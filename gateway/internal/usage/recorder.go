@@ -24,6 +24,11 @@ func NewRecorder(db *pgxpool.Pool, q *quota.Tracker) *Recorder { return &Recorde
 // Postgres is the source of truth (durable); the Redis counter is a fast-read mirror used
 // for the per-request quota gate. A Redis failure is logged-but-tolerated — the Postgres
 // row is what bills.
+//
+// On a successful Postgres insert, the quota middleware's record-signal in context is
+// flipped via quota.MarkRecorded. The middleware uses that signal (not HTTP status) to
+// decide whether to refund the up-front reserve — so HTTP 200 responses carrying a
+// worker error envelope, which skip Record, correctly drop the reserve.
 func (r *Recorder) Record(ctx context.Context, customerID, apiKeyID uuid.UUID, operation, requestID string, units uint64) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
@@ -33,6 +38,10 @@ func (r *Recorder) Record(ctx context.Context, customerID, apiKeyID uuid.UUID, o
 		return err
 	}
 	observability.UsageRecordsTotal.Inc()
+	// Signal the quota middleware that real billable usage was recorded — it uses this
+	// to decide whether to refund the up-front +1 reserve. No-op when quota middleware
+	// isn't in the chain.
+	quota.MarkRecorded(ctx)
 	if r.quota != nil {
 		// Best-effort. Quota middleware fails open on Redis errors so a counter blip
 		// doesn't block traffic — and the Postgres row is the durable record.
