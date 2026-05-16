@@ -26,8 +26,57 @@ func monthKey(customerID uuid.UUID, now time.Time) string {
 	return fmt.Sprintf("quota:%s:%s", customerID, now.UTC().Format("2006-01"))
 }
 
+func expireAt(now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month()+1, 2, 0, 0, 0, 0, time.UTC)
+}
+
+// reserveScript atomically: INCRs the counter by 1, sets the month-end expiry, and
+// rolls back the increment if it would push the customer over their cap. Returns 1
+// if the slot is reserved, 0 if the request would exceed the cap.
+//
+// The pre-fix code used a non-atomic GET-then-check pattern in the middleware: under
+// stampede, N goroutines could all read `current < cap` before any of them committed,
+// allowing soft-overshoot of (N-1) requests per stampede event. Reserving via an
+// atomic INCR-and-check closes that race.
+//
+// Net behaviour: the recorder's later Add(units) still runs after worker success, so
+// total counter movement per successful call = 1 (reserve) + units (recorder). The
+// +1 of overhead is the trade-off for closing the race; for high-units-per-call
+// products it's negligible.
+var reserveScript = redis.NewScript(`
+local key = KEYS[1]
+local cap = tonumber(ARGV[1])
+local exp = tonumber(ARGV[2])
+local v = redis.call('INCR', key)
+redis.call('EXPIREAT', key, exp)
+if v > cap then
+  redis.call('DECR', key)
+  return 0
+end
+return 1
+`)
+
+// Reserve atomically checks the in-month counter against `cap` and, if there's room,
+// reserves a single unit. Returns true if the request is admitted.
+// `cap <= 0` means unlimited (always admit).
+func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, error) {
+	if cap <= 0 {
+		return true, nil
+	}
+	now := time.Now()
+	res, err := reserveScript.Run(ctx, t.cache,
+		[]string{monthKey(customerID, now)},
+		cap, expireAt(now).Unix(),
+	).Int()
+	if err != nil {
+		return false, fmt.Errorf("reserve: %w", err)
+	}
+	return res == 1, nil
+}
+
 // Current returns the customer's billable-unit count for the current calendar month.
 // Missing key → 0. Errors are surfaced; callers may choose to fail-open.
+// Kept for observability / dashboard use; the request-gating path uses Reserve.
 func (t *Tracker) Current(ctx context.Context, customerID uuid.UUID) (uint64, error) {
 	v, err := t.cache.Get(ctx, monthKey(customerID, time.Now())).Uint64()
 	if errors.Is(err, redis.Nil) {
@@ -36,16 +85,15 @@ func (t *Tracker) Current(ctx context.Context, customerID uuid.UUID) (uint64, er
 	return v, err
 }
 
-// Add increments the customer's monthly counter by `units`. Sets an expiry that survives
-// past month-end (a grace window) so late flushes don't lose the value.
+// Add increments the customer's monthly counter by `units` after a successful worker call.
+// The middleware already reserved +1 via Reserve; this adds the actual units consumed.
 func (t *Tracker) Add(ctx context.Context, customerID uuid.UUID, units uint64) error {
 	now := time.Now().UTC()
 	key := monthKey(customerID, now)
-	expireAt := time.Date(now.Year(), now.Month()+1, 2, 0, 0, 0, 0, time.UTC)
 
 	pipe := t.cache.Pipeline()
 	pipe.IncrBy(ctx, key, int64(units))
-	pipe.ExpireAt(ctx, key, expireAt)
+	pipe.ExpireAt(ctx, key, expireAt(now))
 	_, err := pipe.Exec(ctx)
 	return err
 }
