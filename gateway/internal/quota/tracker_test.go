@@ -188,3 +188,112 @@ func TestMonthKey_Shape(t *testing.T) {
 		t.Errorf("monthKey = %q, want %q", got, want)
 	}
 }
+
+// Refund rolls back a previously-reserved slot — used by the middleware when a
+// request didn't produce billable usage (worker failure, contract reject, bad request).
+// Without this the cap would slowly drain even for failed requests, exhausting a
+// customer's quota without any usage_events row to bill.
+func TestRefund_DecrementsCounter(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
+
+	tr := New(rdb)
+	const cap = 10
+
+	// Reserve a few slots.
+	for i := 0; i < 3; i++ {
+		ok, _ := tr.Reserve(context.Background(), cust, cap)
+		if !ok {
+			t.Fatalf("reserve %d should admit", i)
+		}
+	}
+	pre, _ := tr.Current(context.Background(), cust)
+	if pre != 3 {
+		t.Fatalf("counter after 3 reserves = %d, want 3", pre)
+	}
+
+	// Refund one — simulates a failed worker call.
+	if err := tr.Refund(context.Background(), cust); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	post, _ := tr.Current(context.Background(), cust)
+	if post != 2 {
+		t.Errorf("counter after refund = %d, want 2", post)
+	}
+}
+
+// Refund on an empty (missing or zero) counter is a no-op — protects against a
+// refund firing after the month has rolled over and the key has expired.
+func TestRefund_NeverNegative(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
+
+	tr := New(rdb)
+
+	// No prior reserves. Refund should not put the counter into negative territory.
+	for i := 0; i < 5; i++ {
+		if err := tr.Refund(context.Background(), cust); err != nil {
+			t.Fatalf("refund %d failed: %v", i, err)
+		}
+	}
+	v, _ := tr.Current(context.Background(), cust)
+	if int64(v) < 0 {
+		t.Errorf("counter went negative: %d", v)
+	}
+	// uint64 doesn't really go negative — but the underlying Redis value could.
+	raw, err := rdb.Get(context.Background(), monthKey(cust, time.Now().UTC())).Int64()
+	if err == nil && raw < 0 {
+		t.Errorf("raw redis counter went negative: %d", raw)
+	}
+}
+
+// Reserve + Refund should net to zero — verifies the "failed request doesn't burn quota"
+// guarantee that motivated the PR #5 P1 fix.
+func TestReserveThenRefund_NetsToZero(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
+
+	tr := New(rdb)
+	for i := 0; i < 20; i++ {
+		ok, _ := tr.Reserve(context.Background(), cust, 100)
+		if !ok {
+			t.Fatalf("admit %d", i)
+		}
+		if err := tr.Refund(context.Background(), cust); err != nil {
+			t.Fatalf("refund %d: %v", i, err)
+		}
+	}
+	v, _ := tr.Current(context.Background(), cust)
+	if v != 0 {
+		t.Errorf("counter after 20 reserve+refund pairs = %d, want 0", v)
+	}
+}
+
+// Codex P2: monthKey and expireAt must agree on the calendar month even when the
+// host runs in a non-UTC timezone. This test pins the issue: Reserve must touch
+// the UTC-named key and set expiry in the UTC month.
+//
+// We can't easily change the runtime TZ inside a test, so we verify by inspecting
+// the key the Reserve actually wrote to.
+func TestReserve_UsesUTCKey(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	utcKey := monthKey(cust, time.Now().UTC())
+	defer rdb.Del(context.Background(), utcKey)
+
+	tr := New(rdb)
+	ok, err := tr.Reserve(context.Background(), cust, 5)
+	if err != nil || !ok {
+		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
+	}
+	v, err := rdb.Get(context.Background(), utcKey).Int64()
+	if err != nil {
+		t.Fatalf("UTC key %q should exist after Reserve: %v", utcKey, err)
+	}
+	if v != 1 {
+		t.Errorf("UTC counter = %d after one Reserve, want 1", v)
+	}
+}

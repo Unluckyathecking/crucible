@@ -59,11 +59,22 @@ return 1
 // Reserve atomically checks the in-month counter against `cap` and, if there's room,
 // reserves a single unit. Returns true if the request is admitted.
 // `cap <= 0` means unlimited (always admit).
+//
+// Callers MUST pair an admitted Reserve with either:
+//   - usage.Recorder.Record on successful worker invocation (adds the actual units), OR
+//   - Refund if the request did not produce billable usage (worker failure, contract
+//     rejection, bad request, etc.). The quota middleware does this via a deferred call
+//     keyed on response status.
+//
+// Without the Refund path, transient worker outages would burn a slot from the
+// customer's monthly cap without any usage_events row to bill — see PR #5 P1.
 func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, error) {
 	if cap <= 0 {
 		return true, nil
 	}
-	now := time.Now()
+	// Use UTC throughout so the key (which monthKey() builds in UTC) and the expiry
+	// always reference the same calendar month, even on hosts running in a non-UTC TZ.
+	now := time.Now().UTC()
 	res, err := reserveScript.Run(ctx, t.cache,
 		[]string{monthKey(customerID, now)},
 		cap, expireAt(now).Unix(),
@@ -73,6 +84,30 @@ func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) 
 	}
 	return res == 1, nil
 }
+
+// Refund decrements the monthly counter by 1 to release a previously-Reserve'd slot
+// when the request did not result in billable usage (failed worker, contract reject,
+// invalid request). Idempotent at the Redis level — DECR on a missing key returns -1
+// but we floor at 0 via the Lua so counters never go negative on a clock-skew refund
+// after the month rolled over.
+func (t *Tracker) Refund(ctx context.Context, customerID uuid.UUID) error {
+	now := time.Now().UTC()
+	_, err := refundScript.Run(ctx, t.cache, []string{monthKey(customerID, now)}).Int()
+	if err != nil {
+		return fmt.Errorf("refund: %w", err)
+	}
+	return nil
+}
+
+// refundScript decrements only if the key exists and the value is > 0. Prevents
+// negative counters when a refund races with month-boundary expiry.
+var refundScript = redis.NewScript(`
+local key = KEYS[1]
+local v = tonumber(redis.call('GET', key) or 0)
+if v <= 0 then return 0 end
+redis.call('DECR', key)
+return 1
+`)
 
 // Current returns the customer's billable-unit count for the current calendar month.
 // Missing key → 0. Errors are surfaced; callers may choose to fail-open.
