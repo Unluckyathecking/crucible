@@ -22,6 +22,7 @@ PREFIX="${API_KEY_PREFIX:-cru_}"
 
 # Deterministic dev key (24 'A' bytes worth of fake entropy → base32 nopadding).
 # Real keys come from auth.Generate(); this one exists so curl examples in README work.
+# WARNING: Deterministic dev-only key; only works with matching local API_KEY_HASH_SALT. Never use in production.
 FULL_KEY="${PREFIX}live_IFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKBIFAUCQKB"
 # Must match PrefixLen (24) in gateway/internal/auth/keys.go.
 DISPLAY_PREFIX="${FULL_KEY:0:24}"

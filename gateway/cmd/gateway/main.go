@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,7 +30,26 @@ import (
 )
 
 func main() {
+	// Best-effort .env load; absent .env is fine if env is set externally (CI, docker, prod).
 	_ = godotenv.Load()
+
+	// godotenv loads values literally, so a placeholder like
+	//   POSTGRES_DSN=postgres://crucible:${POSTGRES_PASSWORD}@.../crucible
+	// is left as-is. Docker Compose natively expands ${VAR} so the container deploy works.
+	// For local `go run` workflows we expand only the known interpolating connection-string
+	// variables — and ONLY when they actually contain a ${...} placeholder.
+	//
+	// Skipping ExpandEnv when no placeholder is present matters because os.ExpandEnv would
+	// otherwise corrupt a fully-resolved value with literal $-signs (e.g. a generated
+	// password like "MyP@$$w0rd" — $$ would be eaten as a malformed reference). Production
+	// configs usually inject fully-resolved DSN/URLs via env vars, so this expansion must
+	// be opt-in via the placeholder syntax.
+	for _, key := range []string{"POSTGRES_DSN", "REDIS_URL", "WORKER_URL"} {
+		v := os.Getenv(key)
+		if v != "" && strings.Contains(v, "${") {
+			_ = os.Setenv(key, os.ExpandEnv(v))
+		}
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
