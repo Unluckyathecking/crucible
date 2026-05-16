@@ -1,5 +1,11 @@
 # Crucible
 
+[![ci](https://github.com/Unluckyathecking/crucible/actions/workflows/ci.yml/badge.svg)](https://github.com/Unluckyathecking/crucible/actions/workflows/ci.yml)
+[![new-tool-smoke](https://github.com/Unluckyathecking/crucible/actions/workflows/new-tool-smoke.yml/badge.svg)](https://github.com/Unluckyathecking/crucible/actions/workflows/new-tool-smoke.yml)
+[![go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
+[![next.js](https://img.shields.io/badge/next.js-15-000000?logo=next.js)](https://nextjs.org/)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A clone-and-adapt framework for high-volume metered API products.
 
 Crucible is one repo you copy to ship a new API. The framework — auth, rate limiting, Stripe metered billing, observability, OpenAPI/SDK generation, customer dashboard — is identical across every clone. Per-product logic lives in a single worker process that speaks one frozen contract. Workers can be written in any language that speaks HTTP/JSON.
