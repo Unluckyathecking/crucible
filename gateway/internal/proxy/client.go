@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -87,8 +88,14 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Surface up to 512 bytes of the body in the error — invaluable when triaging
+		// a misbehaving worker. Customer-facing errors are still sanitised at the route
+		// handler; this body only lands in the gateway's own structured logs.
+		bodyPeek, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		// Drain anything past the peek so the connection can be reused from the pool.
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("worker returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("worker returned status %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(bodyPeek)))
 	}
 
 	var out InvokeResponse
