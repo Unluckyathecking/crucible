@@ -29,7 +29,23 @@ import (
 )
 
 func main() {
+	// Best-effort .env load; absent .env is fine if env is set externally (CI, docker, prod).
 	_ = godotenv.Load()
+
+	// godotenv loads values literally, so a placeholder like
+	//   POSTGRES_DSN=postgres://crucible:${POSTGRES_PASSWORD}@.../crucible
+	// is left as-is. Docker Compose natively expands ${VAR} so the container deploy works.
+	// For local `go run` workflows we expand the references here so pgx/redis don't see
+	// the literal "${POSTGRES_PASSWORD}" as a password.
+	//
+	// Only expand the variables that may reference others — broad ExpandEnv across every
+	// loaded value would mis-handle legitimate $-signs in passwords. Extend this list when
+	// introducing new vars that interpolate.
+	for _, key := range []string{"POSTGRES_DSN", "REDIS_URL", "WORKER_URL"} {
+		if v := os.Getenv(key); v != "" {
+			_ = os.Setenv(key, os.ExpandEnv(v))
+		}
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
