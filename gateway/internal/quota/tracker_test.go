@@ -30,7 +30,7 @@ func TestReserve_BelowCapAdmits(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 5; i++ {
-		ok, err := tr.Reserve(context.Background(), cust, 10)
+		ok, _, err := tr.Reserve(context.Background(), cust, 10)
 		if err != nil || !ok {
 			t.Fatalf("call %d: ok=%v err=%v", i, ok, err)
 		}
@@ -45,12 +45,12 @@ func TestReserve_OverCapRejects(t *testing.T) {
 	tr := New(rdb)
 	const cap = 3
 	for i := 0; i < cap; i++ {
-		ok, _ := tr.Reserve(context.Background(), cust, cap)
+		ok, _, _ := tr.Reserve(context.Background(), cust, cap)
 		if !ok {
 			t.Fatalf("call %d should admit", i)
 		}
 	}
-	ok, _ := tr.Reserve(context.Background(), cust, cap)
+	ok, _, _ := tr.Reserve(context.Background(), cust, cap)
 	if ok {
 		t.Error("call past cap should reject")
 	}
@@ -80,7 +80,7 @@ func TestReserve_NoStampedeOvershoot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			ok, _ := tr.Reserve(context.Background(), cust, cap)
+			ok, _, _ := tr.Reserve(context.Background(), cust, cap)
 			if ok {
 				admitted.Add(1)
 			}
@@ -105,7 +105,7 @@ func TestReserve_CapZeroMeansUnlimited(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 50; i++ {
-		ok, err := tr.Reserve(context.Background(), cust, 0)
+		ok, _, err := tr.Reserve(context.Background(), cust, 0)
 		if err != nil || !ok {
 			t.Fatalf("call %d: unlimited cap should always admit (ok=%v err=%v)", i, ok, err)
 		}
@@ -127,13 +127,13 @@ func TestReserve_PerCustomerIsolation(t *testing.T) {
 	tr := New(rdb)
 	const cap = 3
 	for i := 0; i < cap; i++ {
-		ok, _ := tr.Reserve(context.Background(), a, cap)
+		ok, _, _ := tr.Reserve(context.Background(), a, cap)
 		if !ok {
 			t.Fatalf("a call %d should admit", i)
 		}
 	}
 	// Customer A is exhausted; customer B should be untouched.
-	ok, _ := tr.Reserve(context.Background(), b, cap)
+	ok, _, _ := tr.Reserve(context.Background(), b, cap)
 	if !ok {
 		t.Error("customer B should be admitted independently of A")
 	}
@@ -162,7 +162,7 @@ func TestReserve_MultipleCustomersConcurrent(t *testing.T) {
 			wg.Add(1)
 			go func(ci int, cust uuid.UUID) {
 				defer wg.Done()
-				ok, _ := tr.Reserve(context.Background(), cust, capPerCust)
+				ok, _, _ := tr.Reserve(context.Background(), cust, capPerCust)
 				if ok {
 					admittedPerCust[ci].Add(1)
 				}
@@ -203,7 +203,7 @@ func TestRefund_DecrementsCounter(t *testing.T) {
 
 	// Reserve a few slots.
 	for i := 0; i < 3; i++ {
-		ok, _ := tr.Reserve(context.Background(), cust, cap)
+		ok, _, _ := tr.Reserve(context.Background(), cust, cap)
 		if !ok {
 			t.Fatalf("reserve %d should admit", i)
 		}
@@ -214,7 +214,7 @@ func TestRefund_DecrementsCounter(t *testing.T) {
 	}
 
 	// Refund one — simulates a failed worker call.
-	if err := tr.Refund(context.Background(), cust); err != nil {
+	if err := tr.RefundAt(context.Background(), monthKey(cust, time.Now().UTC())); err != nil {
 		t.Fatalf("Refund: %v", err)
 	}
 	post, _ := tr.Current(context.Background(), cust)
@@ -234,7 +234,7 @@ func TestRefund_NeverNegative(t *testing.T) {
 
 	// No prior reserves. Refund should not put the counter into negative territory.
 	for i := 0; i < 5; i++ {
-		if err := tr.Refund(context.Background(), cust); err != nil {
+		if err := tr.RefundAt(context.Background(), monthKey(cust, time.Now().UTC())); err != nil {
 			t.Fatalf("refund %d failed: %v", i, err)
 		}
 	}
@@ -258,11 +258,11 @@ func TestReserveThenRefund_NetsToZero(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 20; i++ {
-		ok, _ := tr.Reserve(context.Background(), cust, 100)
+		ok, _, _ := tr.Reserve(context.Background(), cust, 100)
 		if !ok {
 			t.Fatalf("admit %d", i)
 		}
-		if err := tr.Refund(context.Background(), cust); err != nil {
+		if err := tr.RefundAt(context.Background(), monthKey(cust, time.Now().UTC())); err != nil {
 			t.Fatalf("refund %d: %v", i, err)
 		}
 	}
@@ -285,9 +285,12 @@ func TestReserve_UsesUTCKey(t *testing.T) {
 	defer rdb.Del(context.Background(), utcKey)
 
 	tr := New(rdb)
-	ok, err := tr.Reserve(context.Background(), cust, 5)
+	ok, returnedKey, err := tr.Reserve(context.Background(), cust, 5)
 	if err != nil || !ok {
 		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
+	}
+	if returnedKey != utcKey {
+		t.Errorf("Reserve returned key %q, want %q", returnedKey, utcKey)
 	}
 	v, err := rdb.Get(context.Background(), utcKey).Int64()
 	if err != nil {
@@ -295,5 +298,58 @@ func TestReserve_UsesUTCKey(t *testing.T) {
 	}
 	if v != 1 {
 		t.Errorf("UTC counter = %d after one Reserve, want 1", v)
+	}
+}
+
+// Codex P2 (second pass): RefundAt must use the EXACT key returned by Reserve, not
+// a freshly-computed one. Verifies a refund against the original key correctly
+// decrements that month's counter.
+func TestRefundAt_TargetsOriginalReservedKey(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
+
+	tr := New(rdb)
+	ok, reservedKey, err := tr.Reserve(context.Background(), cust, 10)
+	if err != nil || !ok {
+		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
+	}
+	v, _ := rdb.Get(context.Background(), reservedKey).Int64()
+	if v != 1 {
+		t.Fatalf("post-reserve counter = %d, want 1", v)
+	}
+
+	if err := tr.RefundAt(context.Background(), reservedKey); err != nil {
+		t.Fatalf("RefundAt: %v", err)
+	}
+	v, _ = rdb.Get(context.Background(), reservedKey).Int64()
+	if v != 0 {
+		t.Errorf("post-refund counter at %q = %d, want 0", reservedKey, v)
+	}
+}
+
+// RefundAt with an empty key (cap=0 unlimited tier) is a no-op.
+func TestRefundAt_EmptyKeyNoOps(t *testing.T) {
+	rdb := newTestRedis(t)
+	tr := New(rdb)
+	if err := tr.RefundAt(context.Background(), ""); err != nil {
+		t.Errorf("RefundAt with empty key should be a no-op, got %v", err)
+	}
+}
+
+// Codex P1 (second pass): the record-signal in context is the bridge from recorder
+// to middleware. Defaults to false; MarkRecorded flips it true; called on a context
+// without the seeded signal is a safe no-op.
+func TestRecordSignal_DefaultsToFalse_MarkRecordedFlips(t *testing.T) {
+	ctx, sig := withRecordSignal(context.Background())
+	if sig.recorded.Load() {
+		t.Error("fresh signal should be false")
+	}
+	// Safe no-op when context has no signal:
+	MarkRecorded(context.Background())
+	// Flips when context has signal:
+	MarkRecorded(ctx)
+	if !sig.recorded.Load() {
+		t.Error("MarkRecorded should have flipped the signal to true")
 	}
 }

@@ -57,42 +57,53 @@ return 1
 `)
 
 // Reserve atomically checks the in-month counter against `cap` and, if there's room,
-// reserves a single unit. Returns true if the request is admitted.
-// `cap <= 0` means unlimited (always admit).
+// reserves a single unit. Returns `(admitted, reservedKey, err)`. `reservedKey` is the
+// exact Redis key the reserve was applied to — callers MUST pass it back to RefundAt
+// when releasing the reservation. This is what makes the refund path correct across
+// midnight-UTC boundaries: a request that reserves at 23:59 and refunds at 00:01 must
+// release the *previous* month's counter, not the new month's empty key.
+//
+// `cap <= 0` means unlimited (always admit; empty reservedKey).
 //
 // Callers MUST pair an admitted Reserve with either:
 //   - usage.Recorder.Record on successful worker invocation (adds the actual units), OR
-//   - Refund if the request did not produce billable usage (worker failure, contract
-//     rejection, bad request, etc.). The quota middleware does this via a deferred call
-//     keyed on response status.
+//   - RefundAt if the request did not produce billable usage (worker failure, contract
+//     rejection, bad request, HTTP 200 carrying an error envelope, etc.). The quota
+//     middleware drives this via a context-based "was usage recorded" signal that the
+//     recorder flips on a successful insert.
 //
-// Without the Refund path, transient worker outages would burn a slot from the
+// Without the refund path, transient worker outages would burn a slot from the
 // customer's monthly cap without any usage_events row to bill — see PR #5 P1.
-func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, error) {
+func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, string, error) {
 	if cap <= 0 {
-		return true, nil
+		return true, "", nil
 	}
 	// Use UTC throughout so the key (which monthKey() builds in UTC) and the expiry
 	// always reference the same calendar month, even on hosts running in a non-UTC TZ.
 	now := time.Now().UTC()
+	key := monthKey(customerID, now)
 	res, err := reserveScript.Run(ctx, t.cache,
-		[]string{monthKey(customerID, now)},
+		[]string{key},
 		cap, expireAt(now).Unix(),
 	).Int()
 	if err != nil {
-		return false, fmt.Errorf("reserve: %w", err)
+		return false, "", fmt.Errorf("reserve: %w", err)
 	}
-	return res == 1, nil
+	return res == 1, key, nil
 }
 
-// Refund decrements the monthly counter by 1 to release a previously-Reserve'd slot
-// when the request did not result in billable usage (failed worker, contract reject,
-// invalid request). Idempotent at the Redis level — DECR on a missing key returns -1
-// but we floor at 0 via the Lua so counters never go negative on a clock-skew refund
-// after the month rolled over.
-func (t *Tracker) Refund(ctx context.Context, customerID uuid.UUID) error {
-	now := time.Now().UTC()
-	_, err := refundScript.Run(ctx, t.cache, []string{monthKey(customerID, now)}).Int()
+// RefundAt decrements the counter at the specified Redis key by 1. The key MUST come
+// from a prior Reserve() call to handle the month-boundary case correctly:
+// a request that starts at 23:59:59 UTC and refunds at 00:00:01 the next day refunds
+// the PREVIOUS month's reservation rather than touching the (empty) new month key.
+// Idempotent: a Lua-guarded floor at zero prevents counters going negative on
+// clock-skew refunds after month rollover + key expiry.
+func (t *Tracker) RefundAt(ctx context.Context, reservedKey string) error {
+	if reservedKey == "" {
+		// Unlimited-tier reserve (cap=0) returns empty key; nothing to refund.
+		return nil
+	}
+	_, err := refundScript.Run(ctx, t.cache, []string{reservedKey}).Int()
 	if err != nil {
 		return fmt.Errorf("refund: %w", err)
 	}

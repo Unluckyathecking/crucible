@@ -9,7 +9,6 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
-	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
 
 // Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve.
@@ -17,11 +16,20 @@ import (
 //
 // Flow:
 //  1. Reserve(+1) atomically against the customer's monthly counter. Returns 429 on cap.
-//  2. Run the handler with a status-capturing ResponseWriter wrapper.
-//  3. After the handler returns, if the response indicated failure (non-2xx) the
-//     request didn't produce billable usage, so refund the reserve. This is the
-//     compensating decrement for the P1 issue Codex flagged: previously, a transient
-//     worker outage would consume a slot from the cap without any usage_events row.
+//  2. Seed a record-signal into context so the downstream usage recorder can flip
+//     it true on a successful insert.
+//  3. Run the handler.
+//  4. After the handler returns, if the recorder never flipped the signal (worker
+//     failed, response carried an error envelope, recorder write failed, etc.),
+//     refund the reserve against the EXACT key Reserve used.
+//
+// Two non-obvious choices both motivated by Codex's PR #5 review:
+//  - Signal-based refund (not HTTP-status-based) — a worker returning HTTP 200 with a
+//    structured error envelope skips the recorder, which would have escaped a status-only
+//    refund gate. The signal is set only when usage is actually persisted.
+//  - Key-based refund (not customer+now-based) — a request that reserves at 23:59 UTC
+//    and refunds at 00:01 the next day must release the previous month's counter,
+//    not the (empty) new month key.
 //
 // The atomic INCR-and-rollback in Reserve closes the soft-overshoot race that the
 // pre-fix non-atomic GET-then-check had.
@@ -42,7 +50,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				next.ServeHTTP(w, r)
 				return
 			}
-			admitted, err := t.Reserve(r.Context(), key.Customer.ID, cap)
+			admitted, reservedKey, err := t.Reserve(r.Context(), key.Customer.ID, cap)
 			if err != nil {
 				// Fail-open and let the request through. Operators see this in observability.
 				next.ServeHTTP(w, r)
@@ -55,27 +63,23 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				return
 			}
 
-			// Reserve succeeded. Capture response status so we can refund if the
-			// request didn't produce billable usage.
-			rec := httputil.NewStatusRecorder(w)
-			next.ServeHTTP(rec, r)
+			// Reserve succeeded. Plant a record-signal so the recorder can tell us whether
+			// it actually wrote a usage row downstream.
+			ctx, signal := withRecordSignal(r.Context())
+			next.ServeHTTP(w, r.WithContext(ctx))
 
-			// Non-2xx means: worker failure, contract reject (502 WORKER_BAD_RESPONSE),
-			// invalid request (400 BAD_REQUEST), upstream rejection — none of which
-			// produced a usage_events row. Refund the reserved slot.
-			//
-			// Best-effort: a refund failure leaves the counter inflated by 1, which is
-			// the same as not having the refund at all. Worth logging but never blocking.
-			if rec.Status < 200 || rec.Status >= 300 {
-				// Use a fresh background context — the request context may already be canceled
-				// by the time the handler returns (e.g. client disconnect). Refund still needs to run.
+			if !signal.recorded.Load() {
+				// No usage row was written for this request — refund the reserve against
+				// the EXACT key Reserve used (handles midnight-UTC boundaries correctly).
+				// Use a fresh background context: the request context may already be canceled
+				// by client disconnect, but the refund still needs to run.
 				bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				if err := t.Refund(bg, key.Customer.ID); err != nil {
+				if err := t.RefundAt(bg, reservedKey); err != nil {
 					log.Warn().
 						Err(err).
 						Str("customer", key.Customer.ID.String()).
-						Int("status", rec.Status).
+						Str("key", reservedKey).
 						Msg("quota refund failed; counter may drift +1")
 				}
 			}
