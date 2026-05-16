@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,33 @@ func TestInvoke_Non200(t *testing.T) {
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error for non-200, got nil")
+	}
+	// The body should surface in the error message so operators can triage worker failures
+	// without having to attach a debugger.
+	if !strings.Contains(err.Error(), "worker exploded") {
+		t.Errorf("error %q did not include worker response body", err.Error())
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q did not include status code", err.Error())
+	}
+}
+
+func TestInvoke_Non200_BodyTruncated(t *testing.T) {
+	bigBody := strings.Repeat("x", 10000)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(bigBody))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second)
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// The body peek caps at 512 bytes so a chatty worker can't blow up log lines.
+	if len(err.Error()) > 700 {
+		t.Errorf("error too long (%d bytes); body should be truncated to ~512", len(err.Error()))
 	}
 }
 
