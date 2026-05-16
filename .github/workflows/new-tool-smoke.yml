@@ -1,0 +1,19 @@
+name: new-tool-smoke
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The framework's whole value rests on `scripts/new-tool.sh` working. If it silently
+# rots, every clone breaks and we won't find out until someone tries it. Smoke-test it.
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: smoke-new-tool
+        run: bash scripts/smoke-new-tool.sh

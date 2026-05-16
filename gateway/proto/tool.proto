@@ -1,0 +1,92 @@
+// Crucible worker contract — FROZEN across all clones.
+//
+// Every Crucible worker, regardless of language, implements this service.
+// Workers speak Connect HTTP/JSON by default (curl-debuggable, any language);
+// gRPC is opt-in via the same .proto for perf-sensitive workers.
+//
+// Do NOT add per-product fields here. The whole point of the framework is that
+// this contract never needs to change. Routing and product semantics live above
+// it: the gateway forwards `operation` opaquely; the worker dispatches internally.
+syntax = "proto3";
+
+package crucible.worker.v1;
+
+option go_package = "github.com/Unluckyathecking/crucible/gateway/proto/workerv1;workerv1";
+
+service Tool {
+  rpc Invoke (InvokeRequest)  returns (InvokeResponse);
+  rpc Health (HealthRequest)  returns (HealthResponse);
+}
+
+message InvokeRequest {
+  // Unique per request — used to correlate logs/traces between gateway and worker.
+  string request_id = 1;
+
+  // Opaque-to-the-worker customer identifier (typically a UUID).
+  string customer_id = 2;
+
+  // Free-form string naming the operation, e.g. "validate_vat", "parse_statement".
+  // The gateway forwards this opaquely; the worker dispatches internally on it.
+  // NEVER an enum — enums force per-product proto forks.
+  string operation = 3;
+
+  // Product-specific JSON-encoded input. Shape is defined per operation by the worker.
+  bytes payload = 4;
+
+  // Free-form key/value metadata (locale, feature flags, idempotency keys, etc.).
+  map<string, string> metadata = 5;
+
+  // Plan tier the customer is on, e.g. "free" | "pro" | "business".
+  // Workers may tune behaviour on this (model selection, depth of analysis, ...).
+  string plan = 6;
+}
+
+message InvokeResponse {
+  oneof result {
+    // Product-specific JSON-encoded output on success.
+    bytes payload = 1;
+
+    // Structured error envelope on failure.
+    Error error = 2;
+  }
+
+  // Number of billable units consumed by this call. Must be >= 1.
+  //
+  // Flat-rate tools return 1 — one call, one unit.
+  // Per-page parsers return N pages, per-image tools return N images,
+  // per-token LLM tools return tokens consumed, etc.
+  //
+  // The gateway emits a Stripe `meter_event` with value = billable_units
+  // for every successful call.
+  uint64 billable_units = 3;
+
+  // Optional human-readable label for billable_units ("pages", "images", "tokens").
+  // Surfaced on Stripe-rendered invoices and the customer dashboard.
+  string units_label = 4;
+}
+
+message Error {
+  // Stable machine-readable code, e.g. "INVALID_VAT_FORMAT", "RATE_LIMITED".
+  // Customers may parse this — do not change codes across releases.
+  string code = 1;
+
+  // Human-readable message. Safe for display — must NEVER leak internals,
+  // stack traces, or customer-distinguishing details from other tenants.
+  string message = 2;
+
+  // True if the exact same request could succeed if retried later
+  // (transient downstream failure, worker overload, etc.).
+  bool retryable = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_HEALTHY     = 1;
+    STATUS_DEGRADED    = 2;
+    STATUS_UNHEALTHY   = 3;
+  }
+  Status status = 1;
+}

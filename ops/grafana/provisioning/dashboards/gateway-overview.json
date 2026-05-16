@@ -1,0 +1,82 @@
+{
+  "title": "Crucible — Gateway Overview",
+  "uid": "crucible-gateway",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate (req/s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum(rate(crucible_requests_total[1m])) by (status)", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "P95 latency (s)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(crucible_request_duration_seconds_bucket[5m])) by (le, path))", "legendFormat": "p95 {{path}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Worker call latency (p50/p95/p99)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(crucible_worker_call_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(crucible_worker_call_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(crucible_worker_call_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Usage records / s",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "rate(crucible_usage_records_total[1m])", "legendFormat": "records/s" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Stripe billing flushes",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "sum by (outcome) (increase(crucible_billing_flush_total[1h]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Rate-limited requests",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "increase(crucible_rate_limited_total[1h])", "legendFormat": "last hour" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "5xx error rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "sum(rate(crucible_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx/s" }
+      ]
+    }
+  ]
+}

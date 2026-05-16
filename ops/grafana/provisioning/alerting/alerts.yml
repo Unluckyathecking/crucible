@@ -1,0 +1,50 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: crucible-slo
+    folder: Crucible
+    interval: 1m
+    rules:
+      - uid: cru-5xx
+        title: 5xx error rate above 1% for 5 minutes
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(crucible_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(crucible_requests_total[5m])), 0.001)
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [0.01] }
+              expression: A
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+      - uid: cru-flush-stalled
+        title: Stripe billing flush stalled (no successes in 15 minutes)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: increase(crucible_billing_flush_total{outcome="ok"}[15m])
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+              expression: A
+              refId: B
+        noDataState: Alerting
+        for: 0s

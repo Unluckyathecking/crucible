@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: Crucible
+    folder: Crucible
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /etc/grafana/provisioning/dashboards

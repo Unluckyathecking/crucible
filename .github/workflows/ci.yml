@@ -1,0 +1,42 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: |
+            gateway/go.sum
+            workers/sdk-go/go.sum
+            workers/stubs/go/go.sum
+      - name: go.work sync
+        run: go work sync
+      - name: gateway test
+        run: cd gateway && go vet ./... && go test -race ./...
+      - name: sdk-go test
+        run: cd workers/sdk-go && go vet ./... && go test -race ./...
+      - name: worker stub build
+        run: cd workers/stubs/go && go vet ./... && go build ./...
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: pnpm install
+        run: cd dashboard && pnpm install --frozen-lockfile
+      - name: pnpm build
+        run: cd dashboard && pnpm build

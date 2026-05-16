@@ -1,0 +1,112 @@
+# Crucible local development stack.
+# `make dev` brings up postgres + redis + worker + gateway end-to-end.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crucible
+      POSTGRES_PASSWORD: crucible
+      POSTGRES_DB: crucible
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crucible -d crucible"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: workers/stubs/go/Dockerfile
+    environment:
+      PORT: "8081"
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      WORKER_URL: http://worker:8081
+      POSTGRES_DSN: postgres://crucible:crucible@postgres:5432/crucible?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8080:8080"
+    expose:
+      - "9090"  # metrics (scraped internally by prometheus)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./ops/prometheus:/etc/prometheus:ro
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    depends_on:
+      gateway:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      prometheus:
+        condition: service_started
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    env_file: ./dashboard/.env.local
+    environment:
+      DATABASE_URL: postgres://crucible:crucible@postgres:5432/crucible
+      AUTH_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg-data:
