@@ -17,6 +17,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       sendVerificationRequest: async ({ identifier, url }) => {
         const apiKey = process.env.RESEND_API_KEY;
         if (!apiKey) {
+          if (process.env.NODE_ENV === "production") {
+            throw new Error("Missing RESEND_API_KEY environment variable.");
+          }
           // Dev path: log the magic-link to console.
           console.log(
             `\n=== MAGIC LINK for ${identifier} ===\n${url}\n=====================================\n`,
