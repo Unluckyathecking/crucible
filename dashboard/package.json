@@ -29,7 +29,7 @@
     "typescript": "^5.7.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
+    "approvedBuilds": [
       "sharp"
     ]
   }
