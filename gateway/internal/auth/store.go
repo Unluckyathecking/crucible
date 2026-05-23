@@ -31,13 +31,77 @@ type Key struct {
 
 // Store looks up API keys against Postgres with a Redis hot cache (60 s TTL).
 type Store struct {
-	db    *pgxpool.Pool
-	cache *redis.Client
-	salt  string
+	db       *pgxpool.Pool
+	cache    *redis.Client
+	salt     string
+	updateCh chan uuid.UUID
+	done     chan struct{}
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
-	return &Store{db: db, cache: cache, salt: salt}
+	s := &Store{
+		db:       db,
+		cache:    cache,
+		salt:     salt,
+		updateCh: make(chan uuid.UUID, 2048),
+		done:     make(chan struct{}),
+	}
+	go s.processUpdates()
+	return s
+}
+
+// Close gracefully shuts down the background update worker.
+func (s *Store) Close() error {
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
+	return nil
+}
+
+func (s *Store) processUpdates() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	var batch []uuid.UUID
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		unique := make(map[uuid.UUID]struct{})
+		for _, id := range batch {
+			unique[id] = struct{}{}
+		}
+
+		var ids []uuid.UUID
+		for id := range unique {
+			ids = append(ids, id)
+		}
+		batch = batch[:0]
+
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Fire-and-forget the database update, handle batch of IDs
+		_, _ = s.db.Exec(bg, "UPDATE api_keys SET last_used_at = NOW() WHERE id = ANY($1)", ids)
+	}
+
+	for {
+		select {
+		case <-s.done:
+			flush()
+			return
+		case id := <-s.updateCh:
+			batch = append(batch, id)
+			if len(batch) >= 100 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
@@ -118,12 +182,13 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
 	}
 
-	// Fire-and-forget last_used update — don't block the request hot path.
-	go func() {
-		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
-	}()
+	// Queue last_used update — don't block the request hot path.
+	// Bounded channel prevents memory/connection exhaustion.
+	select {
+	case s.updateCh <- keyID:
+	default:
+		// Channel full, drop update to maintain availability.
+	}
 
 	return &Key{
 		ID:       keyID,

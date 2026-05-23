@@ -303,3 +303,57 @@ func TestStore_PrefixLookupIsCaseSensitive(t *testing.T) {
 		}
 	})
 }
+
+func TestStore_ConcurrentLookup(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+	defer s.Close()
+
+	// Clear cache and previous data
+	rdb.FlushDB(ctx)
+
+	var keys []string
+	var keyIDs []uuid.UUID
+
+	// Insert 200 keys
+	for i := 0; i < 200; i++ {
+		keyID, fullKey, _ := insertTestKey(t, ctx, db, testSalt)
+		keys = append(keys, fullKey)
+		keyIDs = append(keyIDs, keyID)
+	}
+
+	// Do lookups concurrently
+	errCh := make(chan error, len(keys))
+	for _, k := range keys {
+		go func(key string) {
+			_, err := s.Lookup(ctx, key)
+			errCh <- err
+		}(k)
+	}
+
+	// Wait for all lookups to finish
+	for i := 0; i < len(keys); i++ {
+		if err := <-errCh; err != nil {
+			t.Errorf("Lookup failed: %v", err)
+		}
+	}
+
+	// Wait for background worker to flush
+	time.Sleep(2 * time.Second)
+
+	// Verify last_used_at is not null
+	for _, id := range keyIDs {
+		var lastUsed *time.Time
+		err := db.QueryRow(ctx, "SELECT last_used_at FROM api_keys WHERE id = $1", id).Scan(&lastUsed)
+		if err != nil {
+			t.Errorf("Failed to check last_used_at for key %s: %v", id, err)
+		}
+		if lastUsed == nil {
+			t.Errorf("last_used_at is nil for key %s", id)
+		}
+	}
+}
