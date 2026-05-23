@@ -18,7 +18,9 @@
     "react-dom": "^19.1.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["sharp"]
+    "ignoredBuiltDependencies": [
+      "sharp"
+    ]
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
