@@ -43,4 +43,5 @@ AGENTS.md
 .bg-shell/
 .gsd/
 .opencode/
+.claude/
 skills-lock.json
