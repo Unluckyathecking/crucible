@@ -74,17 +74,39 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	wantHash := Hash(s.salt, fullKey)
 
 	// Redis hot path.
+	if key := s.checkCache(ctx, prefix, wantHash); key != nil {
+		return key, nil
+	}
+
+	// Cold path: query Postgres.
+	key, storedHash, err := s.lookupDB(ctx, prefix, wantHash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate cache for the next call.
+	s.writeCache(ctx, prefix, key, storedHash)
+
+	// Fire-and-forget last_used update — don't block the request hot path.
+	s.updateLastUsed(key.ID)
+
+	return key, nil
+}
+
+func (s *Store) checkCache(ctx context.Context, prefix string, wantHash []byte) *Key {
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
 		if json.Unmarshal(cached, &c) == nil && VerifyHash(wantHash, c.Hash) {
 			return &Key{
 				ID:       c.KeyID,
 				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
-			}, nil
+			}
 		}
 	}
+	return nil
+}
 
-	// Cold path: query Postgres (idx_api_keys_active_prefix makes this O(1) + verify).
+func (s *Store) lookupDB(ctx context.Context, prefix string, wantHash []byte) (*Key, []byte, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT k.id, k.hash, c.id, c.email, c.plan_id
 		FROM api_keys k
@@ -98,37 +120,39 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	var email, plan string
 	if err := row.Scan(&keyID, &storedHash, &customerID, &email, &plan); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrKeyNotFound
+			return nil, nil, ErrKeyNotFound
 		}
-		return nil, fmt.Errorf("lookup api key: %w", err)
+		return nil, nil, fmt.Errorf("lookup api key: %w", err)
 	}
 	if !VerifyHash(wantHash, storedHash) {
-		return nil, ErrKeyNotFound
+		return nil, nil, ErrKeyNotFound
 	}
 
-	// Populate cache for the next call.
+	return &Key{
+		ID:       keyID,
+		Customer: Customer{ID: customerID, Email: email, Plan: plan},
+	}, storedHash, nil
+}
+
+func (s *Store) writeCache(ctx context.Context, prefix string, key *Key, hash []byte) {
 	entry := cacheEntry{
-		KeyID:      keyID,
-		CustomerID: customerID,
-		Email:      email,
-		Plan:       plan,
-		Hash:       storedHash,
+		KeyID:      key.ID,
+		CustomerID: key.Customer.ID,
+		Email:      key.Customer.Email,
+		Plan:       key.Customer.Plan,
+		Hash:       hash,
 	}
 	if payload, err := json.Marshal(entry); err == nil {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
 	}
+}
 
-	// Fire-and-forget last_used update — don't block the request hot path.
+func (s *Store) updateLastUsed(keyID uuid.UUID) {
 	go func() {
 		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 	}()
-
-	return &Key{
-		ID:       keyID,
-		Customer: Customer{ID: customerID, Email: email, Plan: plan},
-	}, nil
 }
 
 type cacheEntry struct {
