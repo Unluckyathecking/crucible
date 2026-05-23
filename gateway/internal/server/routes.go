@@ -145,25 +145,12 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			return
 		}
 
-		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
-			if errorExposure == "full" {
-				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
-			} else {
-				writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
-			}
+			handleWorkerError(w, errorExposure, resp.Error)
 			return
 		}
 
-		// Contract check: a successful worker response MUST report billable_units >= 1.
-		// Otherwise a buggy or malicious non-SDK worker could let customers consume service for free.
-		// The SDK enforces this client-side, but the gateway is the trust boundary.
-		if resp.BillableUnits < 1 {
-			log.Warn().
-				Str("request_id", rid).
-				Str("operation", operation).
-				Msg("worker returned success with billable_units<1 — rejecting")
-			writeJSONError(w, http.StatusBadGateway, "WORKER_BAD_RESPONSE", "worker contract violation", false)
+		if !validateContract(w, rid, operation, resp) {
 			return
 		}
 
@@ -174,15 +161,44 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			}
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		if resp.BillableUnits > 0 {
-			w.Header().Set("X-Billable-Units", fmt.Sprintf("%d", resp.BillableUnits))
-		}
-		if resp.UnitsLabel != "" {
-			w.Header().Set("X-Units-Label", resp.UnitsLabel)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+		writeSuccessResponse(w, resp)
 	}
+}
+
+// handleWorkerError exposes or sanitizes worker structured errors based on config.
+func handleWorkerError(w http.ResponseWriter, errorExposure string, err *proxy.InvokeError) {
+	if errorExposure == "full" {
+		writeJSONError(w, http.StatusBadGateway, err.Code, err.Message, err.Retryable)
+	} else {
+		writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+	}
+}
+
+// validateContract ensures a successful worker response reports billable_units >= 1.
+// Otherwise a buggy or malicious non-SDK worker could let customers consume service for free.
+// The SDK enforces this client-side, but the gateway is the trust boundary.
+func validateContract(w http.ResponseWriter, rid, operation string, resp *proxy.InvokeResponse) bool {
+	if resp.BillableUnits < 1 {
+		log.Warn().
+			Str("request_id", rid).
+			Str("operation", operation).
+			Msg("worker returned success with billable_units<1 — rejecting")
+		writeJSONError(w, http.StatusBadGateway, "WORKER_BAD_RESPONSE", "worker contract violation", false)
+		return false
+	}
+	return true
+}
+
+// writeSuccessResponse writes the successful worker response to the client.
+func writeSuccessResponse(w http.ResponseWriter, resp *proxy.InvokeResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	if resp.BillableUnits > 0 {
+		w.Header().Set("X-Billable-Units", fmt.Sprintf("%d", resp.BillableUnits))
+	}
+	if resp.UnitsLabel != "" {
+		w.Header().Set("X-Units-Label", resp.UnitsLabel)
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string, retryable bool) {

@@ -392,6 +392,46 @@ func TestInvokeErrorExposureTransportErrorAlwaysSanitized(t *testing.T) {
 	}
 }
 
+func TestInvokeContractViolation(t *testing.T) {
+	// A successful response with billable_units < 1 MUST be rejected.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"payload":        map[string]any{"status": "ok"},
+			"billable_units": 0,
+		})
+	}))
+	defer worker.Close()
+
+	p := proxy.New(worker.URL, 5*time.Second)
+	h := invoke(p, nil, "full", "test")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode body: %v", err)
+	}
+
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", body["error"])
+	}
+	if errObj["code"] != "WORKER_BAD_RESPONSE" {
+		t.Errorf("expected code 'WORKER_BAD_RESPONSE', got %q", errObj["code"])
+	}
+	if errObj["message"] != "worker contract violation" {
+		t.Errorf("expected message 'worker contract violation', got %q", errObj["message"])
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }

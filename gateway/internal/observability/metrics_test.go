@@ -189,5 +189,3 @@ func TestMetrics_RequestDuration_Recorded(t *testing.T) {
 		t.Error("request_duration histogram has no samples")
 	}
 }
-
-
