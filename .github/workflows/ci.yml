@@ -55,6 +55,24 @@ jobs:
 
           echo "Go version drift check passed."
 
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: workers/sdk-rust
+      - name: cargo check
+        run: cd workers/sdk-rust && cargo check
+      - name: cargo clippy
+        run: cd workers/sdk-rust && cargo clippy -- -D warnings
+      - name: cargo test
+        run: cd workers/sdk-rust && cargo test
+
   dashboard:
     runs-on: ubuntu-latest
     steps:
