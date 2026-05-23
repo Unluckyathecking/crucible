@@ -29,8 +29,6 @@
     "typescript": "^5.7.0"
   },
   "pnpm": {
-    "ignoredBuiltDependencies": [
-      "sharp"
-    ]
+    "onlyBuiltDependencies": []
   }
 }
