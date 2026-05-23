@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
@@ -158,4 +160,89 @@ func TestRecord_multipleCalls(t *testing.T) {
 	if count != 5 {
 		t.Errorf("expected 5 rows, got %d", count)
 	}
+}
+
+func TestRecord_withQuota(t *testing.T) {
+	pool := newTestPool(t)
+	custID, apiKeyID := setupTestCustomer(t, pool)
+
+	cache := newTestRedis(t)
+	qTracker := quota.New(cache)
+
+	r := NewRecorder(pool, qTracker)
+
+	// Use background context
+	ctx := context.Background()
+
+	err := r.Record(ctx, custID, apiKeyID, "test.quota.op", "req-quota-1", 42)
+	if err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	// 1. Verify Postgres durable insert
+	var units uint64
+	err = pool.QueryRow(context.Background(),
+		`SELECT billable_units FROM usage_events WHERE request_id = $1`, "req-quota-1",
+	).Scan(&units)
+	if err != nil {
+		t.Fatalf("query inserted row: %v", err)
+	}
+	if units != 42 {
+		t.Errorf("got units %d, want 42", units)
+	}
+
+	// 2. Verify Redis quota counter was updated
+	// Using Current to fetch the count directly from Redis
+	v, err := qTracker.Current(context.Background(), custID)
+	if err != nil {
+		t.Fatalf("querying redis quota tracker failed: %v", err)
+	}
+	if v != 42 {
+		t.Errorf("expected redis counter to be 42, got %d", v)
+	}
+}
+
+func TestRecord_quotaRedisError_Tolerated(t *testing.T) {
+	pool := newTestPool(t)
+	custID, apiKeyID := setupTestCustomer(t, pool)
+
+	cache := newTestRedis(t)
+	qTracker := quota.New(cache)
+
+	// Close the redis connection to force an error on Add()
+	cache.Close()
+
+	r := NewRecorder(pool, qTracker)
+
+	// Use background context
+	ctx := context.Background()
+
+	// Even though Redis will fail, Record should still succeed because Postgres insert is durable
+	err := r.Record(ctx, custID, apiKeyID, "test.quota.err.op", "req-quota-err", 7)
+	if err != nil {
+		t.Fatalf("Record failed with redis error, should have been tolerated: %v", err)
+	}
+
+	// 1. Verify Postgres durable insert still happened
+	var units uint64
+	err = pool.QueryRow(context.Background(),
+		`SELECT billable_units FROM usage_events WHERE request_id = $1`, "req-quota-err",
+	).Scan(&units)
+	if err != nil {
+		t.Fatalf("query inserted row: %v", err)
+	}
+	if units != 7 {
+		t.Errorf("got units %d, want 7", units)
+	}
+}
+
+func newTestRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	c := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("redis unavailable on localhost:6379, skipping: %v", err)
+	}
+	return c
 }
