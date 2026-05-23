@@ -24,12 +24,12 @@ import (
 //     refund the reserve against the EXACT key Reserve used.
 //
 // Two non-obvious choices both motivated by Codex's PR #5 review:
-//  - Signal-based refund (not HTTP-status-based) — a worker returning HTTP 200 with a
-//    structured error envelope skips the recorder, which would have escaped a status-only
-//    refund gate. The signal is set only when usage is actually persisted.
-//  - Key-based refund (not customer+now-based) — a request that reserves at 23:59 UTC
-//    and refunds at 00:01 the next day must release the previous month's counter,
-//    not the (empty) new month key.
+//   - Signal-based refund (not HTTP-status-based) — a worker returning HTTP 200 with a
+//     structured error envelope skips the recorder, which would have escaped a status-only
+//     refund gate. The signal is set only when usage is actually persisted.
+//   - Key-based refund (not customer+now-based) — a request that reserves at 23:59 UTC
+//     and refunds at 00:01 the next day must release the previous month's counter,
+//     not the (empty) new month key.
 //
 // The atomic INCR-and-rollback in Reserve closes the soft-overshoot race that the
 // pre-fix non-atomic GET-then-check had.
