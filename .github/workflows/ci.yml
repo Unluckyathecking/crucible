@@ -26,6 +26,35 @@ jobs:
       - name: worker stub build
         run: cd workers/stubs/go && go vet ./... && go build ./...
 
+      - name: docker compose build
+        run: docker compose build gateway worker dashboard
+
+      - name: go version drift check
+        run: |
+          set -e
+
+          # Extract go version from go.mod (e.g. "1.25.0" from "go 1.25.0")
+          GOMOD_VERSION=$(grep '^go ' gateway/go.mod | awk '{print $2}')
+          echo "go.mod version: $GOMOD_VERSION"
+
+          # Extract go version from gateway Dockerfile FROM line
+          GW_FROM=$(grep -m1 '^FROM golang:' gateway/Dockerfile | sed 's/.*golang:\(.*\)-alpine.*/\1/')
+          echo "gateway/Dockerfile golang version: $GW_FROM"
+          if [ "$GOMOD_VERSION" != "$GW_FROM" ]; then
+            echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM"
+            exit 1
+          fi
+
+          # Extract go version from workers/active/Dockerfile FROM line
+          WF_FROM=$(grep -m1 '^FROM golang:' workers/active/Dockerfile | sed 's/.*golang:\(.*\)-alpine.*/\1/')
+          echo "workers/active/Dockerfile golang version: $WF_FROM"
+          if [ "$GOMOD_VERSION" != "$WF_FROM" ]; then
+            echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM"
+            exit 1
+          fi
+
+          echo "Go version drift check passed."
+
   dashboard:
     runs-on: ubuntu-latest
     steps:

@@ -31,6 +31,16 @@ These exist for non-obvious reasons. If you think you need to change one of them
 
 7. **API key revocation goes through `Store.Revoke`.** Don't write a bare `UPDATE api_keys SET revoked_at = NOW()` somewhere else — the Redis cache won't get invalidated and the key stays valid for up to 60 s. If you need to revoke, call `Store.Revoke(ctx, keyID)`.
 
+   **Plan changes also hit stale cache.** When `customers.plan_id` changes (e.g. upgrade, downgrade, plan tier edit), the Redis hot cache still holds the old plan for up to 60 s. If the new plan has different rate-limit or quota tiers, the old cached plan is applied to incoming requests during that window. To flush immediately:
+
+   ```
+   redis-cli DEL auth:<prefix>
+   ```
+
+   (The prefix is the first 24 characters of the API key.) This is safe to run even if the key isn't currently cached — DEL is idempotent.
+
+   `Store.Revoke()` handles this automatically for key revocation, but plan edits bypass the revocation path, so manual invalidation is needed when plan tiers change.
+
 8. **Migrations are idempotent and run on every gateway boot.** Every `gateway/migrations/*.sql` file uses `CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT DO NOTHING`, etc. No version-tracking table — files run in lexical order every time. Per-product clones add `0005_*.sql` etc.
 
 9. **`workers/sdk-go/` is the shared SDK. `workers/active` is a symlink.** Don't fork the SDK per product; extend it. Don't move the active worker out of `workers/`; the Dockerfile build context expects it there.

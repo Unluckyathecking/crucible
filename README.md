@@ -12,7 +12,7 @@ Crucible is one repo you copy to ship a new API. The framework — auth, rate li
 
 ## Status
 
-v1 build complete pending GitHub push. Frozen worker contract, Postgres schema, Go worker SDK + hello-world stub, Go API gateway with auth + Redis rate-limit + Stripe metered billing + usage recording + Prometheus metrics + Grafana dashboards, Next.js 15 dashboard with NextAuth magic-link, `new-tool.sh` clone-and-rename ergonomic + CI smoke test, GitHub Actions for Go + dashboard. 16 unit tests passing under `-race`. Pre-release review notes at `docs-internal/REVIEW.md`. Approved plan: `~/.claude/plans/ultrathink-create-a-plan-proud-penguin.md`.
+v1 shipped. API key auth (salted SHA-256, Redis hot cache), sliding-window rate limiting with atomic Lua scripts, monthly quota enforcement with atomic reserve, Stripe metered billing (async batch flusher, HMAC webhook verification), Prometheus metrics (6 counters/histograms, cardinality capped), health check endpoints, Next.js 15 dashboard (NextAuth magic-link, Resend email, shared Postgres). 16 unit tests passing under `-race`. Pre-release review notes at `docs-internal/REVIEW.md`.
 
 ## Layout
 
