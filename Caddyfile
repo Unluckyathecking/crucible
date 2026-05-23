@@ -1,0 +1,11 @@
+# Caddy reverse proxy for Crucible.
+#
+# Local dev:   DOMAIN=localhost TLS_POLICY=internal  (defaults — self-signed HTTPS on :443)
+# Production:  DOMAIN=yourdomain.com TLS_POLICY=      (Let's Encrypt via ACME)
+#
+# Env vars are passed through docker-compose or can be set in a Caddy env file.
+
+{$DOMAIN:localhost} {
+	tls {$TLS_POLICY:internal}
+	reverse_proxy gateway:8080
+}
