@@ -19,15 +19,15 @@ type PlanEntry struct {
 // Reloads are single-flighted via `loading` — a sudden stampede of stale-cache reads
 // after the TTL ticks won't fan out N concurrent DB queries.
 type PlanCache struct {
-	db      *pgxpool.Pool
+	db      db
 	mu      sync.RWMutex
 	plans   map[string]PlanEntry
 	fresh   time.Time
 	loading bool
 }
 
-func NewPlanCache(db *pgxpool.Pool) *PlanCache {
-	return &PlanCache{db: db, plans: map[string]PlanEntry{}}
+func NewPlanCache(pool *pgxpool.Pool) *PlanCache {
+	return &PlanCache{db: pool, plans: map[string]PlanEntry{}}
 }
 
 const cacheTTL = 60 * time.Second

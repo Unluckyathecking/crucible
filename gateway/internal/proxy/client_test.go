@@ -113,3 +113,19 @@ func TestInvoke_MalformedShape(t *testing.T) {
 		t.Fatal("expected error for malformed response, got nil")
 	}
 }
+
+func TestInvoke_Timeout(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 50*time.Millisecond)
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "worker call") {
+		t.Errorf("error %q should wrap the transport error", err.Error())
+	}
+}

@@ -56,6 +56,60 @@ var (
 	})
 )
 
+// Metrics is a test-friendly holder for all observability counters.
+// Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
+type Metrics struct {
+	RequestsTotal      *prometheus.CounterVec
+	RequestDuration    *prometheus.HistogramVec
+	WorkerCallDuration prometheus.Histogram
+	UsageRecordsTotal  prometheus.Counter
+	BillingFlushTotal  *prometheus.CounterVec
+	RateLimitedTotal   prometheus.Counter
+}
+
+// NewMetricsForTest creates all metrics registered against the supplied Registerer.
+// Callers should use prometheus.NewRegistry() to avoid collisions with the
+// package-level promauto vars that target prometheus.DefaultRegisterer.
+func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
+	m := &Metrics{
+		RequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_requests_total",
+			Help: "Total HTTP requests handled by the gateway.",
+		}, []string{"method", "path", "status"}),
+		RequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "crucible_request_duration_seconds",
+			Help:    "End-to-end request latency at the gateway, including worker call.",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}, []string{"method", "path"}),
+		WorkerCallDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "crucible_worker_call_duration_seconds",
+			Help:    "Latency of gateway → worker HTTP calls.",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}),
+		UsageRecordsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_usage_records_total",
+			Help: "Number of usage_events rows recorded.",
+		}),
+		BillingFlushTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_billing_flush_total",
+			Help: "Number of billing flush attempts. outcome=ok|error",
+		}, []string{"outcome"}),
+		RateLimitedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_rate_limited_total",
+			Help: "Number of requests rejected for exceeding rate limits.",
+		}),
+	}
+	reg.MustRegister(
+		m.RequestsTotal,
+		m.RequestDuration,
+		m.WorkerCallDuration,
+		m.UsageRecordsTotal,
+		m.BillingFlushTotal,
+		m.RateLimitedTotal,
+	)
+	return m
+}
+
 // Middleware records request count + latency. Plug into the chi router after RequestID.
 // IMPORTANT: must run INSIDE chi's router so RoutePattern() is populated — otherwise random
 // 404 paths from attackers would explode metric label cardinality.
@@ -82,5 +136,24 @@ func Middleware(next http.Handler) http.Handler {
 // Handler returns the /metrics HTTP handler.
 func Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// Middleware records request count + latency using the supplied Metrics.
+// Equivalent to the package-level Middleware but allows injecting test registries.
+func (m *Metrics) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := httputil.NewStatusRecorder(w)
+		next.ServeHTTP(rec, r)
+
+		path := chi.RouteContext(r.Context()).RoutePattern()
+		if path == "" {
+			path = "unmatched"
+		}
+		method := r.Method
+		status := strconv.Itoa(rec.Status)
+		m.RequestsTotal.WithLabelValues(method, path, status).Inc()
+		m.RequestDuration.WithLabelValues(method, path).Observe(time.Since(start).Seconds())
+	})
 }
 

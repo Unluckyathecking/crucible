@@ -13,20 +13,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
+
+// db is the subset of *pgxpool.Pool used by this package. Extracted as an
+// interface to allow test mocking without changing runtime behaviour.
+type db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
 
 // Webhook receives Stripe events, verifies HMAC, dedupes via webhook_events,
 // and updates the customer's plan_id on subscription lifecycle events.
 type Webhook struct {
 	secret string
-	db     *pgxpool.Pool
+	db     db
 	now    func() time.Time // injectable for tests
 }
 
-func NewWebhook(secret string, db *pgxpool.Pool) *Webhook {
-	return &Webhook{secret: secret, db: db, now: time.Now}
+func NewWebhook(secret string, pool *pgxpool.Pool) *Webhook {
+	return &Webhook{secret: secret, db: pool, now: time.Now}
 }
 
 func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
