@@ -68,15 +68,16 @@ func AccessLog(next http.Handler) http.Handler {
 	})
 }
 
-// SecurityHeaders sets defaults that every response should carry.
+// SecurityHeaders sets OWASP-recommended defaults that every response should carry.
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Permissions-Policy", "interest-cohort=()")
+		h.Set("X-XSS-Protection", "0")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()")
 		next.ServeHTTP(w, r)
 	})
 }

@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -28,6 +30,16 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
+
+// redisPinger adapts *redis.Client to server.HealthChecker.
+type redisPinger struct{ c *redis.Client }
+
+func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err() }
+
+// pgPinger adapts *pgxpool.Pool to server.HealthChecker.
+type pgPinger struct{ p *pgxpool.Pool }
+
+func (p *pgPinger) Ping(ctx context.Context) error { return p.p.Ping(ctx) }
 
 func main() {
 	// Best-effort .env load; absent .env is fine if env is set externally (CI, docker, prod).
@@ -105,6 +117,8 @@ func main() {
 			Recorder: recorder,
 			Webhook:  webhook,
 			Quota:    quotaTracker,
+			Redis:    &redisPinger{redisClient},
+			PG:       &pgPinger{pool},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

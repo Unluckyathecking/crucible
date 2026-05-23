@@ -5,11 +5,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
@@ -23,6 +26,17 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
+// HealthChecker wraps a dependency that can be pinged for connectivity verification.
+type HealthChecker interface {
+	Ping(ctx context.Context) error
+}
+
+// readyzResponse is the JSON envelope for the readiness endpoint.
+type readyzResponse struct {
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks"`
+}
+
 // Deps bundles the constructed components the router needs. Easier to evolve than a long arg list.
 type Deps struct {
 	Cfg      *config.Config
@@ -33,6 +47,8 @@ type Deps struct {
 	Recorder *usage.Recorder
 	Webhook  *billing.Webhook
 	Quota    *quota.Tracker
+	Redis    HealthChecker
+	PG       HealthChecker
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -45,9 +61,17 @@ func NewRouter(d *Deps) http.Handler {
 	r.Use(mw.AccessLog)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
 
 	// Public routes (no auth, no rate limit).
 	r.Get("/healthz", healthz)
+	r.Get("/readyz", readyz(d.Redis, d.PG))
 	r.Post("/webhooks/stripe", d.Webhook.Handle)
 
 	// === Per-product routes (auth + rate-limit gated) ===
@@ -56,7 +80,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(auth.Middleware(d.Auth))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(quota.Middleware(d.Quota, d.Plans))
-		r.Post("/echo", invoke(d.Proxy, d.Recorder, "echo"))
+		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
 	})
 
 	return r
@@ -67,7 +91,38 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-func invoke(p *proxy.Client, recorder *usage.Recorder, operation string) http.HandlerFunc {
+func readyz(redis, pg HealthChecker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		redisStatus := "ok"
+		if err := redis.Ping(ctx); err != nil {
+			redisStatus = "error"
+		}
+
+		pgStatus := "ok"
+		if err := pg.Ping(ctx); err != nil {
+			pgStatus = "error"
+		}
+
+		overall := "ok"
+		if redisStatus != "ok" || pgStatus != "ok" {
+			overall = "degraded"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(readyzResponse{
+			Status: overall,
+			Checks: map[string]string{
+				"redis":    redisStatus,
+				"postgres": pgStatus,
+			},
+		})
+	}
+}
+
+func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, operation string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		key := auth.FromContext(r.Context())
@@ -90,10 +145,20 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, operation string) http.Ha
 			return
 		}
 
+		// Worker structured errors: expose or sanitize based on config.
+		if resp.Error != nil {
+			if errorExposure == "full" {
+				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
+			} else {
+				writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+			}
+			return
+		}
+
 		// Contract check: a successful worker response MUST report billable_units >= 1.
 		// Otherwise a buggy or malicious non-SDK worker could let customers consume service for free.
 		// The SDK enforces this client-side, but the gateway is the trust boundary.
-		if resp.Error == nil && resp.BillableUnits < 1 {
+		if resp.BillableUnits < 1 {
 			log.Warn().
 				Str("request_id", rid).
 				Str("operation", operation).
@@ -103,7 +168,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, operation string) http.Ha
 		}
 
 		// Record usage on successful (non-error) responses. Best-effort; do not fail the customer on write error.
-		if key != nil && resp.Error == nil {
+		if key != nil {
 			if err := recorder.Record(r.Context(), key.Customer.ID, key.ID, operation, rid, resp.BillableUnits); err != nil {
 				log.Warn().Err(err).Str("request_id", rid).Msg("usage record failed")
 			}

@@ -1,0 +1,73 @@
+package httputil
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestStatusRecorderWriteHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{"200 OK", http.StatusOK},
+		{"201 Created", http.StatusCreated},
+		{"400 Bad Request", http.StatusBadRequest},
+		{"404 Not Found", http.StatusNotFound},
+		{"500 Internal Server Error", http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sr := NewStatusRecorder(httptest.NewRecorder())
+			sr.WriteHeader(tt.code)
+			if sr.Status != tt.code {
+				t.Errorf("Status = %d, want %d", sr.Status, tt.code)
+			}
+		})
+	}
+}
+
+func TestStatusRecorderDefaultStatus(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	n, err := sr.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("Write returned %d bytes, want 5", n)
+	}
+	if sr.Status != http.StatusOK {
+		t.Errorf("default Status = %d, want %d", sr.Status, http.StatusOK)
+	}
+	if inner.Body.String() != "hello" {
+		t.Errorf("inner body = %q, want hello", inner.Body.String())
+	}
+}
+
+func TestStatusRecorderWriteCapturesCode(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	sr.WriteHeader(http.StatusTeapot)
+	n, err := sr.Write([]byte("tea"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("Write returned %d bytes, want 3", n)
+	}
+
+	if sr.Status != http.StatusTeapot {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusTeapot)
+	}
+	if inner.Code != http.StatusTeapot {
+		t.Errorf("inner Code = %d, want %d", inner.Code, http.StatusTeapot)
+	}
+	if inner.Body.String() != "tea" {
+		t.Errorf("inner body = %q, want tea", inner.Body.String())
+	}
+}

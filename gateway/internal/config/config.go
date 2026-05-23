@@ -30,8 +30,12 @@ type Config struct {
 	StripeMeterName     string `envconfig:"STRIPE_METER_NAME"     default:"crucible_units"`
 
 	// Security
-	APIKeyPrefix   string `envconfig:"API_KEY_PREFIX"    default:"cru_"`
-	APIKeyHashSalt string `envconfig:"API_KEY_HASH_SALT" required:"true"`
+	APIKeyPrefix    string `envconfig:"API_KEY_PREFIX"     default:"cru_"`
+	APIKeyHashSalt  string `envconfig:"API_KEY_HASH_SALT"  required:"true"`
+	DashboardOrigin string `envconfig:"DASHBOARD_ORIGIN"   default:"http://localhost:3001"`
+
+	// Error handling
+	ErrorExposure string `envconfig:"WORKER_ERROR_EXPOSURE" default:"sanitized"`
 
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
@@ -46,6 +50,11 @@ func Load() (*Config, error) {
 	}
 	if len(c.APIKeyHashSalt) < 32 {
 		return nil, fmt.Errorf("API_KEY_HASH_SALT must be at least 32 bytes (got %d)", len(c.APIKeyHashSalt))
+	}
+	switch c.ErrorExposure {
+	case "sanitized", "full":
+	default:
+		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
 	return &c, nil
 }
