@@ -17,6 +17,3 @@ async-trait = "0.1"
 name = "crucible_sdk"
 path = "src/lib.rs"
 
-[[bin]]
-name = "crucible-server"
-path = "src/server.rs"
