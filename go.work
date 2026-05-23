@@ -4,4 +4,5 @@ use (
 	./gateway
 	./workers/sdk-go
 	./workers/stubs/go
+	./workers/products/vat-check
 )

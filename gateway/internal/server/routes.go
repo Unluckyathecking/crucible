@@ -81,6 +81,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(quota.Middleware(d.Quota, d.Plans))
 		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
+		r.Post("/validate-vat", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "validate-vat"))
 	})
 
 	return r
