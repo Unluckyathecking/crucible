@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { ensureCustomer, insertApiKey } from "@/lib/db";
 import { generateKey, hashKey } from "@/lib/keys";
 
-export async function POST(): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
   const session = await auth();
   if (!session?.user?.email) {
     return new Response("Unauthorized", { status: 401 });
@@ -13,6 +13,22 @@ export async function POST(): Promise<Response> {
     return new Response("API_KEY_HASH_SALT not configured (>= 32 bytes)", { status: 500 });
   }
   const productPrefix = process.env.API_KEY_PREFIX || "cru_";
+
+  // Accept name from both FormData (server action) and JSON body
+  let name = "";
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const body = (await request.json()) as { name?: string };
+    name = (body.name || "").trim();
+  } else {
+    const formData = await request.formData();
+    name = (formData.get("name") as string | undefined || "").trim();
+  }
+
+  // Validate name
+  if (name.length > 64) {
+    return new Response("Name must be 64 characters or fewer", { status: 400 });
+  }
 
   const customer = await ensureCustomer(session.user.email);
 
@@ -25,7 +41,7 @@ export async function POST(): Promise<Response> {
     full = generated.full;
     const hash = hashKey(salt, generated.full);
     try {
-      await insertApiKey(customer.id, generated.prefix, hash, "dashboard-issued");
+      await insertApiKey(customer.id, generated.prefix, hash, name);
       inserted = true;
     } catch (e) {
       const code = (e as { code?: string }).code;
