@@ -101,9 +101,12 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	return nil
 }
 
-// claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID, and
-// stamps it onto all their unbatched rows in one statement. Then emits + marks flushed.
-func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
+type target struct {
+	customerID       uuid.UUID
+	stripeCustomerID string
+}
+
+func (f *Flusher) fetchUnbatchedTargets(ctx context.Context) ([]target, error) {
 	rows, err := f.db.Query(ctx, `
 		SELECT DISTINCT u.customer_id, c.stripe_customer_id
 		FROM usage_events u
@@ -113,11 +116,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		LIMIT 100
 	`)
 	if err != nil {
-		return fmt.Errorf("query unbatched customers: %w", err)
-	}
-	type target struct {
-		customerID       uuid.UUID
-		stripeCustomerID string
+		return nil, fmt.Errorf("query unbatched customers: %w", err)
 	}
 	var targets []target
 	for rows.Next() {
@@ -128,21 +127,36 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate unbatched customers: %w", err)
+		return nil, fmt.Errorf("iterate unbatched customers: %w", err)
+	}
+	return targets, nil
+}
+
+func (f *Flusher) claimBatch(ctx context.Context, batchID uuid.UUID, customerID uuid.UUID) (uint64, error) {
+	var units uint64
+	err := f.db.QueryRow(ctx, `
+		WITH claimed AS (
+			UPDATE usage_events SET batch_id = $1
+			WHERE customer_id = $2 AND batch_id IS NULL AND flushed_to_stripe = FALSE
+			RETURNING billable_units
+		)
+		SELECT COALESCE(SUM(billable_units), 0)::bigint FROM claimed
+	`, batchID, customerID).Scan(&units)
+	return units, err
+}
+
+// claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID, and
+// stamps it onto all their unbatched rows in one statement. Then emits + marks flushed.
+func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
+	targets, err := f.fetchUnbatchedTargets(ctx)
+	if err != nil {
+		return err
 	}
 
 	for _, t := range targets {
 		batchID := uuid.New()
 		// Atomic claim: stamp the customer's unbatched rows with the new batch_id and return the unit sum.
-		var units uint64
-		err := f.db.QueryRow(ctx, `
-			WITH claimed AS (
-				UPDATE usage_events SET batch_id = $1
-				WHERE customer_id = $2 AND batch_id IS NULL AND flushed_to_stripe = FALSE
-				RETURNING billable_units
-			)
-			SELECT COALESCE(SUM(billable_units), 0)::bigint FROM claimed
-		`, batchID, t.customerID).Scan(&units)
+		units, err := f.claimBatch(ctx, batchID, t.customerID)
 		if err != nil {
 			log.Warn().Err(err).Str("customer", t.customerID.String()).Msg("flusher: claim failed")
 			continue
