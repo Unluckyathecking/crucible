@@ -84,6 +84,6 @@ jobs:
         with:
           version: 10
       - name: pnpm install
-        run: cd dashboard && pnpm install
+        run: cd dashboard && pnpm install --config.verify-store-integrity=false
       - name: pnpm build
         run: cd dashboard && pnpm build

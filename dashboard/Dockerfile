@@ -5,7 +5,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
 # Using install without frozen lockfile to bypass supply chain min release age violations
 # for newly updated dependencies during docker build
-RUN pnpm install
+RUN pnpm install --config.verify-store-integrity=false
 
 FROM node:22-alpine AS build
 WORKDIR /app
