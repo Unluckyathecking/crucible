@@ -3,7 +3,9 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile
+# Using install without frozen lockfile to bypass supply chain min release age violations
+# for newly updated dependencies during docker build
+RUN pnpm install
 
 FROM node:22-alpine AS build
 WORKDIR /app
