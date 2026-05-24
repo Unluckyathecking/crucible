@@ -16,3 +16,4 @@ async-trait = "0.1"
 [lib]
 name = "crucible_sdk"
 path = "src/lib.rs"
+
