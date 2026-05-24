@@ -91,4 +91,3 @@ func BodyLimit(max int64) func(http.Handler) http.Handler {
 		})
 	}
 }
-
