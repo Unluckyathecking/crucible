@@ -26,7 +26,7 @@ func BenchmarkClaimAndEmitNewBatches(b *testing.B) {
 			b.Fatalf("insert customer: %v", err)
 		}
 		_, err = pool.Exec(ctx,
-			`INSERT INTO api_keys (id, customer_id, prefix, hash, name) VALUES ($1, $2, $3, E'\\\\xdeadbeef', 'test-key')`,
+			`INSERT INTO api_keys (id, customer_id, prefix, hash, name) VALUES ($1, $2, $3, decode('deadbeef', 'hex'), 'test-key')`,
 			apiKeyID, custID, prefix)
 		if err != nil {
 			b.Fatalf("insert api_key: %v", err)
