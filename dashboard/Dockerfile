@@ -3,8 +3,7 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
-RUN npm pkg set pnpm.approvedBuilds[0]="sharp"
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 FROM node:22-alpine AS build
 WORKDIR /app
