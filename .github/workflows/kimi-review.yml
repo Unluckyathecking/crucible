@@ -1,0 +1,19 @@
+name: Kimi Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Unluckyathecking/kimi-code-reviewer@main
+        with:
+          kimi_api_key: ${{ secrets.MOONSHOT_API_KEY }}
