@@ -10,8 +10,8 @@ func TestPlanCache_Get_CacheHit(t *testing.T) {
 	now := time.Now()
 	pc := &PlanCache{
 		plans: map[string]PlanEntry{
-			"pro":    {RatePerMinute: 120, MonthlyCap: 10000},
-			"unlim":  {RatePerMinute: 300, MonthlyCap: 0},
+			"pro":   {RatePerMinute: 120, MonthlyCap: 10000},
+			"unlim": {RatePerMinute: 300, MonthlyCap: 0},
 		},
 		fresh: now,
 	}
