@@ -12,7 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestPool(t *testing.T) *pgxpool.Pool {
+func newTestPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -29,7 +29,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func setupTestCustomer(t *testing.T, pool *pgxpool.Pool) (customerID, apiKeyID uuid.UUID) {
+func setupTestCustomer(t testing.TB, pool *pgxpool.Pool) (customerID, apiKeyID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
