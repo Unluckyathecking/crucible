@@ -101,57 +101,61 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	return nil
 }
 
-// claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID, and
-// stamps it onto all their unbatched rows in one statement. Then emits + marks flushed.
+// claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID per customer,
+// and stamps it onto all their unbatched rows in one bulk statement. Then emits + marks flushed.
 func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
+	// Atomic bulk claim: find up to 100 customers with unbatched usage,
+	// assign each a new batch_id, stamp their rows, and return the aggregated units.
 	rows, err := f.db.Query(ctx, `
-		SELECT DISTINCT u.customer_id, c.stripe_customer_id
-		FROM usage_events u
-		JOIN customers c ON c.id = u.customer_id
-		WHERE u.batch_id IS NULL AND u.flushed_to_stripe = FALSE
-		  AND c.stripe_customer_id IS NOT NULL
-		LIMIT 100
+		WITH targets AS (
+			SELECT u.customer_id, c.stripe_customer_id, gen_random_uuid() as new_batch_id
+			FROM usage_events u
+			JOIN customers c ON c.id = u.customer_id
+			WHERE u.batch_id IS NULL AND u.flushed_to_stripe = FALSE
+			  AND c.stripe_customer_id IS NOT NULL
+			GROUP BY u.customer_id, c.stripe_customer_id
+			LIMIT 100
+		),
+		claimed AS (
+			UPDATE usage_events
+			SET batch_id = targets.new_batch_id
+			FROM targets
+			WHERE usage_events.customer_id = targets.customer_id
+			  AND usage_events.batch_id IS NULL
+			  AND usage_events.flushed_to_stripe = FALSE
+			RETURNING usage_events.batch_id, targets.stripe_customer_id, usage_events.billable_units
+		)
+		SELECT batch_id, stripe_customer_id, COALESCE(SUM(billable_units), 0)::bigint
+		FROM claimed
+		GROUP BY batch_id, stripe_customer_id
 	`)
 	if err != nil {
-		return fmt.Errorf("query unbatched customers: %w", err)
+		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-	type target struct {
-		customerID       uuid.UUID
+
+	type claimedBatch struct {
+		batchID          uuid.UUID
 		stripeCustomerID string
+		units            uint64
 	}
-	var targets []target
+	var batches []claimedBatch
 	for rows.Next() {
-		var t target
-		if err := rows.Scan(&t.customerID, &t.stripeCustomerID); err == nil {
-			targets = append(targets, t)
+		var b claimedBatch
+		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.units); err == nil {
+			if b.units > 0 {
+				batches = append(batches, b)
+			}
+		} else {
+			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row")
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate unbatched customers: %w", err)
+		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
 
-	for _, t := range targets {
-		batchID := uuid.New()
-		// Atomic claim: stamp the customer's unbatched rows with the new batch_id and return the unit sum.
-		var units uint64
-		err := f.db.QueryRow(ctx, `
-			WITH claimed AS (
-				UPDATE usage_events SET batch_id = $1
-				WHERE customer_id = $2 AND batch_id IS NULL AND flushed_to_stripe = FALSE
-				RETURNING billable_units
-			)
-			SELECT COALESCE(SUM(billable_units), 0)::bigint FROM claimed
-		`, batchID, t.customerID).Scan(&units)
-		if err != nil {
-			log.Warn().Err(err).Str("customer", t.customerID.String()).Msg("flusher: claim failed")
-			continue
-		}
-		if units == 0 {
-			// No rows to claim (raced with another flusher instance or the rows became flushed).
-			continue
-		}
-		f.emitAndMark(ctx, batchID, t.stripeCustomerID, units)
+	for _, b := range batches {
+		f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units)
 	}
 	return nil
 }

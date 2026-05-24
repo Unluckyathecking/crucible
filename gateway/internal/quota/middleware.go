@@ -73,16 +73,20 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				// the EXACT key Reserve used (handles midnight-UTC boundaries correctly).
 				// Use a fresh background context: the request context may already be canceled
 				// by client disconnect, but the refund still needs to run.
-				bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				if err := t.RefundAt(bg, reservedKey); err != nil {
-					log.Warn().
-						Err(err).
-						Str("customer", key.Customer.ID.String()).
-						Str("key", reservedKey).
-						Msg("quota refund failed; counter may drift +1")
-				}
+				backgroundRefund(t, key.Customer.ID.String(), reservedKey)
 			}
 		})
+	}
+}
+
+func backgroundRefund(t *Tracker, customerID string, reservedKey string) {
+	bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := t.RefundAt(bg, reservedKey); err != nil {
+		log.Warn().
+			Err(err).
+			Str("customer", customerID).
+			Str("key", reservedKey).
+			Msg("quota refund failed; counter may drift +1")
 	}
 }
