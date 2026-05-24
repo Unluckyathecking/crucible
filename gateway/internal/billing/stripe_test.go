@@ -164,5 +164,3 @@ func TestEmitMeterEvent_PayloadAndIdempotency(t *testing.T) {
 		})
 	}
 }
-
-

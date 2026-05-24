@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"os"
 )
 
 func newTestPool(t testing.TB) *pgxpool.Pool {
@@ -236,13 +237,17 @@ func TestRecord_quotaRedisError_Tolerated(t *testing.T) {
 	}
 }
 
-func newTestRedis(t *testing.T) *redis.Client {
+func newTestRedis(t testing.TB) *redis.Client {
 	t.Helper()
-	c := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	addr := os.Getenv("REDIS_TEST_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	c := redis.NewClient(&redis.Options{Addr: addr})
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("redis unavailable on localhost:6379, skipping: %v", err)
+		t.Skipf("redis unavailable on %s, skipping: %v", addr, err)
 	}
 	return c
 }
