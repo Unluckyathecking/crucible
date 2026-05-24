@@ -71,3 +71,33 @@ func TestStatusRecorderWriteCapturesCode(t *testing.T) {
 		t.Errorf("inner body = %q, want tea", inner.Body.String())
 	}
 }
+
+func TestStatusRecorderMultipleWriteHeader(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	sr.WriteHeader(http.StatusBadRequest)
+	sr.WriteHeader(http.StatusInternalServerError) // Should be ignored
+
+	if sr.Status != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusBadRequest)
+	}
+	if inner.Code != http.StatusBadRequest {
+		t.Errorf("inner Code = %d, want %d", inner.Code, http.StatusBadRequest)
+	}
+}
+
+func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	_, _ = sr.Write([]byte("implicit 200"))
+	sr.WriteHeader(http.StatusInternalServerError) // Should be ignored because header was implicitly written
+
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusOK)
+	}
+	if inner.Code != http.StatusOK {
+		t.Errorf("inner Code = %d, want %d", inner.Code, http.StatusOK)
+	}
+}
