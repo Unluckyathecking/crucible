@@ -3,10 +3,11 @@ import { generateKey, hashKey } from './keys';
 
 describe('keys.ts', () => {
   describe('generateKey', () => {
-    it('should generate a key with the correct prefix format', () => {
+    it('should generate a key with the correct prefix format using regex', () => {
       const { full, prefix } = generateKey('test_');
 
-      expect(full.startsWith('test_live_')).toBe(true);
+      // Match exactly the allowed prefix + 'live_' followed by base32
+      expect(/^test_live_[A-Z2-7]+$/.test(full)).toBe(true);
       expect(prefix).toBe(full.slice(0, 24));
     });
 
@@ -15,12 +16,19 @@ describe('keys.ts', () => {
       expect(prefix.length).toBe(24);
     });
 
-    it('should generate unique keys', () => {
-      const key1 = generateKey('test_');
-      const key2 = generateKey('test_');
+    it('should generate unique keys and maintain collision resistance across 1000 iterations', () => {
+      const generatedFullKeys = new Set<string>();
+      const generatedPrefixes = new Set<string>();
+      const ITERATIONS = 1000;
 
-      expect(key1.full).not.toBe(key2.full);
-      expect(key1.prefix).not.toBe(key2.prefix);
+      for (let i = 0; i < ITERATIONS; i++) {
+        const key = generateKey('test_');
+        generatedFullKeys.add(key.full);
+        generatedPrefixes.add(key.prefix);
+      }
+
+      expect(generatedFullKeys.size).toBe(ITERATIONS);
+      expect(generatedPrefixes.size).toBe(ITERATIONS);
     });
 
     it('should use the base32 alphabet (no padding)', () => {
@@ -44,12 +52,13 @@ describe('keys.ts', () => {
       expect(Buffer.isBuffer(hash1)).toBe(true);
     });
 
-    it('should match the expected SHA-256 output byte-for-byte', () => {
-      const salt = 'salt123';
-      const key = 'key123';
+    it('should match the expected SHA-256 output byte-for-byte with the Go gateway implementation', () => {
+      const salt = 'go_test_salt_999';
+      const key = 'go_test_key_abc_123';
 
+      // This test vector cross-validates against gateway/internal/auth/keys.go:Hash()
       const hash = hashKey(salt, key);
-      const expectedHex = '9ec4ffe0a7b0f743f094e60076c66e9560408c30ad11ac88a05bc98cedfa0f62';
+      const expectedHex = '3e79bbf9dcbdaf944669dde55e6f5982e08a3f8a85de1e6006f1598b0400f99b';
 
       expect(hash.toString('hex')).toBe(expectedHex);
     });
