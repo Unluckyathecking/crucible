@@ -141,6 +141,11 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		resp, err := p.Invoke(r.Context(), req)
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("request_id", rid).
+				Str("operation", operation).
+				Msg("worker invocation failed")
 			writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
 			return
 		}
