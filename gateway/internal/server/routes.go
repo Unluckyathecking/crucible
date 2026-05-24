@@ -175,8 +175,6 @@ func handleWorkerError(w http.ResponseWriter, errorExposure string, err *proxy.I
 }
 
 // validateContract ensures a successful worker response reports billable_units >= 1.
-// Otherwise a buggy or malicious non-SDK worker could let customers consume service for free.
-// The SDK enforces this client-side, but the gateway is the trust boundary.
 func validateContract(w http.ResponseWriter, rid, operation string, resp *proxy.InvokeResponse) bool {
 	if resp.BillableUnits < 1 {
 		log.Warn().
