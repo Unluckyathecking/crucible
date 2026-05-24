@@ -31,13 +31,29 @@ type Key struct {
 
 // Store looks up API keys against Postgres with a Redis hot cache (60 s TTL).
 type Store struct {
-	db    *pgxpool.Pool
-	cache *redis.Client
-	salt  string
+	db      *pgxpool.Pool
+	cache   *redis.Client
+	salt    string
+	updates chan uuid.UUID
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
-	return &Store{db: db, cache: cache, salt: salt}
+	s := &Store{
+		db:      db,
+		cache:   cache,
+		salt:    salt,
+		updates: make(chan uuid.UUID, 1000),
+	}
+	go s.processUpdates()
+	return s
+}
+
+func (s *Store) processUpdates() {
+	for keyID := range s.updates {
+		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
+		cancel()
+	}
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
@@ -119,11 +135,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 
 	// Fire-and-forget last_used update — don't block the request hot path.
-	go func() {
-		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
-	}()
+	select {
+	case s.updates <- keyID:
+	default:
+	}
 
 	return &Key{
 		ID:       keyID,
