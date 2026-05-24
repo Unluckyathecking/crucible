@@ -25,7 +25,8 @@ describe('POST /api/keys', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    process.env.API_KEY_HASH_SALT = '01234567890123456789012345678901';
+    const VALID_SALT_LENGTH = 32;
+    process.env.API_KEY_HASH_SALT = '0'.repeat(VALID_SALT_LENGTH);
     process.env.API_KEY_PREFIX = 'test_';
 
     (auth as any).mockResolvedValue(mockSession);
