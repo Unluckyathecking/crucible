@@ -1,12 +1,13 @@
 // Package observability registers Prometheus metrics and the middleware that increments them.
 //
 // Metrics exposed on /metrics (separate listener on METRICS_PORT, off the public API surface):
-//   crucible_requests_total{method,path,status}
-//   crucible_request_duration_seconds{method,path}
-//   crucible_worker_call_duration_seconds
-//   crucible_usage_records_total
-//   crucible_billing_flush_total{outcome}
-//   crucible_rate_limited_total
+//
+//	crucible_requests_total{method,path,status}
+//	crucible_request_duration_seconds{method,path}
+//	crucible_worker_call_duration_seconds
+//	crucible_usage_records_total
+//	crucible_billing_flush_total{outcome}
+//	crucible_rate_limited_total
 package observability
 
 import (
@@ -156,4 +157,3 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		m.RequestDuration.WithLabelValues(method, path).Observe(time.Since(start).Seconds())
 	})
 }
-
