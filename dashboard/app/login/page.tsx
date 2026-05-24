@@ -1,5 +1,4 @@
 import { signIn } from "@/auth";
-import { SubmitButton } from "./submit-button";
 
 export default function LoginPage() {
   return (
@@ -27,7 +26,12 @@ export default function LoginPage() {
             aria-required="true"
             className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-600 rounded bg-transparent mb-3 text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
           />
-          <SubmitButton />
+          <button
+            type="submit"
+            className="w-full px-3 py-2 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded hover:bg-zinc-700 dark:hover:bg-zinc-200 transition"
+          >
+            Send magic link
+          </button>
         </form>
         <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-4">
           In dev without RESEND_API_KEY, the link is logged to the dashboard console — copy it from there.
