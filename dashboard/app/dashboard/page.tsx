@@ -11,8 +11,10 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const keys = await listKeys(customer.id);
-  const usage = await sumUsage(customer.id, 30);
+  const [keys, usage] = await Promise.all([
+    listKeys(customer.id),
+    sumUsage(customer.id, 30),
+  ]);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">

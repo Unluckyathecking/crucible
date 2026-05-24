@@ -1,10 +1,9 @@
 # Crucible dashboard. Multi-stage Next.js standalone build.
 FROM node:22-alpine AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile
 
 FROM node:22-alpine AS build
 WORKDIR /app
@@ -12,7 +11,7 @@ RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm config set ignore-scripts true && pnpm build
+RUN pnpm build
 
 FROM node:22-alpine
 WORKDIR /app
