@@ -134,8 +134,9 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 	_, _ = mac.Write([]byte(payload))
 	expected := mac.Sum(nil)
 
+	const stripeSignatureHexLen = 64
 	for _, sig := range sigs {
-		if len(sig) > 128 {
+		if len(sig) != stripeSignatureHexLen {
 			continue
 		}
 		sigMAC, err := hex.DecodeString(sig)
