@@ -132,10 +132,11 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 	payload := timestamp + "." + string(body)
 	mac := hmac.New(sha256.New, []byte(h.secret))
 	_, _ = mac.Write([]byte(payload))
-	expected := hex.EncodeToString(mac.Sum(nil))
+	expectedMAC := mac.Sum(nil)
 
 	for _, sig := range sigs {
-		if hmac.Equal([]byte(sig), []byte(expected)) {
+		sigMAC, err := hex.DecodeString(sig)
+		if err == nil && hmac.Equal(sigMAC, expectedMAC) {
 			return nil
 		}
 	}
