@@ -92,11 +92,16 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
-		if json.Unmarshal(cached, &c) == nil && VerifyHash(wantHash, c.Hash) {
-			return &Key{
-				ID:       c.KeyID,
-				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
-			}, nil
+		if json.Unmarshal(cached, &c) == nil {
+			if VerifyHash(wantHash, c.Hash) {
+				return &Key{
+					ID:       c.KeyID,
+					Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
+				}, nil
+			}
+			// Prefix is in cache (and unique), but hash mismatched. Valid prefix + invalid hash.
+			// Return immediately without falling back to DB.
+			return nil, ErrKeyNotFound
 		}
 	}
 
@@ -118,11 +123,9 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		}
 		return nil, fmt.Errorf("lookup api key: %w", err)
 	}
-	if !VerifyHash(wantHash, storedHash) {
-		return nil, ErrKeyNotFound
-	}
 
-	// Populate cache for the next call.
+	// Populate cache for the next call before verifying the hash.
+	// This prevents a valid-prefix + invalid-hash from continually querying the DB.
 	entry := cacheEntry{
 		KeyID:      keyID,
 		CustomerID: customerID,
@@ -132,6 +135,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 	if payload, err := json.Marshal(entry); err == nil {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
+	}
+
+	if !VerifyHash(wantHash, storedHash) {
+		return nil, ErrKeyNotFound
 	}
 
 	// Fire-and-forget last_used update — don't block the request hot path.

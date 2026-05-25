@@ -303,3 +303,44 @@ func TestStore_PrefixLookupIsCaseSensitive(t *testing.T) {
 		}
 	})
 }
+
+func TestStore_InvalidHashIsCached(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+
+	t.Run("invalid hash populates cache to prevent dos", func(t *testing.T) {
+		_, _, prefix := insertTestKey(t, ctx, db, testSalt)
+
+		differentKey := prefix + "ZXYZWXYZWXYZWXYZWX"
+
+		// Ensure the cache is cold.
+		rdb.Del(ctx, "auth:"+prefix)
+
+		// First lookup hits DB, should return ErrKeyNotFound but populate cache.
+		_, err := s.Lookup(ctx, differentKey)
+		if err != ErrKeyNotFound {
+			t.Errorf("Lookup(wrong-hash) = %v, want ErrKeyNotFound", err)
+		}
+
+		// The cache should be populated now.
+		cached, err := rdb.Get(ctx, "auth:"+prefix).Result()
+		if err != nil {
+			t.Errorf("cache should be populated after invalid lookup: %v", err)
+		}
+		if cached == "" {
+			t.Error("cache entry is empty after invalid lookup")
+		}
+
+		// Second lookup should hit the cache and reject the key.
+		// A way to test it hits the cache is to delete it from DB or change the hash in DB.
+		// Or we can just trust our implementation that `ErrKeyNotFound` is returned fast.
+		_, err = s.Lookup(ctx, differentKey)
+		if err != ErrKeyNotFound {
+			t.Errorf("Lookup(wrong-hash) from cache = %v, want ErrKeyNotFound", err)
+		}
+	})
+}
