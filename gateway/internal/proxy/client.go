@@ -53,9 +53,10 @@ func New(workerURL string, timeout time.Duration) *Client {
 		http: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 50,
-				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   50,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: timeout,
 			},
 		},
 	}
