@@ -17,6 +17,8 @@ func NewPool(ctx context.Context, dsn string, maxConns int) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.MaxConns = int32(maxConns)
+	cfg.MinConns = int32(maxConns / 4)
+	cfg.MaxConnLifetime = 1 * time.Hour
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
 	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
