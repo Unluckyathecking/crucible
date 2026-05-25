@@ -56,9 +56,9 @@ func NewRouter(d *Deps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(mw.RequestID)
+	r.Use(mw.AccessLog)
 	r.Use(mw.Recovery)
 	r.Use(observability.Middleware)
-	r.Use(mw.AccessLog)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
 	r.Use(cors.Handler(cors.Options{
