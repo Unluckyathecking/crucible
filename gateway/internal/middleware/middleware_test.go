@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 var okHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +152,38 @@ func TestAccessLogPassThrough(t *testing.T) {
 	}
 	if rec.Body.String() != "hello" {
 		t.Errorf("body = %q, want hello", rec.Body.String())
+	}
+}
+
+func TestAccessLogWithPanic(t *testing.T) {
+	var buf strings.Builder
+	// We want to capture the zerolog output to verify the access log exists
+	oldLogger := log.Logger
+	defer func() { log.Logger = oldLogger }()
+
+	// Overwrite the global logger temporarily
+	log.Logger = log.Output(&buf)
+
+	req := httptest.NewRequest(http.MethodGet, "/test-panic", nil)
+	rec := httptest.NewRecorder()
+
+	// Since we swapped the order, AccessLog should wrap Recovery
+	handler := AccessLog(Recovery(panicHandler))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, `"message":"access"`) {
+		t.Errorf("expected access log message in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"status":500`) {
+		t.Errorf("expected access log to contain status 500, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"path":"/test-panic"`) {
+		t.Errorf("expected access log to contain path /test-panic, got:\n%s", output)
 	}
 }
 
