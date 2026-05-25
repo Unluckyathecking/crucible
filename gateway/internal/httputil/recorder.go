@@ -9,7 +9,8 @@ import "net/http"
 // it here so one copy can't drift from the other.
 type StatusRecorder struct {
 	http.ResponseWriter
-	Status int
+	Status      int
+	wroteHeader bool
 }
 
 func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
@@ -17,6 +18,20 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 }
 
 func (s *StatusRecorder) WriteHeader(code int) {
-	s.Status = code
+	if s.wroteHeader {
+		return
+	}
+	if code >= 200 {
+		s.Status = code
+		s.wroteHeader = true
+	}
 	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *StatusRecorder) Write(b []byte) (int, error) {
+	if !s.wroteHeader {
+		s.wroteHeader = true
+		s.Status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
 }
