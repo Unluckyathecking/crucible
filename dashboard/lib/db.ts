@@ -37,27 +37,17 @@ export async function ensureCustomer(email: string): Promise<Customer> {
     return result.rows[0];
   }
 
-  // If the user doesn't exist, insert them. Use ON CONFLICT DO NOTHING as a safe fallback
+  // If the user doesn't exist, insert them. Use ON CONFLICT DO UPDATE as a safe fallback
   // against race conditions if two concurrent requests try to create the same user.
-  // DO NOTHING prevents MVCC bloat if a concurrent request already inserted the row.
+  // By using DO UPDATE SET email = EXCLUDED.email, we guarantee a row is returned via RETURNING
+  // in a single round-trip, avoiding the race window of a DO NOTHING + secondary SELECT.
+  // We only hit this write path if the first SELECT missed, keeping MVCC bloat ~0 on the hot path.
   result = await pool.query<Customer>(
     `INSERT INTO customers (email, plan_id) VALUES ($1, 'free')
-     ON CONFLICT (email) DO NOTHING
+     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
      RETURNING id, email, plan_id`,
     [email],
   );
-
-  // If DO NOTHING skipped the insert, we need to fetch the newly created row.
-  if (result.rows.length === 0) {
-    result = await pool.query<Customer>(
-      `SELECT id, email, plan_id FROM customers WHERE email = $1`,
-      [email],
-    );
-  }
-
-  if (result.rows.length === 0) {
-    throw new Error(`Failed to ensure customer for email: ${email}`);
-  }
 
   return result.rows[0];
 }
