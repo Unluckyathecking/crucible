@@ -7,8 +7,8 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -181,7 +181,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		w.Header().Set("Content-Type", "application/json")
 		if resp.BillableUnits > 0 {
-			w.Header().Set("X-Billable-Units", fmt.Sprintf("%d", resp.BillableUnits))
+			w.Header().Set("X-Billable-Units", strconv.FormatUint(resp.BillableUnits, 10))
 		}
 		if resp.UnitsLabel != "" {
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
