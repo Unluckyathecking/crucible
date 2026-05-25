@@ -1,5 +1,5 @@
-import { signIn } from "@/auth";
 import { SubmitButton } from "./submit-button";
+import { signInWithEmail } from "./actions";
 
 export default function LoginPage() {
   return (
@@ -8,10 +8,7 @@ export default function LoginPage() {
         <h1 className="text-2xl font-bold mb-1">Sign in to Crucible</h1>
         <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-5">We&apos;ll email you a magic link.</p>
         <form
-          action={async (formData: FormData) => {
-            "use server";
-            await signIn("nodemailer", formData);
-          }}
+          action={signInWithEmail}
           aria-label="Sign in with email"
         >
           <label htmlFor="email" className="visually-hidden">
