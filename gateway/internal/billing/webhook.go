@@ -137,7 +137,11 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 	for _, sig := range sigs {
 		sigMAC, err := hex.DecodeString(sig)
 		if err != nil {
-			log.Debug().Err(err).Str("sig", sig).Msg("invalid hex in stripe signature")
+			prefix := sig
+			if len(sig) > 8 {
+				prefix = sig[:8]
+			}
+			log.Debug().AnErr("decode_err", err).Str("sig_prefix", prefix).Msg("invalid hex in stripe signature")
 			continue
 		}
 		if hmac.Equal(sigMAC, expected) {
