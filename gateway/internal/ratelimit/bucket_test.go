@@ -94,3 +94,63 @@ func TestAllow_ZeroLimitMeansUnlimited(t *testing.T) {
 		}
 	}
 }
+
+func TestAllow_ExactlyAtLimitIsAllowed(t *testing.T) {
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	cust := fmt.Sprintf("test-exact-%d", time.Now().UnixNano())
+	rdb.Del(ctx, "rl:"+cust)
+	defer rdb.Del(ctx, "rl:"+cust)
+
+	b := New(rdb)
+	const limit = 3
+	// Fill bucket to exactly limit-1, then one more should still pass
+	for i := 0; i < limit-1; i++ {
+		if err := b.Allow(ctx, cust, limit); err != nil {
+			t.Fatalf("call %d should pass, got %v", i, err)
+		}
+	}
+	// This is the limit-th request: count before add is limit-1, so allowed
+	if err := b.Allow(ctx, cust, limit); err != nil {
+		t.Fatalf("call at exactly limit should pass, got %v", err)
+	}
+	// Next one must be rejected
+	if err := b.Allow(ctx, cust, limit); !errors.Is(err, ErrLimited) {
+		t.Errorf("call over limit should be ErrLimited, got %v", err)
+	}
+}
+
+func TestAllow_NegativeLimitMeansUnlimited(t *testing.T) {
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	cust := fmt.Sprintf("test-neg-%d", time.Now().UnixNano())
+	rdb.Del(ctx, "rl:"+cust)
+
+	b := New(rdb)
+	for i := 0; i < 100; i++ {
+		if err := b.Allow(ctx, cust, -1); err != nil {
+			t.Fatalf("perMinute=-1 means unlimited, got %v at call %d", err, i)
+		}
+	}
+}
+
+func TestAllow_BurstBoundaryNoSlip(t *testing.T) {
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	cust := fmt.Sprintf("test-burst-%d", time.Now().UnixNano())
+	rdb.Del(ctx, "rl:"+cust)
+	defer rdb.Del(ctx, "rl:"+cust)
+
+	b := New(rdb)
+	const limit = 2
+	// Exhaust the limit
+	for i := 0; i < limit; i++ {
+		if err := b.Allow(ctx, cust, limit); err != nil {
+			t.Fatalf("call %d should pass, got %v", i, err)
+		}
+	}
+	// Immediate retries must fail; this verifies window doesn't slide from rejections
+	for i := 0; i < 5; i++ {
+		if err := b.Allow(ctx, cust, limit); !errors.Is(err, ErrLimited) {
+			t.Fatalf("burst attempt %d should be ErrLimited, got %v", i, err)
+		}
