@@ -27,7 +27,22 @@ export interface ApiKeyRow {
  * Idempotent — safe to call on every dashboard page render.
  */
 export async function ensureCustomer(email: string): Promise<Customer> {
-  const result = await pool.query<Customer>(
+  // First, try a fast lookup to avoid PostgreSQL MVCC bloat.
+  // The INSERT ... ON CONFLICT DO UPDATE approach writes a new dead tuple and WAL entry
+  // on *every* execution, even when nothing changes, which is a massive bottleneck
+  // when this is called on every dashboard render.
+  let result = await pool.query<Customer>(
+    `SELECT id, email, plan_id FROM customers WHERE email = $1`,
+    [email],
+  );
+
+  if (result.rows.length > 0) {
+    return result.rows[0];
+  }
+
+  // If the user doesn't exist, insert them. Use ON CONFLICT DO UPDATE as a safe fallback
+  // against race conditions if two concurrent requests try to create the same user.
+  result = await pool.query<Customer>(
     `INSERT INTO customers (email, plan_id) VALUES ($1, 'free')
      ON CONFLICT (email) DO UPDATE SET email = customers.email
      RETURNING id, email, plan_id`,
