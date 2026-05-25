@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
         with:
           # Check out the actual PR head branch (not the merge commit) so the
           # autofix step can git push back to it.
@@ -31,7 +33,9 @@ jobs:
           # Full history so `git log --grep` can count prior kimi-autofix commits.
           fetch-depth: 0
       - uses: Unluckyathecking/kimi-code-reviewer@main
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
         with:
           kimi_api_key: ${{ secrets.MOONSHOT_API_KEY }}
           fail_on: warning
-          autofix: false
+          max_autofix_iterations: 10
