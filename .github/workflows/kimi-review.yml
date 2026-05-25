@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
 
+# Cancel any in-progress run when a fresh commit lands on the same PR so we
+# don't burn Kimi tokens on already-superseded SHAs.
+concurrency:
+  group: kimi-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # Autofix needs contents:write to push commits back; issues:write to post the
 # claude:suggested-merge handoff comment when Kimi sees a clean review.
 permissions:
