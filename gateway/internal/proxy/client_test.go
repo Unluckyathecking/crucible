@@ -132,12 +132,12 @@ func TestInvoke_Timeout(t *testing.T) {
 
 func TestInvoke_FallbackTimeout(t *testing.T) {
 	c := New("http://fake", 0)
-	if c.http.Timeout != 30*time.Second {
-		t.Errorf("timeout = %v, want 30s fallback", c.http.Timeout)
+	if c.http.Timeout != defaultTimeout {
+		t.Errorf("timeout = %v, want %v fallback", c.http.Timeout, defaultTimeout)
 	}
 
 	cNegative := New("http://fake", -5*time.Second)
-	if cNegative.http.Timeout != 30*time.Second {
-		t.Errorf("negative timeout = %v, want 30s fallback", cNegative.http.Timeout)
+	if cNegative.http.Timeout != defaultTimeout {
+		t.Errorf("negative timeout = %v, want %v fallback", cNegative.http.Timeout, defaultTimeout)
 	}
 }

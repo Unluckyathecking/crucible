@@ -17,6 +17,8 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
+const defaultTimeout = 30 * time.Second
+
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
 type InvokeRequest struct {
 	RequestID  string            `json:"request_id"`
@@ -49,7 +51,7 @@ type Client struct {
 
 func New(workerURL string, timeout time.Duration) *Client {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = defaultTimeout
 	}
 	return &Client{
 		workerURL: workerURL,
