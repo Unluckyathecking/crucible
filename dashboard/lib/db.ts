@@ -55,6 +55,10 @@ export async function ensureCustomer(email: string): Promise<Customer> {
     );
   }
 
+  if (result.rows.length === 0) {
+    throw new Error(`Failed to ensure customer for email: ${email}`);
+  }
+
   return result.rows[0];
 }
 
