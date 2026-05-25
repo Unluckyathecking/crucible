@@ -1,0 +1,36 @@
+diff --git a/dashboard/app/api/keys/route.ts b/dashboard/app/api/keys/route.ts
+index 1234567..abcdefg 100644
+--- a/dashboard/app/api/keys/route.ts
++++ b/dashboard/app/api/keys/route.ts
+@@ -29,10 +29,18 @@ export async function POST(request: Request): Promise<Response> {
+     name = (formData.get("name") as string | undefined || "").trim();
+   }
+ 
+-  // Validate name
++  // Validate name: length and allowed characters
++  if (name.length === 0) {
++    return new Response("Name is required", { status: 400 });
++  }
+   if (name.length > 64) {
+     return new Response("Name must be 64 characters or fewer", { status: 400 });
+   }
++  // Whitelist: alphanumeric, spaces, hyphens, underscores, periods, commas
++  const validName = /^[a-zA-Z0-9 _.,-]+$/.test(name);
++  if (!validName) {
++    return new Response("Name contains invalid characters", { status: 400 });
++  }
+ 
+   const customer = await ensureCustomer(session.user.email);
+ 
+diff --git a/dashboard/lib/keys.ts b/dashboard/lib/keys.ts
+index 1234567..abcdefg 100644
+--- a/dashboard/lib/keys.ts
++++ b/dashboard/lib/keys.ts
+@@ -1,6 +1,7 @@
+ // API key generation and hashing — MUST match gateway/internal/auth/keys.go on the byte level.
+ // The gateway and dashboard read/write the same api_keys table; if their hash functions diverge,
+ // dashboard-issued keys will not authenticate.
++// NOTE: Validation for API key names lives in dashboard/app/api/keys/route.ts
+ import { randomBytes, createHash } from "crypto";
+ 
+ // MUST match auth.PrefixLen in gateway/internal/auth/keys.go.

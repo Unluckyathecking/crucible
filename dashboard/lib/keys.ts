@@ -1,6 +1,7 @@
 // API key generation and hashing — MUST match gateway/internal/auth/keys.go on the byte level.
 // The gateway and dashboard read/write the same api_keys table; if their hash functions diverge,
 // dashboard-issued keys will not authenticate.
+// NOTE: Validation for API key names lives in dashboard/app/api/keys/route.ts
 import { randomBytes, createHash } from "crypto";
 
 // MUST match auth.PrefixLen in gateway/internal/auth/keys.go.

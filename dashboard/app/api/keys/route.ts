@@ -25,9 +25,17 @@ export async function POST(request: Request): Promise<Response> {
     name = (formData.get("name") as string | undefined || "").trim();
   }
 
-  // Validate name
+  // Validate name: length and allowed characters
+  if (name.length === 0) {
+    return new Response("Name is required", { status: 400 });
+  }
   if (name.length > 64) {
     return new Response("Name must be 64 characters or fewer", { status: 400 });
+  }
+  // Whitelist: alphanumeric, spaces, hyphens, underscores, periods, commas
+  const validName = /^[a-zA-Z0-9 _.,-]+$/.test(name);
+  if (!validName) {
+    return new Response("Name contains invalid characters", { status: 400 });
   }
 
   const customer = await ensureCustomer(session.user.email);
