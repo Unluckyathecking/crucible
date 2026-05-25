@@ -87,11 +87,39 @@ func TestStatusRecorderMultipleWriteHeader(t *testing.T) {
 	}
 }
 
+func TestStatusRecorder1xxThenFinal(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	sr.WriteHeader(http.StatusContinue) // 100
+	if sr.wroteHeader {
+		t.Error("wroteHeader should be false after 1xx")
+	}
+	sr.WriteHeader(http.StatusOK) // 200 finalizes
+
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusOK)
+	}
+	// Note: httptest.NewRecorder records the first WriteHeader call,
+	// even if it is a 1xx status code. We don't check inner.Code here.
+}
+
 func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
+    // explicitly reset the status to verify Write actually sets it to 200
+    sr.Status = 0
+
 	_, _ = sr.Write([]byte("implicit 200"))
+	// Critical: verify Status is locked at 200 immediately after Write
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status after Write = %d, want %d", sr.Status, http.StatusOK)
+	}
+	if inner.Code != http.StatusOK {
+		t.Errorf("inner Code after Write = %d, want %d", inner.Code, http.StatusOK)
+	}
+
 	sr.WriteHeader(http.StatusInternalServerError) // Should be ignored because header was implicitly written
 
 	if sr.Status != http.StatusOK {

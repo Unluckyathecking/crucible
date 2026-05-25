@@ -1,3 +1,0 @@
-## 2026-05-16 - StatusRecorder overwriting status issue
-**Learning:** `http.ResponseWriter.WriteHeader` honors only the first call, but wrapping loggers (`StatusRecorder`) might overwrite their internal state on multiple calls if not specifically preventing it, causing access logs and metrics to log a wrong status code. Be sure to respect 1xx informational status codes, which do not finalize the header response.
-**Action:** When implementing an HTTP middleware logger tracking the status, add a `wroteHeader` boolean flag. Only record `code >= 200` to lock the flag, and implicitly lock it on any `Write` calls.

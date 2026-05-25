@@ -21,8 +21,8 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
 	}
-	s.Status = code
 	if code >= 200 {
+		s.Status = code
 		s.wroteHeader = true
 	}
 	s.ResponseWriter.WriteHeader(code)
@@ -31,6 +31,7 @@ func (s *StatusRecorder) WriteHeader(code int) {
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
+		s.Status = http.StatusOK
 	}
 	return s.ResponseWriter.Write(b)
 }
