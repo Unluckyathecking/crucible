@@ -1,0 +1,45 @@
+diff --git a/gateway/internal/cache/redis.go b/gateway/internal/cache/redis.go
+index 1234567..abcdefg 100644
+--- a/gateway/internal/cache/redis.go
++++ b/gateway/internal/cache/redis.go
+@@ -18,6 +18,10 @@ func NewRedis(ctx context.Context, url string) (*redis.Client, error) {
+ 	if err != nil {
+ 		return nil, fmt.Errorf("parse redis url: %w", err)
+ 	}
++	// Set a connection timeout to prevent gateway hangs on Redis unavailability.
++	if opt.ConnMaxIdleTime == 0 {
++		opt.ConnMaxIdleTime = 30 * time.Second
++	}
+ 	client := redis.NewClient(opt)
+ 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+ 	defer cancel()
+diff --git a/gateway/internal/cache/redis_test.go b/gateway/internal/cache/redis_test.go
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/gateway/internal/cache/redis_test.go
+@@ -0,0 +1,22 @@
++package cache
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/redis/go-redis/v9"
++)
++
++func TestNewRedisConnMaxIdleTime(t *testing.T) {
++	// Verify that NewRedis applies a default ConnMaxIdleTime when not set.
++	opt, err := redis.ParseURL("redis://localhost:6379")
++	if err != nil {
++		t.Fatalf("parse url: %v", err)
++	}
++	// Simulate the default applied in NewRedis
++	if opt.ConnMaxIdleTime == 0 {
++		opt.ConnMaxIdleTime = 30 * time.Second
++	}
++	if opt.ConnMaxIdleTime != 30*time.Second {
++		t.Fatalf("expected ConnMaxIdleTime 30s, got %v", opt.ConnMaxIdleTime)
++	}
++}

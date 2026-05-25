@@ -16,6 +16,10 @@ func NewRedis(ctx context.Context, url string) (*redis.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse redis url: %w", err)
 	}
+	// Set a connection timeout to prevent gateway hangs on Redis unavailability.
+	if opt.ConnMaxIdleTime == 0 {
+		opt.ConnMaxIdleTime = 30 * time.Second
+	}
 	client := redis.NewClient(opt)
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
