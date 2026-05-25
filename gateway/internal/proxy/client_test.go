@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,6 +125,57 @@ func TestInvoke_Timeout(t *testing.T) {
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "worker call") {
+		t.Errorf("error %q should wrap the transport error", err.Error())
+	}
+}
+
+func TestInvoke_FallbackTimeout(t *testing.T) {
+	c := New("http://fake", 0)
+	if c.http.Timeout != defaultTimeout {
+		t.Errorf("timeout = %v, want %v fallback", c.http.Timeout, defaultTimeout)
+	}
+
+	cNegative := New("http://fake", -5*time.Second)
+	if cNegative.http.Timeout != defaultTimeout {
+		t.Errorf("negative timeout = %v, want %v fallback", cNegative.http.Timeout, defaultTimeout)
+	}
+}
+
+func TestInvoke_StalledConnection(t *testing.T) {
+	// Start a raw TCP listener that accepts connections but never writes a response.
+	// This simulates a worker that hangs after TCP handshake.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer l.Close()
+
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			// Just hold the connection open.
+			defer conn.Close()
+		}
+	}()
+
+	workerURL := "http://" + l.Addr().String()
+	// Set a very short timeout so the test runs fast.
+	c := New(workerURL, 50*time.Millisecond)
+
+	start := time.Now()
+	_, err = c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
+	duration := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if duration > 1*time.Second {
+		t.Errorf("timeout took too long: %v", duration)
 	}
 	if !strings.Contains(err.Error(), "worker call") {
 		t.Errorf("error %q should wrap the transport error", err.Error())
