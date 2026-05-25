@@ -80,7 +80,7 @@ func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 	// Handler succeeded — record the event so future retries dedupe.
 	// If two deliveries race and both succeed at dispatch, ON CONFLICT keeps the table clean.
 	if _, err := h.recordEvent(r.Context(), event.ID, event.Type, body); err != nil {
-		log.Warn().Err(err).Msg("webhook record failed AFTER successful dispatch — duplicate dispatch possible on retry")
+		log.Error().Err(err).Msg("webhook record failed AFTER successful dispatch — duplicate dispatch possible on retry")
 		// Still return 200 — the action ran. A re-dispatch is at worst a no-op (handler is idempotent on subscription state).
 	}
 	w.WriteHeader(http.StatusOK)
@@ -139,7 +139,7 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 		if len(sig) != stripeSignatureHexLen {
 			continue
 		}
-		sigMAC, err := hex.DecodeString(sig)
+		sigMAC, err := hex.DecodeString(strings.ToUpper(sig))
 		if err != nil {
 			continue
 		}
@@ -220,9 +220,15 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) error {
 	var obj struct {
 		Customer string `json:"customer"`
+		Status   string `json:"status"`
 	}
 	if err := json.Unmarshal(event.Data.Object, &obj); err != nil {
 		return err
+	}
+	// Only downgrade if the subscription is actually canceled. A retried deleted
+	// event for a customer who has since re-subscribed will have a different active subscription.
+	if obj.Status != "canceled" {
+		return nil
 	}
 	_, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = 'free', updated_at = NOW()
