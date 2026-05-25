@@ -7,8 +7,8 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -56,9 +56,9 @@ func NewRouter(d *Deps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(mw.RequestID)
+	r.Use(mw.AccessLog)
 	r.Use(mw.Recovery)
 	r.Use(observability.Middleware)
-	r.Use(mw.AccessLog)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
 	r.Use(cors.Handler(cors.Options{
@@ -141,6 +141,11 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		resp, err := p.Invoke(r.Context(), req)
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("request_id", rid).
+				Str("operation", operation).
+				Msg("worker invocation failed")
 			writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
 			return
 		}
@@ -176,7 +181,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		w.Header().Set("Content-Type", "application/json")
 		if resp.BillableUnits > 0 {
-			w.Header().Set("X-Billable-Units", fmt.Sprintf("%d", resp.BillableUnits))
+			w.Header().Set("X-Billable-Units", strconv.FormatUint(resp.BillableUnits, 10))
 		}
 		if resp.UnitsLabel != "" {
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)

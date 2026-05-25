@@ -17,6 +17,8 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
+const defaultTimeout = 30 * time.Second
+
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
 type InvokeRequest struct {
 	RequestID  string            `json:"request_id"`
@@ -47,15 +49,21 @@ type Client struct {
 	http      *http.Client
 }
 
+// New creates a proxy client. If timeout is 0 or negative, it defaults
+// to a 30s timeout to prevent infinite hangs from unresponsive workers.
 func New(workerURL string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
 	return &Client{
 		workerURL: workerURL,
 		http: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 50,
-				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   50,
+				IdleConnTimeout:       90 * time.Second,
+				ResponseHeaderTimeout: timeout * 2 / 3,
 			},
 		},
 	}
