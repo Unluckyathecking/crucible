@@ -41,7 +41,7 @@ export default async function DashboardPage() {
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="API keys">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-3">
             <h2 className="text-lg sm:text-xl font-semibold">API keys</h2>
-            <CreateKeyForm existingNames={keys.map((k) => k.name ?? "")} />
+            <CreateKeyForm existingNames={keys.map((k) => k.name).filter(Boolean) as string[]} />
           </div>
           {keys.length === 0 ? (
             <p className="text-sm text-zinc-500">No keys yet.</p>
