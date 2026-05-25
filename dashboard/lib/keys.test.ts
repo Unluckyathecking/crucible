@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateKey, hashKey } from './keys';
+import testData from '../testdata/keys.json';
 
 describe('keys.ts', () => {
   describe('generateKey', () => {
@@ -52,25 +53,12 @@ describe('keys.ts', () => {
       expect(Buffer.isBuffer(hash1)).toBe(true);
     });
 
-    it('should match the expected SHA-256 output byte-for-byte with the Go gateway implementation', () => {
-      const salt = 'go_test_salt_999';
-      const key = 'go_test_key_abc_123';
-
-      // This test vector cross-validates against gateway/internal/auth/keys.go:Hash()
-      const hash = hashKey(salt, key);
-      const expectedHex = '3e79bbf9dcbdaf944669dde55e6f5982e08a3f8a85de1e6006f1598b0400f99b';
-
-      expect(hash.toString('hex')).toBe(expectedHex);
-    });
-
-    it('should correctly hash with empty salt', () => {
-      const salt = '';
-      const key = 'key123';
-
-      const hash = hashKey(salt, key);
-      const expectedHex = '8fefe692f690a3173176ecdff4318225afaeb97fdd6f60c866ed823d59221665'; // sha256("key123")
-
-      expect(hash.toString('hex')).toBe(expectedHex);
+    it('should match the expected SHA-256 output byte-for-byte with the Go gateway implementation using testdata', () => {
+      // The expected bytes are stable and identical to Go because the salt and keys are fixed in the test JSON structure.
+      for (const tc of testData) {
+        const hash = hashKey(tc.salt, tc.key);
+        expect(hash.toString('hex')).toBe(tc.expectedHash);
+      }
     });
   });
 });

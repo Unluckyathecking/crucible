@@ -1,0 +1,37 @@
+name: Kimi Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+# Cancel any in-progress run when a fresh commit lands on the same PR so we
+# don't burn Kimi tokens on already-superseded SHAs.
+concurrency:
+  group: kimi-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Autofix needs contents:write to push commits back; issues:write to post the
+# claude:suggested-merge handoff comment when Kimi sees a clean review.
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  issues: write
+
+jobs:
+  kimi-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the actual PR head branch (not the merge commit) so the
+          # autofix step can git push back to it.
+          ref: ${{ github.event.pull_request.head.ref }}
+          # Full history so `git log --grep` can count prior kimi-autofix commits.
+          fetch-depth: 0
+      - uses: Unluckyathecking/kimi-code-reviewer@main
+        with:
+          kimi_api_key: ${{ secrets.MOONSHOT_API_KEY }}
+          fail_on: warning
+          max_autofix_iterations: 10

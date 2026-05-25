@@ -1,0 +1,12 @@
+[
+  {
+    "salt": "go_test_salt_999",
+    "key": "go_test_key_abc_123",
+    "expectedHash": "3e79bbf9dcbdaf944669dde55e6f5982e08a3f8a85de1e6006f1598b0400f99b"
+  },
+  {
+    "salt": "",
+    "key": "key123",
+    "expectedHash": "8fefe692f690a3173176ecdff4318225afaeb97fdd6f60c866ed823d59221665"
+  }
+]

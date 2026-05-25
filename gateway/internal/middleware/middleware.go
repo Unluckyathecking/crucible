@@ -1,6 +1,6 @@
 // Package middleware provides the HTTP middleware stack every Crucible gateway route shares.
 //
-// Mount order (outer → inner): RequestID → Recovery → AccessLog → SecurityHeaders → BodyLimit.
+// Mount order (outer → inner): RequestID → AccessLog → Recovery → SecurityHeaders → BodyLimit.
 package middleware
 
 import (

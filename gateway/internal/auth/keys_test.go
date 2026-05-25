@@ -1,6 +1,10 @@
 package auth
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -62,5 +66,36 @@ func TestPrefixLen(t *testing.T) {
 				t.Errorf("full=%q missing prefix %q", full, p+"live_")
 			}
 		})
+	}
+}
+
+type HashTestCase struct {
+	Salt         string `json:"salt"`
+	Key          string `json:"key"`
+	ExpectedHash string `json:"expectedHash"`
+}
+
+func TestHash_CrossValidation(t *testing.T) {
+	// Read the shared testdata file from the dashboard directory
+	// This ensures the Go and TS implementations stay byte-identical.
+	path := filepath.Join("..", "..", "..", "dashboard", "testdata", "keys.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read cross-language testdata: %v", err)
+	}
+
+	var testCases []HashTestCase
+	if err := json.Unmarshal(data, &testCases); err != nil {
+		t.Fatalf("failed to parse testdata: %v", err)
+	}
+
+	for i, tc := range testCases {
+		hashBytes := Hash(tc.Salt, tc.Key)
+		hashHex := hex.EncodeToString(hashBytes)
+
+		if hashHex != tc.ExpectedHash {
+			t.Errorf("test case %d failed:\nsalt: %q\nkey: %q\nexpected: %s\ngot:      %s",
+				i, tc.Salt, tc.Key, tc.ExpectedHash, hashHex)
+		}
 	}
 }
