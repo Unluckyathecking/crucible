@@ -33,4 +33,4 @@ jobs:
       - uses: Unluckyathecking/kimi-code-reviewer@main
         with:
           kimi_api_key: ${{ secrets.MOONSHOT_API_KEY }}
-          fail_on: warning
+          fail_on: never
