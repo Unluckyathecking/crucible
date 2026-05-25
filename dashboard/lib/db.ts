@@ -27,10 +27,7 @@ export interface ApiKeyRow {
  * Idempotent — safe to call on every dashboard page render.
  */
 export async function ensureCustomer(email: string): Promise<Customer> {
-  // First, try a fast lookup to avoid PostgreSQL MVCC bloat.
-  // The INSERT ... ON CONFLICT DO UPDATE approach writes a new dead tuple and WAL entry
-  // on *every* execution, even when nothing changes, which is a massive bottleneck
-  // when this is called on every dashboard render.
+  // Fast path: avoid ON CONFLICT write if customer already exists.
   let result = await pool.query<Customer>(
     `SELECT id, email, plan_id FROM customers WHERE email = $1`,
     [email],
