@@ -53,9 +53,6 @@ func FromContext(ctx context.Context) *Key {
 func writeUnauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	// json.Encoder over string-concat — the current callers only pass literals,
-	// but encoding eliminates the footgun if a future call site forwards user input
-	// (which would break the envelope and could enable response-splitting).
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"code":    "UNAUTHORIZED",
