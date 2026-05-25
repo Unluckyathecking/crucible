@@ -27,12 +27,28 @@ export interface ApiKeyRow {
  * Idempotent — safe to call on every dashboard page render.
  */
 export async function ensureCustomer(email: string): Promise<Customer> {
-  const result = await pool.query<Customer>(
+  // Fast path: avoid ON CONFLICT write if customer already exists.
+  let result = await pool.query<Customer>(
+    `SELECT id, email, plan_id FROM customers WHERE email = $1`,
+    [email],
+  );
+
+  if (result.rows.length > 0) {
+    return result.rows[0];
+  }
+
+  // If the user doesn't exist, insert them. Use ON CONFLICT DO UPDATE as a safe fallback
+  // against race conditions if two concurrent requests try to create the same user.
+  // By using DO UPDATE SET email = EXCLUDED.email, we guarantee a row is returned via RETURNING
+  // in a single round-trip, avoiding the race window of a DO NOTHING + secondary SELECT.
+  // We only hit this write path if the first SELECT missed, keeping MVCC bloat ~0 on the hot path.
+  result = await pool.query<Customer>(
     `INSERT INTO customers (email, plan_id) VALUES ($1, 'free')
-     ON CONFLICT (email) DO UPDATE SET email = customers.email
+     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
      RETURNING id, email, plan_id`,
     [email],
   );
+
   return result.rows[0];
 }
 
@@ -64,7 +80,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - ($2 || ' days')::interval`,
+     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
   return Number(r.rows[0].units);

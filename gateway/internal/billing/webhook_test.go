@@ -36,6 +36,10 @@ func TestVerifySignature(t *testing.T) {
 		{"missing header", "", true},
 		{"malformed", "garbage", true},
 		{"no v1", fmt.Sprintf("t=%d", now.Unix()), true},
+		{"invalid hex in v1", fmt.Sprintf("t=%d,v1=gggggg", now.Unix()), true},
+		{"invalid hex skipped but valid found", fmt.Sprintf("t=%d,v1=gggggg,%s", now.Unix(), signStripe(secret, body, now.Unix())[13:]), false},
+		{"too long v1", fmt.Sprintf("t=%d,v1=%066x", now.Unix(), 1), true},
+		{"wrong length v1", fmt.Sprintf("t=%d,v1=%062x", now.Unix(), 1), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
