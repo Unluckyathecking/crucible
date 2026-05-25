@@ -36,6 +36,7 @@ func TestVerifySignature(t *testing.T) {
 		{"missing header", "", true},
 		{"malformed", "garbage", true},
 		{"no v1", fmt.Sprintf("t=%d", now.Unix()), true},
+		{"invalid hex in v1", fmt.Sprintf("t=%d,v1=gggggg", now.Unix()), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

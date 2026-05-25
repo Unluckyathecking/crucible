@@ -132,7 +132,7 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 	payload := timestamp + "." + string(body)
 	mac := hmac.New(sha256.New, []byte(h.secret))
 	_, _ = mac.Write([]byte(payload))
-	expectedMAC := mac.Sum(nil)
+	expected := mac.Sum(nil)
 
 	for _, sig := range sigs {
 		sigMAC, err := hex.DecodeString(sig)
@@ -140,7 +140,7 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 			log.Debug().Err(err).Str("sig", sig).Msg("invalid hex in stripe signature")
 			continue
 		}
-		if hmac.Equal(sigMAC, expectedMAC) {
+		if hmac.Equal(sigMAC, expected) {
 			return nil
 		}
 	}
