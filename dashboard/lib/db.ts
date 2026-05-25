@@ -40,14 +40,24 @@ export async function ensureCustomer(email: string): Promise<Customer> {
     return result.rows[0];
   }
 
-  // If the user doesn't exist, insert them. Use ON CONFLICT DO UPDATE as a safe fallback
+  // If the user doesn't exist, insert them. Use ON CONFLICT DO NOTHING as a safe fallback
   // against race conditions if two concurrent requests try to create the same user.
+  // DO NOTHING prevents MVCC bloat if a concurrent request already inserted the row.
   result = await pool.query<Customer>(
     `INSERT INTO customers (email, plan_id) VALUES ($1, 'free')
-     ON CONFLICT (email) DO UPDATE SET email = customers.email
+     ON CONFLICT (email) DO NOTHING
      RETURNING id, email, plan_id`,
     [email],
   );
+
+  // If DO NOTHING skipped the insert, we need to fetch the newly created row.
+  if (result.rows.length === 0) {
+    result = await pool.query<Customer>(
+      `SELECT id, email, plan_id FROM customers WHERE email = $1`,
+      [email],
+    );
+  }
+
   return result.rows[0];
 }
 
@@ -79,7 +89,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - ($2 || ' days')::interval`,
+     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
   return Number(r.rows[0].units);
