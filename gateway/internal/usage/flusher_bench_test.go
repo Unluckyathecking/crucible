@@ -53,7 +53,6 @@ func BenchmarkClaimAndEmitNewBatches(b *testing.B) {
 			}
 		}
 		b.StartTimer()
-
 		if err := f.claimAndEmitNewBatches(ctx); err != nil {
 			b.Fatalf("claimAndEmitNewBatches: %v", err)
 		}

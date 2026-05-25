@@ -33,11 +33,15 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					writeUnauthorized(w, "invalid api key")
 					return
 				}
-				// Log the internal error for operational visibility before returning generic response
-				// TODO(jules, #5574680341944503945): wire structured logger when available
+				// Log the internal error for operational visibility before returning generic response.
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"auth lookup failed"}}`))
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":    "INTERNAL",
+						"message": "auth lookup failed",
+					},
+				})
 				return
 			}
 			ctx := context.WithValue(r.Context(), keyCtxKey, key)
