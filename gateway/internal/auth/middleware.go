@@ -33,7 +33,8 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					writeUnauthorized(w, "invalid api key")
 					return
 				}
-				// Log the internal error for operational visibility before returning generic response.
+				// Log the internal error for operational visibility before returning generic response
+				// TODO: replace with structured logging when logger is available in this package
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]any{
