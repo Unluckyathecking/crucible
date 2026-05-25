@@ -34,7 +34,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					return
 				}
 				// Log the internal error for operational visibility before returning generic response
-				// TODO: replace with structured logging when logger is available in this package
+				// TODO: wire structured logger (see github.com/org/repo/issues/XXX).
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]any{
@@ -63,7 +63,8 @@ func writeUnauthorized(w http.ResponseWriter, msg string) {
 	// json.Encoder over string-concat — the current callers only pass literals,
 	// but encoding eliminates the footgun if a future call site forwards user input
 	// (which would break the envelope and could enable response-splitting).
-	// We ignore the error here as there's no logging wired up for auth failures and write failures imply connection dropped.
+	// We ignore the error here: the payload is a simple map[string]any with only string values,
+	// so encoding cannot fail for type reasons, and write failures mean the client has disconnected.
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"code":    "UNAUTHORIZED",
