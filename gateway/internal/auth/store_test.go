@@ -321,27 +321,35 @@ func TestStore_InvalidHashPopulatesCache(t *testing.T) {
 	// Cold path lookup with invalid hash should fail
 	_, err := s.Lookup(ctx, invalidKey)
 	if err != ErrKeyNotFound {
-		t.Fatalf("Lookup(invalidKey) = %v, want ErrKeyNotFound", err)
+		t.Errorf("Lookup(invalidKey) = %v, want ErrKeyNotFound", err)
 	}
 
 	// But cache should be populated with the valid hash
 	exists, err := rdb.Exists(ctx, "auth:"+prefix).Result()
-	if err != nil || exists != 1 {
-		t.Fatalf("cache should be populated after invalid hash lookup: err=%v, exists=%d", err, exists)
+	if err != nil {
+		t.Errorf("redis Exists error: %v", err)
+	} else if exists != 1 {
+		t.Errorf("cache should be populated after invalid hash lookup, got exists=%d", exists)
+	}
+
+	ttl, err := rdb.TTL(ctx, "auth:"+prefix).Result()
+	if err != nil {
+		t.Errorf("redis TTL error: %v", err)
+	} else if ttl <= 0 || ttl > 60*time.Second {
+		t.Errorf("cache TTL = %v, want ~60s", ttl)
 	}
 
 	// Hot path lookup with valid key should succeed using the cache
 	got, err := s.Lookup(ctx, fullKey)
 	if err != nil {
-		t.Fatalf("Lookup(fullKey) after invalid hash lookup = %v", err)
-	}
-	if got.ID == uuid.Nil {
+		t.Errorf("Lookup(fullKey) after invalid hash lookup = %v", err)
+	} else if got.ID == uuid.Nil {
 		t.Error("returned key has zero-value ID")
 	}
 
 	// Hot path lookup with invalid key should fail quickly
 	_, err = s.Lookup(ctx, invalidKey)
 	if err != ErrKeyNotFound {
-		t.Fatalf("Lookup(invalidKey) on hot path = %v, want ErrKeyNotFound", err)
+		t.Errorf("Lookup(invalidKey) on hot path = %v, want ErrKeyNotFound", err)
 	}
 }
