@@ -10,7 +10,7 @@ export function SignOutButton() {
       type="submit"
       disabled={pending}
       aria-busy={pending}
-      className="text-sm text-zinc-500 hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+      className="text-sm text-zinc-500 hover:underline focus-visible:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
     >
       {pending ? "Signing out..." : "Sign out"}
     </button>
