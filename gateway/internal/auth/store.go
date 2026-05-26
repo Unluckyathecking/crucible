@@ -93,8 +93,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
 		if err := json.Unmarshal(cached, &c); err == nil {
-			// A cached entry with an empty hash indicates a cached failure (negative caching)
-			if len(c.Hash) == 0 || !VerifyHash(wantHash, c.Hash) {
+			if !VerifyHash(wantHash, c.Hash) {
 				return nil, ErrKeyNotFound
 			}
 			return &Key{
@@ -125,17 +124,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		return nil, fmt.Errorf("lookup api key: %w", err)
 	}
 
-	if !VerifyHash(wantHash, storedHash) {
-		// Populate cache to explicitly cache the failure so attackers can't DoS the database
-		// with invalid hashes for a valid prefix.
-		entry := cacheEntry{Hash: []byte{}} // Empty hash indicates cached failure
-		if payload, err := json.Marshal(entry); err == nil {
-			_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
-		}
-		return nil, ErrKeyNotFound
-	}
-
-	// Populate cache for the next call.
+	// Populate cache for the next call. We cache the correct database record
+	// BEFORE we verify the incoming request's hash. This provides negative caching
+	// (an invalid hash hitting the cache will fail VerifyHash and return early),
+	// without poisoning the cache for subsequent valid requests.
 	entry := cacheEntry{
 		KeyID:      keyID,
 		CustomerID: customerID,
@@ -145,6 +137,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 	if payload, err := json.Marshal(entry); err == nil {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
+	}
+
+	if !VerifyHash(wantHash, storedHash) {
+		return nil, ErrKeyNotFound
 	}
 
 	// Fire-and-forget last_used update — don't block the request hot path.

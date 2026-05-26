@@ -138,7 +138,7 @@ func TestStore_NegativeCaching(t *testing.T) {
 	s := NewStore(db, rdb, testSalt)
 
 	t.Run("caches authentication failure to prevent DB DoS", func(t *testing.T) {
-		_, _, prefix := insertTestKey(t, ctx, db, testSalt)
+		_, fullKey, prefix := insertTestKey(t, ctx, db, testSalt)
 
 		// Make sure cache is cold
 		rdb.Del(ctx, "auth:"+prefix)
@@ -163,14 +163,20 @@ func TestStore_NegativeCaching(t *testing.T) {
 			t.Fatalf("second lookup: expected ErrKeyNotFound, got %v", err)
 		}
 
-		// Unmarshal the raw cache entry manually to verify it has an empty hash
-		// and won't poison a valid lookup.
+		// Unmarshal the raw cache entry manually to verify it contains the *correct* hash
+		// and won't poison a valid lookup for the legitimate user.
 		var c cacheEntry
 		if err := json.Unmarshal(cached, &c); err != nil {
 			t.Fatalf("failed to unmarshal cache entry: %v", err)
 		}
-		if len(c.Hash) != 0 {
-			t.Errorf("expected empty hash in cache, got len %d", len(c.Hash))
+		if len(c.Hash) == 0 {
+			t.Error("expected valid hash in cache, got empty")
+		}
+
+		// 3. Warm path lookup with the valid hash. Should hit cache, pass verify, and succeed.
+		_, err = s.Lookup(ctx, fullKey)
+		if err != nil {
+			t.Fatalf("third lookup (valid key): expected success, got %v", err)
 		}
 	})
 }
