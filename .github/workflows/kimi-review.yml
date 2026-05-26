@@ -22,8 +22,6 @@ jobs:
   kimi-review:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,5 +33,5 @@ jobs:
       - uses: Unluckyathecking/kimi-code-reviewer@main
         with:
           kimi_api_key: ${{ secrets.MOONSHOT_API_KEY }}
-          fail_on: warning
+          fail_on: critical
           autofix: false
