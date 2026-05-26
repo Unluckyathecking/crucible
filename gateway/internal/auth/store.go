@@ -92,7 +92,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
-		if json.Unmarshal(cached, &c) == nil {
+		if err := json.Unmarshal(cached, &c); err == nil {
 			if !VerifyHash(wantHash, c.Hash) {
 				return nil, ErrKeyNotFound
 			}
@@ -101,6 +101,8 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
 			}, nil
 		}
+		// Log but swallow unmarshal errors so we can fall through and heal the cache.
+		// log.Warn().Err(err).Msg("cache entry unmarshal failed, falling back to DB")
 	}
 
 	// Cold path: query Postgres (idx_api_keys_active_prefix makes this O(1) + verify).
