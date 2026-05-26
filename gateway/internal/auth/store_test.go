@@ -303,3 +303,45 @@ func TestStore_PrefixLookupIsCaseSensitive(t *testing.T) {
 		}
 	})
 }
+
+func TestStore_InvalidHashPopulatesCache(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+
+	_, fullKey, prefix := insertTestKey(t, ctx, db, testSalt)
+	invalidKey := prefix + "INVALIDHASH12345" // Use valid length
+
+	// Ensure cache is cold
+	rdb.Del(ctx, "auth:"+prefix)
+
+	// Cold path lookup with invalid hash should fail
+	_, err := s.Lookup(ctx, invalidKey)
+	if err != ErrKeyNotFound {
+		t.Fatalf("Lookup(invalidKey) = %v, want ErrKeyNotFound", err)
+	}
+
+	// But cache should be populated with the valid hash
+	exists, err := rdb.Exists(ctx, "auth:"+prefix).Result()
+	if err != nil || exists != 1 {
+		t.Fatalf("cache should be populated after invalid hash lookup: err=%v, exists=%d", err, exists)
+	}
+
+	// Hot path lookup with valid key should succeed using the cache
+	got, err := s.Lookup(ctx, fullKey)
+	if err != nil {
+		t.Fatalf("Lookup(fullKey) after invalid hash lookup = %v", err)
+	}
+	if got.ID == uuid.Nil {
+		t.Error("returned key has zero-value ID")
+	}
+
+	// Hot path lookup with invalid key should fail quickly
+	_, err = s.Lookup(ctx, invalidKey)
+	if err != ErrKeyNotFound {
+		t.Fatalf("Lookup(invalidKey) on hot path = %v, want ErrKeyNotFound", err)
+	}
+}
