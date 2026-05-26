@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,7 @@ type Store struct {
 	cache   *redis.Client
 	salt    string
 	updates chan uuid.UUID
+	wg      sync.WaitGroup
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
@@ -44,16 +46,25 @@ func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
 		salt:    salt,
 		updates: make(chan uuid.UUID, 1000),
 	}
+	s.wg.Add(1)
 	go s.processUpdates()
 	return s
 }
 
 func (s *Store) processUpdates() {
+	defer s.wg.Done()
 	for keyID := range s.updates {
 		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 		cancel()
 	}
+}
+
+// Close drains the last_used_at update queue and waits for the background
+// goroutine to finish. Call once during graceful shutdown.
+func (s *Store) Close() {
+	close(s.updates)
+	s.wg.Wait()
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry

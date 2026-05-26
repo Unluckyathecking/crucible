@@ -74,8 +74,8 @@ func main() {
 		zerolog.SetGlobalLevel(lvl)
 	}
 
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 
 	pool, err := db.NewPool(rootCtx, cfg.PostgresDSN, cfg.PostgresMaxConns)
 	if err != nil {
@@ -135,9 +135,6 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	shutdown := make(chan os.Signal, 1)
-	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
 		log.Info().Int("port", cfg.Port).Str("worker", cfg.WorkerURL).Msg("gateway listening")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -152,14 +149,15 @@ func main() {
 		}
 	}()
 
-	<-shutdown
+	<-rootCtx.Done()
+	stop()
 	log.Info().Msg("shutdown signal received")
-	rootCancel()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	authStore.Close()
 }
