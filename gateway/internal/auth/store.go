@@ -35,6 +35,7 @@ type Store struct {
 	cache   *redis.Client
 	salt    string
 	updates chan uuid.UUID
+	done    chan struct{}
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
@@ -43,17 +44,27 @@ func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
 		cache:   cache,
 		salt:    salt,
 		updates: make(chan uuid.UUID, 1000),
+		done:    make(chan struct{}),
 	}
 	go s.processUpdates()
 	return s
 }
 
 func (s *Store) processUpdates() {
+	defer close(s.done)
 	for keyID := range s.updates {
 		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 		cancel()
 	}
+}
+
+// Close drains the last_used_at update queue and waits for the background
+// writer to finish. Call once during shutdown after http.Server.Shutdown returns.
+// Closing guarantees queued updates are not silently dropped on SIGTERM.
+func (s *Store) Close() {
+	close(s.updates)
+	<-s.done
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
