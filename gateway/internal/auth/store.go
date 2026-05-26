@@ -89,7 +89,12 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	prefix := fullKey[:PrefixLen]
 	wantHash := Hash(s.salt, fullKey)
 
-	const negativeCacheTTL = 5 * time.Second
+
+	// Redis hot path.
+	const (
+		positiveCacheTTL = 60 * time.Second
+		negativeCacheTTL = 5 * time.Second
+	)
 
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
@@ -104,6 +109,13 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 			// Prefix is in cache (and unique), but hash mismatched. Valid prefix + invalid hash.
 			// Return immediately without falling back to DB.
 			return nil, ErrKeyNotFound
+		}
+	} else if cached, err := s.cache.Get(ctx, "auth:neg:"+prefix).Bytes(); err == nil {
+		var c cacheEntry
+		if json.Unmarshal(cached, &c) == nil {
+			if !VerifyHash(wantHash, c.Hash) {
+				return nil, ErrKeyNotFound
+			}
 		}
 	}
 
@@ -135,13 +147,15 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		Plan:       plan,
 		Hash:       storedHash,
 	}
+	hashValid := VerifyHash(wantHash, storedHash)
 	if payload, err := json.Marshal(entry); err == nil {
-		if !VerifyHash(wantHash, storedHash) {
-			_ = s.cache.Set(ctx, "auth:"+prefix, payload, negativeCacheTTL).Err()
+		if !hashValid {
+			_ = s.cache.Set(ctx, "auth:neg:"+prefix, payload, negativeCacheTTL).Err()
 			return nil, ErrKeyNotFound
 		}
-		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
-	} else if !VerifyHash(wantHash, storedHash) {
+		_ = s.cache.Set(ctx, "auth:"+prefix, payload, positiveCacheTTL).Err()
+	}
+	if !hashValid {
 		return nil, ErrKeyNotFound
 	}
 
