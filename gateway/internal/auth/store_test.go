@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -272,6 +273,70 @@ func TestStore_ConstantTimeComparison(t *testing.T) {
 					t.Errorf("VerifyHash(...) = %v, want %v", got, tt.want)
 				}
 			})
+		}
+	})
+}
+
+func TestLookup_NegativePrefixCache(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+	defer s.Close()
+
+	// Use a prefix guaranteed not to be in the database.
+	unknownKey := "cru_XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	prefix := unknownKey[:PrefixLen]
+	missKey := "auth:miss:" + prefix
+
+	// Ensure clean state from any prior run.
+	rdb.Del(ctx, missKey)
+
+	t.Run("first call hits Postgres and creates sentinel", func(t *testing.T) {
+		_, err := s.Lookup(ctx, unknownKey)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("Lookup(unknown) = %v, want ErrKeyNotFound", err)
+		}
+		ttl, err := rdb.TTL(ctx, missKey).Result()
+		if err != nil {
+			t.Fatalf("TTL(%q): %v", missKey, err)
+		}
+		if ttl <= 0 || ttl > 30*time.Second {
+			t.Errorf("sentinel TTL = %v, want (0, 30s]", ttl)
+		}
+	})
+
+	t.Run("second call hits sentinel, zero Postgres queries, ErrKeyNotFound returned", func(t *testing.T) {
+		// Shorten the sentinel TTL so any DB re-query that resets it to 30 s is detectable.
+		rdb.Expire(ctx, missKey, 5*time.Second)
+
+		_, err := s.Lookup(ctx, unknownKey)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("Lookup(unknown, sentinel) = %v, want ErrKeyNotFound", err)
+		}
+		ttl, _ := rdb.TTL(ctx, missKey).Result()
+		if ttl > 5*time.Second {
+			t.Errorf("sentinel TTL = %v, expected ≤ 5s; DB was re-queried and TTL reset to 30s", ttl)
+		}
+	})
+
+	t.Run("after Del sentinel, next call hits Postgres and recreates sentinel", func(t *testing.T) {
+		if err := rdb.Del(ctx, missKey).Err(); err != nil {
+			t.Fatalf("Del sentinel: %v", err)
+		}
+
+		_, err := s.Lookup(ctx, unknownKey)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("Lookup after Del = %v, want ErrKeyNotFound", err)
+		}
+		ttl, err := rdb.TTL(ctx, missKey).Result()
+		if err != nil {
+			t.Fatalf("TTL after sentinel re-creation: %v", err)
+		}
+		if ttl <= 0 || ttl > 30*time.Second {
+			t.Errorf("re-created sentinel TTL = %v, want (0, 30s]", ttl)
 		}
 	})
 }

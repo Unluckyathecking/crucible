@@ -19,6 +19,10 @@ import (
 // "row exists but hash mismatch" to avoid leaking which prefix is real.
 var ErrKeyNotFound = errors.New("api key not found")
 
+// missTTL is how long an unknown prefix is cached as a negative sentinel to
+// absorb repeated DB probes on random-but-plausible prefixes (Case B DoS path).
+const missTTL = 30 * time.Second
+
 type Customer struct {
 	ID    uuid.UUID
 	Email string
@@ -100,6 +104,12 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	prefix := fullKey[:PrefixLen]
 	wantHash := Hash(s.salt, fullKey)
 
+	// Negative-prefix sentinel: if this prefix was previously queried and found absent
+	// in Postgres, skip both Redis and DB for missTTL to bound repeated-miss DB load.
+	if s.cache.Get(ctx, "auth:miss:"+prefix).Err() == nil {
+		return nil, ErrKeyNotFound
+	}
+
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
@@ -125,6 +135,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	var email, plan string
 	if err := row.Scan(&keyID, &storedHash, &customerID, &email, &plan); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			_ = s.cache.Set(ctx, "auth:miss:"+prefix, "1", missTTL).Err()
 			return nil, ErrKeyNotFound
 		}
 		return nil, fmt.Errorf("lookup api key: %w", err)
