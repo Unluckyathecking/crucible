@@ -89,6 +89,8 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	prefix := fullKey[:PrefixLen]
 	wantHash := Hash(s.salt, fullKey)
 
+	const negativeCacheTTL = 5 * time.Second
+
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
@@ -134,10 +136,12 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		Hash:       storedHash,
 	}
 	if payload, err := json.Marshal(entry); err == nil {
+		if !VerifyHash(wantHash, storedHash) {
+			_ = s.cache.Set(ctx, "auth:"+prefix, payload, negativeCacheTTL).Err()
+			return nil, ErrKeyNotFound
+		}
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
-	}
-
-	if !VerifyHash(wantHash, storedHash) {
+	} else if !VerifyHash(wantHash, storedHash) {
 		return nil, ErrKeyNotFound
 	}
 
