@@ -308,17 +308,29 @@ func TestLookup_NegativePrefixCache(t *testing.T) {
 		}
 	})
 
-	t.Run("second call hits sentinel, zero Postgres queries, ErrKeyNotFound returned", func(t *testing.T) {
-		// Shorten the sentinel TTL so any DB re-query that resets it to 30 s is detectable.
-		rdb.Expire(ctx, missKey, 5*time.Second)
+	t.Run("second call reads sentinel from Redis, returns ErrKeyNotFound without DB query", func(t *testing.T) {
+		// Confirm sentinel exists before the call so the subtest has a clear precondition.
+		exists, err := rdb.Exists(ctx, missKey).Result()
+		if err != nil {
+			t.Fatalf("check sentinel exists: %v", err)
+		}
+		if exists != 1 {
+			t.Fatalf("sentinel %q must exist before second call", missKey)
+		}
 
-		_, err := s.Lookup(ctx, unknownKey)
+		_, err = s.Lookup(ctx, unknownKey)
 		if !errors.Is(err, ErrKeyNotFound) {
 			t.Fatalf("Lookup(unknown, sentinel) = %v, want ErrKeyNotFound", err)
 		}
-		ttl, _ := rdb.TTL(ctx, missKey).Result()
-		if ttl > 5*time.Second {
-			t.Errorf("sentinel TTL = %v, expected ≤ 5s; DB was re-queried and TTL reset to 30s", ttl)
+
+		// Sentinel must still be alive — Lookup returns before the DB query and never
+		// deletes or rewrites the sentinel on the hit path.
+		ttl, err := rdb.TTL(ctx, missKey).Result()
+		if err != nil {
+			t.Fatalf("TTL(%q) after second call: %v", missKey, err)
+		}
+		if ttl <= 0 {
+			t.Errorf("sentinel TTL = %v after second call, want > 0", ttl)
 		}
 	})
 

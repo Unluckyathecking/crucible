@@ -106,7 +106,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 
 	// Negative-prefix sentinel: if this prefix was previously queried and found absent
 	// in Postgres, skip both Redis and DB for missTTL to bound repeated-miss DB load.
-	if s.cache.Get(ctx, "auth:miss:"+prefix).Err() == nil {
+	if v, err := s.cache.Get(ctx, "auth:miss:"+prefix).Result(); err == nil && v == "1" {
 		return nil, ErrKeyNotFound
 	}
 
