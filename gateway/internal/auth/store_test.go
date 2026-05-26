@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -124,6 +125,52 @@ func TestStore_Lookup(t *testing.T) {
 		_, err := s.Lookup(ctx, "short")
 		if err != ErrKeyNotFound {
 			t.Errorf("Lookup(short) = %v, want ErrKeyNotFound", err)
+		}
+	})
+}
+
+func TestStore_NegativeCaching(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+
+	t.Run("caches authentication failure to prevent DB DoS", func(t *testing.T) {
+		_, _, prefix := insertTestKey(t, ctx, db, testSalt)
+
+		// Make sure cache is cold
+		rdb.Del(ctx, "auth:"+prefix)
+
+		invalidKey := prefix + "WRONGHASH123456789"
+
+		// 1. Cold path lookup with invalid hash. Should hit DB, fail hash verify, and cache the failure.
+		_, err := s.Lookup(ctx, invalidKey)
+		if err != ErrKeyNotFound {
+			t.Fatalf("first lookup: expected ErrKeyNotFound, got %v", err)
+		}
+
+		// Verify cache was populated with empty hash
+		cached, err := rdb.Get(ctx, "auth:"+prefix).Bytes()
+		if err != nil {
+			t.Fatalf("expected cache entry to exist after failed lookup: %v", err)
+		}
+
+		// 2. Warm path lookup with same invalid hash. Should hit cache, see failure, and return early.
+		_, err = s.Lookup(ctx, invalidKey)
+		if err != ErrKeyNotFound {
+			t.Fatalf("second lookup: expected ErrKeyNotFound, got %v", err)
+		}
+
+		// Unmarshal the raw cache entry manually to verify it has an empty hash
+		// and won't poison a valid lookup.
+		var c cacheEntry
+		if err := json.Unmarshal(cached, &c); err != nil {
+			t.Fatalf("failed to unmarshal cache entry: %v", err)
+		}
+		if len(c.Hash) != 0 {
+			t.Errorf("expected empty hash in cache, got len %d", len(c.Hash))
 		}
 	})
 }
