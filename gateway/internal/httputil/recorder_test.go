@@ -108,8 +108,8 @@ func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
-    // explicitly reset the status to verify Write actually sets it to 200
-    sr.Status = 0
+	// explicitly reset the status to verify Write actually sets it to 200
+	sr.Status = 0
 
 	_, _ = sr.Write([]byte("implicit 200"))
 	// Critical: verify Status is locked at 200 immediately after Write
