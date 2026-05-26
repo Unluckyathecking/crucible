@@ -104,13 +104,8 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	prefix := fullKey[:PrefixLen]
 	wantHash := Hash(s.salt, fullKey)
 
-	// Negative-prefix sentinel: if this prefix was previously queried and found absent
-	// in Postgres, skip both Redis and DB for missTTL to bound repeated-miss DB load.
-	if v, err := s.cache.Get(ctx, "auth:miss:"+prefix).Result(); err == nil && v == "1" {
-		return nil, ErrKeyNotFound
-	}
-
-	// Redis hot path.
+	// Redis hot path — positive cache checked first so a newly-created valid key is
+	// never shadowed by a stale negative sentinel for the same prefix.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
 		if json.Unmarshal(cached, &c) == nil && VerifyHash(wantHash, c.Hash) {
@@ -119,6 +114,13 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
 			}, nil
 		}
+	}
+
+	// Negative-prefix sentinel: if this prefix was queried and found absent in Postgres,
+	// skip the DB query for missTTL to bound repeated-miss load. Checked after the
+	// positive cache so a legitimately populated entry always wins.
+	if v, err := s.cache.Get(ctx, "auth:miss:"+prefix).Result(); err == nil && v == "1" {
+		return nil, ErrKeyNotFound
 	}
 
 	// Cold path: query Postgres (idx_api_keys_active_prefix makes this O(1) + verify).
