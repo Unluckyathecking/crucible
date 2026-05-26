@@ -92,7 +92,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
-		if json.Unmarshal(cached, &c) == nil && VerifyHash(wantHash, c.Hash) {
+		if json.Unmarshal(cached, &c) == nil {
+			if !VerifyHash(wantHash, c.Hash) {
+				return nil, ErrKeyNotFound
+			}
 			return &Key{
 				ID:       c.KeyID,
 				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
@@ -118,9 +121,6 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		}
 		return nil, fmt.Errorf("lookup api key: %w", err)
 	}
-	if !VerifyHash(wantHash, storedHash) {
-		return nil, ErrKeyNotFound
-	}
 
 	// Populate cache for the next call.
 	entry := cacheEntry{
@@ -132,6 +132,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 	if payload, err := json.Marshal(entry); err == nil {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
+	}
+
+	if !VerifyHash(wantHash, storedHash) {
+		return nil, ErrKeyNotFound
 	}
 
 	// Fire-and-forget last_used update — don't block the request hot path.
