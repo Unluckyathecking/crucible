@@ -39,8 +39,8 @@ type Components struct {
 }
 
 // SecurityScheme describes an authentication method.
-// Use Type="http", Scheme="bearer" for HTTP Bearer token auth (Authorization: Bearer <token>).
-// Use Type="apiKey", In="header", Name=<header> for raw header key auth.
+// Use Type="apiKey", In="header", Name=<header> for API key header auth.
+// Use Type="http", Scheme="bearer" for RFC 6750 Bearer token auth.
 type SecurityScheme struct {
 	Type        string `json:"type"`
 	Scheme      string `json:"scheme,omitempty"`  // for http type
@@ -99,10 +99,7 @@ type Response struct {
 
 const (
 	errorSchemaRef  = "#/components/schemas/Error"
-	// bearerScheme is the key for the HTTP Bearer security scheme in the document.
-	// Named "bearer" (not "apiKey") because the gateway uses Authorization: Bearer <token>,
-	// which OpenAPI 3.1 represents as type=http, scheme=bearer — not type=apiKey.
-	bearerScheme    = "BearerAuth"
+	apiKeyScheme    = "ApiKeyAuth"
 	contentTypeJSON = "application/json"
 )
 
@@ -133,10 +130,11 @@ func Build() Document {
 		},
 		Components: Components{
 			SecuritySchemes: map[string]*SecurityScheme{
-				bearerScheme: {
-					Type:        "http",
-					Scheme:      "bearer",
-					Description: "Bearer token — Authorization: Bearer <api-key>",
+				apiKeyScheme: {
+					Type:        "apiKey",
+					In:          "header",
+					Name:        "Authorization",
+					Description: "API key provided in the Authorization header",
 				},
 			},
 			Schemas: map[string]*Schema{
@@ -223,7 +221,7 @@ func Build() Document {
 					OperationID: "invoke_echo",
 					Summary:     "Invoke echo worker operation (authenticated)",
 					Tags:        []string{"invoke"},
-					Security:    []SecurityRequirement{{bearerScheme: []string{}}},
+					Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
 					RequestBody: &RequestBody{
 						Required: true,
 						Content: map[string]MediaType{
@@ -240,6 +238,7 @@ func Build() Document {
 						"400": errResp("Bad request — invalid JSON body"),
 						"401": errResp("Unauthorized — missing or invalid API key"),
 						"429": errResp("Rate limited"),
+						"500": errResp("Internal server error"),
 						"502": errResp("Worker unavailable"),
 					},
 				},
@@ -250,10 +249,15 @@ func Build() Document {
 
 // --- handler -----------------------------------------------------------------
 
-// documentJSON is the pre-marshaled OpenAPI document, computed once at init.
-// Build() uses only marshal-safe types (strings, maps, slices, struct pointers);
-// json.Marshal cannot fail on this value, so the error is intentionally ignored.
-var documentJSON, _ = json.Marshal(Build())
+var documentJSON []byte
+
+func init() {
+	b, err := json.Marshal(Build())
+	if err != nil {
+		panic("openapi: failed to marshal static document: " + err.Error())
+	}
+	documentJSON = b
+}
 
 // Handler returns an http.HandlerFunc that serves the static OpenAPI document.
 // The response is pre-computed at init time; no DB or Redis access is performed.

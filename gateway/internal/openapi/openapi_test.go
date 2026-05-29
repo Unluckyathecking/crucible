@@ -30,16 +30,15 @@ func TestBuild_RequiredPaths(t *testing.T) {
 
 func TestBuild_SecurityScheme(t *testing.T) {
 	doc := openapi.Build()
-	scheme, ok := doc.Components.SecuritySchemes["BearerAuth"]
+	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
 	if !ok {
-		t.Fatal("components.securitySchemes missing BearerAuth")
+		t.Fatal("components.securitySchemes missing ApiKeyAuth")
 	}
-	// Gateway uses Authorization: Bearer <token>; correct OpenAPI representation is http/bearer.
-	if scheme.Type != "http" {
-		t.Errorf("BearerAuth type = %q; want http", scheme.Type)
+	if scheme.Type != "apiKey" {
+		t.Errorf("ApiKeyAuth type = %q; want apiKey", scheme.Type)
 	}
-	if scheme.Scheme != "bearer" {
-		t.Errorf("BearerAuth scheme = %q; want bearer", scheme.Scheme)
+	if scheme.In != "header" {
+		t.Errorf("ApiKeyAuth in = %q; want header", scheme.In)
 	}
 }
 
@@ -69,7 +68,7 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	}
 
 	// Verify each error code is present and uses the Error $ref (no inline duplication).
-	for _, code := range []string{"400", "401", "429", "502"} {
+	for _, code := range []string{"400", "401", "429", "500", "502"} {
 		resp, ok := echo.Post.Responses[code]
 		if !ok {
 			t.Fatalf("POST /v1/echo missing response %s", code)
@@ -93,8 +92,8 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 	if len(echo.Post.Security) == 0 {
 		t.Fatal("POST /v1/echo has no security requirements")
 	}
-	if _, ok := echo.Post.Security[0]["BearerAuth"]; !ok {
-		t.Error("POST /v1/echo security does not reference BearerAuth")
+	if _, ok := echo.Post.Security[0]["ApiKeyAuth"]; !ok {
+		t.Error("POST /v1/echo security does not reference ApiKeyAuth")
 	}
 }
 
@@ -103,7 +102,7 @@ func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
 	// These routes are mounted outside the auth middleware in routes.go.
 	unauthenticated := []struct {
 		path   string
-		method string // "get" or "post"
+		method string
 	}{
 		{"/healthz", "get"},
 		{"/readyz", "get"},
@@ -139,7 +138,6 @@ func TestHandler_Response(t *testing.T) {
 	openapi.Handler()(w, req)
 
 	res := w.Result()
-	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("status = %d; want 200", res.StatusCode)
