@@ -20,6 +20,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
@@ -72,6 +73,7 @@ func NewRouter(d *Deps) http.Handler {
 	// Public routes (no auth, no rate limit).
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Redis, d.PG))
+	r.Get("/openapi.json", openapi.Handler())
 	r.Post("/webhooks/stripe", d.Webhook.Handle)
 
 	// === Per-product routes (auth + rate-limit gated) ===

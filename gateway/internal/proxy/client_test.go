@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +142,40 @@ func TestInvoke_FallbackTimeout(t *testing.T) {
 	cNegative := New("http://fake", -5*time.Second)
 	if cNegative.http.Timeout != defaultTimeout {
 		t.Errorf("negative timeout = %v, want %v fallback", cNegative.http.Timeout, defaultTimeout)
+	}
+}
+
+func TestInvoke_ContextDeadlineHonored(t *testing.T) {
+	// Handler blocks until request context cancels or a long fallback elapses.
+	// The client HTTP timeout (5s) and handler sleep (2s) both outlast the 100ms caller context.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	t.Cleanup(worker.Close)
+
+	c := New(worker.URL, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "slow"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from context deadline, got nil")
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("Invoke took %v; should have returned promptly on context deadline", elapsed)
+	}
+	var urlErr *url.Error
+	if !errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, context.Canceled) &&
+		!(errors.As(err, &urlErr) && urlErr.Timeout()) {
+		t.Errorf("expected context deadline/cancellation error, got: %v", err)
 	}
 }
 
