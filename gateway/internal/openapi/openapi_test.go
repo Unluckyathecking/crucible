@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -31,11 +33,12 @@ func TestBuild_SecurityScheme(t *testing.T) {
 	if !ok {
 		t.Fatal("components.securitySchemes missing ApiKeyAuth")
 	}
-	if scheme.Type != "apiKey" {
-		t.Errorf("ApiKeyAuth type = %q; want apiKey", scheme.Type)
+	// Gateway uses Authorization: Bearer <token>; correct OpenAPI representation is http/bearer.
+	if scheme.Type != "http" {
+		t.Errorf("ApiKeyAuth type = %q; want http", scheme.Type)
 	}
-	if scheme.In != "header" {
-		t.Errorf("ApiKeyAuth in = %q; want header", scheme.In)
+	if scheme.Scheme != "bearer" {
+		t.Errorf("ApiKeyAuth scheme = %q; want bearer", scheme.Scheme)
 	}
 }
 
@@ -53,15 +56,18 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
 	}
-	for code, resp := range echo.Post.Responses {
-		if code == "200" {
-			continue
+	// Explicitly verify each expected error status code is present and uses $ref.
+	for _, code := range []string{"400", "401", "429", "502"} {
+		resp, ok := echo.Post.Responses[code]
+		if !ok {
+			t.Fatalf("POST /v1/echo missing response %s", code)
 		}
-		for mime, media := range resp.Content {
-			if media.Schema == nil || media.Schema.Ref != wantRef {
-				t.Errorf("POST /v1/echo response %s %s: want schema.$ref=%q, got %v",
-					code, mime, wantRef, media.Schema)
-			}
+		media, ok := resp.Content["application/json"]
+		if !ok {
+			t.Fatalf("response %s missing application/json content", code)
+		}
+		if media.Schema == nil || media.Schema.Ref != wantRef {
+			t.Errorf("response %s: want schema.$ref=%q, got %v", code, wantRef, media.Schema)
 		}
 	}
 }
@@ -90,7 +96,8 @@ func TestHandler_Response(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("status = %d; want 200", res.StatusCode)
 	}
-	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
+	ct := res.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type = %q; want application/json", ct)
 	}
 
@@ -99,8 +106,15 @@ func TestHandler_Response(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
+	rawOpenAPI, ok := raw["openapi"]
+	if !ok {
+		t.Fatal("missing openapi field in document")
+	}
 	var version string
-	if err := json.Unmarshal(raw["openapi"], &version); err != nil || version != "3.1.0" {
+	if err := json.Unmarshal(rawOpenAPI, &version); err != nil {
+		t.Fatalf("unmarshal openapi: %v", err)
+	}
+	if version != "3.1.0" {
 		t.Errorf("openapi = %q; want 3.1.0", version)
 	}
 
@@ -116,4 +130,22 @@ func TestHandler_Response(t *testing.T) {
 			t.Errorf("paths missing %q", want)
 		}
 	}
+}
+
+func TestHandler_ConcurrentAccess(t *testing.T) {
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+			w := httptest.NewRecorder()
+			openapi.Handler()(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("concurrent call: status = %d; want 200", w.Code)
+			}
+		}()
+	}
+	wg.Wait()
 }

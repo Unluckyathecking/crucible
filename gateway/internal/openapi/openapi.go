@@ -14,6 +14,7 @@ import (
 type Document struct {
 	OpenAPI    string              `json:"openapi"`
 	Info       Info                `json:"info"`
+	Servers    []Server            `json:"servers,omitempty"`
 	Paths      map[string]PathItem `json:"paths"`
 	Components Components          `json:"components"`
 }
@@ -25,6 +26,12 @@ type Info struct {
 	Description string `json:"description,omitempty"`
 }
 
+// Server represents an API server entry.
+type Server struct {
+	URL         string `json:"url"`
+	Description string `json:"description,omitempty"`
+}
+
 // Components holds reusable schema and security objects.
 type Components struct {
 	Schemas         map[string]*Schema         `json:"schemas,omitempty"`
@@ -32,10 +39,13 @@ type Components struct {
 }
 
 // SecurityScheme describes an authentication method.
+// Use Type="http", Scheme="bearer" for Bearer token auth.
+// Use Type="apiKey", In="header", Name=<header> for raw header keys.
 type SecurityScheme struct {
 	Type        string `json:"type"`
-	In          string `json:"in,omitempty"`
-	Name        string `json:"name,omitempty"`
+	Scheme      string `json:"scheme,omitempty"`      // for http type
+	In          string `json:"in,omitempty"`           // for apiKey type
+	Name        string `json:"name,omitempty"`         // for apiKey type
 	Description string `json:"description,omitempty"`
 }
 
@@ -57,12 +67,12 @@ type PathItem struct {
 
 // Operation describes a single HTTP operation.
 type Operation struct {
-	OperationID string               `json:"operationId,omitempty"`
-	Summary     string               `json:"summary,omitempty"`
-	Tags        []string             `json:"tags,omitempty"`
+	OperationID string                `json:"operationId,omitempty"`
+	Summary     string                `json:"summary,omitempty"`
+	Tags        []string              `json:"tags,omitempty"`
 	Security    []SecurityRequirement `json:"security,omitempty"`
-	RequestBody *RequestBody         `json:"requestBody,omitempty"`
-	Responses   map[string]Response  `json:"responses"`
+	RequestBody *RequestBody          `json:"requestBody,omitempty"`
+	Responses   map[string]Response   `json:"responses"`
 }
 
 // SecurityRequirement maps a scheme name to its required scopes (empty slice = no scopes).
@@ -88,23 +98,27 @@ type Response struct {
 // --- constants ---------------------------------------------------------------
 
 const (
-	errorSchemaRef = "#/components/schemas/Error"
-	apiKeyScheme   = "ApiKeyAuth"
+	errorSchemaRef  = "#/components/schemas/Error"
+	apiKeyScheme    = "ApiKeyAuth"
+	contentTypeJSON = "application/json"
 )
 
 // --- builder -----------------------------------------------------------------
 
+// errResp returns a Response whose content schema is a fresh $ref to Error.
+// A fresh pointer per call ensures responses are independent (no shared mutations).
+func errResp(desc string) Response {
+	return Response{
+		Description: desc,
+		Content: map[string]MediaType{
+			contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
+		},
+	}
+}
+
 // Build constructs and returns the gateway's OpenAPI 3.1 document.
 // It is a pure function with no I/O; safe to call multiple times.
 func Build() Document {
-	errSchema := &Schema{Ref: errorSchemaRef}
-	errResp := func(desc string) Response {
-		return Response{
-			Description: desc,
-			Content:     map[string]MediaType{"application/json": {Schema: errSchema}},
-		}
-	}
-
 	return Document{
 		OpenAPI: "3.1.0",
 		Info: Info{
@@ -112,13 +126,17 @@ func Build() Document {
 			Version:     "1.0.0",
 			Description: "Clone-and-adapt framework for high-volume metered API products.",
 		},
+		Servers: []Server{
+			{URL: "https://api.example.com", Description: "Replace with your deployment URL"},
+		},
 		Components: Components{
 			SecuritySchemes: map[string]*SecurityScheme{
+				// The gateway reads Authorization: Bearer <token>; http/bearer is the
+				// correct OpenAPI representation (apiKey does not express the Bearer prefix).
 				apiKeyScheme: {
-					Type:        "apiKey",
-					In:          "header",
-					Name:        "Authorization",
-					Description: "Bearer token — value format: Bearer <api-key>",
+					Type:        "http",
+					Scheme:      "bearer",
+					Description: "Bearer token — Authorization: Bearer <api-key>",
 				},
 			},
 			Schemas: map[string]*Schema{
@@ -128,11 +146,13 @@ func Build() Document {
 						"error": {
 							Type: "object",
 							Properties: map[string]*Schema{
-								"code":      {Type: "string"},
-								"message":   {Type: "string"},
+								"code":    {Type: "string"},
+								"message": {Type: "string"},
+								// retryable is optional: auth-layer errors (401, 500) omit it;
+								// only invoke-path errors (writeJSONError) always include it.
 								"retryable": {Type: "boolean"},
 							},
-							Required: []string{"code", "message"}, // retryable absent in auth-layer errors (see auth/middleware.go)
+							Required: []string{"code", "message"},
 						},
 					},
 					Required: []string{"error"},
@@ -149,7 +169,7 @@ func Build() Document {
 						"200": {
 							Description: "Service is alive",
 							Content: map[string]MediaType{
-								"application/json": {
+								contentTypeJSON: {
 									Schema: &Schema{
 										Type: "object",
 										Properties: map[string]*Schema{
@@ -171,7 +191,7 @@ func Build() Document {
 						"200": {
 							Description: "Dependency health report",
 							Content: map[string]MediaType{
-								"application/json": {
+								contentTypeJSON: {
 									Schema: &Schema{
 										Type: "object",
 										Properties: map[string]*Schema{
@@ -207,14 +227,14 @@ func Build() Document {
 					RequestBody: &RequestBody{
 						Required: true,
 						Content: map[string]MediaType{
-							"application/json": {Schema: &Schema{Type: "object"}},
+							contentTypeJSON: {Schema: &Schema{Type: "object"}},
 						},
 					},
 					Responses: map[string]Response{
 						"200": {
 							Description: "Successful invocation",
 							Content: map[string]MediaType{
-								"application/json": {Schema: &Schema{Type: "object"}},
+								contentTypeJSON: {Schema: &Schema{Type: "object"}},
 							},
 						},
 						"400": errResp("Bad request — invalid JSON body"),
@@ -242,7 +262,7 @@ var documentJSON = func() []byte {
 // The response is pre-computed at init time; no DB or Redis access is performed.
 func Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", contentTypeJSON)
 		_, _ = w.Write(documentJSON)
 	}
 }
