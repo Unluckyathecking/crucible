@@ -5,6 +5,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 )
@@ -285,6 +286,8 @@ func Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		buildOnce.Do(buildDocument)
 		w.Header().Set("Content-Type", contentTypeJSON)
-		_, _ = w.Write(documentJSON)
+		if _, err := w.Write(documentJSON); err != nil {
+			log.Printf("openapi: write: %v", err)
+		}
 	}
 }
