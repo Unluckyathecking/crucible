@@ -132,7 +132,7 @@ func Build() Document {
 								"message":   {Type: "string"},
 								"retryable": {Type: "boolean"},
 							},
-							Required: []string{"code", "message", "retryable"},
+							Required: []string{"code", "message"}, // retryable absent in auth-layer errors (see auth/middleware.go)
 						},
 					},
 					Required: []string{"error"},
