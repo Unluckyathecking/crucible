@@ -21,7 +21,7 @@ func TestBuild_Version(t *testing.T) {
 
 func TestBuild_RequiredPaths(t *testing.T) {
 	doc := openapi.Build()
-	for _, path := range []string{"/healthz", "/readyz", "/v1/echo"} {
+	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
 		}
@@ -39,6 +39,12 @@ func TestBuild_SecurityScheme(t *testing.T) {
 	}
 	if scheme.In != "header" {
 		t.Errorf("ApiKeyAuth in = %q; want header", scheme.In)
+	}
+	if scheme.Name != "X-API-Key" {
+		t.Errorf("ApiKeyAuth name = %q; want X-API-Key", scheme.Name)
+	}
+	if scheme.Description == "" {
+		t.Error("ApiKeyAuth description is empty")
 	}
 }
 
@@ -99,13 +105,13 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 
 func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
 	doc := openapi.Build()
-	// These routes are mounted outside the auth middleware in routes.go.
 	unauthenticated := []struct {
 		path   string
 		method string
 	}{
 		{"/healthz", "get"},
 		{"/readyz", "get"},
+		{"/metrics", "get"},
 		{"/webhooks/stripe", "post"},
 	}
 	for _, tc := range unauthenticated {

@@ -1,11 +1,12 @@
 // Package openapi builds and serves the gateway's OpenAPI 3.1 document.
-// Zero third-party dependencies: uses only encoding/json and net/http.
+// Zero third-party dependencies: uses only encoding/json, net/http, and sync.
 // The document is derived from the static route table; no DB or Redis needed.
 package openapi
 
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 )
 
 // --- structural types --------------------------------------------------------
@@ -133,8 +134,8 @@ func Build() Document {
 				apiKeyScheme: {
 					Type:        "apiKey",
 					In:          "header",
-					Name:        "Authorization",
-					Description: "API key provided in the Authorization header",
+					Name:        "X-API-Key",
+					Description: "API key for authenticating requests to protected endpoints",
 				},
 			},
 			Schemas: map[string]*Schema{
@@ -146,8 +147,9 @@ func Build() Document {
 							Properties: map[string]*Schema{
 								"code":    {Type: "string"},
 								"message": {Type: "string"},
-								// retryable is optional: auth-layer 401/500 responses omit it;
-								// only invoke-path errors via writeJSONError always include it.
+								// retryable is always present in gateway-generated errors
+								// (writeJSONError always includes it), but may be omitted
+								// by upstream/auth layers, so it is not required in the schema.
 								"retryable": {Type: "boolean"},
 							},
 							Required: []string{"code", "message"},
@@ -206,6 +208,21 @@ func Build() Document {
 					},
 				},
 			},
+			"/metrics": {
+				Get: &Operation{
+					OperationID: "metrics",
+					Summary:     "Prometheus metrics",
+					Tags:        []string{"system"},
+					Responses: map[string]Response{
+						"200": {
+							Description: "Prometheus exposition format",
+							Content: map[string]MediaType{
+								"text/plain": {Schema: &Schema{Type: "string"}},
+							},
+						},
+					},
+				},
+			},
 			"/webhooks/stripe": {
 				Post: &Operation{
 					OperationID: "stripe_webhook",
@@ -249,9 +266,12 @@ func Build() Document {
 
 // --- handler -----------------------------------------------------------------
 
-var documentJSON []byte
+var (
+	documentJSON []byte
+	buildOnce    sync.Once
+)
 
-func init() {
+func buildDocument() {
 	b, err := json.Marshal(Build())
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
@@ -260,9 +280,10 @@ func init() {
 }
 
 // Handler returns an http.HandlerFunc that serves the static OpenAPI document.
-// The response is pre-computed at init time; no DB or Redis access is performed.
+// The document is built lazily on first request via sync.Once; no DB or Redis access.
 func Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		buildOnce.Do(buildDocument)
 		w.Header().Set("Content-Type", contentTypeJSON)
 		_, _ = w.Write(documentJSON)
 	}
