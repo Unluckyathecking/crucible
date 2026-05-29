@@ -30,11 +30,11 @@ func TestMain(m *testing.M) {
 }
 
 // invokeResp mirrors the two possible /invoke response shapes.
+// Only frozen contract fields are present — extra fields from any SDK are tolerated on decode.
 // Pointer fields are nil when the key is absent, distinguishing absence from zero value.
 type invokeResp struct {
 	Payload       json.RawMessage `json:"payload"`
 	BillableUnits *uint64         `json:"billable_units"`
-	UnitsLabel    string          `json:"units_label,omitempty"`
 	Error         *invokeError    `json:"error"`
 }
 
@@ -44,7 +44,8 @@ type invokeError struct {
 	Retryable *bool  `json:"retryable"`
 }
 
-// TestHealthz asserts GET /healthz returns 200 with body exactly {"status":"ok"}.
+// TestHealthz asserts GET /healthz returns 200 with Content-Type application/json
+// and body exactly {"status":"ok"}.
 func TestHealthz(t *testing.T) {
 	resp, err := http.Get(workerURL + "/healthz")
 	if err != nil {
@@ -54,6 +55,9 @@ func TestHealthz(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected Content-Type application/json, got %q", ct)
 	}
 
 	var buf bytes.Buffer
@@ -85,12 +89,15 @@ func TestInvokeSuccess(t *testing.T) {
 	}
 }
 
-// TestInvokeBillableUnitsNormalization asserts that a request without an explicit
-// units hint still yields billable_units >= 1 on success.
+// TestInvokeBillableUnitsNormalization asserts that a zero/unset units hint still
+// produces billable_units >= 1, exercising the normalization contract.
 func TestInvokeBillableUnitsNormalization(t *testing.T) {
+	// metadata.units = "0" is treated as unset by the Go stub (n >= 1 guard),
+	// so the default normalisation path applies and the response must have >= 1.
 	r := doInvoke(t, map[string]any{
 		"operation": "echo",
-		"payload":   nil,
+		"payload":   map[string]string{"hello": "world"},
+		"metadata":  map[string]string{"units": "0"},
 	})
 
 	if r.Error != nil {
@@ -103,6 +110,7 @@ func TestInvokeBillableUnitsNormalization(t *testing.T) {
 
 // TestInvokeErrorEnvelope asserts that an error condition returns HTTP 200 with
 // {"error":{"code":..., "message":..., "retryable":...}} and no payload or billable_units.
+// Additional fields beyond the frozen contract are permitted (portability).
 func TestInvokeErrorEnvelope(t *testing.T) {
 	// Malformed JSON triggers the SDK's BAD_REQUEST structured error, exercising the
 	// full error-envelope path without requiring a stub modification.
@@ -115,6 +123,9 @@ func TestInvokeErrorEnvelope(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("error envelope must be HTTP 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected Content-Type application/json on error envelope, got %q", ct)
 	}
 
 	var r invokeResp
@@ -145,7 +156,8 @@ func TestInvokeErrorEnvelope(t *testing.T) {
 	}
 }
 
-// doInvoke is a shared helper: POST /invoke, assert HTTP 200, decode and return the response.
+// doInvoke is a shared helper: POST /invoke, assert HTTP 200 + application/json,
+// decode and return the response.
 func doInvoke(t *testing.T, body any) invokeResp {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -159,6 +171,9 @@ func doInvoke(t *testing.T, body any) invokeResp {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected HTTP 200 from /invoke, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected Content-Type application/json from /invoke, got %q", ct)
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {

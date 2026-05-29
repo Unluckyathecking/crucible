@@ -27,6 +27,7 @@ jobs:
           cache-dependency-path: |
             workers/sdk-go/go.sum
             workers/stubs/go/go.sum
+            test/conformance/go.sum
 
       - name: Run conformance harness
         run: bash scripts/conformance-run.sh ${{ matrix.stub.id }}

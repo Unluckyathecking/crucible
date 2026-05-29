@@ -27,12 +27,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Grab a free port from the OS — avoids hard-coded port collisions in parallel CI.
+# Grab a free port from the OS.
+# Note: there is a TOCTOU window between selecting the port and the worker binding it.
+# The early-exit check in the readiness loop (kill -0) catches the failure fast if it occurs.
 PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); p=s.getsockname()[1]; s.close(); print(p)")
 
 case "$STUB" in
   go)
-    STUB_BIN="$(mktemp /tmp/conformance-worker-XXXX)"
+    STUB_BIN="$(mktemp -t conformance-worker.XXXXXX)"
     echo "==> Building Go stub..."
     (cd "$REPO_ROOT/workers/stubs/go" && go build -o "$STUB_BIN" .)
     echo "==> Starting Go stub on port $PORT..."
@@ -49,17 +51,24 @@ esac
 WORKER_URL="http://127.0.0.1:$PORT"
 export WORKER_URL
 
-# Wait for /healthz with a 30-second bounded timeout.
+# Wait for /healthz with a 30-second bounded timeout (300 × 0.1 s).
+# Exits immediately if the stub process dies before becoming ready.
 echo "==> Waiting for worker at $WORKER_URL/healthz ..."
-DEADLINE=$(( $(date +%s) + 30 ))
-until curl -sf "$WORKER_URL/healthz" >/dev/null 2>&1; do
-    if [[ $(date +%s) -ge $DEADLINE ]]; then
-        echo "ERROR: worker did not become ready within 30s" >&2
+for ((i=0; i<300; i++)); do
+    if curl -sf "$WORKER_URL/healthz" >/dev/null 2>&1; then
+        echo "==> Worker ready."
+        break
+    fi
+    if ! kill -0 "$STUB_PID" 2>/dev/null; then
+        echo "ERROR: worker process exited before becoming ready" >&2
         exit 1
     fi
-    sleep 1
+    sleep 0.1
 done
-echo "==> Worker ready."
+if ! curl -sf "$WORKER_URL/healthz" >/dev/null 2>&1; then
+    echo "ERROR: worker did not become ready within 30s" >&2
+    exit 1
+fi
 
 # Run the language-agnostic conformance suite.
 echo "==> Running conformance suite against $WORKER_URL ..."
