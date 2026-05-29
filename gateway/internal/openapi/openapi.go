@@ -39,13 +39,13 @@ type Components struct {
 }
 
 // SecurityScheme describes an authentication method.
-// Use Type="http", Scheme="bearer" for Bearer token auth.
-// Use Type="apiKey", In="header", Name=<header> for raw header keys.
+// Use Type="http", Scheme="bearer" for HTTP Bearer token auth (Authorization: Bearer <token>).
+// Use Type="apiKey", In="header", Name=<header> for raw header key auth.
 type SecurityScheme struct {
 	Type        string `json:"type"`
-	Scheme      string `json:"scheme,omitempty"`      // for http type
-	In          string `json:"in,omitempty"`           // for apiKey type
-	Name        string `json:"name,omitempty"`         // for apiKey type
+	Scheme      string `json:"scheme,omitempty"`  // for http type
+	In          string `json:"in,omitempty"`       // for apiKey type
+	Name        string `json:"name,omitempty"`     // for apiKey type
 	Description string `json:"description,omitempty"`
 }
 
@@ -99,14 +99,16 @@ type Response struct {
 
 const (
 	errorSchemaRef  = "#/components/schemas/Error"
-	apiKeyScheme    = "ApiKeyAuth"
+	// bearerScheme is the key for the HTTP Bearer security scheme in the document.
+	// Named "bearer" (not "apiKey") because the gateway uses Authorization: Bearer <token>,
+	// which OpenAPI 3.1 represents as type=http, scheme=bearer — not type=apiKey.
+	bearerScheme    = "BearerAuth"
 	contentTypeJSON = "application/json"
 )
 
 // --- builder -----------------------------------------------------------------
 
-// errResp returns a Response whose content schema is a fresh $ref to Error.
-// A fresh pointer per call ensures responses are independent (no shared mutations).
+// errResp returns a Response whose content schema is a $ref to the Error component.
 func errResp(desc string) Response {
 	return Response{
 		Description: desc,
@@ -131,9 +133,7 @@ func Build() Document {
 		},
 		Components: Components{
 			SecuritySchemes: map[string]*SecurityScheme{
-				// The gateway reads Authorization: Bearer <token>; http/bearer is the
-				// correct OpenAPI representation (apiKey does not express the Bearer prefix).
-				apiKeyScheme: {
+				bearerScheme: {
 					Type:        "http",
 					Scheme:      "bearer",
 					Description: "Bearer token — Authorization: Bearer <api-key>",
@@ -148,8 +148,8 @@ func Build() Document {
 							Properties: map[string]*Schema{
 								"code":    {Type: "string"},
 								"message": {Type: "string"},
-								// retryable is optional: auth-layer errors (401, 500) omit it;
-								// only invoke-path errors (writeJSONError) always include it.
+								// retryable is optional: auth-layer 401/500 responses omit it;
+								// only invoke-path errors via writeJSONError always include it.
 								"retryable": {Type: "boolean"},
 							},
 							Required: []string{"code", "message"},
@@ -211,7 +211,7 @@ func Build() Document {
 			"/webhooks/stripe": {
 				Post: &Operation{
 					OperationID: "stripe_webhook",
-					Summary:     "Stripe billing webhook receiver",
+					Summary:     "Stripe billing webhook receiver (unauthenticated)",
 					Tags:        []string{"billing"},
 					Responses: map[string]Response{
 						"200": {Description: "Webhook processed"},
@@ -223,7 +223,7 @@ func Build() Document {
 					OperationID: "invoke_echo",
 					Summary:     "Invoke echo worker operation (authenticated)",
 					Tags:        []string{"invoke"},
-					Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+					Security:    []SecurityRequirement{{bearerScheme: []string{}}},
 					RequestBody: &RequestBody{
 						Required: true,
 						Content: map[string]MediaType{
@@ -250,18 +250,15 @@ func Build() Document {
 
 // --- handler -----------------------------------------------------------------
 
-var documentJSON = func() []byte {
-	b, err := json.Marshal(Build())
-	if err != nil {
-		panic("openapi: failed to marshal document: " + err.Error())
-	}
-	return b
-}()
+// documentJSON is the pre-marshaled OpenAPI document, computed once at init.
+// Build() uses only marshal-safe types (strings, maps, slices, struct pointers);
+// json.Marshal cannot fail on this value, so the error is intentionally ignored.
+var documentJSON, _ = json.Marshal(Build())
 
 // Handler returns an http.HandlerFunc that serves the static OpenAPI document.
 // The response is pre-computed at init time; no DB or Redis access is performed.
 func Handler() http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentTypeJSON)
 		_, _ = w.Write(documentJSON)
 	}

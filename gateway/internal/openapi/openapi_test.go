@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -20,7 +21,7 @@ func TestBuild_Version(t *testing.T) {
 
 func TestBuild_RequiredPaths(t *testing.T) {
 	doc := openapi.Build()
-	for _, path := range []string{"/healthz", "/v1/echo"} {
+	for _, path := range []string{"/healthz", "/readyz", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
 		}
@@ -29,16 +30,16 @@ func TestBuild_RequiredPaths(t *testing.T) {
 
 func TestBuild_SecurityScheme(t *testing.T) {
 	doc := openapi.Build()
-	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
+	scheme, ok := doc.Components.SecuritySchemes["BearerAuth"]
 	if !ok {
-		t.Fatal("components.securitySchemes missing ApiKeyAuth")
+		t.Fatal("components.securitySchemes missing BearerAuth")
 	}
 	// Gateway uses Authorization: Bearer <token>; correct OpenAPI representation is http/bearer.
 	if scheme.Type != "http" {
-		t.Errorf("ApiKeyAuth type = %q; want http", scheme.Type)
+		t.Errorf("BearerAuth type = %q; want http", scheme.Type)
 	}
 	if scheme.Scheme != "bearer" {
-		t.Errorf("ApiKeyAuth scheme = %q; want bearer", scheme.Scheme)
+		t.Errorf("BearerAuth scheme = %q; want bearer", scheme.Scheme)
 	}
 }
 
@@ -56,7 +57,18 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
 	}
-	// Explicitly verify each expected error status code is present and uses $ref.
+	// Verify 200 has an object schema (not an error ref).
+	if resp200, ok := echo.Post.Responses["200"]; !ok {
+		t.Fatal("missing 200 response")
+	} else if media, ok := resp200.Content["application/json"]; !ok || media.Schema == nil {
+		t.Fatal("200 response missing application/json schema")
+	} else if media.Schema.Ref != "" {
+		t.Errorf("200 response should not be a $ref, got %q", media.Schema.Ref)
+	} else if media.Schema.Type != "object" {
+		t.Errorf("200 response type = %q; want object", media.Schema.Type)
+	}
+
+	// Verify each error code is present and uses the Error $ref (no inline duplication).
 	for _, code := range []string{"400", "401", "429", "502"} {
 		resp, ok := echo.Post.Responses[code]
 		if !ok {
@@ -81,8 +93,42 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 	if len(echo.Post.Security) == 0 {
 		t.Fatal("POST /v1/echo has no security requirements")
 	}
-	if _, ok := echo.Post.Security[0]["ApiKeyAuth"]; !ok {
-		t.Error("POST /v1/echo security does not reference ApiKeyAuth")
+	if _, ok := echo.Post.Security[0]["BearerAuth"]; !ok {
+		t.Error("POST /v1/echo security does not reference BearerAuth")
+	}
+}
+
+func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
+	doc := openapi.Build()
+	// These routes are mounted outside the auth middleware in routes.go.
+	unauthenticated := []struct {
+		path   string
+		method string // "get" or "post"
+	}{
+		{"/healthz", "get"},
+		{"/readyz", "get"},
+		{"/webhooks/stripe", "post"},
+	}
+	for _, tc := range unauthenticated {
+		item, ok := doc.Paths[tc.path]
+		if !ok {
+			t.Errorf("missing path %q", tc.path)
+			continue
+		}
+		var op *openapi.Operation
+		switch tc.method {
+		case "get":
+			op = item.Get
+		case "post":
+			op = item.Post
+		}
+		if op == nil {
+			t.Errorf("missing %s %s operation", tc.method, tc.path)
+			continue
+		}
+		if len(op.Security) != 0 {
+			t.Errorf("%s %s should have no security requirements, got %v", tc.method, tc.path, op.Security)
+		}
 	}
 }
 
@@ -93,6 +139,8 @@ func TestHandler_Response(t *testing.T) {
 	openapi.Handler()(w, req)
 
 	res := w.Result()
+	defer res.Body.Close()
+
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("status = %d; want 200", res.StatusCode)
 	}
@@ -134,7 +182,10 @@ func TestHandler_Response(t *testing.T) {
 
 func TestHandler_ConcurrentAccess(t *testing.T) {
 	const goroutines = 50
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		failures atomic.Int32
+	)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
@@ -143,9 +194,12 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 			w := httptest.NewRecorder()
 			openapi.Handler()(w, req)
 			if w.Code != http.StatusOK {
-				t.Errorf("concurrent call: status = %d; want 200", w.Code)
+				failures.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	if n := failures.Load(); n > 0 {
+		t.Errorf("%d concurrent calls returned non-200", n)
+	}
 }
