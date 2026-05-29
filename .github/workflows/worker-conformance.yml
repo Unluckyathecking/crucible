@@ -1,0 +1,32 @@
+name: worker-conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    strategy:
+      # Run all stubs even if one fails so every SDK gets a report.
+      fail-fast: false
+      matrix:
+        stub:
+          # ── Add new language stubs here; assertions never change. ──
+          - id: go
+
+    name: conformance (${{ matrix.stub.id }} stub)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: |
+            workers/sdk-go/go.sum
+            workers/stubs/go/go.sum
+
+      - name: Run conformance harness
+        run: bash scripts/conformance-run.sh ${{ matrix.stub.id }}
