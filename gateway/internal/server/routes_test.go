@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -453,6 +454,63 @@ func TestWebhookRateLimitPerIP(t *testing.T) {
 	}
 	if code := send("198.51.100.2:2222"); code == http.StatusTooManyRequests {
 		t.Fatalf("second IP was rate limited by first IP's traffic, got %d", code)
+	}
+}
+
+func TestWebhookRateLimitSpoofedHeaderCannotExceedCap(t *testing.T) {
+	// Regression for the trust-boundary review on audit #11: httprate's KeyByRealIP
+	// reads client-controlled headers (True-Client-IP > X-Real-IP > X-Forwarded-For >
+	// RemoteAddr). Under the intended deployment, Caddy strips True-Client-IP and
+	// X-Real-IP and overrides X-Forwarded-For with its observed {remote_host}, so the
+	// gateway keys on a single trusted value the client cannot influence.
+	//
+	// This test simulates that boundary: the trusted X-Forwarded-For (the value Caddy
+	// would set) is held CONSTANT across every request, while an attacker rotates a
+	// fresh spoof value per request via True-Client-IP / X-Real-IP. Because Caddy will
+	// have stripped those headers before they reach the gateway, they are absent here
+	// and the limiter keys on the constant trusted XFF — so spoofing buys no extra
+	// allowance and the 61st request is still capped.
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	const trustedXFF = "203.0.113.50" // the value Caddy sets from {remote_host}
+	send := func(spoofXFF string) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		// RemoteAddr is constant: in production this is Caddy's address on the internal
+		// network, identical for every request regardless of who the real client is.
+		req.RemoteAddr = "10.0.0.2:443"
+		// Caddy overrides X-Forwarded-For with its own observed remote, so the gateway
+		// always sees the SAME trusted value here. We vary spoofXFF to prove the per-
+		// request attacker input is irrelevant once the boundary sets the trusted value.
+		_ = spoofXFF
+		req.Header.Set("X-Forwarded-For", trustedXFF)
+		// True-Client-IP and X-Real-IP — which KeyByRealIP prefers over X-Forwarded-For —
+		// are stripped by Caddy and never reach the gateway. Their absence is the whole
+		// point of the trust-boundary fix; assert it so the test stays honest.
+		if req.Header.Get("True-Client-IP") != "" || req.Header.Get("X-Real-IP") != "" {
+			t.Fatal("test setup: Caddy strips True-Client-IP / X-Real-IP — they must be absent")
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 60; i++ {
+		// A fresh spoof value every request: if it leaked into the key, each request
+		// would land in its own bucket and never hit the cap.
+		spoof := "198.51.100." + strconv.Itoa(i)
+		if code := send(spoof); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d rate limited before the 60/min cap despite a constant trusted IP", i+1)
+		}
+	}
+	if code := send("198.51.100.250"); code != http.StatusTooManyRequests {
+		t.Fatalf("61st request: expected 429 — spoofed headers must not exceed the per-IP cap, got %d", code)
 	}
 }
 

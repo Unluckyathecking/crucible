@@ -7,5 +7,35 @@
 
 {$DOMAIN:localhost} {
 	tls {$TLS_POLICY:internal}
-	reverse_proxy gateway:8080
+
+	reverse_proxy gateway:8080 {
+		# Trust boundary for the gateway's per-IP webhook rate limiter.
+		#
+		# The gateway keys /webhooks/stripe rate limiting on httprate's KeyByRealIP,
+		# which reads, in order: True-Client-IP, X-Real-IP, X-Forwarded-For, then
+		# RemoteAddr. Caddy is the only thing the public internet talks to, so it must
+		# be the sole source of truth for the client IP — otherwise an attacker rotates
+		# these headers to mint a fresh limiter bucket per request and defeats the cap.
+		#
+		# Strip every client-supplied forwarding header and set X-Forwarded-For to
+		# Caddy's *observed* remote address. The gateway then keys on a value the client
+		# cannot control. Caddy connects to the gateway over the internal Docker network,
+		# so the gateway sees Caddy's IP as RemoteAddr and X-Forwarded-For as the real
+		# client — both trusted.
+		header_up -True-Client-IP
+		header_up -X-Real-IP
+		header_up X-Forwarded-For {remote_host}
+	}
 }
+
+# Deployment note — trusted_proxies:
+#
+# This config assumes Caddy is the FIRST hop from the public internet (the bare
+# {remote_host} it observes IS the real client). If you place another proxy, CDN,
+# or L7 load balancer IN FRONT of Caddy, then {remote_host} becomes that upstream's
+# IP and the override above collapses every client into one rate-limit bucket.
+#
+# In that topology, give Caddy a `servers.trusted_proxies` policy listing the
+# upstream CIDRs (e.g. via the global options block) so Caddy parses the client IP
+# from the upstream's X-Forwarded-For BEFORE re-emitting it, and only trust XFF from
+# those proxies. See https://caddyserver.com/docs/caddyfile/options#trusted-proxies
