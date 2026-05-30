@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +18,15 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
-const defaultTimeout = 30 * time.Second
+const (
+	defaultTimeout = 30 * time.Second
+	// defaultMaxConns caps total connections per worker host so a slow worker
+	// can't pin gateway sockets/goroutines without bound. Used when maxConns <= 0.
+	defaultMaxConns = 64
+	// responseHeaderTimeout bounds the wait for a worker's response headers after
+	// the request is written, independent of the per-request context deadline.
+	responseHeaderTimeout = 5 * time.Second
+)
 
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
 type InvokeRequest struct {
@@ -51,19 +60,29 @@ type Client struct {
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
 // to a 30s timeout to prevent infinite hangs from unresponsive workers.
-func New(workerURL string, timeout time.Duration) *Client {
+// maxConns caps total connections per worker host; if 0 or negative it
+// defaults to 64 so a slow worker can't exhaust gateway sockets/goroutines.
+func New(workerURL string, timeout time.Duration, maxConns int) *Client {
 	if timeout <= 0 {
 		timeout = defaultTimeout
+	}
+	if maxConns <= 0 {
+		maxConns = defaultMaxConns
 	}
 	return &Client{
 		workerURL: workerURL,
 		http: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   2 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				MaxConnsPerHost:       maxConns,
 				MaxIdleConns:          100,
 				MaxIdleConnsPerHost:   50,
 				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: timeout * 2 / 3,
+				ResponseHeaderTimeout: responseHeaderTimeout,
 			},
 		},
 	}

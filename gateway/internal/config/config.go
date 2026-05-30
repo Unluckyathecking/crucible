@@ -14,8 +14,9 @@ type Config struct {
 	BodyLimitBytes int64 `envconfig:"GATEWAY_BODY_LIMIT_BYTES" default:"1048576"`
 
 	// Worker
-	WorkerURL       string `envconfig:"WORKER_URL"        default:"http://localhost:8081"`
-	WorkerTimeoutMS int    `envconfig:"WORKER_TIMEOUT_MS" default:"10000"`
+	WorkerURL       string `envconfig:"WORKER_URL"           default:"http://localhost:8081"`
+	WorkerTimeoutMS int    `envconfig:"WORKER_TIMEOUT_MS"    default:"10000"`
+	WorkerMaxConns  int    `envconfig:"GATEWAY_WORKER_MAX_CONNS" default:"64"`
 
 	// Postgres
 	PostgresDSN      string `envconfig:"POSTGRES_DSN"       required:"true"`
