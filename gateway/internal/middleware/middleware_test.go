@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,5 +230,186 @@ func TestSecurityHeadersPassThrough(t *testing.T) {
 
 	if rec.Code != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusTeapot)
+	}
+}
+
+// TestSecurityHeadersAllPresent verifies every required OWASP header appears on every response.
+func TestSecurityHeadersAllPresent(t *testing.T) {
+	required := []string{
+		"Strict-Transport-Security",
+		"X-Content-Type-Options",
+		"X-Frame-Options",
+		"X-XSS-Protection",
+		"Referrer-Policy",
+		"Permissions-Policy",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	SecurityHeaders(okHandler).ServeHTTP(rec, req)
+
+	for _, h := range required {
+		if got := rec.Header().Get(h); got == "" {
+			t.Errorf("header %q missing from response", h)
+		}
+	}
+}
+
+// TestBodyLimitAllowsRequestUnderLimit confirms small bodies pass through intact.
+func TestBodyLimitAllowsRequestUnderLimit(t *testing.T) {
+	const max = 10  // bytes
+	body := "hello" // 5 bytes — under limit
+
+	readHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	BodyLimit(max)(readHandler).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != body {
+		t.Errorf("body = %q, want %q", rec.Body.String(), body)
+	}
+}
+
+// TestBodyLimitRejects413 verifies that reading a body beyond the limit surfaces a MaxBytesError.
+// The middleware sets http.MaxBytesReader; a well-behaved handler detects the error and replies 413.
+func TestBodyLimitRejects413(t *testing.T) {
+	const max = 5 // bytes
+	oversized := strings.Repeat("x", 100)
+
+	guardHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				http.Error(w, `{"error":{"code":"REQUEST_TOO_LARGE","message":"request body too large"}}`, http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(oversized))
+	rec := httptest.NewRecorder()
+	BodyLimit(max)(guardHandler).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d (413)", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// TestBodyLimitExactlyAtLimit verifies a body exactly at the limit is accepted.
+func TestBodyLimitExactlyAtLimit(t *testing.T) {
+	const max = 5
+	body := "hello" // exactly 5 bytes
+
+	readHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	BodyLimit(max)(readHandler).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestRecoveryNoLeakOfPanicValue asserts that the panic value never appears in the response body.
+func TestRecoveryNoLeakOfPanicValue(t *testing.T) {
+	secretPanic := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("super-secret-internal-db-password-1234")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	Recovery(secretPanic).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "super-secret-internal-db-password-1234") {
+		t.Error("panic value leaked into response body")
+	}
+	// Confirm the body is valid JSON with the safe envelope only.
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+}
+
+// TestRecoveryWithRequestIDInContext verifies that when RequestID runs before Recovery,
+// the logged request-id matches the one set by RequestID middleware.
+func TestRecoveryWithRequestIDInContext(t *testing.T) {
+	const testRID = "test-request-id-abc"
+
+	panicWithRID := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("whoops")
+	})
+
+	var buf strings.Builder
+	oldLogger := log.Logger
+	defer func() { log.Logger = oldLogger }()
+	log.Logger = log.Output(&buf)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-ID", testRID)
+
+	rec := httptest.NewRecorder()
+	// Stack: RequestID → Recovery → panicHandler, so rid is in context when Recovery logs.
+	RequestID(Recovery(panicWithRID)).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	output := buf.String()
+	if !strings.Contains(output, testRID) {
+		t.Errorf("expected request_id %q in log output, got:\n%s", testRID, output)
+	}
+}
+
+// TestRequestIDPropagatesIntoContext verifies the id placed on the response header
+// is also the id stored in the request context.
+func TestRequestIDPropagatesIntoContext(t *testing.T) {
+	var ctxID, headerID string
+
+	captureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctxID, _ = r.Context().Value(RequestIDKey).(string)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	RequestID(captureHandler).ServeHTTP(rec, req)
+
+	headerID = rec.Header().Get("X-Request-ID")
+
+	if headerID == "" {
+		t.Fatal("X-Request-ID response header is empty")
+	}
+	if ctxID == "" {
+		t.Fatal("request id not found in context")
+	}
+	if ctxID != headerID {
+		t.Errorf("context id %q != response header id %q", ctxID, headerID)
 	}
 }
