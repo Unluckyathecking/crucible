@@ -12,7 +12,7 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
    ```
    The `operation` string is forwarded opaquely to the worker. The framework never needs to know what your product does.
 
-3. **`gateway/migrations/0002_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id).
+3. **`gateway/migrations/0005_seed_vat_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). A seeded plan is only *reachable* once a customer is placed on it: `customers.plan_id` must reference one of these ids. `scripts/seed-dev.sh` lands the dev customer on `vat_pro` so the plan is exercised locally; in production a customer reaches a plan via Stripe checkout / the subscription webhook (`billing/webhook.go`), never by editing this migration.
 
 4. **`dashboard/app/(marketing)/page.tsx`** — landing copy + pricing display.
 
