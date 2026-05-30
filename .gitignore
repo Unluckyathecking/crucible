@@ -33,12 +33,8 @@ tmp/
 workers/stubs/go/go
 workers/stubs/*/main
 # Built product worker binaries (binary name == parent directory name, e.g. go build in workers/products/vat-check/ produces vat-check)
-# Use a two-rule pattern: catch all files under any product dir, then re-include known source extensions.
-workers/products/*/*
-!workers/products/*/*.go
-!workers/products/*/go.mod
-!workers/products/*/go.sum
-!workers/products/*/Dockerfile
+# List each explicitly — over-broad globs risk silently ignoring source if a product grows subdirs.
+workers/products/vat-check/vat-check
 
 # Private internal docs that shouldn't be public (product strategy / handoffs / plans)
 docs-internal/handoff-*.md
