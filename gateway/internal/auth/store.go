@@ -41,25 +41,47 @@ type Store struct {
 	salt    string
 	updates chan uuid.UUID
 	wg      sync.WaitGroup
+	// rootCtx is the long-lived parent for best-effort last_used_at writes; cancelled
+	// by Close so in-flight background writes abort on shutdown instead of outliving the
+	// Store on a detached context.Background(). Each write derives a short timeout from it.
+	rootCtx context.Context
+	cancel  context.CancelFunc
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
+	rootCtx, cancel := context.WithCancel(context.Background())
 	s := &Store{
 		db:      db,
 		cache:   cache,
 		salt:    salt,
 		updates: make(chan uuid.UUID, 1000),
+		rootCtx: rootCtx,
+		cancel:  cancel,
 	}
 	s.wg.Add(1)
 	go s.processUpdates()
 	return s
 }
 
+// enqueueUpdate queues a best-effort last_used_at write. The send is non-blocking:
+// when the buffer is full the update is dropped rather than blocking the request hot
+// path. This is what bounds background work during a cold-cache storm (e.g. Redis
+// outage) — concurrent DB writes never exceed the single processUpdates worker, and
+// excess arrivals are shed. Returns true if the update was queued, false if dropped.
+func (s *Store) enqueueUpdate(keyID uuid.UUID) bool {
+	select {
+	case s.updates <- keyID:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) processUpdates() {
 	defer s.wg.Done()
 	for keyID := range s.updates {
-		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
+		ctx, cancel := context.WithTimeout(s.rootCtx, 2*time.Second)
+		_, _ = s.db.Exec(ctx, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 		cancel()
 	}
 }
@@ -69,6 +91,7 @@ func (s *Store) processUpdates() {
 func (s *Store) Close() {
 	close(s.updates)
 	s.wg.Wait()
+	s.cancel()
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
@@ -157,10 +180,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 
 	// Fire-and-forget last_used update — don't block the request hot path.
-	select {
-	case s.updates <- keyID:
-	default:
-	}
+	s.enqueueUpdate(keyID)
 
 	return &Key{
 		ID:       keyID,
