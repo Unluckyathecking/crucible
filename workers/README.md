@@ -14,7 +14,7 @@ The contract is defined in `gateway/proto/tool.proto`. Workers speak HTTP/JSON b
 | `sdk-go/` | Go SDK. Import this, write one function, you have a working worker. |
 | `sdk-python/` | (v1.5) |
 | `sdk-typescript/` | (v1.5) |
-| `sdk-rust/` | (v1.5) |
+| `sdk-rust/` | Rust SDK. Depend on it, write one async handler, call `serve`. |
 | `stubs/` | Hello-world reference impls — one per SDK language. |
 | `active` | Symlink to the worker this clone ships. Edit this when adapting Crucible. |
 
@@ -36,6 +36,28 @@ func main() {
 ```
 
 That's a complete worker. The SDK handles server bootstrap, `/healthz`, structured logging, graceful shutdown, request decoding, error sanitisation, and the `billable_units >= 1` default.
+
+## Writing a Rust worker
+
+```rust
+use crucible_sdk::{serve, HandlerError, Request, Response};
+
+#[tokio::main]
+async fn main() -> Result<(), crucible_sdk::ServeError> {
+    serve(8081, |req: Request| async move {
+        Ok::<_, HandlerError>(Response::new(serde_json::json!({"hello": "world"})))
+    })
+    .await
+}
+```
+
+The Rust SDK (`sdk-rust/`, axum + tokio) mirrors the Go SDK's semantics: it registers
+`POST /invoke` + `GET /healthz`, decodes the request, defaults `billable_units` to 1,
+returns a `BAD_REQUEST` envelope on malformed bodies, surfaces a handler's `WorkerError`
+verbatim, and sanitises any other error to a generic `INTERNAL` envelope (the cause is
+logged, never surfaced). Error envelopes are returned with HTTP 200 — the gateway reads
+the response *shape* (`payload` vs `error`), not the status. See `stubs/rust/` for the
+hello-world echo worker.
 
 ## Writing a worker in another language (no SDK yet)
 
