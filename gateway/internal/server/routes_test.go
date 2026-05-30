@@ -404,3 +404,50 @@ func searchSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestWriteJSONError(t *testing.T) {
+	type errorEnvelope struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+		} `json:"error"`
+	}
+
+	cases := []struct {
+		status    int
+		code      string
+		msg       string
+		retryable bool
+	}{
+		{http.StatusBadRequest, "BAD_INPUT", "invalid payload", false},
+		{http.StatusTooManyRequests, "RATE_LIMITED", "too many requests", true},
+		{http.StatusServiceUnavailable, "WORKER_UNAVAILABLE", "worker unreachable", true},
+	}
+
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		writeJSONError(w, tc.status, tc.code, tc.msg, tc.retryable)
+
+		if w.Code != tc.status {
+			t.Errorf("writeJSONError(%d): got HTTP status %d", tc.status, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("writeJSONError(%d): Content-Type %q, want application/json", tc.status, ct)
+		}
+
+		var env errorEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("writeJSONError(%d): failed to decode body: %v", tc.status, err)
+		}
+		if env.Error.Code != tc.code {
+			t.Errorf("writeJSONError(%d): error.code %q, want %q", tc.status, env.Error.Code, tc.code)
+		}
+		if env.Error.Message != tc.msg {
+			t.Errorf("writeJSONError(%d): error.message %q, want %q", tc.status, env.Error.Message, tc.msg)
+		}
+		if env.Error.Retryable != tc.retryable {
+			t.Errorf("writeJSONError(%d): error.retryable %v, want %v", tc.status, env.Error.Retryable, tc.retryable)
+		}
+	}
+}
