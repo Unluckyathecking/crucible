@@ -93,6 +93,13 @@ func TestPackageMiddleware_RoutePattern(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
+	// Capture baseline before the request so the assertion is a delta of exactly
+	// 1 regardless of what prior tests may have incremented on the global counter.
+	before := counterVecValue(requestsTotal, "GET", "/items/{id}", "200")
+	if before < 0 {
+		before = 0
+	}
+
 	resp, err := http.Get(srv.URL + "/items/42")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
@@ -104,10 +111,10 @@ func TestPackageMiddleware_RoutePattern(t *testing.T) {
 	}
 
 	// The label must be the route template, not the concrete path.
-	// We verify by reading the counter from the global vec.
-	v := counterVecValue(requestsTotal, "GET", "/items/{id}", "200")
-	if v < 1 {
-		t.Errorf("requestsTotal{GET, /items/{id}, 200} = %v, want >= 1", v)
+	// Assert delta == 1 rather than >= 1 to catch both stale-state and race issues.
+	after := counterVecValue(requestsTotal, "GET", "/items/{id}", "200")
+	if after-before != 1 {
+		t.Errorf("requestsTotal{GET, /items/{id}, 200} delta = %v, want 1 (before=%v, after=%v)", after-before, before, after)
 	}
 }
 
@@ -121,6 +128,13 @@ func TestPackageMiddleware_Unmatched(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
+	// Capture baseline before the request so the assertion is a delta of exactly
+	// 1 regardless of what prior tests may have incremented on the global counter.
+	before := counterVecValue(requestsTotal, "GET", "unmatched", "404")
+	if before < 0 {
+		before = 0
+	}
+
 	resp, err := http.Get(srv.URL + "/does/not/exist/at/all")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
@@ -128,9 +142,10 @@ func TestPackageMiddleware_Unmatched(t *testing.T) {
 	resp.Body.Close()
 
 	// The path label for unregistered routes must be "unmatched", not the raw URL.
-	v := counterVecValue(requestsTotal, "GET", "unmatched", "404")
-	if v < 1 {
-		t.Errorf("requestsTotal{GET, unmatched, 404} = %v, want >= 1", v)
+	// Assert delta == 1 rather than >= 1 to catch both stale-state and race issues.
+	after := counterVecValue(requestsTotal, "GET", "unmatched", "404")
+	if after-before != 1 {
+		t.Errorf("requestsTotal{GET, unmatched, 404} delta = %v, want 1 (before=%v, after=%v)", after-before, before, after)
 	}
 }
 
