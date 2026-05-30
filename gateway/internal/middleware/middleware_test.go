@@ -282,17 +282,21 @@ func TestBodyLimitAllowsRequestUnderLimit(t *testing.T) {
 	}
 }
 
-// TestBodyLimitRejects413 verifies that reading a body beyond the limit surfaces a MaxBytesError.
-// The middleware sets http.MaxBytesReader; a well-behaved handler detects the error and replies 413.
+// TestBodyLimitRejects413 verifies that the real BodyLimit middleware causes io.ReadAll to fail
+// with *http.MaxBytesError when the body exceeds the configured limit. A realistic downstream
+// handler that unconditionally reads the body is used — the test asserts both that the read
+// error is a *http.MaxBytesError AND that a well-behaved handler can translate it to 413.
 func TestBodyLimitRejects413(t *testing.T) {
 	const max = 5 // bytes
 	oversized := strings.Repeat("x", 100)
 
-	guardHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := io.ReadAll(r.Body)
-		if err != nil {
+	var capturedErr error
+	downstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Realistic handler: always reads the full body, then decides what to do.
+		_, capturedErr = io.ReadAll(r.Body)
+		if capturedErr != nil {
 			var mbe *http.MaxBytesError
-			if errors.As(err, &mbe) {
+			if errors.As(capturedErr, &mbe) {
 				http.Error(w, `{"error":{"code":"REQUEST_TOO_LARGE","message":"request body too large"}}`, http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -304,8 +308,20 @@ func TestBodyLimitRejects413(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(oversized))
 	rec := httptest.NewRecorder()
-	BodyLimit(max)(guardHandler).ServeHTTP(rec, req)
+	// Drive the request through the ACTUAL BodyLimit middleware.
+	BodyLimit(max)(downstreamHandler).ServeHTTP(rec, req)
 
+	// Primary assertion: the middleware caused io.ReadAll to return *http.MaxBytesError.
+	// This confirms BodyLimit itself (via http.MaxBytesReader) enforces the cap.
+	if capturedErr == nil {
+		t.Fatal("expected io.ReadAll to fail with *http.MaxBytesError, got nil")
+	}
+	var mbe *http.MaxBytesError
+	if !errors.As(capturedErr, &mbe) {
+		t.Errorf("expected *http.MaxBytesError, got %T: %v", capturedErr, capturedErr)
+	}
+
+	// Secondary assertion: a handler that correctly handles *http.MaxBytesError returns 413.
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want %d (413)", rec.Code, http.StatusRequestEntityTooLarge)
 	}
