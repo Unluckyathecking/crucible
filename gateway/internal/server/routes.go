@@ -81,7 +81,21 @@ func NewRouter(d *Deps) http.Handler {
 	// keyed on X-Forwarded-For/RemoteAddr) in front of ONLY this route to blunt
 	// unauthenticated flooding. Signature verification, the replay window, and the
 	// dispatch-first/record-after ordering inside Handle are untouched.
-	r.With(httprate.LimitByRealIP(60, time.Minute)).Post("/webhooks/stripe", d.Webhook.Handle)
+	//
+	// Defense-in-depth: strip True-Client-IP and X-Real-IP before the rate limiter
+	// runs. httprate.KeyByRealIP prefers those headers over X-Forwarded-For; if they
+	// reached the limiter an attacker could rotate them to mint a fresh bucket per
+	// request and defeat the cap (audit #11). Caddy already strips them at the edge,
+	// but doing it here too means a Caddyfile mis-config cannot silently re-open the
+	// bypass.
+	stripSpoofableIPHeaders := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Del("True-Client-IP")
+			r.Header.Del("X-Real-IP")
+			next.ServeHTTP(w, r)
+		})
+	}
+	r.With(stripSpoofableIPHeaders, httprate.LimitByRealIP(60, time.Minute)).Post("/webhooks/stripe", d.Webhook.Handle)
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
