@@ -217,3 +217,112 @@ func TestInvoke_StalledConnection(t *testing.T) {
 		t.Errorf("error %q should wrap the transport error", err.Error())
 	}
 }
+
+// TestInvoke_MarshalError exercises the json.Marshal failure path (line 77-79).
+// json.RawMessage containing invalid JSON causes Marshal to return an error.
+func TestInvoke_MarshalError(t *testing.T) {
+	c := New("http://unused", 5*time.Second)
+	_, err := c.Invoke(context.Background(), &InvokeRequest{
+		Operation: "x",
+		Payload:   json.RawMessage(`not-valid-json`),
+	})
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "marshal request") {
+		t.Errorf("error %q should wrap as marshal request", err.Error())
+	}
+}
+
+// TestInvoke_BadWorkerURL exercises the http.NewRequestWithContext failure path (line 82-84).
+// A URL with a control character is rejected by net/url at request-build time.
+func TestInvoke_BadWorkerURL(t *testing.T) {
+	c := New("http://\x00bad", 5*time.Second)
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected request-build error, got nil")
+	}
+	if !strings.Contains(err.Error(), "build request") {
+		t.Errorf("error %q should wrap as build request", err.Error())
+	}
+}
+
+// TestInvoke_DecodeError exercises the json.Decode failure path (line 110-112).
+// The worker returns HTTP 200 but a body that is not valid JSON.
+func TestInvoke_DecodeError(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`this is not json at all`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second)
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode worker response") {
+		t.Errorf("error %q should wrap as decode worker response", err.Error())
+	}
+}
+
+// TestInvoke_ContextCanceled verifies that an explicit context.Cancel unblocks Invoke promptly.
+// Complements TestInvoke_ContextDeadlineHonored which uses a deadline rather than explicit cancel.
+func TestInvoke_ContextCanceled(t *testing.T) {
+	// Handler blocks until request context is done or a long fallback elapses.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	t.Cleanup(worker.Close)
+
+	c := New(worker.URL, 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a short delay to let the request reach the handler.
+	time.AfterFunc(80*time.Millisecond, cancel)
+
+	start := time.Now()
+	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "slow"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from context cancel, got nil")
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("Invoke took %v; should have returned promptly on context cancel", elapsed)
+	}
+	var urlErr *url.Error
+	if !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!(errors.As(err, &urlErr) && urlErr.Timeout()) {
+		t.Errorf("expected context cancellation error, got: %v", err)
+	}
+}
+
+// TestInvoke_LargeSuccessBody verifies Invoke correctly decodes a large valid response body.
+// This ensures the response body reader is not arbitrarily limited for successful 200 responses.
+func TestInvoke_LargeSuccessBody(t *testing.T) {
+	// Build a payload field with 64 KB of data to confirm no silent truncation.
+	largeData := strings.Repeat("a", 64*1024)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"data":"` + largeData + `"},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second)
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.BillableUnits != 1 {
+		t.Errorf("billable_units = %d, want 1", resp.BillableUnits)
+	}
+	// Payload should decode the full body without truncation.
+	if len(resp.Payload) < 64*1024 {
+		t.Errorf("payload length %d, want >= 64 KB", len(resp.Payload))
+	}
+}
