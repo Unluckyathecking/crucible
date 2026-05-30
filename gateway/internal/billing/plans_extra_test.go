@@ -48,6 +48,12 @@ func TestPlanCache_Concurrency_Race(t *testing.T) {
 	}
 	wg.Wait()
 
+	// Enforce the single-query expectation: if more than one reload fired,
+	// pgxmock will report an unexpected call here.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("single-flight violated — mock expectations not met: %v", err)
+	}
+
 	// After reload the new value should be visible.
 	entry := pc.Get(context.Background(), "pro")
 	if entry.RatePerMinute != 200 {

@@ -99,9 +99,6 @@ func TestEmitMeterEvent_HTTPTestServer(t *testing.T) {
 				meterName: "api_calls",
 				http:      &http.Client{Timeout: 5 * time.Second},
 			}
-			// Override base URL to point at the test server.
-			origBase := stripeAPIBase
-			_ = origBase // keep linter happy
 			// We construct the request directly using a custom transport that rewrites the host.
 			client.http.Transport = &rewriteHostTransport{
 				base:    srv.URL,
@@ -147,6 +144,10 @@ func TestEmitMeterEvent_HTTPTestServer(t *testing.T) {
 			wantValue := fmt.Sprintf("%d", tc.units)
 			if got := form.Get("payload[value]"); got != wantValue {
 				t.Errorf("payload[value] = %q, want %q", got, wantValue)
+			}
+			// Assert the customer-attribution field is present (stripe.go:36).
+			if got := form.Get("payload[stripe_customer_id]"); got != "cus_httptest" {
+				t.Errorf("payload[stripe_customer_id] = %q, want %q", got, "cus_httptest")
 			}
 			if got := form.Get("identifier"); got != tc.idempotencyKey {
 				t.Errorf("identifier form field = %q, want %q", got, tc.idempotencyKey)
