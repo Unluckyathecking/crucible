@@ -17,12 +17,15 @@ jobs:
             gateway/go.sum
             workers/sdk-go/go.sum
             workers/stubs/go/go.sum
+            workers/products/vat-check/go.sum
       - name: go.work sync
         run: go work sync
       - name: gateway test
         run: cd gateway && go vet ./... && go test -race ./...
       - name: sdk-go test
         run: cd workers/sdk-go && go vet ./... && go test -race ./...
+      - name: vat-check test
+        run: cd workers/products/vat-check && go vet ./... && go test -race ./...
       - name: worker stub build
         run: cd workers/stubs/go && go vet ./... && go build ./...
 
