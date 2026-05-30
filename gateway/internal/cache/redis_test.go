@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -73,10 +74,19 @@ func TestNewRedis_InvalidURLReturnsError(t *testing.T) {
 }
 
 func TestNewRedis_PingFailureReturnsError(t *testing.T) {
-	// Port 1 is reserved and never listening; Ping must fail fast.
-	// Use a short dial timeout so the test doesn't block CI.
-	_, err := NewRedis(context.Background(), "redis://localhost:1?dial_timeout=200ms&read_timeout=200ms&write_timeout=200ms")
+	// Grab an ephemeral port, then close it immediately so the address is
+	// guaranteed to be closed (not just unreachable) by the time NewRedis dials.
+	// This avoids relying on port 1 being blocked by a firewall — which is not
+	// guaranteed and can cause a full dial-timeout hang on some hosts.
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("could not open listener: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	_, err = NewRedis(context.Background(), "redis://"+addr+"?dial_timeout=200ms&read_timeout=200ms&write_timeout=200ms")
 	if err == nil {
-		t.Fatal("expected ping error for unreachable Redis, got nil")
+		t.Fatal("expected ping error for closed-port Redis, got nil")
 	}
 }
