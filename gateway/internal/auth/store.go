@@ -41,10 +41,11 @@ type Store struct {
 	salt    string
 	updates chan uuid.UUID
 	wg      sync.WaitGroup
-	// rootCtx is the long-lived parent for best-effort last_used_at writes; each write
-	// derives a short timeout from it instead of a detached context.Background(), so the
-	// writes can never outlive the Store. Close cancels it once the queue has drained,
-	// which also unblocks any write still stuck in the DB driver past the drain budget.
+	// rootCtx roots the per-write timeouts; each write derives a short 2s timeout from it
+	// instead of a detached context.Background(), so no write can outlive the Store.
+	// cancel() is called by Close() via defer — after wg.Wait() returns, meaning after
+	// processUpdates has finished its final write — so cancel() does not abort an in-flight
+	// write; the per-write 2s WithTimeout is the only bound on a stuck write.
 	rootCtx context.Context
 	cancel  context.CancelFunc
 }
