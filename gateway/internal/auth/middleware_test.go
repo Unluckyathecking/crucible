@@ -190,15 +190,12 @@ func TestMiddleware_RevokedKey(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 
+	body, _ := io.ReadAll(rr.Body)
 	if rr.Code != http.StatusUnauthorized {
-		body, _ := io.ReadAll(rr.Body)
 		t.Errorf("revoked key: status = %d, want 401; body: %s", rr.Code, body)
 	}
-	body, _ := io.ReadAll(rr.Body)
-	if len(body) > 0 {
-		if code := bodyError(t, body); code != "UNAUTHORIZED" {
-			t.Errorf("revoked key: error.code = %q, want UNAUTHORIZED", code)
-		}
+	if code := bodyError(t, body); code != "UNAUTHORIZED" {
+		t.Errorf("revoked key: error.code = %q, want UNAUTHORIZED", code)
 	}
 }
 
@@ -223,9 +220,12 @@ func TestMiddleware_MalformedShortKey(t *testing.T) {
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, req)
 
+			body, _ := io.ReadAll(rr.Body)
 			if rr.Code != http.StatusUnauthorized {
-				body, _ := io.ReadAll(rr.Body)
 				t.Errorf("%s: status = %d, want 401; body: %s", tc.name, rr.Code, body)
+			}
+			if code := bodyError(t, body); code != "UNAUTHORIZED" {
+				t.Errorf("%s: error.code = %q, want UNAUTHORIZED", tc.name, code)
 			}
 		})
 	}
@@ -348,11 +348,10 @@ func TestMiddleware_InvalidKeyReturnsUnauthorized(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 
+	body, _ := io.ReadAll(rr.Body)
 	if rr.Code != http.StatusUnauthorized {
-		body, _ := io.ReadAll(rr.Body)
 		t.Errorf("invalid key: status = %d, want 401; body: %s", rr.Code, body)
 	}
-	body, _ := io.ReadAll(rr.Body)
 	if code := bodyError(t, body); code != "UNAUTHORIZED" {
 		t.Errorf("invalid key: error.code = %q, want UNAUTHORIZED", code)
 	}
