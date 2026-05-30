@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,27 +67,69 @@ func TestEnqueueUpdate_NeverBlocks(t *testing.T) {
 	}
 }
 
-// TestClose_CancelsRootContext proves background writes derive from a long-lived store
-// context that Close cancels — not a detached context.Background(). On shutdown this
-// aborts any in-flight last_used_at write instead of leaking a write bound only by its
-// own 2s timeout.
-func TestClose_CancelsRootContext(t *testing.T) {
+// TestEnqueueUpdate_BoundIsIndependentOfBurstSize proves the genuine value of the
+// non-blocking enqueue: the number of pending last_used_at writes is O(buffer), never
+// O(requests). It drives bursts that are 2x, 10x, and 100x the buffer against an
+// undrained queue and asserts the pending depth equals the buffer capacity every time —
+// excess is shed, the queue never grows unbounded, and the hot path never blocks
+// regardless of how large the cold-cache storm gets.
+func TestEnqueueUpdate_BoundIsIndependentOfBurstSize(t *testing.T) {
+	const buf = 16
+	for _, burst := range []int{buf * 2, buf * 10, buf * 100} {
+		s := &Store{updates: make(chan uuid.UUID, buf)}
+
+		queued := 0
+		for i := 0; i < burst; i++ {
+			if s.enqueueUpdate(uuid.New()) {
+				queued++
+			}
+		}
+
+		if queued != buf {
+			t.Fatalf("burst=%d: queued=%d, want exactly buffer size %d (excess must be dropped, not buffered)", burst, queued, buf)
+		}
+		if len(s.updates) != buf {
+			t.Fatalf("burst=%d: pending depth=%d, want %d — bound must stay at buffer capacity, not grow with the burst", burst, len(s.updates), buf)
+		}
+	}
+}
+
+// TestClose_DrainsThenCancels proves Close has drain-then-cancel semantics: it finishes
+// the writes already queued (not discarding recent telemetry) and then tears down rootCtx
+// so no derived context can outlive the Store. The earlier version only asserted
+// rootCtx.Err()!=nil after Close (trivially true once cancel runs anywhere); this also
+// checks the queued work was actually drained, which is the property Close exists for.
+func TestClose_DrainsThenCancels(t *testing.T) {
+	const queuedWrites = 5
+	var drained int64
 	rootCtx, cancel := context.WithCancel(context.Background())
 	s := &Store{
-		updates: make(chan uuid.UUID, 1),
+		updates: make(chan uuid.UUID, queuedWrites),
 		rootCtx: rootCtx,
 		cancel:  cancel,
 	}
+	// White-box drain worker mirroring processUpdates' loop shape, but counting instead of
+	// hitting Postgres — it must consume every queued item before Close returns.
 	s.wg.Add(1)
-	go s.processUpdates()
+	go func() {
+		defer s.wg.Done()
+		for range s.updates {
+			atomic.AddInt64(&drained, 1)
+		}
+	}()
 
-	if err := s.rootCtx.Err(); err != nil {
-		t.Fatalf("root context cancelled before Close: %v", err)
+	for i := 0; i < queuedWrites; i++ {
+		if !s.enqueueUpdate(uuid.New()) {
+			t.Fatalf("enqueue %d dropped while buffer had room", i)
+		}
 	}
 
 	s.Close()
 
-	if err := s.rootCtx.Err(); err == nil {
-		t.Fatal("root context not cancelled after Close; background writes would outlive the Store")
+	if got := atomic.LoadInt64(&drained); got != queuedWrites {
+		t.Fatalf("drained=%d, want %d — Close must drain queued writes, not abandon them", got, queuedWrites)
+	}
+	if s.rootCtx.Err() == nil {
+		t.Fatal("rootCtx not cancelled after Close; derived writes could outlive the Store")
 	}
 }

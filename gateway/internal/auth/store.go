@@ -41,9 +41,10 @@ type Store struct {
 	salt    string
 	updates chan uuid.UUID
 	wg      sync.WaitGroup
-	// rootCtx is the long-lived parent for best-effort last_used_at writes; cancelled
-	// by Close so in-flight background writes abort on shutdown instead of outliving the
-	// Store on a detached context.Background(). Each write derives a short timeout from it.
+	// rootCtx is the long-lived parent for best-effort last_used_at writes; each write
+	// derives a short timeout from it instead of a detached context.Background(), so the
+	// writes can never outlive the Store. Close cancels it once the queue has drained,
+	// which also unblocks any write still stuck in the DB driver past the drain budget.
 	rootCtx context.Context
 	cancel  context.CancelFunc
 }
@@ -86,12 +87,20 @@ func (s *Store) processUpdates() {
 	}
 }
 
-// Close drains the last_used_at update queue and waits for the background
-// goroutine to finish. Call once during graceful shutdown.
+// Close stops accepting last_used_at updates, drains the queued ones best-effort, and
+// waits for the background worker to finish. Call once during graceful shutdown.
+//
+// Semantics are drain-then-cancel, not abort: closing the channel lets processUpdates
+// finish the already-queued writes — each capped by its own 2s timeout derived from
+// rootCtx, so the whole drain is bounded and a single stuck write can hang shutdown for
+// at most 2s — and then cancel() tears down rootCtx so no later derived context can
+// outlive the Store. cancel() is deferred to guarantee that teardown on every return
+// path. (This is graceful drain, not in-flight abort: a queued write that has already
+// started commits; it is the per-write timeout, not cancel, that bounds shutdown.)
 func (s *Store) Close() {
+	defer s.cancel()
 	close(s.updates)
 	s.wg.Wait()
-	s.cancel()
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
