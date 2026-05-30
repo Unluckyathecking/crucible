@@ -489,7 +489,7 @@ func TestClaimAndEmitNewBatches_stripeErrorLeavesRowsBatched(t *testing.T) {
 		t.Fatalf("query row: %v", err)
 	}
 	if batchID == nil {
-		t.Error("batch_id must be set after claim even when Stripe fails")
+		t.Fatal("batch_id must be set after claim even when Stripe fails")
 	}
 	if flushed {
 		t.Error("flushed_to_stripe must remain FALSE when Stripe fails")
@@ -611,27 +611,79 @@ func TestRun_cancelStops(t *testing.T) {
 
 // TestRun_tickCallsPhases verifies that Run delegates to both flusher phases on each tick
 // and exits cleanly when the context is canceled.
+//
+// Behavioral assertions: we plant data that requires both phases to process — a
+// pre-claimed pending row (phase A) and an unbatched row (phase B) — then confirm
+// both are marked flushed_to_stripe=TRUE after Run exits.
 func TestRun_tickCallsPhases(t *testing.T) {
 	pool := newTestPool(t)
+	ctx := context.Background()
 
-	// 1 ms period so the ticker fires quickly.
-	f := NewFlusher(pool, &mockStripeMeter{}, 1*time.Millisecond)
+	custID, apiKeyID := setupTestCustomer(t, pool)
+	stripeID := "cus_run_" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
+	); err != nil {
+		t.Fatalf("set stripe_customer_id: %v", err)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Phase-A seed: a row with batch_id already stamped but not yet flushed.
+	pendingBatchID := uuid.New()
+	reqA := "req-run-phaseA-" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id, flushed_to_stripe)
+		 VALUES ($1, $2, 'run.phaseA', 7, $3, $4, FALSE)`,
+		custID, apiKeyID, reqA, pendingBatchID,
+	); err != nil {
+		t.Fatalf("insert phase-A row: %v", err)
+	}
+
+	// Phase-B seed: an unbatched row (batch_id IS NULL).
+	reqB := "req-run-phaseB-" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
+		 VALUES ($1, $2, 'run.phaseB', 3, $3)`,
+		custID, apiKeyID, reqB,
+	); err != nil {
+		t.Fatalf("insert phase-B row: %v", err)
+	}
+
+	// Run with a 1 ms ticker; cancel after it exits.
+	runCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 
-	// Run must not panic and must exit cleanly when the context expires.
+	f := NewFlusher(pool, &mockStripeMeter{}, 1*time.Millisecond)
+
 	done := make(chan struct{})
 	go func() {
-		f.Run(ctx)
+		f.Run(runCtx)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		// good
+		// good — Run returned cleanly
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Run did not return after context deadline within 500ms")
+	}
+
+	// Both rows must now be flushed_to_stripe=TRUE — proving both phases fired.
+	var flushedA, flushedB bool
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE request_id=$1 LIMIT 1`, reqA,
+	).Scan(&flushedA); err != nil {
+		t.Fatalf("query phase-A row: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE request_id=$1 LIMIT 1`, reqB,
+	).Scan(&flushedB); err != nil {
+		t.Fatalf("query phase-B row: %v", err)
+	}
+	if !flushedA {
+		t.Error("phase A (retryPendingBatches) did not flush the pre-claimed row")
+	}
+	if !flushedB {
+		t.Error("phase B (claimAndEmitNewBatches) did not flush the unbatched row")
 	}
 }
 
