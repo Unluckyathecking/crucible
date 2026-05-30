@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,10 @@ import (
 // Treated as 401 by the middleware. Always returned for both "no row" and
 // "row exists but hash mismatch" to avoid leaking which prefix is real.
 var ErrKeyNotFound = errors.New("api key not found")
+
+// missTTL is how long an unknown prefix is cached as a negative sentinel to
+// absorb repeated DB probes on random-but-plausible prefixes (Case B DoS path).
+const missTTL = 30 * time.Second
 
 type Customer struct {
 	ID    uuid.UUID
@@ -35,6 +40,7 @@ type Store struct {
 	cache   *redis.Client
 	salt    string
 	updates chan uuid.UUID
+	wg      sync.WaitGroup
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
@@ -44,16 +50,25 @@ func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
 		salt:    salt,
 		updates: make(chan uuid.UUID, 1000),
 	}
+	s.wg.Add(1)
 	go s.processUpdates()
 	return s
 }
 
 func (s *Store) processUpdates() {
+	defer s.wg.Done()
 	for keyID := range s.updates {
 		bg, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_, _ = s.db.Exec(bg, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 		cancel()
 	}
+}
+
+// Close drains the last_used_at update queue and waits for the background
+// goroutine to finish. Call once during graceful shutdown.
+func (s *Store) Close() {
+	close(s.updates)
+	s.wg.Wait()
 }
 
 // Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
@@ -89,6 +104,12 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	prefix := fullKey[:PrefixLen]
 	wantHash := Hash(s.salt, fullKey)
 
+	// Negative-prefix sentinel: if this prefix was previously queried and found absent
+	// in Postgres, skip both Redis and DB for missTTL to bound repeated-miss DB load.
+	if v, err := s.cache.Get(ctx, "auth:miss:"+prefix).Result(); err == nil && v == "1" {
+		return nil, ErrKeyNotFound
+	}
+
 	// Redis hot path.
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
@@ -114,6 +135,7 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	var email, plan string
 	if err := row.Scan(&keyID, &storedHash, &customerID, &email, &plan); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			_ = s.cache.Set(ctx, "auth:miss:"+prefix, "1", missTTL).Err()
 			return nil, ErrKeyNotFound
 		}
 		return nil, fmt.Errorf("lookup api key: %w", err)
