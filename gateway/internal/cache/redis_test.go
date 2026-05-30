@@ -63,3 +63,20 @@ func TestNewRedis_URLTimeoutsWin(t *testing.T) {
 		t.Errorf("WriteTimeout = %v, want 1s", opt.WriteTimeout)
 	}
 }
+
+func TestNewRedis_InvalidURLReturnsError(t *testing.T) {
+	// ParseURL should reject a non-redis scheme; no Redis required.
+	_, err := NewRedis(context.Background(), "not-a-url://??")
+	if err == nil {
+		t.Fatal("expected error for invalid URL, got nil")
+	}
+}
+
+func TestNewRedis_PingFailureReturnsError(t *testing.T) {
+	// Port 1 is reserved and never listening; Ping must fail fast.
+	// Use a short dial timeout so the test doesn't block CI.
+	_, err := NewRedis(context.Background(), "redis://localhost:1?dial_timeout=200ms&read_timeout=200ms&write_timeout=200ms")
+	if err == nil {
+		t.Fatal("expected ping error for unreachable Redis, got nil")
+	}
+}
