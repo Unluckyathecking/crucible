@@ -3,8 +3,9 @@ package usage
 import (
 	"context"
 	"fmt"
-	"github.com/google/uuid"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func BenchmarkClaimAndEmitNewBatches(b *testing.B) {

@@ -2,6 +2,7 @@ import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
 import { ensureCustomer, listKeys, sumUsage } from "@/lib/db";
 import { CreateKeyForm } from "./create-key-form";
+import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,7 @@ export default async function DashboardPage() {
               await signOut();
             }}
           >
-            <button className="text-sm text-zinc-500 hover:underline">Sign out</button>
+            <SignOutButton />
           </form>
         </header>
 
