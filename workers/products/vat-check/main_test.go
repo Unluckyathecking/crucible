@@ -236,7 +236,8 @@ func TestHandler_InvalidFormat_DE(t *testing.T) {
 
 func TestHandler_GRNormalizedToEL(t *testing.T) {
 	// The handler converts GR → EL for the VIES country code.
-	// EL-prefixed numbers pass the EL regex; verify the countryCode sent to VIES is EL.
+	// Pass a GR-prefixed number so the normalization branch is actually exercised;
+	// an EL-prefixed input would bypass the GR→EL code path entirely.
 	var capturedBody map[string]string
 	vies := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
@@ -246,7 +247,7 @@ func TestHandler_GRNormalizedToEL(t *testing.T) {
 	defer vies.Close()
 
 	h := buildHandler(httpClientWithTimeout(5*time.Second), vies.URL)
-	payload, _ := json.Marshal(map[string]string{"vat": "EL123456789"})
+	payload, _ := json.Marshal(map[string]string{"vat": "GR123456789"})
 	resp, err := h(context.Background(), crucible.Request{Payload: payload})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -254,8 +255,9 @@ func TestHandler_GRNormalizedToEL(t *testing.T) {
 	if resp.BillableUnits < 1 {
 		t.Errorf("billable_units = %d, want >= 1", resp.BillableUnits)
 	}
+	// The normalization must have fired: VIES receives EL, not GR.
 	if capturedBody["countryCode"] != "EL" {
-		t.Errorf("VIES countryCode = %q, want EL", capturedBody["countryCode"])
+		t.Errorf("VIES countryCode = %q, want EL (GR must be normalized to EL)", capturedBody["countryCode"])
 	}
 }
 
@@ -380,12 +382,22 @@ func TestHandler_Vies503(t *testing.T) {
 }
 
 func TestHandler_ViesTimeout(t *testing.T) {
+	// Block the server handler on a channel so it never responds, causing the
+	// client to time out deterministically. t.Cleanup unblocks the channel first,
+	// then closes the server — order matters because vies.Close() waits for in-flight
+	// connections to drain, and those connections block on <-unblock.
+	unblock := make(chan struct{})
 	vies := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
+		<-unblock // released by t.Cleanup before vies.Close()
 	}))
-	defer vies.Close()
+	t.Cleanup(func() {
+		close(unblock) // unblock the handler goroutine first
+		vies.Close()   // then drain and shut down the server
+	})
 
-	h := buildHandler(httpClientWithTimeout(50*time.Millisecond), vies.URL)
+	// A very short client timeout guarantees the deadline fires in milliseconds,
+	// not seconds, keeping the test fast even under -count/-race load.
+	h := buildHandler(httpClientWithTimeout(20*time.Millisecond), vies.URL)
 	payload, _ := json.Marshal(map[string]string{"vat": "DE123456789"})
 	_, err := h(context.Background(), crucible.Request{Payload: payload})
 	if err == nil {

@@ -35,9 +35,11 @@ func buildHandler(client *http.Client, viesEndpoint string) crucible.HandlerFunc
 			viesCountry = "EL"
 		}
 
-		// Pre-validation
+		// Pre-validation: use the normalized country prefix so GR-prefixed inputs (normalized
+		// to EL) are checked against the EL pattern rather than the raw GR prefix, which
+		// would always fail.
 		if re, ok := vatRegex[viesCountry]; ok {
-			if !re.MatchString(vat) {
+			if !re.MatchString(viesCountry + number) {
 				return crucible.Response{}, &crucible.Error{Code: "INVALID_FORMAT", Message: fmt.Sprintf("VAT number does not match %s format", country), Retryable: false}
 			}
 		}
