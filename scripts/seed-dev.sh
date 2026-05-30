@@ -34,9 +34,13 @@ else
 fi
 
 psql "$DSN" <<EOF >/dev/null
+-- Dev customer lands on the vat_pro plan seeded by
+-- gateway/migrations/0005_seed_vat_plans.sql. Without this the vat_* plans are
+-- advertised but unreachable — no customer is ever placed on them (audit #16).
+-- DO UPDATE (not DO NOTHING) so a DB previously seeded on 'pro' is migrated.
 INSERT INTO customers (id, email, plan_id) VALUES
-  ('00000000-0000-0000-0000-000000000001', 'dev@example.com', 'pro')
-ON CONFLICT (email) DO NOTHING;
+  ('00000000-0000-0000-0000-000000000001', 'dev@example.com', 'vat_pro')
+ON CONFLICT (email) DO UPDATE SET plan_id = EXCLUDED.plan_id;
 
 INSERT INTO api_keys (id, customer_id, prefix, hash, name) VALUES
   ('00000000-0000-0000-0000-000000000002',
@@ -47,13 +51,13 @@ INSERT INTO api_keys (id, customer_id, prefix, hash, name) VALUES
 ON CONFLICT (id) DO NOTHING;
 EOF
 
-echo "Seeded customer dev@example.com (plan=pro)."
+echo "Seeded customer dev@example.com (plan=vat_pro)."
 echo
 echo "Dev key (use as Authorization: Bearer):"
 echo "  $FULL_KEY"
 echo
 echo "Smoke test:"
-echo "  curl -s -X POST localhost:8080/v1/echo \\"
+echo "  curl -s -X POST localhost:8080/v1/validate-vat \\"
 echo "    -H 'authorization: Bearer $FULL_KEY' \\"
 echo "    -H 'content-type: application/json' \\"
-echo "    -d '{\"x\":\"hi\"}' | jq"
+echo "    -d '{\"vat\":\"DE123456789\"}' | jq"
