@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
@@ -74,7 +75,13 @@ func NewRouter(d *Deps) http.Handler {
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Redis, d.PG))
 	r.Get("/openapi.json", openapi.Handler())
-	r.Post("/webhooks/stripe", d.Webhook.Handle)
+
+	// The Stripe webhook is mounted outside auth/quota gating, so it carries no
+	// per-customer rate limit. Add a lightweight IP-based limiter (60 req/min/IP,
+	// keyed on X-Forwarded-For/RemoteAddr) in front of ONLY this route to blunt
+	// unauthenticated flooding. Signature verification, the replay window, and the
+	// dispatch-first/record-after ordering inside Handle are untouched.
+	r.With(httprate.LimitByRealIP(60, time.Minute)).Post("/webhooks/stripe", d.Webhook.Handle)
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
