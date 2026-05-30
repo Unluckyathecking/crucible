@@ -191,9 +191,10 @@ func TestNew_TransportCeilingAndTimeouts(t *testing.T) {
 	if tr.MaxConnsPerHost != 32 {
 		t.Errorf("MaxConnsPerHost = %d, want 32 from config knob", tr.MaxConnsPerHost)
 	}
-	if tr.ResponseHeaderTimeout != responseHeaderTimeout {
-		t.Errorf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, responseHeaderTimeout)
-	}
+	// No ResponseHeaderTimeout assertion: a fixed header-wait ceiling would cap
+	// legitimate workers (which write the response only after their handler
+	// returns) below WORKER_TIMEOUT_MS. Total time is bounded by the per-request
+	// context deadline; the real DoS fix is the connection ceiling + connect timeout.
 	if tr.DialContext == nil {
 		t.Error("DialContext is nil; want an explicit net.Dialer with connect timeout")
 	}

@@ -23,9 +23,6 @@ const (
 	// defaultMaxConns caps total connections per worker host so a slow worker
 	// can't pin gateway sockets/goroutines without bound. Used when maxConns <= 0.
 	defaultMaxConns = 64
-	// responseHeaderTimeout bounds the wait for a worker's response headers after
-	// the request is written, independent of the per-request context deadline.
-	responseHeaderTimeout = 5 * time.Second
 )
 
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
@@ -78,11 +75,16 @@ func New(workerURL string, timeout time.Duration, maxConns int) *Client {
 					Timeout:   2 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				MaxConnsPerHost:       maxConns,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   50,
-				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: responseHeaderTimeout,
+				MaxConnsPerHost:     maxConns,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 50,
+				IdleConnTimeout:     90 * time.Second,
+				// No ResponseHeaderTimeout: workers write the whole response only after
+				// their handler returns, so header latency == total handler latency. A
+				// fixed ceiling here would silently cap legitimate workers below the
+				// configured WORKER_TIMEOUT_MS. Total time is already bounded by the
+				// per-request context deadline (and Client.Timeout); connection stalls
+				// are bounded by the Dialer connect timeout above.
 			},
 		},
 	}
