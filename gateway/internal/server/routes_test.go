@@ -407,14 +407,6 @@ func searchSubstring(s, substr string) bool {
 }
 
 func TestWriteJSONError(t *testing.T) {
-	type errorEnvelope struct {
-		Error struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			Retryable bool   `json:"retryable"`
-		} `json:"error"`
-	}
-
 	cases := []struct {
 		name      string
 		status    int
@@ -439,20 +431,39 @@ func TestWriteJSONError(t *testing.T) {
 				t.Errorf("Content-Type %q, want application/json", ct)
 			}
 
-			dec := json.NewDecoder(bytes.NewReader(w.Body.Bytes()))
+			// Verify top-level has exactly one key: "error".
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			if len(top) != 1 {
+				t.Fatalf("body has %d top-level keys, want 1 (\"error\")", len(top))
+			}
+			errRaw, ok := top["error"]
+			if !ok {
+				t.Fatal("body missing top-level \"error\" key")
+			}
+
+			// Verify error object has exactly three fields with correct values.
+			type errorObj struct {
+				Code      string `json:"code"`
+				Message   string `json:"message"`
+				Retryable bool   `json:"retryable"`
+			}
+			dec := json.NewDecoder(bytes.NewReader(errRaw))
 			dec.DisallowUnknownFields()
-			var env errorEnvelope
-			if err := dec.Decode(&env); err != nil {
-				t.Fatalf("failed to decode body (unexpected field or malformed JSON?): %v", err)
+			var obj errorObj
+			if err := dec.Decode(&obj); err != nil {
+				t.Fatalf("failed to decode error object (unexpected field?): %v", err)
 			}
-			if env.Error.Code != tc.code {
-				t.Errorf("error.code %q, want %q", env.Error.Code, tc.code)
+			if obj.Code != tc.code {
+				t.Errorf("error.code %q, want %q", obj.Code, tc.code)
 			}
-			if env.Error.Message != tc.msg {
-				t.Errorf("error.message %q, want %q", env.Error.Message, tc.msg)
+			if obj.Message != tc.msg {
+				t.Errorf("error.message %q, want %q", obj.Message, tc.msg)
 			}
-			if env.Error.Retryable != tc.retryable {
-				t.Errorf("error.retryable %v, want %v", env.Error.Retryable, tc.retryable)
+			if obj.Retryable != tc.retryable {
+				t.Errorf("error.retryable %v, want %v", obj.Retryable, tc.retryable)
 			}
 		})
 	}
