@@ -7,10 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
@@ -390,6 +392,188 @@ func TestInvokeErrorExposureTransportErrorAlwaysSanitized(t *testing.T) {
 	// Transport errors always sanitized — worker message never exposed.
 	if errObj["message"] != "worker unavailable" {
 		t.Errorf("expected message 'worker unavailable', got %q", errObj["message"])
+	}
+}
+
+func TestWebhookIPRateLimited(t *testing.T) {
+	// Regression for audit #11: the public /webhooks/stripe route is mounted
+	// outside auth/quota gating and previously had no rate limit. A single IP
+	// must be capped at 60 req/min; the 61st request returns 429 before reaching
+	// the webhook handler. Each request carries no valid Stripe signature, so the
+	// handler (when reached) returns 400 without touching the DB — the limiter is
+	// the only thing that can produce a 429 here.
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	const remoteAddr = "203.0.113.7:54321"
+	send := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		req.RemoteAddr = remoteAddr
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 60; i++ {
+		if code := send(); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d was rate limited (429) before the 60/min cap", i+1)
+		}
+	}
+	if code := send(); code != http.StatusTooManyRequests {
+		t.Fatalf("61st request: expected 429, got %d", code)
+	}
+}
+
+func TestWebhookRateLimitPerIP(t *testing.T) {
+	// A different IP must not be penalized by another IP's traffic — the limiter
+	// keys per-IP, not globally.
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	send := func(addr string) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 61; i++ {
+		send("198.51.100.1:1111")
+	}
+	if code := send("198.51.100.2:2222"); code == http.StatusTooManyRequests {
+		t.Fatalf("second IP was rate limited by first IP's traffic, got %d", code)
+	}
+}
+
+func TestWebhookRateLimitSpoofedHeaderCannotExceedCap(t *testing.T) {
+	// Regression for the trust-boundary review on audit #11: httprate's KeyByRealIP
+	// reads client-controlled headers (True-Client-IP > X-Real-IP > X-Forwarded-For >
+	// RemoteAddr). Under the intended deployment, Caddy strips True-Client-IP and
+	// X-Real-IP and overrides X-Forwarded-For with its observed {remote_host}, so the
+	// gateway keys on a single trusted value the client cannot influence.
+	//
+	// The gateway also strips True-Client-IP and X-Real-IP in its own middleware
+	// (defense-in-depth) so a Caddyfile mis-config cannot silently re-open the bypass.
+	//
+	// This test sends ALL THREE client-controlled identity headers with a FRESH value
+	// on every request (simulating an attacker trying to mint a new rate-limit bucket
+	// per request). RemoteAddr stays constant (Caddy's internal Docker address) and
+	// X-Forwarded-For is set to the constant trusted value Caddy would emit. The
+	// gateway must strip True-Client-IP and X-Real-IP before the limiter runs, so it
+	// keys on the constant X-Forwarded-For — the 61st request must still return 429.
+	//
+	// If the stripping middleware is removed, KeyByRealIP keys on the rotating
+	// True-Client-IP first; each request lands in its own bucket and the cap is never
+	// reached, causing this test to fail (audit #11 re-opened).
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	const (
+		trustedXFF = "203.0.113.50" // constant value Caddy sets from {remote_host}
+		caddyAddr  = "10.0.0.2:443" // constant Caddy Docker-bridge address
+	)
+	send := func(i int) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		// RemoteAddr is constant: in production this is Caddy's address on the Docker
+		// network, identical for every request regardless of the real client.
+		req.RemoteAddr = caddyAddr
+		// Caddy sets X-Forwarded-For to the real client IP (constant for one attacker).
+		req.Header.Set("X-Forwarded-For", trustedXFF)
+		// Rotate True-Client-IP and X-Real-IP per request — an attacker's attempt to
+		// mint a fresh rate-limit bucket each time. The gateway must strip these before
+		// the limiter so they cannot influence the key.
+		req.Header.Set("True-Client-IP", "198.51.100."+strconv.Itoa(i))
+		req.Header.Set("X-Real-IP", "192.0.2."+strconv.Itoa(i%254+1))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 60; i++ {
+		// Each request carries a unique True-Client-IP and X-Real-IP. Without the
+		// stripping middleware, KeyByRealIP would key on True-Client-IP and each
+		// request would land in its own bucket — the cap would never be reached.
+		if code := send(i); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d rate limited before cap despite rotating spoofed headers (unexpected early 429)", i+1)
+		}
+	}
+	// 61st request: spoofed headers rotate again, but the limiter must still see the
+	// same constant X-Forwarded-For key and return 429.
+	if code := send(255); code != http.StatusTooManyRequests {
+		t.Fatalf("61st request: expected 429 — rotating spoofed headers must not exceed the per-IP cap, got %d", code)
+	}
+}
+
+func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
+	// Regression for audit #20: only the explicit "full" opt-in forwards worker
+	// detail. Every other value — including the unset/empty default — must surface
+	// a stable code + safe message and never leak the worker's error code or
+	// message. Cover empty, the configured "sanitized" default, and an unknown
+	// value to lock the safe-by-default fallthrough.
+	for _, mode := range []string{"", "sanitized", "unknown"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":      "INTERNAL_STACK",
+						"message":   "panic: runtime error at /srv/worker/db.go:42",
+						"retryable": false,
+					},
+				})
+			}))
+			defer worker.Close()
+
+			p := proxy.New(worker.URL, 5*time.Second)
+			h := invoke(p, nil, mode, "test")
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"x"}`))
+			w := httptest.NewRecorder()
+			h(w, req)
+
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("expected 502, got %d", w.Code)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			errObj := body["error"].(map[string]any)
+			if errObj["code"] != "WORKER_UNREACHABLE" {
+				t.Errorf("expected stable code 'WORKER_UNREACHABLE', got %q", errObj["code"])
+			}
+			if errObj["message"] != "worker unavailable" {
+				t.Errorf("expected safe message 'worker unavailable', got %q", errObj["message"])
+			}
+
+			bodyStr := w.Body.String()
+			for _, leak := range []string{"INTERNAL_STACK", "panic", "runtime error", "/srv/worker/db.go"} {
+				if contains(bodyStr, leak) {
+					t.Errorf("mode %q leaked worker internal detail %q", mode, leak)
+				}
+			}
+		})
 	}
 }
 
