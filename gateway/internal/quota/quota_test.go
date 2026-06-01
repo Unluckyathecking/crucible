@@ -11,10 +11,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
@@ -353,6 +355,8 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
+	before := testutil.ToFloat64(observability.QuotaFailOpenTotal)
+
 	ctx := auth.WithTestKey(context.Background(), key)
 	req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -364,5 +368,10 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d (fail-open on Redis error)", rec.Code, http.StatusOK)
+	}
+
+	after := testutil.ToFloat64(observability.QuotaFailOpenTotal)
+	if after != before+1 {
+		t.Errorf("crucible_quota_failopen_total = %v, want %v (must increment on Redis-error fail-open)", after, before+1)
 	}
 }
