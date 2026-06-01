@@ -238,7 +238,7 @@ func TestInvokeErrorExposureSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -291,7 +291,7 @@ func TestInvokeErrorExposureFull(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -337,7 +337,7 @@ func TestInvokeErrorExposureDefaultSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -372,7 +372,7 @@ func TestInvokeErrorExposureTransportErrorAlwaysSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))

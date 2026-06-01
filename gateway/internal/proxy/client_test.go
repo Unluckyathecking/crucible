@@ -23,7 +23,7 @@ func TestInvoke_Success(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{
 		RequestID: "req_x",
 		Operation: "echo",
@@ -50,7 +50,7 @@ func TestInvoke_WorkerError(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
@@ -70,7 +70,7 @@ func TestInvoke_Non200(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error for non-200, got nil")
@@ -93,7 +93,7 @@ func TestInvoke_Non200_BodyTruncated(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -110,7 +110,7 @@ func TestInvoke_MalformedShape(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error for malformed response, got nil")
@@ -123,7 +123,7 @@ func TestInvoke_Timeout(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 50*time.Millisecond)
+	c := New(worker.URL, 50*time.Millisecond, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
@@ -134,12 +134,12 @@ func TestInvoke_Timeout(t *testing.T) {
 }
 
 func TestInvoke_FallbackTimeout(t *testing.T) {
-	c := New("http://fake", 0)
+	c := New("http://fake", 0, 0)
 	if c.http.Timeout != defaultTimeout {
 		t.Errorf("timeout = %v, want %v fallback", c.http.Timeout, defaultTimeout)
 	}
 
-	cNegative := New("http://fake", -5*time.Second)
+	cNegative := New("http://fake", -5*time.Second, 0)
 	if cNegative.http.Timeout != defaultTimeout {
 		t.Errorf("negative timeout = %v, want %v fallback", cNegative.http.Timeout, defaultTimeout)
 	}
@@ -156,7 +156,7 @@ func TestInvoke_ContextDeadlineHonored(t *testing.T) {
 	}))
 	t.Cleanup(worker.Close)
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -176,6 +176,36 @@ func TestInvoke_ContextDeadlineHonored(t *testing.T) {
 		!errors.Is(err, context.Canceled) &&
 		!(errors.As(err, &urlErr) && urlErr.Timeout()) {
 		t.Errorf("expected context deadline/cancellation error, got: %v", err)
+	}
+}
+
+func TestNew_TransportCeilingAndTimeouts(t *testing.T) {
+	// A slow worker must not be able to pin gateway sockets/goroutines without
+	// bound: the transport caps connections per host and bounds the header wait.
+	c := New("http://worker", 5*time.Second, 32)
+
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.http.Transport)
+	}
+	if tr.MaxConnsPerHost != 32 {
+		t.Errorf("MaxConnsPerHost = %d, want 32 from config knob", tr.MaxConnsPerHost)
+	}
+	// No ResponseHeaderTimeout assertion: a fixed header-wait ceiling would cap
+	// legitimate workers (which write the response only after their handler
+	// returns) below WORKER_TIMEOUT_MS. Total time is bounded by the per-request
+	// context deadline; the real DoS fix is the connection ceiling + connect timeout.
+	if tr.DialContext == nil {
+		t.Error("DialContext is nil; want an explicit net.Dialer with connect timeout")
+	}
+}
+
+func TestNew_DefaultMaxConns(t *testing.T) {
+	// maxConns <= 0 must fall back to a sane ceiling rather than unlimited (0).
+	c := New("http://worker", 5*time.Second, 0)
+	tr := c.http.Transport.(*http.Transport)
+	if tr.MaxConnsPerHost != defaultMaxConns {
+		t.Errorf("MaxConnsPerHost = %d, want default %d", tr.MaxConnsPerHost, defaultMaxConns)
 	}
 }
 
@@ -201,7 +231,7 @@ func TestInvoke_StalledConnection(t *testing.T) {
 
 	workerURL := "http://" + l.Addr().String()
 	// Set a very short timeout so the test runs fast.
-	c := New(workerURL, 50*time.Millisecond)
+	c := New(workerURL, 50*time.Millisecond, 0)
 
 	start := time.Now()
 	_, err = c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
