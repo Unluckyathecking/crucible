@@ -15,5 +15,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
       - name: smoke-new-tool
         run: bash scripts/smoke-new-tool.sh

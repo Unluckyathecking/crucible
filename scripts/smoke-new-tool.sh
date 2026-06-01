@@ -48,5 +48,45 @@ if [[ "$ROOT_SALT" != "$DASH_SALT" || "$ROOT_SALT" == "REPLACE_WITH"* ]]; then
   exit 1
 fi
 
+echo "==> non-Go surfaces"
+
+# --- Rust SDK -----------------------------------------------------------------
+# Gate on cargo; machines without Rust toolchain skip this check gracefully.
+if command -v cargo >/dev/null 2>&1; then
+  echo "  -> cargo check workers/sdk-rust"
+  (cd workers/sdk-rust && cargo check --quiet 2>&1)
+else
+  echo "  -> cargo not found — skipping Rust SDK check"
+fi
+
+# --- Python stub --------------------------------------------------------------
+# Gate on python3; machines without Python skip this check gracefully.
+if command -v python3 >/dev/null 2>&1; then
+  echo "  -> py_compile workers/stubs/python/worker.py"
+  python3 -c "import py_compile; py_compile.compile('workers/stubs/python/worker.py', doraise=True)"
+
+  echo "  -> smoke-run: start worker, hit /healthz, stop worker"
+  WORKER_PORT=19081
+  PORT=$WORKER_PORT python3 workers/stubs/python/worker.py &
+  WORKER_PID=$!
+  # Wait up to 3 seconds for the worker to be ready.
+  ok=0
+  for _i in 1 2 3 4 5 6; do
+    sleep 0.5
+    if curl -sf "http://localhost:${WORKER_PORT}/healthz" >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+  done
+  kill "$WORKER_PID" 2>/dev/null || true
+  wait "$WORKER_PID" 2>/dev/null || true
+  if [[ $ok -ne 1 ]]; then
+    echo "FAIL: Python stub /healthz did not return 200" >&2
+    exit 1
+  fi
+else
+  echo "  -> python3 not found — skipping Python stub check"
+fi
+
 echo
 echo "smoke-new-tool: PASS"
