@@ -8,6 +8,19 @@ jobs:
   go:
     runs-on: ubuntu-latest
     services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_DB: crucible
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible -d crucible"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       redis:
         image: redis:7-alpine
         ports:
@@ -31,6 +44,7 @@ jobs:
         run: go work sync
       - name: gateway test
         env:
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
           REDIS_URL: redis://localhost:6379
         run: cd gateway && go vet ./... && go test -race ./...
       - name: sdk-go test
