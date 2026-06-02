@@ -100,6 +100,12 @@ func (p *PlanCache) reload(ctx context.Context) {
 		p.mu.Unlock()
 	}()
 
+	// Zero-value PlanCache literals (used in some unit tests) leave baseCtx nil;
+	// context.WithTimeout panics on a nil parent. NewPlanCache always sets
+	// baseCtx to context.Background(), so this guard is a no-op in production.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ctx, cancel := context.WithTimeout(ctx, reloadTimeout)
 	defer cancel()
 

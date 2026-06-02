@@ -14,6 +14,28 @@ import (
 // that must satisfy the nullable *int64 column in the plans table.
 func int64ptr(v int64) *int64 { return &v }
 
+// waitReloadApplied blocks until a background (async) reload has populated planID
+// with the expected rate and is no longer loading, or fails the test after a short
+// deadline. It reads cache state directly under the lock so it never itself triggers
+// a reload. Used by the stale-path tests, whose reload runs in a goroutine.
+func waitReloadApplied(t *testing.T, pc *PlanCache, planID string, wantRate int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pc.mu.RLock()
+		e, ok := pc.plans[planID]
+		loading := pc.loading
+		pc.mu.RUnlock()
+		if ok && e.RatePerMinute == wantRate && !loading {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background reload did not apply %s=%d (loading=%v)", planID, wantRate, loading)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestPlanCache_Concurrency_Race exercises concurrent Get calls under -race.
 // A stale cache is set up so that the first goroutine triggers reload while
 // others read stale values — the single-flight guard must prevent DB fan-out.
@@ -78,10 +100,16 @@ func TestPlanCache_TTL_RefreshTriggered(t *testing.T) {
 			AddRow("enterprise", 1000, int64ptr(100000)))
 
 	pc := &PlanCache{
-		db:    mock,
-		plans: map[string]PlanEntry{},
-		fresh: time.Now().Add(-2 * cacheTTL), // stale
+		db:      mock,
+		baseCtx: context.Background(),
+		plans:   map[string]PlanEntry{},
+		fresh:   time.Now().Add(-2 * cacheTTL), // stale → background (async) reload
 	}
+
+	// A stale read returns immediately and kicks off a background reload; wait for
+	// it to land before asserting the refreshed values.
+	_ = pc.Get(context.Background(), "enterprise")
+	waitReloadApplied(t, pc, "enterprise", 1000)
 
 	entry := pc.Get(context.Background(), "enterprise")
 	if entry.RatePerMinute != 1000 {
@@ -135,10 +163,12 @@ func TestPlanCache_Reload_DBError(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, rate_limit_per_minute, monthly_unit_cap FROM plans`).
 		WillReturnError(fmt.Errorf("connection refused"))
 
+	// Zero (cold) fresh → reload runs synchronously, so the single Get below
+	// deterministically observes the fail-open outcome. The stale path's async
+	// reload is covered in plans_async_test.go.
 	pc := &PlanCache{
 		db:    mock,
 		plans: map[string]PlanEntry{"pro": {RatePerMinute: 77, MonthlyCap: 777}},
-		fresh: time.Now().Add(-2 * cacheTTL),
 	}
 
 	// Should return last-known value despite DB error.
@@ -168,10 +198,10 @@ func TestPlanCache_Reload_IterationError(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, rate_limit_per_minute, monthly_unit_cap FROM plans`).
 		WillReturnRows(rows)
 
+	// Zero (cold) fresh → synchronous reload for a deterministic single-Get assertion.
 	pc := &PlanCache{
 		db:    mock,
 		plans: map[string]PlanEntry{"pro": {RatePerMinute: 42, MonthlyCap: 42}},
-		fresh: time.Now().Add(-2 * cacheTTL),
 	}
 
 	// Even with iteration error, the code should not panic and last-known is preserved.
@@ -200,10 +230,10 @@ func TestPlanCache_Reload_NullCap(t *testing.T) {
 		WillReturnRows(mock.NewRows([]string{"id", "rate_limit_per_minute", "monthly_unit_cap"}).
 			AddRow("unlimited", 999, (*int64)(nil)))
 
+	// Zero (cold) fresh → synchronous reload for a deterministic single-Get assertion.
 	pc := &PlanCache{
 		db:    mock,
 		plans: map[string]PlanEntry{},
-		fresh: time.Now().Add(-2 * cacheTTL),
 	}
 
 	entry := pc.Get(context.Background(), "unlimited")
@@ -234,13 +264,15 @@ func TestPlanCache_Concurrency_MultipleReloads(t *testing.T) {
 			AddRow("pro", 100, int64ptr(1000)))
 
 	pc := &PlanCache{
-		db:    mock,
-		plans: map[string]PlanEntry{},
-		fresh: time.Now().Add(-2 * cacheTTL),
+		db:      mock,
+		baseCtx: context.Background(),
+		plans:   map[string]PlanEntry{},
+		fresh:   time.Now().Add(-2 * cacheTTL),
 	}
 
-	// First call triggers first reload.
+	// First stale window triggers the first (background) reload.
 	_ = pc.Get(context.Background(), "pro")
+	waitReloadApplied(t, pc, "pro", 100)
 
 	// Now set stale again and set up second reload expectation.
 	pc.mu.Lock()
@@ -251,7 +283,10 @@ func TestPlanCache_Concurrency_MultipleReloads(t *testing.T) {
 		WillReturnRows(mock.NewRows([]string{"id", "rate_limit_per_minute", "monthly_unit_cap"}).
 			AddRow("pro", 200, int64ptr(2000)))
 
-	// Second call triggers second reload.
+	// Second stale window triggers the second (background) reload.
+	_ = pc.Get(context.Background(), "pro")
+	waitReloadApplied(t, pc, "pro", 200)
+
 	entry := pc.Get(context.Background(), "pro")
 	if entry.RatePerMinute != 200 {
 		t.Errorf("RatePerMinute = %d, want 200 after second reload", entry.RatePerMinute)

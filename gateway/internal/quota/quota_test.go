@@ -189,7 +189,11 @@ func TestRefundAt_MonthBoundary_UsesOriginalKey(t *testing.T) {
 
 	tr := New(rdb)
 
-	now := time.Date(2026, 5, 31, 23, 59, 0, 0, time.UTC)
+	// Reserve derives the month key from time.Now() internally, so the expected
+	// key must be computed from the same clock — a hardcoded date breaks the test
+	// at every month rollover. The invariant under test is that RefundAt reuses
+	// the key Reserve returned, not which month it is.
+	now := time.Now().UTC()
 	key := monthKey(cust, now)
 	t.Cleanup(func() { rdb.Del(context.Background(), key) })
 
