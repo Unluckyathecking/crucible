@@ -644,9 +644,10 @@ export class ApiError extends Error {
     let retryable: boolean | undefined;
     try {
       const body = (await resp.json()) as ErrorBody;
-      code = body.error.code;
-      message = body.error.message;
-      retryable = body.error.retryable;
+      // Use || / ?? so the defensive defaults survive a partial error body ({}).
+      code = body.error.code || code;
+      message = body.error.message || message;
+      retryable = body.error.retryable ?? retryable;
     } catch (e) {
       message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
@@ -918,7 +919,7 @@ def ts_test_method(op):
             f'      }});',
             f'    }};',
             f'    const c2 = new Client("http://gw.test", {{ fetch: capFetch2, apiKey: "default-key" }});',
-            f'    {call_no_key.replace("c.", "c2.")};',
+            f'    {"await c2." + call_no_key.split("c.", 1)[1]};',
             f'    const hdrs2 = capturedInit2!.headers as Record<string, string>;',
             f'    assert.equal(hdrs2["{api_key_header}"], "default-key");',
             f'  }});',

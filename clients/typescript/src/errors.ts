@@ -38,9 +38,10 @@ export class ApiError extends Error {
     let retryable: boolean | undefined;
     try {
       const body = (await resp.json()) as ErrorBody;
-      code = body.error.code;
-      message = body.error.message;
-      retryable = body.error.retryable;
+      // Use || / ?? so the defensive defaults survive a partial error body ({}).
+      code = body.error.code || code;
+      message = body.error.message || message;
+      retryable = body.error.retryable ?? retryable;
     } catch (e) {
       message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
