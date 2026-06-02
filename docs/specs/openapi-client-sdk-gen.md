@@ -1,39 +1,80 @@
-# 10xworker:job — `openapi-client-sdk-gen`
+# `openapi-client-sdk-gen` — implementation reference
 
-> Primary decomposition spec. The canonical machine-readable contract is the JSON block in the PR body; this document is the human-facing decomposition for downstream 10X workers.
+> This document describes the delivered implementation. The canonical machine-readable contract is the JSON block in PR #94.
 
-## Why this phase
+## What was built
 
-Crucible advertises a clone-and-adapt framework with "OpenAPI/SDK generation" as a first-class feature. Today `gateway/internal/openapi` builds a static OpenAPI 3.1 document and serves it at `GET /openapi.json`, but there is **no generated consumer client SDK** — only the worker-side SDKs (`workers/sdk-go`, `workers/sdk-rust`, `workers/stubs/*`). Every team integrating *against* a Crucible-built API must hand-roll an HTTP client and re-derive the request/response and error-envelope shapes. This phase closes that gap with reusable, regenerable client SDKs and a CI drift guard, so each clone ships type-safe clients for free and every future endpoint propagates into the SDKs on regeneration.
+| Artifact | Path | Purpose |
+|---|---|---|
+| OpenAPI snapshot | `clients/openapi.json` | Canonical source-of-truth for generation; exact output of `gateway/internal/openapi.Build()` |
+| Generator script | `scripts/gen-clients.sh` | Reads the snapshot; uses embedded Python 3 (stdlib only) to regenerate both SDKs deterministically |
+| Go client | `clients/go/` | Standalone `go.mod` module; typed `Client`, typed `APIError`, zero external deps |
+| TypeScript client | `clients/typescript/` | Strict-TS npm package; typed `Client`, typed `ApiError`, no runtime deps beyond `fetch` |
+| Drift CI | `.github/workflows/client-sdk-drift.yml` | Runs generator then `git diff --exit-code clients/`; fails if committed clients are stale |
 
-This is **consumer/client SDK** work and is deliberately disjoint from the worker-side TypeScript SDK in open PR #56 (`workers/sdk-ts/**`). Different module boundary, different audience, no shared files.
+## Design decisions
 
-## Module boundary
+### Snapshot instead of live gateway
 
-- New top-level `clients/` tree: `clients/go/` (standalone Go module) and `clients/typescript/` (standalone npm package).
-- New `scripts/gen-clients.sh` regeneration entrypoint.
-- New `.github/workflows/client-sdk-drift.yml` CI job (NOT `ci.yml`, which open PR #88 owns).
-- `gateway/internal/openapi/openapi.go` is **read-only input**.
+`scripts/gen-clients.sh` reads `clients/openapi.json` — a committed snapshot produced by `gateway/internal/openapi.Build()`. This avoids the need for a running gateway in CI and keeps generation deterministic and offline. When the gateway's OpenAPI document changes, update `clients/openapi.json` by running `go test ./gateway/internal/openapi/... -run TestBuildDocument -v` (or equivalent) and committing the output, then re-run `scripts/gen-clients.sh`.
 
-## Suggested decomposition for downstream workers
+### Generator language
 
-1. **Spec source** — read the OpenAPI doc either by invoking the `openapi` package's builder from a tiny Go `//go:generate`-style helper, or from a committed `clients/openapi.json` snapshot that the script regenerates. The script must be deterministic and runnable in CI without a live gateway.
-2. **Go client** (`clients/go/`) — its own `go.mod`; a `Client` with a constructor taking a base URL and a caller-supplied `*http.Client` (so timeouts are the caller's choice — do **not** hardcode); typed request/response structs and a typed error mapping the `{error:{code,message,retryable}}` envelope to a Go error.
-3. **TypeScript client** (`clients/typescript/`) — strict TS, `fetch`-based, no runtime deps beyond the runtime's `fetch`; typed request/response interfaces and a typed error/exception for the envelope.
-4. **Drift guard** — `client-sdk-drift.yml` runs `scripts/gen-clients.sh` then `git diff --exit-code clients/`, failing CI if the committed clients are stale relative to the spec.
+Embedded Python 3 (stdlib only: `json`, `os`, `sys`). Python 3 is present on all common CI images and developer machines. No `oapi-codegen`, `openapi-generator-cli`, or other external tools required.
 
-## Acceptance (verifiable from the diff)
+### Idempotency guarantee
 
-See the PR-body JSON `acceptance` array. In summary: `scripts/gen-clients.sh` is idempotent; `cd clients/go && go build ./... && go test -race ./...` is green; `cd clients/typescript && npm ci && npm run build && npm test` is green with `tsc --strict --noEmit`; both clients type the error envelope; the drift workflow fails on un-regenerated spec changes; nothing under `gateway/**`, `workers/**`, or `dashboard/**` is modified.
+The generator:
+- Sorts all map keys (from JSON parsing) consistently using Python 3.7+ insertion-order dicts with explicit `sorted()` calls
+- Uses fixed string templates (no timestamps, no randomness)
 
-## Forbidden
+A second run with the same `clients/openapi.json` produces byte-identical output → `git diff --exit-code clients/` exits 0.
 
-- No changes to `gateway/proto/tool.proto` or any `gateway/internal/**` package.
-- No changes to `workers/sdk-ts/**` or `workers/stubs/ts/**` (open PR #56's boundary).
-- No runtime SDK generation inside the gateway binary — build/CI-time only.
-- No edits to `.github/workflows/ci.yml` (open PR #88) — add a new workflow.
+### Go module isolation
+
+`clients/go/go.work` (a local workspace file) overrides the repo-root `go.work` so that `cd clients/go && go build ./...` and `go test -race ./...` work without modifying the shared workspace. The local workspace simply contains `use .`.
+
+### TypeScript: no private-field syntax
+
+Uses TypeScript `private readonly` (compile-time only) instead of `#` native private fields. Both are valid; `private readonly` avoids potential issues with older TypeScript targets or transpilation steps that consumers might apply.
+
+### Error model
+
+Both SDKs model the gateway error envelope `{"error":{"code":"...","message":"...","retryable":true}}` as a concrete typed value:
+- **Go**: `*APIError` (implements `error`); callers use `errors.As(err, &apiErr)`.
+- **TypeScript**: `ApiError extends Error`; callers use `err instanceof ApiError`.
+
+The `retryable` field is present but optional on the Go side (`bool`, zero-value = false) and `boolean | undefined` on the TypeScript side.
+
+## Running locally
+
+```bash
+# Regenerate clients from the committed snapshot (idempotent):
+bash scripts/gen-clients.sh
+
+# Check for drift:
+git diff --exit-code clients/
+
+# Test Go client:
+cd clients/go && go build ./... && go test -race ./...
+
+# Test TypeScript client (first time — installs devDependencies):
+cd clients/typescript && npm ci && npm run build && npm test
+```
+
+## Adding a new endpoint
+
+1. Add the route in `gateway/internal/server/routes.go` (per-product edit point).
+2. Rebuild the OpenAPI snapshot: run `gateway/internal/openapi.Build()` and capture its JSON output to `clients/openapi.json`.
+3. Run `bash scripts/gen-clients.sh` — new typed methods appear in both SDKs.
+4. Commit `clients/openapi.json`, `clients/go/`, `clients/typescript/`.
+
+The CI drift job enforces this: if you push a changed spec without regenerating the clients, the `git diff --exit-code clients/` step fails.
+
+## Invariants respected
+
+- `gateway/proto/tool.proto` — untouched.
+- `gateway/internal/**` — read-only (only `internal/openapi` is consumed, as input to snapshot creation).
+- `workers/sdk-ts/**`, `workers/stubs/ts/**` — untouched.
+- `.github/workflows/ci.yml` — untouched; this adds a separate `client-sdk-drift.yml`.
 - No new runtime dependency in the gateway Go module or the dashboard.
-
-## Scope LOC
-
-Estimated well under the 10k cap (small API surface → small generated clients + script + workflow + spec).

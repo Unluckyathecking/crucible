@@ -1,0 +1,48 @@
+name: Client SDK drift guard
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "clients/openapi.json"
+      - "clients/go/**"
+      - "clients/typescript/**"
+      - "scripts/gen-clients.sh"
+      - ".github/workflows/client-sdk-drift.yml"
+  pull_request:
+    paths:
+      - "clients/openapi.json"
+      - "clients/go/**"
+      - "clients/typescript/**"
+      - "scripts/gen-clients.sh"
+      - ".github/workflows/client-sdk-drift.yml"
+
+jobs:
+  drift:
+    name: Drift guard + client tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: clients/go/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Regenerate clients from snapshot
+        run: bash scripts/gen-clients.sh
+
+      - name: Fail if clients drift from spec
+        run: git diff --exit-code clients/
+
+      - name: Go client — build and test
+        working-directory: clients/go
+        run: go build ./... && go test -race ./...
+
+      - name: TypeScript client — install, build, and test
+        working-directory: clients/typescript
+        run: npm ci && npm run build && npm test
