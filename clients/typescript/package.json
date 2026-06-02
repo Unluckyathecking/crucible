@@ -8,6 +8,7 @@
     "dist/src"
   ],
   "scripts": {
+    "prepack": "npm run build",
     "build": "tsc",
     "test": "node --test dist/test/client.test.js",
     "typecheck": "tsc --noEmit"
