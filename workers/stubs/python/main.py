@@ -48,7 +48,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
         except json.JSONDecodeError:
-            self._send_json({"error": {"code": "BAD_REQUEST", "message": "invalid JSON"}})
+            self._send_json({"error": {"code": "BAD_REQUEST", "message": "invalid JSON", "retryable": False}})
             return
 
         metadata = req.get("metadata") or {}

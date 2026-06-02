@@ -41,9 +41,30 @@ case "$STUB" in
     PORT="$PORT" "$STUB_BIN" &
     STUB_PID=$!
     ;;
+  rust)
+    echo "==> Building Rust stub..."
+    (cd "$REPO_ROOT/workers/stubs/rust" && cargo build --release 2>&1)
+    echo "==> Starting Rust stub on port $PORT..."
+    PORT="$PORT" "$REPO_ROOT/workers/stubs/rust/target/release/crucible-stub-rust" &
+    STUB_PID=$!
+    ;;
+  ts)
+    echo "==> Building TS SDK..."
+    (cd "$REPO_ROOT/workers/sdk-ts" && npm install --silent && npm run build --silent)
+    echo "==> Building TS stub..."
+    (cd "$REPO_ROOT/workers/stubs/ts" && npm install --silent && npm run build --silent)
+    echo "==> Starting TS stub on port $PORT..."
+    PORT="$PORT" node "$REPO_ROOT/workers/stubs/ts/dist/index.js" &
+    STUB_PID=$!
+    ;;
+  python)
+    echo "==> Starting Python stub on port $PORT..."
+    PORT="$PORT" python3 "$REPO_ROOT/workers/stubs/python/worker.py" &
+    STUB_PID=$!
+    ;;
   *)
     echo "Unknown stub id: $STUB" >&2
-    echo "Supported stubs: go" >&2
+    echo "Supported stubs: go|rust|ts|python" >&2
     exit 1
     ;;
 esac

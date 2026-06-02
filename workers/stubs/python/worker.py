@@ -48,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            self._respond(200, b"ok")
+            self._respond(200, json.dumps({"status": "ok"}).encode())
         else:
             self._respond(404, b"not found")
 
@@ -61,7 +61,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
         except json.JSONDecodeError as exc:
-            self._respond(400, json.dumps({"error": {"code": "BAD_REQUEST", "message": str(exc), "retryable": False}}).encode())
+            self._respond(200, json.dumps({"error": {"code": "BAD_REQUEST", "message": str(exc), "retryable": False}}).encode())
             return
         result = invoke(req)
         self._respond(200, json.dumps(result).encode())
