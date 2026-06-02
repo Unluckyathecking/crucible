@@ -69,6 +69,7 @@ class Handler(BaseHTTPRequestHandler):
     def _respond(self, status: int, body: bytes):
         self.send_response(status)
         self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 

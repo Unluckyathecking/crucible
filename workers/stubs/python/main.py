@@ -75,7 +75,7 @@ def main():
         try:
             port = int(sys.argv[1])
         except ValueError:
-            pass
+            print(f"warning: invalid port {sys.argv[1]!r}, using default {port}", file=sys.stderr, flush=True)
 
     server = HTTPServer(("", port), WorkerHandler)
     print(f"worker listening on :{port}", flush=True)

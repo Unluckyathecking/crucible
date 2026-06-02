@@ -11,8 +11,8 @@ RUN cargo build --release
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-RUN useradd -u 10001 -r cru
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --no-log-init -u 10001 -r cru
 COPY --from=build /src/workers/stubs/rust/target/release/crucible-stub-rust /usr/local/bin/worker
 USER cru
 EXPOSE 8081
