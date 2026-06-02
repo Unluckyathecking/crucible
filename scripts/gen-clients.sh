@@ -59,8 +59,10 @@ for path, item in sorted(spec["paths"].items()):
             continue
         op = Op(path, method, item[method])
         if "billing" in op.tags:
+            print(f"note: skipping {method.upper()} {path} (billing tag excluded)", file=sys.stderr)
             continue
         if not op.json_ok:
+            print(f"note: skipping {method.upper()} {path} (no application/json 200 response)", file=sys.stderr)
             continue
         ops.append(op)
 
