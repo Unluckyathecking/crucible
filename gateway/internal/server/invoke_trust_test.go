@@ -53,7 +53,7 @@ func TestInvokeBillableUnitsZero(t *testing.T) {
 	worker := successWorker(0, "")
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "echo")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"x":1}`))
@@ -122,7 +122,7 @@ func TestInvokeSuccessResponseHeaders(t *testing.T) {
 			worker := successWorker(tt.units, tt.label)
 			defer worker.Close()
 
-			p := proxy.New(worker.URL, 5*time.Second)
+			p := proxy.New(worker.URL, 5*time.Second, 0)
 			h := invoke(p, nil, "sanitized", "echo")
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"x":1}`))
@@ -152,7 +152,7 @@ func TestInvokeSuccessBodyContainsPayload(t *testing.T) {
 	worker := successWorker(3, "ops")
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "echo")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"input":"hello"}`))
@@ -189,7 +189,7 @@ func TestInvokeBadJSONBody(t *testing.T) {
 	worker := successWorker(1, "")
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "echo")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
@@ -222,7 +222,7 @@ func TestInvokeWorker5xxAlwaysSanitized(t *testing.T) {
 			worker := workerThat(http.StatusServiceUnavailable, `{"internal":"secret error details"}`)
 			defer worker.Close()
 
-			p := proxy.New(worker.URL, 5*time.Second)
+			p := proxy.New(worker.URL, 5*time.Second, 0)
 			h := invoke(p, nil, mode, "echo")
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
@@ -264,7 +264,7 @@ func TestInvokeWorkerTimeout(t *testing.T) {
 	workerURL := worker.URL
 	worker.Close() // closed before any request is made
 
-	p := proxy.New(workerURL, 5*time.Second)
+	p := proxy.New(workerURL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "echo")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
@@ -315,7 +315,7 @@ func TestInvokeInternalErrorNeverLeaked(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "echo")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
@@ -354,7 +354,7 @@ func TestInvokeBillableUnitsContractTableDriven(t *testing.T) {
 			worker := successWorker(tt.units, "")
 			defer worker.Close()
 
-			p := proxy.New(worker.URL, 5*time.Second)
+			p := proxy.New(worker.URL, 5*time.Second, 0)
 			h := invoke(p, nil, "sanitized", "echo")
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"x":1}`))
