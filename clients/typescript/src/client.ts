@@ -28,6 +28,17 @@ export class Client {
   private readonly defaultApiKey: string | undefined;
 
   constructor(baseURL: string, options: ClientOptions = {}) {
+    // Normalize baseURL: strip query, fragment, and credentials (mirrors Go client).
+    try {
+      const u = new URL(baseURL);
+      u.search = "";
+      u.hash = "";
+      u.username = "";
+      u.password = "";
+      baseURL = u.toString();
+    } catch {
+      // Non-absolute URL — use as-is (e.g. relative path in tests).
+    }
     this.baseURL = baseURL.replace(/\/$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;

@@ -151,8 +151,9 @@ def go_response_structs():
             elif ftype == "array":
                 go_type = "[]any"
             elif ftype == "object" and add:
-                inner   = add.get("type", "any")
-                go_type = f"map[string]{inner}" if inner == "string" else "map[string]any"
+                inner    = add.get("type", "any")
+                inner_go = {"string": "string", "integer": "int64", "number": "float64", "boolean": "bool"}.get(inner, "any")
+                go_type  = f"map[string]{inner_go}"
             else:
                 go_type = "any"
             fields.append(f'\t{go_field} {go_type} `json:"{fname}"`')
@@ -244,8 +245,11 @@ type Client struct {{
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
 // baseURL is normalized: query strings, fragments, and credentials are stripped.
+// url.Parse is lenient and almost never returns an error for well-formed URLs;
+// on the rare parse failure the raw URL is used unchanged.
 func New(baseURL string, httpClient *http.Client) *Client {{
-\tif u, err := url.Parse(baseURL); err == nil {{
+\tu, err := url.Parse(baseURL)
+\tif err == nil {{
 \t\tu.RawQuery = ""
 \t\tu.Fragment = ""
 \t\tu.User = nil
@@ -292,8 +296,8 @@ func checkError(resp *http.Response) error {{
 \t\t}} `json:"error"`
 \t}}
 \t// Limit to 64 KiB to prevent unbounded reads from malicious servers.
-\t_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
-\tif envelope.Error.Code == "" {{
+\tdecErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
+\tif decErr != nil || envelope.Error.Code == "" {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
 \t}}
 \treturn &APIError{{
@@ -374,6 +378,9 @@ def go_test_method(op):
             "\tif got == nil {",
             '\t\tt.Fatal("expected non-nil map, got nil")',
             "\t}",
+            '\tif got["result"] != "ok" {',
+            '\t\tt.Errorf("result = %v, want \\"ok\\"", got["result"])',
+            "\t}",
             "}",
         ]
     else:
@@ -410,8 +417,8 @@ if first_auth_post:
     auth_go_fn = go_name(first_auth_post.op_id)
     auth_go_has_body = first_auth_post.has_body
     if auth_go_has_body:
-        auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key", nil)'
-        auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key", nil)'
+        auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key", map[string]any{{}})'
+        auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key", map[string]any{{}})'
     else:
         auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key")'
         auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key")'
@@ -668,6 +675,17 @@ export class Client {{
   private readonly defaultApiKey: string | undefined;
 
   constructor(baseURL: string, options: ClientOptions = {{}}) {{
+    // Normalize baseURL: strip query, fragment, and credentials (mirrors Go client).
+    try {{
+      const u = new URL(baseURL);
+      u.search = "";
+      u.hash = "";
+      u.username = "";
+      u.password = "";
+      baseURL = u.toString();
+    }} catch {{
+      // Non-absolute URL — use as-is (e.g. relative path in tests).
+    }}
     this.baseURL = baseURL.replace(/\\/$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;

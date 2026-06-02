@@ -25,8 +25,11 @@ type Client struct {
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
 // baseURL is normalized: query strings, fragments, and credentials are stripped.
+// url.Parse is lenient and almost never returns an error for well-formed URLs;
+// on the rare parse failure the raw URL is used unchanged.
 func New(baseURL string, httpClient *http.Client) *Client {
-	if u, err := url.Parse(baseURL); err == nil {
+	u, err := url.Parse(baseURL)
+	if err == nil {
 		u.RawQuery = ""
 		u.Fragment = ""
 		u.User = nil
@@ -130,8 +133,8 @@ func checkError(resp *http.Response) error {
 		} `json:"error"`
 	}
 	// Limit to 64 KiB to prevent unbounded reads from malicious servers.
-	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
-	if envelope.Error.Code == "" {
+	decErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
+	if decErr != nil || envelope.Error.Code == "" {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
 	return &APIError{

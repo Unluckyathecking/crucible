@@ -83,6 +83,9 @@ func TestInvokeEcho(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected non-nil map, got nil")
 	}
+	if got["result"] != "ok" {
+		t.Errorf("result = %v, want \"ok\"", got["result"])
+	}
 }
 
 func TestAPIError_typed(t *testing.T) {
@@ -96,7 +99,7 @@ func TestAPIError_typed(t *testing.T) {
 			},
 		})
 	})
-	_, err := c.InvokeEcho(context.Background(), "bad-key", nil)
+	_, err := c.InvokeEcho(context.Background(), "bad-key", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -123,7 +126,7 @@ func TestAPIError_retryable(t *testing.T) {
 			},
 		})
 	})
-	_, err := c.InvokeEcho(context.Background(), "key", nil)
+	_, err := c.InvokeEcho(context.Background(), "key", map[string]any{})
 	apiErr, ok := err.(*crucible.APIError)
 	if !ok {
 		t.Fatalf("expected *crucible.APIError, got %T", err)
