@@ -61,7 +61,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self._send_json(resp)
 
     def _send_json(self, obj: dict):
-        data = json.dumps(obj).encode()
+        data = json.dumps(obj, separators=(',', ':')).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))

@@ -48,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            self._respond(200, json.dumps({"status": "ok"}).encode())
+            self._respond(200, b'{"status":"ok"}')
         else:
             self._respond(404, b"not found")
 

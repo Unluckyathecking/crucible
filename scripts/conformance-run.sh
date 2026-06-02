@@ -43,7 +43,7 @@ case "$STUB" in
     ;;
   rust)
     echo "==> Building Rust stub..."
-    (cd "$REPO_ROOT/workers/stubs/rust" && cargo build --release 2>&1)
+    (cd "$REPO_ROOT/workers/stubs/rust" && cargo build --release)
     echo "==> Starting Rust stub on port $PORT..."
     PORT="$PORT" "$REPO_ROOT/workers/stubs/rust/target/release/crucible-stub-rust" &
     STUB_PID=$!
