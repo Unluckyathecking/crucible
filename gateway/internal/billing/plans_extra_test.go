@@ -54,9 +54,10 @@ func TestPlanCache_Concurrency_Race(t *testing.T) {
 
 	// Start with a stale cache so reload fires.
 	pc := &PlanCache{
-		db:    mock,
-		plans: map[string]PlanEntry{"pro": {RatePerMinute: 100, MonthlyCap: 9999}},
-		fresh: time.Now().Add(-2 * cacheTTL),
+		db:      mock,
+		baseCtx: context.Background(),
+		plans:   map[string]PlanEntry{"pro": {RatePerMinute: 100, MonthlyCap: 9999}},
+		fresh:   time.Now().Add(-2 * cacheTTL),
 	}
 
 	const goroutines = 20
@@ -69,6 +70,10 @@ func TestPlanCache_Concurrency_Race(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	// The stale reads return last-known immediately and fire a single background
+	// reload; wait for it to land before asserting on the refreshed value.
+	waitReloadApplied(t, pc, "pro", 200)
 
 	// Enforce the single-query expectation: if more than one reload fired,
 	// pgxmock will report an unexpected call here.
