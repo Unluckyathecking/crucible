@@ -18,8 +18,17 @@ type PlanEntry struct {
 // PlanCache holds the plans table in memory and refreshes every minute.
 // Reloads are single-flighted via `loading` — a sudden stampede of stale-cache reads
 // after the TTL ticks won't fan out N concurrent DB queries.
+//
+// After the first (cold) load, TTL refreshes run ASYNCHRONOUSLY: a stale read
+// kicks off a background reload and serves the last-known-good value immediately,
+// so no request eats the DB round-trip on the hot path. The background reload is
+// rooted at baseCtx (a context tied to the cache's lifetime, NOT the request),
+// so it cannot leak past the cache and cannot be cancelled by the triggering
+// request returning. One extra stale serve per TTL window is acceptable under
+// the existing 60s contract.
 type PlanCache struct {
 	db      db
+	baseCtx context.Context
 	mu      sync.RWMutex
 	plans   map[string]PlanEntry
 	fresh   time.Time
@@ -27,21 +36,35 @@ type PlanCache struct {
 }
 
 func NewPlanCache(pool *pgxpool.Pool) *PlanCache {
-	return &PlanCache{db: pool, plans: map[string]PlanEntry{}}
+	return &PlanCache{db: pool, baseCtx: context.Background(), plans: map[string]PlanEntry{}}
 }
 
 const cacheTTL = 60 * time.Second
+
+// reloadTimeout bounds a single background reload's DB round-trip so a slow or
+// hung query can't pin the `loading` flag forever (which would wedge refreshes).
+const reloadTimeout = 10 * time.Second
 
 // Get returns the full PlanEntry for the named plan. Falls back to a free-tier-shaped entry
 // (60/min, 1000-unit monthly cap) for unknown plans so the gateway fails closed-ish, not wide open.
 func (p *PlanCache) Get(ctx context.Context, planID string) PlanEntry {
 	p.mu.RLock()
+	cold := p.fresh.IsZero()
 	stale := time.Since(p.fresh) > cacheTTL
 	already := p.loading
 	p.mu.RUnlock()
 
-	if stale && !already {
+	switch {
+	case cold:
+		// First load: no last-known-good value exists. Serving an empty plan set
+		// would mis-tier rate-limit/quota, so block and populate synchronously.
+		// reload() re-checks `loading` under the lock to preserve single-flight.
 		p.reload(ctx)
+	case stale && !already:
+		// Warm cache past TTL: refresh in the background off a cache-rooted
+		// context and serve the stale-but-valid value to this request now.
+		// The next request after the reload finishes picks up fresh values.
+		go p.reload(p.baseCtx)
 	}
 
 	p.mu.RLock()
@@ -76,6 +99,15 @@ func (p *PlanCache) reload(ctx context.Context) {
 		p.loading = false
 		p.mu.Unlock()
 	}()
+
+	// Zero-value PlanCache literals (used in some unit tests) leave baseCtx nil;
+	// context.WithTimeout panics on a nil parent. NewPlanCache always sets
+	// baseCtx to context.Background(), so this guard is a no-op in production.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, reloadTimeout)
+	defer cancel()
 
 	rows, err := p.db.Query(ctx, `SELECT id, rate_limit_per_minute, monthly_unit_cap FROM plans`)
 	if err != nil {

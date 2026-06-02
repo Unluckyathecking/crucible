@@ -132,5 +132,7 @@ jobs:
           version: 10
       - name: pnpm install
         run: cd dashboard && pnpm install --frozen-lockfile --ignore-scripts
+      - name: dashboard test
+        run: cd dashboard && pnpm test
       - name: pnpm build
         run: cd dashboard && pnpm build

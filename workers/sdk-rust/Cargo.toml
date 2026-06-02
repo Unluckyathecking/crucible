@@ -17,3 +17,6 @@ async-trait = "0.1"
 name = "crucible_sdk"
 path = "src/lib.rs"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+

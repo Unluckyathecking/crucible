@@ -51,6 +51,64 @@ func TestVerifySignature(t *testing.T) {
 	}
 }
 
+// TestVerifySignature_BoundedCandidates verifies that verifySignature only ever
+// considers a small, bounded number of v1= candidates so an attacker cannot force
+// unbounded constant-time HMAC comparisons on the unauthenticated webhook endpoint.
+// Chosen semantics: only the first 8 v1= values are parsed/compared; a valid
+// signature positioned after the cap is treated as not present and rejected.
+func TestVerifySignature_BoundedCandidates(t *testing.T) {
+	const secret = "whsec_bound_test"
+	const cap = 8
+	body := []byte(`{"id":"evt_bound","type":"customer.subscription.created"}`)
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	h := &Webhook{secret: secret, now: func() time.Time { return now }}
+
+	ts := now.Unix()
+	valid := signStripe(secret, body, ts)
+	validSig := valid[len(fmt.Sprintf("t=%d,v1=", ts)):] // bare 64-hex signature
+
+	bogus := make([]string, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		bogus = append(bogus, fmt.Sprintf("v1=%064x", i))
+	}
+
+	t.Run("1000 invalid candidates rejected", func(t *testing.T) {
+		header := fmt.Sprintf("t=%d,%s", ts, joinComma(bogus))
+		if err := h.VerifySignature(header, body); err == nil {
+			t.Error("expected rejection for header full of invalid signatures")
+		}
+	})
+
+	t.Run("valid within cap verifies", func(t *testing.T) {
+		// valid at position 4 (0-indexed), within the cap of 8
+		parts := append(append([]string{}, bogus[:3]...), "v1="+validSig)
+		header := fmt.Sprintf("t=%d,%s", ts, joinComma(parts))
+		if err := h.VerifySignature(header, body); err != nil {
+			t.Errorf("expected valid signature within cap to verify, got %v", err)
+		}
+	})
+
+	t.Run("valid beyond cap rejected", func(t *testing.T) {
+		// fill the first `cap` slots with bogus, put the valid sig after the cap
+		parts := append(append([]string{}, bogus[:cap]...), "v1="+validSig)
+		header := fmt.Sprintf("t=%d,%s", ts, joinComma(parts))
+		if err := h.VerifySignature(header, body); err == nil {
+			t.Error("expected valid signature positioned beyond the cap to be rejected")
+		}
+	})
+}
+
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ","
+		}
+		out += p
+	}
+	return out
+}
+
 func TestVerifySignature_TamperedBody(t *testing.T) {
 	const secret = "whsec_test"
 	body := []byte(`{"id":"evt_x"}`)

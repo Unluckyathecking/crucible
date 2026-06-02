@@ -104,6 +104,12 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 	if header == "" {
 		return errors.New("missing stripe-signature header")
 	}
+	// maxSigCandidates bounds how many v1= signatures we parse and constant-time
+	// compare. The endpoint is unauthenticated, so an attacker could otherwise stuff
+	// the header with unbounded v1= values to force unbounded HMAC comparisons. We
+	// keep only the first N candidates; any beyond the cap are ignored (a valid
+	// signature past position N is treated as not present).
+	const maxSigCandidates = 8
 	var timestamp string
 	var sigs []string
 	for _, p := range strings.Split(header, ",") {
@@ -115,7 +121,9 @@ func (h *Webhook) verifySignature(header string, body []byte) error {
 		case "t":
 			timestamp = kv[1]
 		case "v1":
-			sigs = append(sigs, kv[1])
+			if len(sigs) < maxSigCandidates {
+				sigs = append(sigs, kv[1])
+			}
 		}
 	}
 	if timestamp == "" || len(sigs) == 0 {

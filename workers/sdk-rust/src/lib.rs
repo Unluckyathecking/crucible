@@ -6,4 +6,6 @@
 
 pub mod server;
 
-pub use server::{Handler, ServeError};
+pub use server::{
+    router, serve, Handler, HandlerError, Request, Response, ServeError, WorkerError,
+};

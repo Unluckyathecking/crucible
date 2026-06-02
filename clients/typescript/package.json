@@ -1,0 +1,23 @@
+{
+  "name": "@crucible/client",
+  "version": "0.1.0",
+  "description": "Type-safe client SDK for the Crucible Gateway API",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src"
+  ],
+  "scripts": {
+    "prepack": "npm run build",
+    "build": "tsc",
+    "test": "npm run build && node --test dist/test/client.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}
