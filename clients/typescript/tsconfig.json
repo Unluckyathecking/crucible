@@ -11,6 +11,7 @@
     "sourceMap": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "noEmitOnError": true,
     "types": ["node"]
   },
   "include": ["src/**/*", "test/**/*"],

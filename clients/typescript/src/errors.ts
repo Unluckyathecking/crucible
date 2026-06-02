@@ -41,8 +41,8 @@ export class ApiError extends Error {
       code = body.error.code;
       message = body.error.message;
       retryable = body.error.retryable;
-    } catch {
-      // body is not valid JSON; keep defaults
+    } catch (e) {
+      message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
     return new ApiError(resp.status, code, message, retryable);
   }

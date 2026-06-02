@@ -22,23 +22,25 @@ type Client struct {
 	http    *http.Client
 }
 
-// New returns a Client targeting baseURL. httpClient defaults to http.DefaultClient when nil.
+// New returns a Client targeting baseURL, or an error if baseURL cannot be parsed.
+// httpClient defaults to http.DefaultClient when nil. Note: http.DefaultClient has no
+// timeout; callers must supply a client with Timeout set or use context.WithTimeout.
 // baseURL is normalized: query strings, fragments, and credentials are stripped; trailing
-// slashes on the path are removed so that path concatenation via ResolveReference is correct.
-func New(baseURL string, httpClient *http.Client) *Client {
+// slashes on the path are removed so that appending spec paths (which start with "/") is correct.
+// Any base path prefix (e.g. "/crucible" for a reverse-proxy subpath) is preserved.
+func New(baseURL string, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		u = &url.URL{Path: strings.TrimRight(baseURL, "/")}
-	} else {
-		u.RawQuery = ""
-		u.Fragment = ""
-		u.User = nil
-		u.Path = strings.TrimRight(u.Path, "/")
+		return nil, fmt.Errorf("crucible: invalid baseURL %q: %w", baseURL, err)
 	}
-	return &Client{baseURL: u, http: httpClient}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.User = nil
+	u.Path = strings.TrimRight(u.Path, "/")
+	return &Client{baseURL: u, http: httpClient}, nil
 }
 
 // HealthzResponse is returned by Healthz.
@@ -106,7 +108,9 @@ func (c *Client) InvokeEcho(ctx context.Context, apiKey string, payload any) (ma
 }
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {
-	reqURL := c.baseURL.ResolveReference(&url.URL{Path: path}).String()
+	// Append path directly: c.baseURL has no trailing slash; path starts with "/".
+	// This preserves any base path prefix (e.g. a reverse-proxy subpath).
+	reqURL := c.baseURL.String() + path
 	var req *http.Request
 	var err error
 	if body != nil {

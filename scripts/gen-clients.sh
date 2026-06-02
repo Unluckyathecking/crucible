@@ -24,7 +24,14 @@ TS_DIR     = os.path.join(REPO_ROOT, "clients", "typescript")
 with open(SPEC_PATH) as f:
     spec = json.load(f)
 
-info    = spec["info"]
+info = spec.get("info")
+if not info or not isinstance(info, dict):
+    print("error: spec missing 'info' object", file=sys.stderr)
+    sys.exit(1)
+for _req in ("title", "version"):
+    if _req not in info:
+        print(f"error: spec.info missing required field '{_req}'", file=sys.stderr)
+        sys.exit(1)
 title   = info["title"]
 version = info["version"]
 header  = (
@@ -262,29 +269,33 @@ type Client struct {{
 \thttp    *http.Client
 }}
 
-// New returns a Client targeting baseURL. httpClient defaults to http.DefaultClient when nil.
+// New returns a Client targeting baseURL, or an error if baseURL cannot be parsed.
+// httpClient defaults to http.DefaultClient when nil. Note: http.DefaultClient has no
+// timeout; callers must supply a client with Timeout set or use context.WithTimeout.
 // baseURL is normalized: query strings, fragments, and credentials are stripped; trailing
-// slashes on the path are removed so that path concatenation via ResolveReference is correct.
-func New(baseURL string, httpClient *http.Client) *Client {{
+// slashes on the path are removed so that appending spec paths (which start with "/") is correct.
+// Any base path prefix (e.g. "/crucible" for a reverse-proxy subpath) is preserved.
+func New(baseURL string, httpClient *http.Client) (*Client, error) {{
 \tif httpClient == nil {{
 \t\thttpClient = http.DefaultClient
 \t}}
 \tu, err := url.Parse(baseURL)
 \tif err != nil {{
-\t\tu = &url.URL{{Path: strings.TrimRight(baseURL, "/")}}
-\t}} else {{
-\t\tu.RawQuery = ""
-\t\tu.Fragment = ""
-\t\tu.User = nil
-\t\tu.Path = strings.TrimRight(u.Path, "/")
+\t\treturn nil, fmt.Errorf("crucible: invalid baseURL %q: %w", baseURL, err)
 \t}}
-\treturn &Client{{baseURL: u, http: httpClient}}
+\tu.RawQuery = ""
+\tu.Fragment = ""
+\tu.User = nil
+\tu.Path = strings.TrimRight(u.Path, "/")
+\treturn &Client{{baseURL: u, http: httpClient}}, nil
 }}
 
 {structs_go}{methods_go}
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {{
-\treqURL := c.baseURL.ResolveReference(&url.URL{{Path: path}}).String()
+\t// Append path directly: c.baseURL has no trailing slash; path starts with "/".
+\t// This preserves any base path prefix (e.g. a reverse-proxy subpath).
+\treqURL := c.baseURL.String() + path
 \tvar req *http.Request
 \tvar err error
 \tif body != nil {{
@@ -505,7 +516,11 @@ func newClient(t *testing.T, handler http.HandlerFunc) *crucible.Client {{
 \tt.Helper()
 \tsrv := httptest.NewServer(handler)
 \tt.Cleanup(srv.Close)
-\treturn crucible.New(srv.URL, srv.Client())
+\tc, err := crucible.New(srv.URL, srv.Client())
+\tif err != nil {{
+\t\tt.Fatalf("crucible.New: %v", err)
+\t}}
+\treturn c
 }}
 
 func writeJSON(w http.ResponseWriter, v any) {{
@@ -570,7 +585,7 @@ func TestAPIError_unknownBody(t *testing.T) {{
 \t\tw.WriteHeader(http.StatusInternalServerError)
 \t\tw.Write([]byte("not json"))
 \t}})
-\t_, err := c.Healthz(context.Background())
+\t_, err := {auth_go_call_bad}
 \tvar apiErr *crucible.APIError
 \tif !errors.As(err, &apiErr) {{
 \t\tt.Fatalf("expected *crucible.APIError, got %T", err)
@@ -632,8 +647,8 @@ export class ApiError extends Error {
       code = body.error.code;
       message = body.error.message;
       retryable = body.error.retryable;
-    } catch {
-      // body is not valid JSON; keep defaults
+    } catch (e) {
+      message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
     return new ApiError(resp.status, code, message, retryable);
   }
@@ -745,17 +760,18 @@ export class Client {{
 
   constructor(baseURL: string, options: ClientOptions = {{}}) {{
     // Normalize baseURL: strip query, fragment, and credentials (mirrors Go client).
+    let normalizedURL = baseURL;
     try {{
       const u = new URL(baseURL);
       u.search = "";
       u.hash = "";
       u.username = "";
       u.password = "";
-      baseURL = u.toString();
+      normalizedURL = u.toString();
     }} catch {{
       // Non-absolute URL — use as-is (e.g. relative path in tests).
     }}
-    this.baseURL = baseURL.replace(/\\/+$/u, "");
+    this.baseURL = normalizedURL.replace(/\\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;
   }}

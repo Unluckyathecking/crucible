@@ -10,7 +10,7 @@
   "scripts": {
     "prepack": "npm run build",
     "build": "tsc",
-    "test": "npm run build && node --test dist/test/client.test.js",
+    "test": "tsc --noEmitOnError && node --test dist/test/client.test.js",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

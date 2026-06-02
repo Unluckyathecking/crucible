@@ -29,17 +29,18 @@ export class Client {
 
   constructor(baseURL: string, options: ClientOptions = {}) {
     // Normalize baseURL: strip query, fragment, and credentials (mirrors Go client).
+    let normalizedURL = baseURL;
     try {
       const u = new URL(baseURL);
       u.search = "";
       u.hash = "";
       u.username = "";
       u.password = "";
-      baseURL = u.toString();
+      normalizedURL = u.toString();
     } catch {
       // Non-absolute URL — use as-is (e.g. relative path in tests).
     }
-    this.baseURL = baseURL.replace(/\/+$/u, "");
+    this.baseURL = normalizedURL.replace(/\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;
   }

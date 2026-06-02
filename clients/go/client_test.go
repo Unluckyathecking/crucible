@@ -18,7 +18,11 @@ func newClient(t *testing.T, handler http.HandlerFunc) *crucible.Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return crucible.New(srv.URL, srv.Client())
+	c, err := crucible.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("crucible.New: %v", err)
+	}
+	return c
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -159,7 +163,7 @@ func TestAPIError_unknownBody(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("not json"))
 	})
-	_, err := c.Healthz(context.Background())
+	_, err := c.InvokeEcho(context.Background(), "bad-key", map[string]any{})
 	var apiErr *crucible.APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *crucible.APIError, got %T", err)
