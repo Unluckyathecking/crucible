@@ -657,7 +657,9 @@ export class ApiError extends Error {
     let retryable: boolean | undefined;
     try {
       const body = (await resp.json()) as ErrorBody;
-      // Use || / ?? so the defensive defaults survive a partial error body ({}).
+      // Use || / ?? so the defensive defaults survive a partial error object ({"error":{}}).
+      // If body.error is missing entirely (e.g. body is {}), body.error.code throws and
+      // the catch block below handles it — the || guards only apply when error exists.
       code = body.error.code || code;
       message = body.error.message || message;
       retryable = body.error.retryable ?? retryable;
