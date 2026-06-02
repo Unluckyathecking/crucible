@@ -69,8 +69,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _respond(self, status: int, body: bytes):
         self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -82,7 +82,7 @@ def main():
     except ValueError:
         print(f"warning: invalid PORT {raw_port!r}, using default 8081", file=sys.stderr, flush=True)
         port = 8081
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    server = HTTPServer(("", port), Handler)
     server.serve_forever()
 
 

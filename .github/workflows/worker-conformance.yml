@@ -35,7 +35,7 @@ jobs:
 
       - name: Set up Rust toolchain
         if: matrix.stub.id == 'rust'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.87
 
       - name: Set up Node.js
         if: matrix.stub.id == 'ts'

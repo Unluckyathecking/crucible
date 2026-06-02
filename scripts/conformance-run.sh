@@ -50,9 +50,9 @@ case "$STUB" in
     ;;
   ts)
     echo "==> Building TS SDK..."
-    (cd "$REPO_ROOT/workers/sdk-ts" && npm install --silent && npm run build --silent)
+    (cd "$REPO_ROOT/workers/sdk-ts" && npm install && npm run build)
     echo "==> Building TS stub..."
-    (cd "$REPO_ROOT/workers/stubs/ts" && npm install --silent && npm run build --silent)
+    (cd "$REPO_ROOT/workers/stubs/ts" && npm install && npm run build)
     echo "==> Starting TS stub on port $PORT..."
     PORT="$PORT" node "$REPO_ROOT/workers/stubs/ts/dist/index.js" &
     STUB_PID=$!

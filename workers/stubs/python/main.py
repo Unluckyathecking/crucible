@@ -47,8 +47,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         try:
             req = json.loads(body)
-        except json.JSONDecodeError:
-            self._send_json({"error": {"code": "BAD_REQUEST", "message": "invalid JSON", "retryable": False}})
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": {"code": "BAD_REQUEST", "message": str(exc), "retryable": False}})
             return
 
         metadata = req.get("metadata") or {}
