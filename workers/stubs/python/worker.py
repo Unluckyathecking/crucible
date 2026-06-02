@@ -16,6 +16,7 @@ Smoke test:
 """
 import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -48,7 +49,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            self._respond(200, b"ok")
+            self._respond(200, b'{"status":"ok"}')
         else:
             self._respond(404, b"not found")
 
@@ -61,21 +62,27 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
         except json.JSONDecodeError as exc:
-            self._respond(400, json.dumps({"error": {"code": "BAD_REQUEST", "message": str(exc), "retryable": False}}).encode())
+            self._respond(200, json.dumps({"error": {"code": "BAD_REQUEST", "message": exc.msg, "retryable": False}}, separators=(',', ':')).encode())
             return
         result = invoke(req)
-        self._respond(200, json.dumps(result).encode())
+        self._respond(200, json.dumps(result, separators=(',', ':')).encode())
 
     def _respond(self, status: int, body: bytes):
         self.send_response(status)
-        self.send_header("content-type", "application/json")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
 
 def main():
-    port = int(os.environ.get("PORT", 8081))
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    raw_port = os.environ.get("PORT", "8081")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        print(f"warning: invalid PORT {raw_port!r}, using default 8081", file=sys.stderr, flush=True)
+        port = 8081
+    server = HTTPServer(("", port), Handler)
     server.serve_forever()
 
 

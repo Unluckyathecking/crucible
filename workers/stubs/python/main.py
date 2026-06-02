@@ -47,8 +47,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         try:
             req = json.loads(body)
-        except json.JSONDecodeError:
-            self._send_json({"error": {"code": "BAD_REQUEST", "message": "invalid JSON"}})
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": {"code": "BAD_REQUEST", "message": exc.msg, "retryable": False}})
             return
 
         metadata = req.get("metadata") or {}
@@ -61,7 +61,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self._send_json(resp)
 
     def _send_json(self, obj: dict):
-        data = json.dumps(obj).encode()
+        data = json.dumps(obj, separators=(',', ':')).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -75,7 +75,7 @@ def main():
         try:
             port = int(sys.argv[1])
         except ValueError:
-            pass
+            print(f"warning: invalid port {sys.argv[1]!r}, using default {port}", file=sys.stderr, flush=True)
 
     server = HTTPServer(("", port), WorkerHandler)
     print(f"worker listening on :{port}", flush=True)

@@ -93,6 +93,27 @@ Speak HTTP/JSON against the contract. The on-wire shapes:
 
 `/healthz` just needs to return HTTP 200 when the process is ready to serve.
 
+## Conformance gate
+
+Every stub in `stubs/` is wired into a language-agnostic contract test suite
+(`test/conformance/contract_test.go`) that verifies the frozen HTTP/JSON shapes:
+
+| Stub | Run locally |
+|---|---|
+| Go | `bash scripts/conformance-run.sh go` |
+| Rust | `bash scripts/conformance-run.sh rust` |
+| TypeScript | `bash scripts/conformance-run.sh ts` |
+| Python | `bash scripts/conformance-run.sh python` |
+
+CI runs all four in a matrix (`.github/workflows/worker-conformance.yml`) with
+`fail-fast: false` so every SDK gets a report even if one fails. The suite is
+driven by `WORKER_URL` — no language-specific assertion branches exist; the same
+tests run against every stub unchanged.
+
+Adding a new language: add a `case` entry in `scripts/conformance-run.sh` and a
+matrix entry in `.github/workflows/worker-conformance.yml`. The test file never
+changes.
+
 ## Billable units
 
 Return `billable_units >= 1` on every successful response.
