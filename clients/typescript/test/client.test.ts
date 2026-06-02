@@ -40,7 +40,7 @@ describe("Client.invokeEcho", () => {
     };
     const c = new Client("http://gw.test", { fetch: capFetch });
     const got = await c.invokeEcho({}, "key");
-    assert.ok(got);
+    assert.equal(got["result"], "ok");
     assert.ok(capturedInit, "capFetch was not called");
     const hdrs = capturedInit!.headers as Record<string, string>;
     assert.equal(hdrs["X-API-Key"], "key");

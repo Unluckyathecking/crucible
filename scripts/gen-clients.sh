@@ -229,7 +229,9 @@ import (
 \t"context"
 \t"encoding/json"
 \t"fmt"
+\t"io"
 \t"net/http"
+\t"net/url"
 \t"strings"
 )
 
@@ -241,7 +243,14 @@ type Client struct {{
 
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
+// baseURL is normalized: query strings, fragments, and credentials are stripped.
 func New(baseURL string, httpClient *http.Client) *Client {{
+\tif u, err := url.Parse(baseURL); err == nil {{
+\t\tu.RawQuery = ""
+\t\tu.Fragment = ""
+\t\tu.User = nil
+\t\tbaseURL = u.String()
+\t}}
 \treturn &Client{{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}}
 }}
 
@@ -268,8 +277,9 @@ func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byt
 \treturn c.http.Do(req)
 }}
 
-// checkError returns nil for 2xx responses. For all other status codes it
-// parses the gateway error envelope and returns an *APIError.
+// checkError returns nil for 2xx responses without touching resp.Body.
+// For non-2xx it reads the body (bounded to 64 KiB) to decode the gateway
+// error envelope. The caller's defer resp.Body.Close() handles cleanup.
 func checkError(resp *http.Response) error {{
 \tif resp.StatusCode >= 200 && resp.StatusCode < 300 {{
 \t\treturn nil
@@ -281,7 +291,8 @@ func checkError(resp *http.Response) error {{
 \t\t\tRetryable bool   `json:"retryable"`
 \t\t}} `json:"error"`
 \t}}
-\t_ = json.NewDecoder(resp.Body).Decode(&envelope)
+\t// Limit to 64 KiB to prevent unbounded reads from malicious servers.
+\t_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
 \tif envelope.Error.Code == "" {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
 \t}}
@@ -366,13 +377,30 @@ def go_test_method(op):
             "}",
         ]
     else:
-        lines += [
-            f"\t_, err := {call}",
-            "\tif err != nil {",
-            "\t\tt.Fatal(err)",
-            "\t}",
-            "}",
-        ]
+        first_str_field = next(
+            (fname for fname in sorted(props.keys()) if props[fname].get("type") == "string"),
+            None
+        )
+        if first_str_field:
+            go_field = first_str_field.capitalize()
+            lines += [
+                f"\tresp, err := {call}",
+                "\tif err != nil {",
+                "\t\tt.Fatal(err)",
+                "\t}",
+                f'\tif resp.{go_field} != "ok" {{',
+                f'\t\tt.Errorf("{go_field} = %q, want %q", resp.{go_field}, "ok")',
+                "\t}",
+                "}",
+            ]
+        else:
+            lines += [
+                f"\t_, err := {call}",
+                "\tif err != nil {",
+                "\t\tt.Fatal(err)",
+                "\t}",
+                "}",
+            ]
     return "\n".join(lines)
 
 test_methods_go = "\n\n".join(go_test_method(op) for op in ops)
@@ -750,6 +778,8 @@ def ts_test_method(op):
         ]
         if first_str_prop:
             lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+        elif rtype == "Record<string, unknown>":
+            lines.append(f'    assert.equal(got["result"], "ok");')
         else:
             lines.append(f'    assert.ok(got);')
         lines += [
@@ -768,6 +798,8 @@ def ts_test_method(op):
         ]
         if first_str_prop:
             lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+        elif rtype == "Record<string, unknown>":
+            lines.append(f'    assert.equal(got["result"], "ok");')
         else:
             lines.append(f'    assert.ok(got);')
         lines += ['  });', '});']

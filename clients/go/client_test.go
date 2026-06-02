@@ -34,9 +34,12 @@ func TestHealthz(t *testing.T) {
 		}
 		writeJSON(w, map[string]any{"status": "ok"})
 	})
-	_, err := c.Healthz(context.Background())
+	resp, err := c.Healthz(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("Status = %q, want %q", resp.Status, "ok")
 	}
 }
 
@@ -47,9 +50,12 @@ func TestReadyz(t *testing.T) {
 		}
 		writeJSON(w, map[string]any{"checks": map[string]any{"db": "ok"}, "status": "ok"})
 	})
-	_, err := c.Readyz(context.Background())
+	resp, err := c.Readyz(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("Status = %q, want %q", resp.Status, "ok")
 	}
 }
 

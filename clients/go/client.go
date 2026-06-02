@@ -10,7 +10,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -22,7 +24,14 @@ type Client struct {
 
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
+// baseURL is normalized: query strings, fragments, and credentials are stripped.
 func New(baseURL string, httpClient *http.Client) *Client {
+	if u, err := url.Parse(baseURL); err == nil {
+		u.RawQuery = ""
+		u.Fragment = ""
+		u.User = nil
+		baseURL = u.String()
+	}
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
 }
 
@@ -106,8 +115,9 @@ func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byt
 	return c.http.Do(req)
 }
 
-// checkError returns nil for 2xx responses. For all other status codes it
-// parses the gateway error envelope and returns an *APIError.
+// checkError returns nil for 2xx responses without touching resp.Body.
+// For non-2xx it reads the body (bounded to 64 KiB) to decode the gateway
+// error envelope. The caller's defer resp.Body.Close() handles cleanup.
 func checkError(resp *http.Response) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
@@ -119,7 +129,8 @@ func checkError(resp *http.Response) error {
 			Retryable bool   `json:"retryable"`
 		} `json:"error"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&envelope)
+	// Limit to 64 KiB to prevent unbounded reads from malicious servers.
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
 	if envelope.Error.Code == "" {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
