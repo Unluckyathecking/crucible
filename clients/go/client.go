@@ -65,7 +65,10 @@ func (c *Client) Healthz(ctx context.Context) (*HealthzResponse, error) {
 		return nil, err
 	}
 	var out HealthzResponse
-	return &out, json.NewDecoder(resp.Body).Decode(&out)
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
 }
 
 // Readyz calls GET /readyz (readyz).
@@ -79,7 +82,10 @@ func (c *Client) Readyz(ctx context.Context) (*ReadyzResponse, error) {
 		return nil, err
 	}
 	var out ReadyzResponse
-	return &out, json.NewDecoder(resp.Body).Decode(&out)
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
 }
 
 // InvokeEcho calls POST /v1/echo (invoke echo).
@@ -152,7 +158,7 @@ func checkError(resp *http.Response) error {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (read body: %v)", resp.StatusCode, readErr)}
 	}
 	if len(body) > limit {
-		// Drain a bounded amount so the TCP connection can be reused.
+		// Best-effort bounded drain; connection may not be reusable if body exceeds ~68 KiB.
 		_, _ = io.CopyN(io.Discard, resp.Body, 4<<10)
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}
 	}
