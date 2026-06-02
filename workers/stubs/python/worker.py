@@ -62,7 +62,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
         except json.JSONDecodeError as exc:
-            self._respond(200, json.dumps({"error": {"code": "BAD_REQUEST", "message": str(exc), "retryable": False}}, separators=(',', ':')).encode())
+            self._respond(200, json.dumps({"error": {"code": "BAD_REQUEST", "message": exc.msg, "retryable": False}}, separators=(',', ':')).encode())
             return
         result = invoke(req)
         self._respond(200, json.dumps(result, separators=(',', ':')).encode())
