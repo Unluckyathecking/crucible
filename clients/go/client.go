@@ -132,9 +132,16 @@ func checkError(resp *http.Response) error {
 			Retryable bool   `json:"retryable"`
 		} `json:"error"`
 	}
-	// Limit to 64 KiB to prevent unbounded reads from malicious servers.
-	decErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
-	if decErr != nil || envelope.Error.Code == "" {
+	// Read up to 64 KiB + 1; the extra byte lets us detect oversized bodies explicitly.
+	const limit = 64 << 10
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if readErr != nil {
+		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	}
+	if len(body) > limit {
+		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}
+	}
+	if decErr := json.Unmarshal(body, &envelope); decErr != nil || envelope.Error.Code == "" {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
 	return &APIError{

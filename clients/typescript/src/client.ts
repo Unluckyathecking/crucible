@@ -39,33 +39,37 @@ export class Client {
     } catch {
       // Non-absolute URL — use as-is (e.g. relative path in tests).
     }
-    this.baseURL = baseURL.replace(/\/$/u, "");
+    this.baseURL = baseURL.replace(/\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;
   }
 
   /** GET /healthz — healthz. */
   async healthz(): Promise<HealthzResponse> {
-    return this.get<HealthzResponse>("/healthz");
+    return this.get<HealthzResponse>("/healthz", undefined);
   }
 
   /** GET /readyz — readyz. */
   async readyz(): Promise<ReadyzResponse> {
-    return this.get<ReadyzResponse>("/readyz");
+    return this.get<ReadyzResponse>("/readyz", undefined);
   }
 
   /**
    * POST /v1/echo — invoke echo.
    * @param apiKey - Override the default API key for this call.
    */
-  async invokeEcho(payload: Record<string, unknown>, apiKey?: string): Promise<Record<string, unknown>> {
+  async invokeEcho(apiKey: string | undefined, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.post<Record<string, unknown>>("/v1/echo", payload, apiKey ?? this.defaultApiKey);
   }
 
-  private async get<T>(path: string): Promise<T> {
+  private async get<T>(path: string, apiKey?: string): Promise<T> {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (apiKey) {
+      headers["X-API-Key"] = apiKey;
+    }
     const resp = await this.fetchImpl(this.baseURL + path, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
     });
     if (!resp.ok) {
       throw await ApiError.fromResponse(resp);

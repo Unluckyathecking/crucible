@@ -49,6 +49,7 @@ class Op:
         self.secure   = bool(op.get("security"))
         self.has_body = bool(op.get("requestBody"))
         resp200 = op.get("responses", {}).get("200", {})
+        self.resp200 = resp200
         self.json_ok = "application/json" in resp200.get("content", {})
 
 ops = []
@@ -119,9 +120,8 @@ func (e *APIError) Error() string {{
 # ── Response types ────────────────────────────────────────────────────────────
 
 def go_response_type(op):
-    resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-    schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
-    props   = schema.get("properties", {})
+    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    props  = schema.get("properties", {})
     if props and not schema.get("additionalProperties"):
         return go_name(op.op_id) + "Response"
     return "map[string]any"
@@ -132,8 +132,7 @@ def go_response_structs():
         rtype = go_response_type(op)
         if rtype == "map[string]any":
             continue
-        resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-        schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
+        schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
         props   = schema.get("properties", {})
         fields  = []
         for fname, fschema in sorted(props.items()):
@@ -295,9 +294,16 @@ func checkError(resp *http.Response) error {{
 \t\t\tRetryable bool   `json:"retryable"`
 \t\t}} `json:"error"`
 \t}}
-\t// Limit to 64 KiB to prevent unbounded reads from malicious servers.
-\tdecErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope)
-\tif decErr != nil || envelope.Error.Code == "" {{
+\t// Read up to 64 KiB + 1; the extra byte lets us detect oversized bodies explicitly.
+\tconst limit = 64 << 10
+\tbody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+\tif readErr != nil {{
+\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
+\t}}
+\tif len(body) > limit {{
+\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}}
+\t}}
+\tif decErr := json.Unmarshal(body, &envelope); decErr != nil || envelope.Error.Code == "" {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
 \t}}
 \treturn &APIError{{
@@ -315,9 +321,8 @@ def go_test_method(op):
     rtype = go_response_type(op)
     method_const = "http.MethodGet" if op.method == "get" else "http.MethodPost"
 
-    resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-    schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
-    props   = schema.get("properties", {})
+    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    props  = schema.get("properties", {})
 
     # Build response JSON for server stub.
     if rtype == "map[string]any":
@@ -433,6 +438,7 @@ package crucible_test
 import (
 \t"context"
 \t"encoding/json"
+\t"errors"
 \t"net/http"
 \t"net/http/httptest"
 \t"testing"
@@ -471,8 +477,8 @@ func TestAPIError_typed(t *testing.T) {{
 \tif err == nil {{
 \t\tt.Fatal("expected error, got nil")
 \t}}
-\tapiErr, ok := err.(*crucible.APIError)
-\tif !ok {{
+\tvar apiErr *crucible.APIError
+\tif !errors.As(err, &apiErr) {{
 \t\tt.Fatalf("expected *crucible.APIError, got %T: %v", err, err)
 \t}}
 \tif apiErr.Code != "UNAUTHORIZED" {{
@@ -495,8 +501,8 @@ func TestAPIError_retryable(t *testing.T) {{
 \t\t}})
 \t}})
 \t_, err := {auth_go_call_rate}
-\tapiErr, ok := err.(*crucible.APIError)
-\tif !ok {{
+\tvar apiErr *crucible.APIError
+\tif !errors.As(err, &apiErr) {{
 \t\tt.Fatalf("expected *crucible.APIError, got %T", err)
 \t}}
 \tif !apiErr.Retryable {{
@@ -510,8 +516,8 @@ func TestAPIError_unknownBody(t *testing.T) {{
 \t\tw.Write([]byte("not json"))
 \t}})
 \t_, err := c.Healthz(context.Background())
-\tapiErr, ok := err.(*crucible.APIError)
-\tif !ok {{
+\tvar apiErr *crucible.APIError
+\tif !errors.As(err, &apiErr) {{
 \t\tt.Fatalf("expected *crucible.APIError, got %T", err)
 \t}}
 \tif apiErr.Code != "UNKNOWN" {{
@@ -579,9 +585,8 @@ export class ApiError extends Error {
 # ── TypeScript response types ─────────────────────────────────────────────────
 
 def ts_response_type(op):
-    resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-    schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
-    props   = schema.get("properties", {})
+    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    props  = schema.get("properties", {})
     if props and not schema.get("additionalProperties"):
         return go_name(op.op_id) + "Response"
     return "Record<string, unknown>"
@@ -590,8 +595,7 @@ def ts_response_interface(op):
     rtype = ts_response_type(op)
     if rtype == "Record<string, unknown>":
         return ""
-    resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-    schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
     props   = schema.get("properties", {})
     fields  = []
     for fname, fschema in sorted(props.items()):
@@ -621,17 +625,22 @@ def ts_method(op):
     path  = op.path
 
     param_parts = []
-    if op.has_body:
+    if op.secure and op.has_body:
+        # apiKey before payload; use explicit union to avoid required-after-optional TS error.
+        param_parts.append("apiKey: string | undefined")
         param_parts.append("payload: Record<string, unknown>")
-    if op.secure:
+    elif op.secure:
         param_parts.append("apiKey?: string")
+    elif op.has_body:
+        param_parts.append("payload: Record<string, unknown>")
     params = ", ".join(param_parts)
 
     if op.method == "get":
+        api_key_expr = "apiKey" if op.secure else "undefined"
         return (
             f"  /** {op.method.upper()} {path} — {op.op_id.replace('_', ' ')}. */\n"
             f"  async {fn}({params}): Promise<{rtype}> {{\n"
-            f'    return this.get<{rtype}>("{path}");\n'
+            f'    return this.get<{rtype}>("{path}", {api_key_expr});\n'
             f"  }}"
         )
     else:
@@ -686,17 +695,21 @@ export class Client {{
     }} catch {{
       // Non-absolute URL — use as-is (e.g. relative path in tests).
     }}
-    this.baseURL = baseURL.replace(/\\/$/u, "");
+    this.baseURL = baseURL.replace(/\\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultApiKey = options.apiKey;
   }}
 
 {methods_ts}
 
-  private async get<T>(path: string): Promise<T> {{
+  private async get<T>(path: string, apiKey?: string): Promise<T> {{
+    const headers: Record<string, string> = {{ Accept: "application/json" }};
+    if (apiKey) {{
+      headers["{api_key_header}"] = apiKey;
+    }}
     const resp = await this.fetchImpl(this.baseURL + path, {{
       method: "GET",
-      headers: {{ Accept: "application/json" }},
+      headers,
     }});
     if (!resp.ok) {{
       throw await ApiError.fromResponse(resp);
@@ -747,9 +760,8 @@ def ts_test_method(op):
     fn    = ts_name(op.op_id)
     rtype = ts_response_type(op)
 
-    resp200 = spec["paths"][op.path].get(op.method, {}).get("responses", {}).get("200", {})
-    schema  = resp200.get("content", {}).get("application/json", {}).get("schema", {})
-    props   = schema.get("properties", {})
+    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    props  = schema.get("properties", {})
 
     # Build mock response body.
     if rtype == "Record<string, unknown>":
@@ -764,9 +776,9 @@ def ts_test_method(op):
                 sample[p] = {"db": "ok"}
         mock_body = json.dumps(sample)
 
-    # Build client call.
+    # Build client call (apiKey before payload to match updated ts_method signature).
     if op.has_body and op.secure:
-        call = f'await c.{fn}({{}}, "key")'
+        call = f'await c.{fn}("key", {{}})'
     elif op.has_body:
         call = f'await c.{fn}({{}})'
     elif op.secure:
@@ -829,7 +841,8 @@ ts_test_methods = "\n\n".join(ts_test_method(op) for op in ops)
 if first_auth_post:
     auth_ts_fn = ts_name(first_auth_post.op_id)
     if first_auth_post.has_body:
-        auth_ts_call = f'() => c.{auth_ts_fn}({{}})'
+        # apiKey is first param (string | undefined); pass undefined to test error handling.
+        auth_ts_call = f'() => c.{auth_ts_fn}(undefined, {{}})'
     else:
         auth_ts_call = f'() => c.{auth_ts_fn}()'
 else:

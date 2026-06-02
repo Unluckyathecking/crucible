@@ -6,6 +6,7 @@ package crucible_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,8 +104,8 @@ func TestAPIError_typed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	apiErr, ok := err.(*crucible.APIError)
-	if !ok {
+	var apiErr *crucible.APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *crucible.APIError, got %T: %v", err, err)
 	}
 	if apiErr.Code != "UNAUTHORIZED" {
@@ -127,8 +128,8 @@ func TestAPIError_retryable(t *testing.T) {
 		})
 	})
 	_, err := c.InvokeEcho(context.Background(), "key", map[string]any{})
-	apiErr, ok := err.(*crucible.APIError)
-	if !ok {
+	var apiErr *crucible.APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *crucible.APIError, got %T", err)
 	}
 	if !apiErr.Retryable {
@@ -142,8 +143,8 @@ func TestAPIError_unknownBody(t *testing.T) {
 		w.Write([]byte("not json"))
 	})
 	_, err := c.Healthz(context.Background())
-	apiErr, ok := err.(*crucible.APIError)
-	if !ok {
+	var apiErr *crucible.APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *crucible.APIError, got %T", err)
 	}
 	if apiErr.Code != "UNKNOWN" {
