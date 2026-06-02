@@ -46,12 +46,12 @@ export class Client {
 
   /** GET /healthz — healthz. */
   async healthz(): Promise<HealthzResponse> {
-    return this.get<HealthzResponse>("/healthz", undefined);
+    return this.get<HealthzResponse>("/healthz");
   }
 
   /** GET /readyz — readyz. */
   async readyz(): Promise<ReadyzResponse> {
-    return this.get<ReadyzResponse>("/readyz", undefined);
+    return this.get<ReadyzResponse>("/readyz");
   }
 
   /**
@@ -74,6 +74,10 @@ export class Client {
     if (!resp.ok) {
       throw await ApiError.fromResponse(resp);
     }
+    const ct = resp.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${ct}`);
+    }
     return resp.json() as Promise<T>;
   }
 
@@ -92,6 +96,10 @@ export class Client {
     });
     if (!resp.ok) {
       throw await ApiError.fromResponse(resp);
+    }
+    const ct = resp.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${ct}`);
     }
     return resp.json() as Promise<T>;
   }

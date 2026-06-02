@@ -30,6 +30,9 @@ export class ApiError extends Error {
   }
 
   static async fromResponse(resp: Response): Promise<ApiError> {
+    if (resp.bodyUsed) {
+      return new ApiError(resp.status, "UNKNOWN", `HTTP ${resp.status} (body already consumed)`);
+    }
     let code = "UNKNOWN";
     let message = `HTTP ${resp.status}`;
     let retryable: boolean | undefined;

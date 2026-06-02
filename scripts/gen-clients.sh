@@ -53,9 +53,14 @@ class Op:
         self.json_ok = "application/json" in resp200.get("content", {})
 
 ops = []
+_all_methods = ("get", "post", "put", "delete", "patch", "head", "options", "trace")
+_gen_methods  = ("get", "post")
 for path, item in sorted(spec["paths"].items()):
-    for method in ("get", "post"):
+    for method in _all_methods:
         if method not in item:
+            continue
+        if method not in _gen_methods:
+            print(f"note: skipping {method.upper()} {path} (only GET/POST are generated; add support to gen-clients.sh to include this method)", file=sys.stderr)
             continue
         op = Op(path, method, item[method])
         if "billing" in op.tags:
@@ -128,7 +133,7 @@ type APIError struct {{
 }}
 
 func (e *APIError) Error() string {{
-\treturn fmt.Sprintf("crucible: %s: %s", e.Code, e.Message)
+\treturn fmt.Sprintf("crucible: %s: %s (retryable=%v)", e.Code, e.Message, e.Retryable)
 }}
 """)
 
@@ -195,8 +200,9 @@ def go_method(op):
     if rtype == "map[string]any":
         ret_sig  = "(map[string]any, error)"
         out_decl = "\tout := make(map[string]any)"
-        # Guard against JSON "null" body: json.Decode sets a pre-made map to nil on null.
-        out_ret  = "\terr = json.NewDecoder(resp.Body).Decode(&out)\n\tif out == nil {\n\t\tout = make(map[string]any)\n\t}\n\treturn out, err"
+        # Return nil on decode error (consistent with struct-returning methods).
+        # Guard also handles JSON "null" body: Decode sets a pre-made map to nil.
+        out_ret  = "\tif decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {\n\t\treturn nil, fmt.Errorf(\"crucible: decode response: %w\", decErr)\n\t}\n\tif out == nil {\n\t\tout = make(map[string]any)\n\t}\n\treturn out, nil"
     else:
         ret_sig  = f"(*{rtype}, error)"
         out_decl = f"\tvar out {rtype}"
@@ -252,35 +258,39 @@ import (
 
 // Client calls the Crucible Gateway. Construct with New.
 type Client struct {{
-\tbaseURL string
+\tbaseURL *url.URL
 \thttp    *http.Client
 }}
 
-// New returns a Client targeting baseURL. The caller owns httpClient and is
-// responsible for setting timeouts, transport, and TLS configuration.
-// baseURL is normalized: query strings, fragments, and credentials are stripped.
-// url.Parse is lenient and almost never returns an error for well-formed URLs;
-// on the rare parse failure the raw URL is used unchanged.
+// New returns a Client targeting baseURL. httpClient defaults to http.DefaultClient when nil.
+// baseURL is normalized: query strings, fragments, and credentials are stripped; trailing
+// slashes on the path are removed so that path concatenation via ResolveReference is correct.
 func New(baseURL string, httpClient *http.Client) *Client {{
+\tif httpClient == nil {{
+\t\thttpClient = http.DefaultClient
+\t}}
 \tu, err := url.Parse(baseURL)
-\tif err == nil {{
+\tif err != nil {{
+\t\tu = &url.URL{{Path: strings.TrimRight(baseURL, "/")}}
+\t}} else {{
 \t\tu.RawQuery = ""
 \t\tu.Fragment = ""
 \t\tu.User = nil
-\t\tbaseURL = u.String()
+\t\tu.Path = strings.TrimRight(u.Path, "/")
 \t}}
-\treturn &Client{{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}}
+\treturn &Client{{baseURL: u, http: httpClient}}
 }}
 
 {structs_go}{methods_go}
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {{
+\treqURL := c.baseURL.ResolveReference(&url.URL{{Path: path}}).String()
 \tvar req *http.Request
 \tvar err error
 \tif body != nil {{
-\t\treq, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
+\t\treq, err = http.NewRequestWithContext(ctx, method, reqURL, bytes.NewReader(body))
 \t}} else {{
-\t\treq, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+\t\treq, err = http.NewRequestWithContext(ctx, method, reqURL, nil)
 \t}}
 \tif err != nil {{
 \t\treturn nil, fmt.Errorf("crucible: build request: %w", err)
@@ -313,7 +323,7 @@ func checkError(resp *http.Response) error {{
 \tconst limit = 64 << 10
 \tbody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 \tif readErr != nil {{
-\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
+\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (read body: %v)", resp.StatusCode, readErr)}}
 \t}}
 \tif len(body) > limit {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}}
@@ -460,6 +470,9 @@ if first_map_op:
         '\t}',
         '\tif got == nil {',
         '\t\tt.Error("expected non-nil map for null JSON body, got nil")',
+        '\t}',
+        '\tif len(got) != 0 {',
+        '\t\tt.Errorf("expected empty map, got %v", got)',
         '\t}',
         '}',
     ])
@@ -608,6 +621,9 @@ export class ApiError extends Error {
   }
 
   static async fromResponse(resp: Response): Promise<ApiError> {
+    if (resp.bodyUsed) {
+      return new ApiError(resp.status, "UNKNOWN", `HTTP ${resp.status} (body already consumed)`);
+    }
     let code = "UNKNOWN";
     let message = `HTTP ${resp.status}`;
     let retryable: boolean | undefined;
@@ -679,11 +695,12 @@ def ts_method(op):
     params = ", ".join(param_parts)
 
     if op.method == "get":
-        api_key_expr = "apiKey" if op.secure else "undefined"
+        # Use ?? fallback so the constructor default key covers authenticated GETs too.
+        get_key_arg = ", apiKey ?? this.defaultApiKey" if op.secure else ""
         return (
             f"  /** {op.method.upper()} {path} — {op.op_id.replace('_', ' ')}. */\n"
             f"  async {fn}({params}): Promise<{rtype}> {{\n"
-            f'    return this.get<{rtype}>("{path}", {api_key_expr});\n'
+            f'    return this.get<{rtype}>("{path}"{get_key_arg});\n'
             f"  }}"
         )
     else:
@@ -757,6 +774,10 @@ export class Client {{
     if (!resp.ok) {{
       throw await ApiError.fromResponse(resp);
     }}
+    const ct = resp.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {{
+      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${{ct}}`);
+    }}
     return resp.json() as Promise<T>;
   }}
 
@@ -775,6 +796,10 @@ export class Client {{
     }});
     if (!resp.ok) {{
       throw await ApiError.fromResponse(resp);
+    }}
+    const ct = resp.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {{
+      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${{ct}}`);
     }}
     return resp.json() as Promise<T>;
   }}
@@ -855,12 +880,31 @@ def ts_test_method(op):
             lines.append(f'    assert.equal(got["result"], "ok");')
         else:
             lines.append(f'    assert.ok(got);')
+        # Build no-apiKey call for defaultApiKey fallback test.
+        if op.has_body:
+            call_no_key = f'await c.{fn}({{}})'
+        else:
+            call_no_key = f'await c.{fn}()'
         lines += [
             f'    assert.ok(capturedInit, "capFetch was not called");',
             f'    const body = JSON.parse(capturedInit!.body as string);',
             f'    assert.deepEqual(body, {{}});',
             f'    const hdrs = capturedInit!.headers as Record<string, string>;',
             f'    assert.equal(hdrs["{api_key_header}"], "key");',
+            f'  }});',
+            f'',
+            f'  it("falls back to constructor apiKey when not provided", async () => {{',
+            f'    let capturedInit2: RequestInit | undefined;',
+            f'    const capFetch2: typeof globalThis.fetch = async (_url, init) => {{',
+            f'      capturedInit2 = init;',
+            f'      return new Response(JSON.stringify({mock_body}), {{',
+            f'        status: 200, headers: {{ "Content-Type": "application/json" }},',
+            f'      }});',
+            f'    }};',
+            f'    const c2 = new Client("http://gw.test", {{ fetch: capFetch2, apiKey: "default-key" }});',
+            f'    {call_no_key.replace("c.", "c2.")};',
+            f'    const hdrs2 = capturedInit2!.headers as Record<string, string>;',
+            f'    assert.equal(hdrs2["{api_key_header}"], "default-key");',
             f'  }});',
             f'}});',
         ]

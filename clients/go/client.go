@@ -18,24 +18,27 @@ import (
 
 // Client calls the Crucible Gateway. Construct with New.
 type Client struct {
-	baseURL string
+	baseURL *url.URL
 	http    *http.Client
 }
 
-// New returns a Client targeting baseURL. The caller owns httpClient and is
-// responsible for setting timeouts, transport, and TLS configuration.
-// baseURL is normalized: query strings, fragments, and credentials are stripped.
-// url.Parse is lenient and almost never returns an error for well-formed URLs;
-// on the rare parse failure the raw URL is used unchanged.
+// New returns a Client targeting baseURL. httpClient defaults to http.DefaultClient when nil.
+// baseURL is normalized: query strings, fragments, and credentials are stripped; trailing
+// slashes on the path are removed so that path concatenation via ResolveReference is correct.
 func New(baseURL string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	u, err := url.Parse(baseURL)
-	if err == nil {
+	if err != nil {
+		u = &url.URL{Path: strings.TrimRight(baseURL, "/")}
+	} else {
 		u.RawQuery = ""
 		u.Fragment = ""
 		u.User = nil
-		baseURL = u.String()
+		u.Path = strings.TrimRight(u.Path, "/")
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
+	return &Client{baseURL: u, http: httpClient}
 }
 
 // HealthzResponse is returned by Healthz.
@@ -93,20 +96,23 @@ func (c *Client) InvokeEcho(ctx context.Context, apiKey string, payload any) (ma
 		return nil, err
 	}
 	out := make(map[string]any)
-	err = json.NewDecoder(resp.Body).Decode(&out)
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
 	if out == nil {
 		out = make(map[string]any)
 	}
-	return out, err
+	return out, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {
+	reqURL := c.baseURL.ResolveReference(&url.URL{Path: path}).String()
 	var req *http.Request
 	var err error
 	if body != nil {
-		req, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
+		req, err = http.NewRequestWithContext(ctx, method, reqURL, bytes.NewReader(body))
 	} else {
-		req, err = http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+		req, err = http.NewRequestWithContext(ctx, method, reqURL, nil)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("crucible: build request: %w", err)
@@ -139,7 +145,7 @@ func checkError(resp *http.Response) error {
 	const limit = 64 << 10
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if readErr != nil {
-		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (read body: %v)", resp.StatusCode, readErr)}
 	}
 	if len(body) > limit {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}

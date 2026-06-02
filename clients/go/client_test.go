@@ -101,6 +101,9 @@ func TestInvokeEcho_nullBody(t *testing.T) {
 	if got == nil {
 		t.Error("expected non-nil map for null JSON body, got nil")
 	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %v", got)
+	}
 }
 
 func TestAPIError_typed(t *testing.T) {

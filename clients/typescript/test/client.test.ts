@@ -47,6 +47,20 @@ describe("Client.invokeEcho", () => {
     const hdrs = capturedInit!.headers as Record<string, string>;
     assert.equal(hdrs["X-API-Key"], "key");
   });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"result":"ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.invokeEcho({});
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
 });
 
 describe("ApiError", () => {

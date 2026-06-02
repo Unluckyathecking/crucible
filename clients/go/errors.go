@@ -14,5 +14,5 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("crucible: %s: %s", e.Code, e.Message)
+	return fmt.Sprintf("crucible: %s: %s (retryable=%v)", e.Code, e.Message, e.Retryable)
 }
