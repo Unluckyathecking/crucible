@@ -61,11 +61,21 @@ func TestInvokeEcho(t *testing.T) {
 		if got := r.Header.Get("X-API-Key"); got == "" {
 			t.Error("X-API-Key header missing")
 		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if reqBody["x"] == nil {
+			t.Error("expected request body to contain key x")
+		}
 		writeJSON(w, map[string]any{"result": "ok"})
 	})
-	_, err := c.InvokeEcho(context.Background(), "test-key", map[string]any{"x": 1})
+	got, err := c.InvokeEcho(context.Background(), "test-key", map[string]any{"x": 1})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil map, got nil")
 	}
 }
 

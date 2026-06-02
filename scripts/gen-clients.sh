@@ -144,6 +144,12 @@ def go_response_structs():
                 go_type = "string"
             elif ftype == "boolean":
                 go_type = "bool"
+            elif ftype == "integer":
+                go_type = "int64"
+            elif ftype == "number":
+                go_type = "float64"
+            elif ftype == "array":
+                go_type = "[]any"
             elif ftype == "object" and add:
                 inner   = add.get("type", "any")
                 go_type = f"map[string]{inner}" if inner == "string" else "map[string]any"
@@ -174,7 +180,8 @@ def go_method(op):
     if rtype == "map[string]any":
         ret_sig  = "(map[string]any, error)"
         out_decl = "\tvar out map[string]any"
-        out_ret  = "\treturn out, json.NewDecoder(resp.Body).Decode(&out)"
+        # Two-statement form avoids left-to-right evaluation capturing nil before Decode runs.
+        out_ret  = "\terr = json.NewDecoder(resp.Body).Decode(&out)\n\treturn out, err"
     else:
         ret_sig  = f"(*{rtype}, error)"
         out_decl = f"\tvar out {rtype}"
@@ -223,6 +230,7 @@ import (
 \t"encoding/json"
 \t"fmt"
 \t"net/http"
+\t"strings"
 )
 
 // Client calls the Crucible Gateway. Construct with New.
@@ -234,7 +242,7 @@ type Client struct {{
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
 func New(baseURL string, httpClient *http.Client) *Client {{
-\treturn &Client{{baseURL: baseURL, http: httpClient}}
+\treturn &Client{{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}}
 }}
 
 {structs_go}{methods_go}
@@ -332,15 +340,39 @@ def go_test_method(op):
             f'\t\t\tt.Error("{api_key_header} header missing")',
             "\t\t}",
         ]
+    if op.has_body:
+        lines += [
+            "\t\tvar reqBody map[string]any",
+            "\t\tif err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {",
+            '\t\t\tt.Fatalf("decode request body: %v", err)',
+            "\t\t}",
+            '\t\tif reqBody["x"] == nil {',
+            '\t\t\tt.Error("expected request body to contain key x")',
+            "\t\t}",
+        ]
     lines += [
         f"\t\twriteJSON(w, {resp_json})",
         "\t})",
-        f"\t_, err := {call}",
-        "\tif err != nil {",
-        "\t\tt.Fatal(err)",
-        "\t}",
-        "}",
     ]
+    if rtype == "map[string]any":
+        lines += [
+            f"\tgot, err := {call}",
+            "\tif err != nil {",
+            "\t\tt.Fatal(err)",
+            "\t}",
+            "\tif got == nil {",
+            '\t\tt.Fatal("expected non-nil map, got nil")',
+            "\t}",
+            "}",
+        ]
+    else:
+        lines += [
+            f"\t_, err := {call}",
+            "\tif err != nil {",
+            "\t\tt.Fatal(err)",
+            "\t}",
+            "}",
+        ]
     return "\n".join(lines)
 
 test_methods_go = "\n\n".join(go_test_method(op) for op in ops)
@@ -534,6 +566,10 @@ def ts_response_interface(op):
             ts_type = "string"
         elif ftype == "boolean":
             ts_type = "boolean"
+        elif ftype == "integer" or ftype == "number":
+            ts_type = "number"
+        elif ftype == "array":
+            ts_type = "unknown[]"
         elif ftype == "object" and add:
             inner   = add.get("type", "unknown")
             ts_type = f"Record<string, {inner}>"
@@ -542,7 +578,7 @@ def ts_response_interface(op):
         fields.append(f"  {fname}: {ts_type};")
     return f"export interface {rtype} {{\n" + "\n".join(fields) + "\n}\n"
 
-interfaces = "".join(ts_response_interface(op) for op in ops if ts_response_interface(op))
+interfaces = "".join(iface for op in ops if (iface := ts_response_interface(op)))
 
 def ts_method(op):
     fn    = ts_name(op.op_id)
@@ -698,17 +734,43 @@ def ts_test_method(op):
         None
     ) if props else None
 
-    lines = [
-        f'describe("Client.{fn}", () => {{',
-        f'  it("returns typed {rtype} on 200", async () => {{',
-        f'    const c = new Client("http://gw.test", {{ fetch: mockFetch(200, {mock_body}) }});',
-        f'    const got = {call};',
-    ]
-    if first_str_prop:
-        lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+    if op.method == "post" and op.secure:
+        lines = [
+            f'describe("Client.{fn}", () => {{',
+            f'  it("sends {api_key_header} header and returns {rtype} on 200", async () => {{',
+            f'    let capturedInit: RequestInit | undefined;',
+            f'    const capFetch: typeof globalThis.fetch = async (_url, init) => {{',
+            f'      capturedInit = init;',
+            f'      return new Response(JSON.stringify({mock_body}), {{',
+            f'        status: 200, headers: {{ "Content-Type": "application/json" }},',
+            f'      }});',
+            f'    }};',
+            f'    const c = new Client("http://gw.test", {{ fetch: capFetch }});',
+            f'    const got = {call};',
+        ]
+        if first_str_prop:
+            lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+        else:
+            lines.append(f'    assert.ok(got);')
+        lines += [
+            f'    assert.ok(capturedInit, "capFetch was not called");',
+            f'    const hdrs = capturedInit!.headers as Record<string, string>;',
+            f'    assert.equal(hdrs["{api_key_header}"], "key");',
+            f'  }});',
+            f'}});',
+        ]
     else:
-        lines.append(f'    assert.ok(got);')
-    lines += ['  });', '});']
+        lines = [
+            f'describe("Client.{fn}", () => {{',
+            f'  it("returns typed {rtype} on 200", async () => {{',
+            f'    const c = new Client("http://gw.test", {{ fetch: mockFetch(200, {mock_body}) }});',
+            f'    const got = {call};',
+        ]
+        if first_str_prop:
+            lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+        else:
+            lines.append(f'    assert.ok(got);')
+        lines += ['  });', '});']
     return "\n".join(lines)
 
 ts_test_methods = "\n\n".join(ts_test_method(op) for op in ops)

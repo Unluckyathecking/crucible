@@ -30,10 +30,20 @@ describe("Client.readyz", () => {
 });
 
 describe("Client.invokeEcho", () => {
-  it("returns typed Record<string, unknown> on 200", async () => {
-    const c = new Client("http://gw.test", { fetch: mockFetch(200, {"result":"ok"}) });
+  it("sends X-API-Key header and returns Record<string, unknown> on 200", async () => {
+    let capturedInit: RequestInit | undefined;
+    const capFetch: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit = init;
+      return new Response(JSON.stringify({"result":"ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
     const got = await c.invokeEcho({}, "key");
     assert.ok(got);
+    assert.ok(capturedInit, "capFetch was not called");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
   });
 });
 

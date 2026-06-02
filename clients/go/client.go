@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Client calls the Crucible Gateway. Construct with New.
@@ -22,7 +23,7 @@ type Client struct {
 // New returns a Client targeting baseURL. The caller owns httpClient and is
 // responsible for setting timeouts, transport, and TLS configuration.
 func New(baseURL string, httpClient *http.Client) *Client {
-	return &Client{baseURL: baseURL, http: httpClient}
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
 }
 
 // HealthzResponse is returned by Healthz.
@@ -80,7 +81,8 @@ func (c *Client) InvokeEcho(ctx context.Context, apiKey string, payload any) (ma
 		return nil, err
 	}
 	var out map[string]any
-	return out, json.NewDecoder(resp.Body).Decode(&out)
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
 }
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {
