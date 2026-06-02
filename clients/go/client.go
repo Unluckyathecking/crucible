@@ -92,8 +92,11 @@ func (c *Client) InvokeEcho(ctx context.Context, apiKey string, payload any) (ma
 	if err := checkError(resp); err != nil {
 		return nil, err
 	}
-	var out map[string]any
+	out := make(map[string]any)
 	err = json.NewDecoder(resp.Body).Decode(&out)
+	if out == nil {
+		out = make(map[string]any)
+	}
 	return out, err
 }
 
@@ -141,8 +144,11 @@ func checkError(resp *http.Response) error {
 	if len(body) > limit {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}
 	}
-	if decErr := json.Unmarshal(body, &envelope); decErr != nil || envelope.Error.Code == "" {
-		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	if decErr := json.Unmarshal(body, &envelope); decErr != nil {
+		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (invalid JSON: %v)", resp.StatusCode, decErr)}
+	}
+	if envelope.Error.Code == "" {
+		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (missing error code)", resp.StatusCode)}
 	}
 	return &APIError{
 		Code:      envelope.Error.Code,

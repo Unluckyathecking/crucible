@@ -76,6 +76,9 @@ def ts_name(op_id):
 
 # Find first authenticated POST op (used in error test stubs).
 first_auth_post = next((op for op in ops if op.secure and op.method == "post"), None)
+if not first_auth_post:
+    print("error: no authenticated POST operation found; cannot generate error tests", file=sys.stderr)
+    sys.exit(1)
 
 def write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -86,9 +89,19 @@ def write(path, content):
 # Go client
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-write(os.path.join(GO_DIR, "go.mod"), f"""\
+# Read module path from existing go.mod if present; preserves clone-and-adapt renames.
+go_mod_path = os.path.join(GO_DIR, "go.mod")
+go_module = "github.com/Unluckyathecking/crucible/clients/go"
+if os.path.exists(go_mod_path):
+    with open(go_mod_path) as _f:
+        for _line in _f:
+            if _line.startswith("module "):
+                go_module = _line.split()[1].strip()
+                break
+
+write(go_mod_path, f"""\
 {header}
-module github.com/Unluckyathecking/crucible/clients/go
+module {go_module}
 
 go 1.22
 """)
@@ -181,9 +194,9 @@ def go_method(op):
     nil_ret = "nil, "
     if rtype == "map[string]any":
         ret_sig  = "(map[string]any, error)"
-        out_decl = "\tvar out map[string]any"
-        # Two-statement form avoids left-to-right evaluation capturing nil before Decode runs.
-        out_ret  = "\terr = json.NewDecoder(resp.Body).Decode(&out)\n\treturn out, err"
+        out_decl = "\tout := make(map[string]any)"
+        # Guard against JSON "null" body: json.Decode sets a pre-made map to nil on null.
+        out_ret  = "\terr = json.NewDecoder(resp.Body).Decode(&out)\n\tif out == nil {\n\t\tout = make(map[string]any)\n\t}\n\treturn out, err"
     else:
         ret_sig  = f"(*{rtype}, error)"
         out_decl = f"\tvar out {rtype}"
@@ -305,8 +318,11 @@ func checkError(resp *http.Response) error {{
 \tif len(body) > limit {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}}
 \t}}
-\tif decErr := json.Unmarshal(body, &envelope); decErr != nil || envelope.Error.Code == "" {{
-\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d", resp.StatusCode)}}
+\tif decErr := json.Unmarshal(body, &envelope); decErr != nil {{
+\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (invalid JSON: %v)", resp.StatusCode, decErr)}}
+\t}}
+\tif envelope.Error.Code == "" {{
+\t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (missing error code)", resp.StatusCode)}}
 \t}}
 \treturn &APIError{{
 \t\tCode:      envelope.Error.Code,
@@ -419,19 +435,43 @@ def go_test_method(op):
 
 test_methods_go = "\n\n".join(go_test_method(op) for op in ops)
 
-# Error tests use the first authenticated POST operation (dynamically resolved).
-if first_auth_post:
-    auth_go_fn = go_name(first_auth_post.op_id)
-    auth_go_has_body = first_auth_post.has_body
-    if auth_go_has_body:
-        auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key", map[string]any{{}})'
-        auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key", map[string]any{{}})'
+# Null-body regression test: JSON "null" response should produce empty map, not nil.
+first_map_op = next((op for op in ops if go_response_type(op) == "map[string]any"), None)
+null_body_test_go = ""
+if first_map_op:
+    fn_nb = go_name(first_map_op.op_id)
+    if first_map_op.has_body and first_map_op.secure:
+        nb_call = f'c.{fn_nb}(context.Background(), "test-key", map[string]any{{"x": 1}})'
+    elif first_map_op.has_body:
+        nb_call = f'c.{fn_nb}(context.Background(), map[string]any{{"x": 1}})'
+    elif first_map_op.secure:
+        nb_call = f'c.{fn_nb}(context.Background(), "test-key")'
     else:
-        auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key")'
-        auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key")'
+        nb_call = f'c.{fn_nb}(context.Background())'
+    null_body_test_go = "\n\n" + "\n".join([
+        f"func Test{fn_nb}_nullBody(t *testing.T) {{",
+        '\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {',
+        '\t\tw.Header().Set("Content-Type", "application/json")',
+        '\t\tw.Write([]byte("null"))',
+        '\t})',
+        f'\tgot, err := {nb_call}',
+        '\tif err != nil {',
+        '\t\tt.Fatalf("unexpected error: %v", err)',
+        '\t}',
+        '\tif got == nil {',
+        '\t\tt.Error("expected non-nil map for null JSON body, got nil")',
+        '\t}',
+        '}',
+    ])
+
+# Error tests use the first authenticated POST operation (guaranteed non-None after sys.exit check).
+auth_go_fn = go_name(first_auth_post.op_id)
+if first_auth_post.has_body:
+    auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key", map[string]any{{}})'
+    auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key", map[string]any{{}})'
 else:
-    auth_go_call_bad  = 'c.Healthz(context.Background())'
-    auth_go_call_rate = 'c.Healthz(context.Background())'
+    auth_go_call_bad  = f'c.{auth_go_fn}(context.Background(), "bad-key")'
+    auth_go_call_rate = f'c.{auth_go_fn}(context.Background(), "key")'
 
 write(os.path.join(GO_DIR, "client_test.go"), f"""\
 {header}
@@ -445,7 +485,7 @@ import (
 \t"net/http/httptest"
 \t"testing"
 
-\tcrucible "github.com/Unluckyathecking/crucible/clients/go"
+\tcrucible "{go_module}"
 )
 
 func newClient(t *testing.T, handler http.HandlerFunc) *crucible.Client {{
@@ -462,7 +502,7 @@ func writeJSON(w http.ResponseWriter, v any) {{
 \t}}
 }}
 
-{test_methods_go}
+{test_methods_go}{null_body_test_go}
 
 func TestAPIError_typed(t *testing.T) {{
 \tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {{
@@ -612,8 +652,9 @@ def ts_response_interface(op):
         elif ftype == "array":
             ts_type = "unknown[]"
         elif ftype == "object" and add:
-            inner   = add.get("type", "unknown")
-            ts_type = f"Record<string, {inner}>"
+            inner    = add.get("type", "unknown")
+            inner_ts = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean"}.get(inner, "unknown")
+            ts_type  = f"Record<string, {inner_ts}>"
         else:
             ts_type = "unknown"
         fields.append(f"  {fname}: {ts_type};")
@@ -628,9 +669,9 @@ def ts_method(op):
 
     param_parts = []
     if op.secure and op.has_body:
-        # apiKey before payload; use explicit union to avoid required-after-optional TS error.
-        param_parts.append("apiKey: string | undefined")
+        # payload first; apiKey is an optional override for the constructor default.
         param_parts.append("payload: Record<string, unknown>")
+        param_parts.append("apiKey?: string")
     elif op.secure:
         param_parts.append("apiKey?: string")
     elif op.has_body:
@@ -778,9 +819,9 @@ def ts_test_method(op):
                 sample[p] = {"db": "ok"}
         mock_body = json.dumps(sample)
 
-    # Build client call (apiKey before payload to match updated ts_method signature).
+    # Build client call (payload first, apiKey optional).
     if op.has_body and op.secure:
-        call = f'await c.{fn}("key", {{}})'
+        call = f'await c.{fn}({{}}, "key")'
     elif op.has_body:
         call = f'await c.{fn}({{}})'
     elif op.secure:
@@ -816,6 +857,8 @@ def ts_test_method(op):
             lines.append(f'    assert.ok(got);')
         lines += [
             f'    assert.ok(capturedInit, "capFetch was not called");',
+            f'    const body = JSON.parse(capturedInit!.body as string);',
+            f'    assert.deepEqual(body, {{}});',
             f'    const hdrs = capturedInit!.headers as Record<string, string>;',
             f'    assert.equal(hdrs["{api_key_header}"], "key");',
             f'  }});',
@@ -839,16 +882,13 @@ def ts_test_method(op):
 
 ts_test_methods = "\n\n".join(ts_test_method(op) for op in ops)
 
-# Error test uses first authenticated POST operation (dynamically resolved).
-if first_auth_post:
-    auth_ts_fn = ts_name(first_auth_post.op_id)
-    if first_auth_post.has_body:
-        # apiKey is first param (string | undefined); pass undefined to test error handling.
-        auth_ts_call = f'() => c.{auth_ts_fn}(undefined, {{}})'
-    else:
-        auth_ts_call = f'() => c.{auth_ts_fn}()'
+# Error test uses first authenticated POST operation (guaranteed non-None after sys.exit check).
+auth_ts_fn = ts_name(first_auth_post.op_id)
+if first_auth_post.has_body:
+    # payload is first param; omit apiKey (uses constructor default or undefined).
+    auth_ts_call = f'() => c.{auth_ts_fn}({{}})'
 else:
-    auth_ts_call = '() => c.healthz()'
+    auth_ts_call = f'() => c.{auth_ts_fn}()'
 
 write(os.path.join(TS_DIR, "test", "client.test.ts"), ts_header + f"""\
 import {{ describe, it }} from "node:test";

@@ -89,6 +89,20 @@ func TestInvokeEcho(t *testing.T) {
 	}
 }
 
+func TestInvokeEcho_nullBody(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("null"))
+	})
+	got, err := c.InvokeEcho(context.Background(), "test-key", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Error("expected non-nil map for null JSON body, got nil")
+	}
+}
+
 func TestAPIError_typed(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

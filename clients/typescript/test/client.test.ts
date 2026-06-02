@@ -39,9 +39,11 @@ describe("Client.invokeEcho", () => {
       });
     };
     const c = new Client("http://gw.test", { fetch: capFetch });
-    const got = await c.invokeEcho("key", {});
+    const got = await c.invokeEcho({}, "key");
     assert.equal(got["result"], "ok");
     assert.ok(capturedInit, "capFetch was not called");
+    const body = JSON.parse(capturedInit!.body as string);
+    assert.deepEqual(body, {});
     const hdrs = capturedInit!.headers as Record<string, string>;
     assert.equal(hdrs["X-API-Key"], "key");
   });
@@ -79,7 +81,7 @@ describe("ApiError", () => {
       fetch: mockFetch(401, { error: { code: "UNAUTHORIZED", message: "bad key", retryable: false } }),
     });
     await assert.rejects(
-      () => c.invokeEcho(undefined, {}),
+      () => c.invokeEcho({}),
       (err: unknown) => {
         assert.ok(err instanceof ApiError);
         assert.equal(err.code, "UNAUTHORIZED");
@@ -94,7 +96,7 @@ describe("ApiError", () => {
       fetch: mockFetch(429, { error: { code: "RATE_LIMITED", message: "slow down", retryable: true } }),
     });
     await assert.rejects(
-      () => c.invokeEcho(undefined, {}),
+      () => c.invokeEcho({}),
       (err: unknown) => {
         assert.ok(err instanceof ApiError);
         assert.equal(err.code, "RATE_LIMITED");

@@ -58,7 +58,7 @@ export class Client {
    * POST /v1/echo — invoke echo.
    * @param apiKey - Override the default API key for this call.
    */
-  async invokeEcho(apiKey: string | undefined, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async invokeEcho(payload: Record<string, unknown>, apiKey?: string): Promise<Record<string, unknown>> {
     return this.post<Record<string, unknown>>("/v1/echo", payload, apiKey ?? this.defaultApiKey);
   }
 
