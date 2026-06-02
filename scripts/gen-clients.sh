@@ -39,6 +39,11 @@ header  = (
     f"// Source: clients/openapi.json ({title} {version})\n"
 )
 
+paths = spec.get("paths")
+if not isinstance(paths, dict):
+    print("error: spec missing 'paths' object", file=sys.stderr)
+    sys.exit(1)
+
 # ── API-key header name from securitySchemes ─────────────────────────────────
 api_key_header = "X-API-Key"
 for scheme in spec.get("components", {}).get("securitySchemes", {}).values():
@@ -62,7 +67,7 @@ class Op:
 ops = []
 _all_methods = ("get", "post", "put", "delete", "patch", "head", "options", "trace")
 _gen_methods  = ("get", "post")
-for path, item in sorted(spec["paths"].items()):
+for path, item in sorted(paths.items()):
     for method in _all_methods:
         if method not in item:
             continue
@@ -101,26 +106,28 @@ def write(path, content):
 # Go client
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Read module path from existing go.mod if present; preserves clone-and-adapt renames.
+# Read module path and Go version from existing go.mod if present; preserves clone-and-adapt renames.
 go_mod_path = os.path.join(GO_DIR, "go.mod")
 go_module = "github.com/Unluckyathecking/crucible/clients/go"
+go_version = "1.22"
 if os.path.exists(go_mod_path):
     with open(go_mod_path) as _f:
         for _line in _f:
             if _line.startswith("module "):
                 go_module = _line.split()[1].strip()
-                break
+            elif _line.startswith("go "):
+                go_version = _line.split()[1].strip()
 
 write(go_mod_path, f"""\
 {header}
 module {go_module}
 
-go 1.22
+go {go_version}
 """)
 
 # Overrides the repo-root go.work so `cd clients/go && go build ./...` works.
-write(os.path.join(GO_DIR, "go.work"), """\
-go 1.22
+write(os.path.join(GO_DIR, "go.work"), f"""\
+go {go_version}
 
 use .
 """)
@@ -337,6 +344,8 @@ func checkError(resp *http.Response) error {{
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (read body: %v)", resp.StatusCode, readErr)}}
 \t}}
 \tif len(body) > limit {{
+\t\t// Drain a bounded amount so the TCP connection can be reused.
+\t\t_, _ = io.CopyN(io.Discard, resp.Body, 4<<10)
 \t\treturn &APIError{{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}}
 \t}}
 \tif decErr := json.Unmarshal(body, &envelope); decErr != nil {{
@@ -770,7 +779,7 @@ export class Client {{
       u.password = "";
       normalizedURL = u.toString();
     }} catch {{
-      // Non-absolute URL — use as-is (e.g. relative path in tests).
+      throw new TypeError(`crucible: invalid baseURL: ${{baseURL}}`);
     }}
     this.baseURL = normalizedURL.replace(/\\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;

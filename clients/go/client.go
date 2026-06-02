@@ -152,6 +152,8 @@ func checkError(resp *http.Response) error {
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (read body: %v)", resp.StatusCode, readErr)}
 	}
 	if len(body) > limit {
+		// Drain a bounded amount so the TCP connection can be reused.
+		_, _ = io.CopyN(io.Discard, resp.Body, 4<<10)
 		return &APIError{Code: "UNKNOWN", Message: fmt.Sprintf("HTTP %d (error body >%d bytes)", resp.StatusCode, limit)}
 	}
 	if decErr := json.Unmarshal(body, &envelope); decErr != nil {

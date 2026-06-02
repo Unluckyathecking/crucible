@@ -38,7 +38,7 @@ export class Client {
       u.password = "";
       normalizedURL = u.toString();
     } catch {
-      // Non-absolute URL — use as-is (e.g. relative path in tests).
+      throw new TypeError(`crucible: invalid baseURL: ${baseURL}`);
     }
     this.baseURL = normalizedURL.replace(/\/+$/u, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch;
