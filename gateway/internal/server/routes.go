@@ -175,6 +175,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
+			observability.WorkerErrorsTotal.WithLabelValues(resp.Error.Code).Inc()
 			if errorExposure == "full" {
 				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else {
