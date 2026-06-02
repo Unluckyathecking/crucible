@@ -12,7 +12,7 @@ Crucible is one repo you copy to ship a new API. The framework — auth, rate li
 
 ## Status
 
-v1 shipped. API key auth (salted SHA-256, Redis hot cache), sliding-window rate limiting with atomic Lua scripts, monthly quota enforcement with atomic reserve, Stripe metered billing (async batch flusher, HMAC webhook verification), Prometheus metrics (6 counters/histograms, cardinality capped), health check endpoints, Next.js 15 dashboard (NextAuth magic-link, Resend email, shared Postgres). 16 unit tests passing under `-race`. Pre-release review notes at `docs-internal/REVIEW.md`.
+v1 shipped. API key auth (salted SHA-256, Redis hot cache), sliding-window rate limiting with atomic Lua scripts, monthly quota enforcement with atomic reserve, Stripe metered billing (async batch flusher, HMAC webhook verification), Prometheus metrics (6 counters/histograms, cardinality capped), health check endpoints, Next.js 15 dashboard (NextAuth magic-link, Resend email, shared Postgres). All 21 gateway packages have unit-test coverage; 249 tests pass under `-race` (infrastructure-gated tests self-skip when Postgres/Redis are absent and run in CI). First real product worker: VIES REST VAT-validation (`docs-internal/vies-research.md`). Worker SDKs: Go (shipped), Rust (shipped), TypeScript (v1.5). Pre-release review notes at `docs-internal/REVIEW.md`.
 
 ## Layout
 
@@ -21,7 +21,8 @@ v1 shipped. API key auth (salted SHA-256, Redis hot cache), sliding-window rate 
 | `gateway/` | Go API gateway. Owns auth, rate limit, billing, metering, OpenAPI, observability. |
 | `gateway/proto/tool.proto` | The frozen worker contract. Never edit per product. |
 | `gateway/migrations/` | Postgres schema. |
-| `workers/sdk-go/` | Shared library every Go worker imports. |
+| `workers/sdk-go/` | Go worker SDK. Import it, write one function, you have a worker. |
+| `workers/sdk-rust/` | Rust worker SDK. Mirrors the Go SDK against the same HTTP/JSON contract. |
 | `workers/stubs/go/` | Hello-world reference worker (~30 lines). |
 | `workers/active` | Symlink to the worker this clone is shipping. |
 | `docs-internal/` | Design notes and handoffs. Not published. |

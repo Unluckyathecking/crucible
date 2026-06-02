@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 // ErrLimited is returned when the customer has exceeded their per-minute quota.
@@ -74,6 +76,8 @@ func (b *Bucket) Allow(ctx context.Context, customerID string, perMinute int) er
 	res, err := allowScript.Run(ctx, b.cache, []string{key}, now, windowSeconds, perMinute, member).Int()
 	if err != nil {
 		// Fail-open. Better to bill an extra request than refuse legit traffic on a Redis blip.
+		// Count it so operators can alert on a degraded limiter instead of it being silent.
+		observability.RateLimitFailOpenTotal.Inc()
 		return nil
 	}
 	if res == 0 {

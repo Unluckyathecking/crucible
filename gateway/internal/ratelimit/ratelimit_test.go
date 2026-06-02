@@ -11,9 +11,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
@@ -92,9 +94,16 @@ func TestBucket_FailOpenOnRedisError(t *testing.T) {
 	b := New(rdb)
 	cust := fmt.Sprintf("failopen-%d", time.Now().UnixNano())
 
+	before := testutil.ToFloat64(observability.RateLimitFailOpenTotal)
+
 	err := b.Allow(context.Background(), cust, 5)
 	if err != nil {
 		t.Errorf("Allow should return nil on Redis error (fail-open), got %v", err)
+	}
+
+	after := testutil.ToFloat64(observability.RateLimitFailOpenTotal)
+	if after != before+1 {
+		t.Errorf("crucible_ratelimit_failopen_total = %v, want %v (must increment on Redis-error fail-open)", after, before+1)
 	}
 }
 

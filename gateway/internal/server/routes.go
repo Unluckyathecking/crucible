@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
@@ -20,6 +21,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
@@ -72,7 +74,28 @@ func NewRouter(d *Deps) http.Handler {
 	// Public routes (no auth, no rate limit).
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Redis, d.PG))
-	r.Post("/webhooks/stripe", d.Webhook.Handle)
+	r.Get("/openapi.json", openapi.Handler())
+
+	// The Stripe webhook is mounted outside auth/quota gating, so it carries no
+	// per-customer rate limit. Add a lightweight IP-based limiter (60 req/min/IP,
+	// keyed on X-Forwarded-For/RemoteAddr) in front of ONLY this route to blunt
+	// unauthenticated flooding. Signature verification, the replay window, and the
+	// dispatch-first/record-after ordering inside Handle are untouched.
+	//
+	// Defense-in-depth: strip True-Client-IP and X-Real-IP before the rate limiter
+	// runs. httprate.KeyByRealIP prefers those headers over X-Forwarded-For; if they
+	// reached the limiter an attacker could rotate them to mint a fresh bucket per
+	// request and defeat the cap (audit #11). Caddy already strips them at the edge,
+	// but doing it here too means a Caddyfile mis-config cannot silently re-open the
+	// bypass.
+	stripSpoofableIPHeaders := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Del("True-Client-IP")
+			r.Header.Del("X-Real-IP")
+			next.ServeHTTP(w, r)
+		})
+	}
+	r.With(stripSpoofableIPHeaders, httprate.LimitByRealIP(60, time.Minute)).Post("/webhooks/stripe", d.Webhook.Handle)
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.

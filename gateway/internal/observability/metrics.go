@@ -8,6 +8,8 @@
 //	crucible_usage_records_total
 //	crucible_billing_flush_total{outcome}
 //	crucible_rate_limited_total
+//	crucible_ratelimit_failopen_total
+//	crucible_quota_failopen_total
 package observability
 
 import (
@@ -55,6 +57,19 @@ var (
 		Name: "crucible_rate_limited_total",
 		Help: "Number of requests rejected for exceeding rate limits.",
 	})
+
+	// Fail-open counters: incremented when Redis is unreachable and the request is
+	// admitted anyway (correct behaviour, but otherwise silent). A non-zero rate here
+	// means the limiter/quota is degraded and customers may be exceeding their caps.
+	RateLimitFailOpenTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_ratelimit_failopen_total",
+		Help: "Number of requests admitted because the rate-limit store (Redis) was unreachable.",
+	})
+
+	QuotaFailOpenTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_quota_failopen_total",
+		Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
+	})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -66,6 +81,8 @@ type Metrics struct {
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
+	RateLimitFailOpen  prometheus.Counter
+	QuotaFailOpen      prometheus.Counter
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -99,6 +116,14 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_rate_limited_total",
 			Help: "Number of requests rejected for exceeding rate limits.",
 		}),
+		RateLimitFailOpen: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_ratelimit_failopen_total",
+			Help: "Number of requests admitted because the rate-limit store (Redis) was unreachable.",
+		}),
+		QuotaFailOpen: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_quota_failopen_total",
+			Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
+		}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -107,6 +132,8 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,
+		m.RateLimitFailOpen,
+		m.QuotaFailOpen,
 	)
 	return m
 }
