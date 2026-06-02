@@ -251,7 +251,7 @@ func TestInvoke_StalledConnection(t *testing.T) {
 // TestInvoke_MarshalError exercises the json.Marshal failure path (line 77-79).
 // json.RawMessage containing invalid JSON causes Marshal to return an error.
 func TestInvoke_MarshalError(t *testing.T) {
-	c := New("http://unused", 5*time.Second)
+	c := New("http://unused", 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{
 		Operation: "x",
 		Payload:   json.RawMessage(`not-valid-json`),
@@ -267,7 +267,7 @@ func TestInvoke_MarshalError(t *testing.T) {
 // TestInvoke_BadWorkerURL exercises the http.NewRequestWithContext failure path (line 82-84).
 // A URL with a control character is rejected by net/url at request-build time.
 func TestInvoke_BadWorkerURL(t *testing.T) {
-	c := New("http://\x00bad", 5*time.Second)
+	c := New("http://\x00bad", 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected request-build error, got nil")
@@ -286,7 +286,7 @@ func TestInvoke_DecodeError(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected decode error, got nil")
@@ -308,7 +308,7 @@ func TestInvoke_ContextCanceled(t *testing.T) {
 	}))
 	t.Cleanup(worker.Close)
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel after a short delay to let the request reach the handler.
@@ -343,7 +343,7 @@ func TestInvoke_LargeSuccessBody(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	c := New(worker.URL, 5*time.Second)
+	c := New(worker.URL, 5*time.Second, 0)
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)

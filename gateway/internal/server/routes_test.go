@@ -544,7 +544,7 @@ func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
 			}))
 			defer worker.Close()
 
-			p := proxy.New(worker.URL, 5*time.Second)
+			p := proxy.New(worker.URL, 5*time.Second, 0)
 			h := invoke(p, nil, mode, "test")
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"x"}`))
