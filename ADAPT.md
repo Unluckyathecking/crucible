@@ -14,7 +14,7 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
 
 3. **`gateway/migrations/0002_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id).
 
-4. **`dashboard/app/(marketing)/page.tsx`** — landing copy + pricing display.
+4. **`dashboard/app/page.tsx`** — landing copy + pricing display.
 
 5. **`docs/guides/`** — product-specific MDX docs.
 

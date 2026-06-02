@@ -9,6 +9,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 // Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve.
@@ -52,7 +53,9 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 			admitted, reservedKey, err := t.Reserve(r.Context(), key.Customer.ID, cap)
 			if err != nil {
-				// Fail-open and let the request through. Operators see this in observability.
+				// Fail-open and let the request through. Count it so operators can alert on a
+				// degraded quota store instead of the fail-open being silent.
+				observability.QuotaFailOpenTotal.Inc()
 				next.ServeHTTP(w, r)
 				return
 			}

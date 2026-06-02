@@ -48,8 +48,9 @@ PRODUCT_TITLE=$(echo "$PRODUCT" | awk -F- '{for (i=1;i<=NF;i++) printf "%s%s", t
 # Use `find -exec ... +` directly (avoids bash 4 dependency on mapfile).
 FIND_ARGS=(. -type f \(
   -name '*.go' -o -name '*.ts' -o -name '*.tsx' -o -name '*.json' -o -name '*.md'
-  -o -name '*.yml' -o -name '*.yaml' -o -name '*.sql' -o -name 'Dockerfile'
-  -o -name 'Makefile' -o -name 'go.work' -o -name 'go.mod' -o -name '.env.example'
+  -o -name '*.yml' -o -name '*.yaml' -o -name '*.sql' -o -name '*.sh'
+  -o -name 'Dockerfile' -o -name 'Makefile' -o -name 'go.work' -o -name 'go.mod'
+  -o -name '.env.example'
 \)
   ! -path './node_modules/*' ! -path './.next/*' ! -path '*/node_modules/*' ! -path '*/.next/*')
 

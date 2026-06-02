@@ -1,15 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
@@ -235,7 +238,7 @@ func TestInvokeErrorExposureSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -288,7 +291,7 @@ func TestInvokeErrorExposureFull(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -334,7 +337,7 @@ func TestInvokeErrorExposureDefaultSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -369,7 +372,7 @@ func TestInvokeErrorExposureTransportErrorAlwaysSanitized(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	p := proxy.New(worker.URL, 5*time.Second)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
@@ -392,6 +395,188 @@ func TestInvokeErrorExposureTransportErrorAlwaysSanitized(t *testing.T) {
 	}
 }
 
+func TestWebhookIPRateLimited(t *testing.T) {
+	// Regression for audit #11: the public /webhooks/stripe route is mounted
+	// outside auth/quota gating and previously had no rate limit. A single IP
+	// must be capped at 60 req/min; the 61st request returns 429 before reaching
+	// the webhook handler. Each request carries no valid Stripe signature, so the
+	// handler (when reached) returns 400 without touching the DB — the limiter is
+	// the only thing that can produce a 429 here.
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	const remoteAddr = "203.0.113.7:54321"
+	send := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		req.RemoteAddr = remoteAddr
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 60; i++ {
+		if code := send(); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d was rate limited (429) before the 60/min cap", i+1)
+		}
+	}
+	if code := send(); code != http.StatusTooManyRequests {
+		t.Fatalf("61st request: expected 429, got %d", code)
+	}
+}
+
+func TestWebhookRateLimitPerIP(t *testing.T) {
+	// A different IP must not be penalized by another IP's traffic — the limiter
+	// keys per-IP, not globally.
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	send := func(addr string) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 61; i++ {
+		send("198.51.100.1:1111")
+	}
+	if code := send("198.51.100.2:2222"); code == http.StatusTooManyRequests {
+		t.Fatalf("second IP was rate limited by first IP's traffic, got %d", code)
+	}
+}
+
+func TestWebhookRateLimitSpoofedHeaderCannotExceedCap(t *testing.T) {
+	// Regression for the trust-boundary review on audit #11: httprate's KeyByRealIP
+	// reads client-controlled headers (True-Client-IP > X-Real-IP > X-Forwarded-For >
+	// RemoteAddr). Under the intended deployment, Caddy strips True-Client-IP and
+	// X-Real-IP and overrides X-Forwarded-For with its observed {remote_host}, so the
+	// gateway keys on a single trusted value the client cannot influence.
+	//
+	// The gateway also strips True-Client-IP and X-Real-IP in its own middleware
+	// (defense-in-depth) so a Caddyfile mis-config cannot silently re-open the bypass.
+	//
+	// This test sends ALL THREE client-controlled identity headers with a FRESH value
+	// on every request (simulating an attacker trying to mint a new rate-limit bucket
+	// per request). RemoteAddr stays constant (Caddy's internal Docker address) and
+	// X-Forwarded-For is set to the constant trusted value Caddy would emit. The
+	// gateway must strip True-Client-IP and X-Real-IP before the limiter runs, so it
+	// keys on the constant X-Forwarded-For — the 61st request must still return 429.
+	//
+	// If the stripping middleware is removed, KeyByRealIP keys on the rotating
+	// True-Client-IP first; each request lands in its own bucket and the cap is never
+	// reached, causing this test to fail (audit #11 re-opened).
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	const (
+		trustedXFF = "203.0.113.50" // constant value Caddy sets from {remote_host}
+		caddyAddr  = "10.0.0.2:443" // constant Caddy Docker-bridge address
+	)
+	send := func(i int) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(`{}`))
+		// RemoteAddr is constant: in production this is Caddy's address on the Docker
+		// network, identical for every request regardless of the real client.
+		req.RemoteAddr = caddyAddr
+		// Caddy sets X-Forwarded-For to the real client IP (constant for one attacker).
+		req.Header.Set("X-Forwarded-For", trustedXFF)
+		// Rotate True-Client-IP and X-Real-IP per request — an attacker's attempt to
+		// mint a fresh rate-limit bucket each time. The gateway must strip these before
+		// the limiter so they cannot influence the key.
+		req.Header.Set("True-Client-IP", "198.51.100."+strconv.Itoa(i))
+		req.Header.Set("X-Real-IP", "192.0.2."+strconv.Itoa(i%254+1))
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := 0; i < 60; i++ {
+		// Each request carries a unique True-Client-IP and X-Real-IP. Without the
+		// stripping middleware, KeyByRealIP would key on True-Client-IP and each
+		// request would land in its own bucket — the cap would never be reached.
+		if code := send(i); code == http.StatusTooManyRequests {
+			t.Fatalf("request %d rate limited before cap despite rotating spoofed headers (unexpected early 429)", i+1)
+		}
+	}
+	// 61st request: spoofed headers rotate again, but the limiter must still see the
+	// same constant X-Forwarded-For key and return 429.
+	if code := send(255); code != http.StatusTooManyRequests {
+		t.Fatalf("61st request: expected 429 — rotating spoofed headers must not exceed the per-IP cap, got %d", code)
+	}
+}
+
+func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
+	// Regression for audit #20: only the explicit "full" opt-in forwards worker
+	// detail. Every other value — including the unset/empty default — must surface
+	// a stable code + safe message and never leak the worker's error code or
+	// message. Cover empty, the configured "sanitized" default, and an unknown
+	// value to lock the safe-by-default fallthrough.
+	for _, mode := range []string{"", "sanitized", "unknown"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":      "INTERNAL_STACK",
+						"message":   "panic: runtime error at /srv/worker/db.go:42",
+						"retryable": false,
+					},
+				})
+			}))
+			defer worker.Close()
+
+			p := proxy.New(worker.URL, 5*time.Second, 0)
+			h := invoke(p, nil, mode, "test")
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"x"}`))
+			w := httptest.NewRecorder()
+			h(w, req)
+
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("expected 502, got %d", w.Code)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			errObj := body["error"].(map[string]any)
+			if errObj["code"] != "WORKER_UNREACHABLE" {
+				t.Errorf("expected stable code 'WORKER_UNREACHABLE', got %q", errObj["code"])
+			}
+			if errObj["message"] != "worker unavailable" {
+				t.Errorf("expected safe message 'worker unavailable', got %q", errObj["message"])
+			}
+
+			bodyStr := w.Body.String()
+			for _, leak := range []string{"INTERNAL_STACK", "panic", "runtime error", "/srv/worker/db.go"} {
+				if contains(bodyStr, leak) {
+					t.Errorf("mode %q leaked worker internal detail %q", mode, leak)
+				}
+			}
+		})
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchSubstring(s, substr)
 }
@@ -403,4 +588,67 @@ func searchSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestWriteJSONError(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		code      string
+		msg       string
+		retryable bool
+	}{
+		{"bad_request", http.StatusBadRequest, "BAD_INPUT", "invalid payload", false},
+		{"rate_limited", http.StatusTooManyRequests, "RATE_LIMITED", "too many requests", true},
+		{"service_unavailable", http.StatusServiceUnavailable, "WORKER_UNAVAILABLE", "worker unreachable", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeJSONError(w, tc.status, tc.code, tc.msg, tc.retryable)
+
+			if w.Code != tc.status {
+				t.Errorf("got HTTP status %d, want %d", w.Code, tc.status)
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type %q, want application/json", ct)
+			}
+
+			// Verify top-level has exactly one key: "error".
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			if len(top) != 1 {
+				t.Fatalf("body has %d top-level keys, want 1 (\"error\")", len(top))
+			}
+			errRaw, ok := top["error"]
+			if !ok {
+				t.Fatal("body missing top-level \"error\" key")
+			}
+
+			// Verify error object has exactly three fields with correct values.
+			type errorObj struct {
+				Code      string `json:"code"`
+				Message   string `json:"message"`
+				Retryable bool   `json:"retryable"`
+			}
+			dec := json.NewDecoder(bytes.NewReader(errRaw))
+			dec.DisallowUnknownFields()
+			var obj errorObj
+			if err := dec.Decode(&obj); err != nil {
+				t.Fatalf("failed to decode error object (unexpected field?): %v", err)
+			}
+			if obj.Code != tc.code {
+				t.Errorf("error.code %q, want %q", obj.Code, tc.code)
+			}
+			if obj.Message != tc.msg {
+				t.Errorf("error.message %q, want %q", obj.Message, tc.msg)
+			}
+			if obj.Retryable != tc.retryable {
+				t.Errorf("error.retryable %v, want %v", obj.Retryable, tc.retryable)
+			}
+		})
+	}
 }

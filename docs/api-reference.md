@@ -215,7 +215,7 @@ The `retryable` field indicates whether the same request might succeed if retrie
 |---|---|---|
 | 400 | `BAD_REQUEST` | Invalid JSON in the request body. |
 | 401 | `UNAUTHORIZED` | Missing, malformed, or invalid API key. |
-| 401 | `UNAUTHORIZED` | Auth lookup failed due to internal error (message: "auth lookup failed"). |
+| 500 | `INTERNAL` | Auth lookup failed due to internal error (message: "auth lookup failed"). |
 | 429 | `RATE_LIMITED` | Per-minute rate limit exceeded for your plan. Retry after 60 seconds. |
 | 429 | `QUOTA_EXCEEDED` | Monthly billable-unit cap reached. Does not reset until the next billing cycle. |
 | 500 | `INTERNAL` | Unexpected server error. Include `X-Request-ID` when reporting. |

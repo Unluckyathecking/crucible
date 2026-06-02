@@ -11,10 +11,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
@@ -187,7 +189,11 @@ func TestRefundAt_MonthBoundary_UsesOriginalKey(t *testing.T) {
 
 	tr := New(rdb)
 
-	now := time.Date(2026, 5, 31, 23, 59, 0, 0, time.UTC)
+	// Reserve derives the month key from time.Now() internally, so the expected
+	// key must be computed from the same clock — a hardcoded date breaks the test
+	// at every month rollover. The invariant under test is that RefundAt reuses
+	// the key Reserve returned, not which month it is.
+	now := time.Now().UTC()
 	key := monthKey(cust, now)
 	t.Cleanup(func() { rdb.Del(context.Background(), key) })
 
@@ -353,6 +359,8 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
+	before := testutil.ToFloat64(observability.QuotaFailOpenTotal)
+
 	ctx := auth.WithTestKey(context.Background(), key)
 	req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -364,5 +372,10 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d (fail-open on Redis error)", rec.Code, http.StatusOK)
+	}
+
+	after := testutil.ToFloat64(observability.QuotaFailOpenTotal)
+	if after != before+1 {
+		t.Errorf("crucible_quota_failopen_total = %v, want %v (must increment on Redis-error fail-open)", after, before+1)
 	}
 }
