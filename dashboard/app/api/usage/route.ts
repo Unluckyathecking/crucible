@@ -43,11 +43,13 @@ export async function GET(request: Request): Promise<Response> {
     const now = new Date();
     // Align defaults to UTC midnight boundaries so the half-open [from, to) interval
     // behaves consistently whether params are supplied or not.
-    // to = start of tomorrow (exclusive upper bound) → all of today is included.
-    // from = to - 30 days = start of the day 30 days ago (inclusive lower bound).
-    const utcMidnightToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    let from = new Date(utcMidnightToday.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);
-    let to = new Date(utcMidnightToday.getTime() + 24 * 60 * 60 * 1000);
+    // tomorrowMidnight = exclusive upper bound for today; used for both the default
+    // value of `to` and the future-date guard so the same anchor is never stale.
+    const todayMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    let from = new Date(todayMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
+    let to = tomorrowMidnight;
 
     if (fromParam) {
       if (!ISO_DATE_RE.test(fromParam)) {
@@ -91,14 +93,14 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+    if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * MS_PER_DAY) {
       return new Response(JSON.stringify({ error: `date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days` }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
-    if (to.getTime() > utcMidnightToday.getTime() + 24 * 60 * 60 * 1000) {
-      return new Response(JSON.stringify({ error: "'to' date cannot be more than 24 hours in the future" }), {
+    if (to > tomorrowMidnight) {
+      return new Response(JSON.stringify({ error: "'to' date cannot be in the future" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
