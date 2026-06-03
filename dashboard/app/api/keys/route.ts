@@ -25,7 +25,8 @@ export async function POST(request: Request): Promise<Response> {
       let body: unknown;
       try {
         body = await request.json();
-      } catch {
+      } catch (err) {
+        console.error("POST /api/keys JSON parse failed:", err instanceof Error ? err.message : String(err));
         return new Response("Invalid JSON", { status: 400 });
       }
       const nameValue = (body as Record<string, unknown>).name;

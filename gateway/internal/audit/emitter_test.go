@@ -127,13 +127,15 @@ func TestEmit_RoundTrip(t *testing.T) {
 		targetType  string
 		targetID    string
 		detailsJSON []byte
+		createdAt   time.Time
 	)
+	beforeEmit := time.Now().Add(-time.Second)
 	err := db.QueryRow(ctx, `
-		SELECT actor_type, actor_id, action, target_type, target_id, details
+		SELECT actor_type, actor_id, action, target_type, target_id, details, created_at
 		FROM audit_log
 		WHERE actor_id = $1 AND action = $2
 		ORDER BY id DESC LIMIT 1
-	`, uniqueActorID, e.Action).Scan(&actorType, &actorID, &action, &targetType, &targetID, &detailsJSON)
+	`, uniqueActorID, e.Action).Scan(&actorType, &actorID, &action, &targetType, &targetID, &detailsJSON, &createdAt)
 	if err != nil {
 		t.Fatalf("query round-trip row: %v", err)
 	}
@@ -165,6 +167,17 @@ func TestEmit_RoundTrip(t *testing.T) {
 	// JSON numbers decode as float64.
 	if gotDetails["attempt"] != float64(1) {
 		t.Errorf("details.attempt = %v, want 1", gotDetails["attempt"])
+	}
+
+	// Verify created_at was set to a recent timestamp (within the last minute).
+	if createdAt.IsZero() {
+		t.Error("created_at is zero")
+	}
+	if createdAt.Before(beforeEmit) {
+		t.Errorf("created_at %v is before test start %v", createdAt, beforeEmit)
+	}
+	if time.Since(createdAt) > time.Minute {
+		t.Errorf("created_at %v is older than 1 minute", createdAt)
 	}
 }
 
