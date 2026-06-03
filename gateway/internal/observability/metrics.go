@@ -5,6 +5,7 @@
 //	crucible_requests_total{method,path,status}
 //	crucible_request_duration_seconds{method,path}
 //	crucible_worker_call_duration_seconds
+//	crucible_worker_errors_total{code}
 //	crucible_usage_records_total
 //	crucible_billing_flush_total{outcome}
 //	crucible_rate_limited_total
@@ -43,6 +44,14 @@ var (
 		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	})
 
+	// WorkerErrorsTotal counts worker error responses by their structured error code.
+	// The label is the bounded enum-like Code returned by the worker (e.g. INVALID_VAT_FORMAT) —
+	// never a free-form message or per-request value, so cardinality stays bounded.
+	WorkerErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_worker_errors_total",
+		Help: "Number of worker error responses, by structured error code.",
+	}, []string{"code"})
+
 	UsageRecordsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_usage_records_total",
 		Help: "Number of usage_events rows recorded.",
@@ -78,6 +87,7 @@ type Metrics struct {
 	RequestsTotal      *prometheus.CounterVec
 	RequestDuration    *prometheus.HistogramVec
 	WorkerCallDuration prometheus.Histogram
+	WorkerErrorsTotal  *prometheus.CounterVec
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
@@ -104,6 +114,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Help:    "Latency of gateway → worker HTTP calls.",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		}),
+		WorkerErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_worker_errors_total",
+			Help: "Number of worker error responses, by structured error code.",
+		}, []string{"code"}),
 		UsageRecordsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_usage_records_total",
 			Help: "Number of usage_events rows recorded.",
@@ -129,6 +143,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RequestsTotal,
 		m.RequestDuration,
 		m.WorkerCallDuration,
+		m.WorkerErrorsTotal,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,
