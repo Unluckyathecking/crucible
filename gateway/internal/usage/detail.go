@@ -73,7 +73,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	}
 	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query usage by operation: %w", err)
 	}
 	defer rows.Close()
 

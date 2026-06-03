@@ -3,7 +3,7 @@
 // All date parameters are interpreted as UTC midnight. Clients should express dates in UTC.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
+import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH, MS_PER_DAY } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 // Accepts ISO 8601 date-only (YYYY-MM-DD). Month bounded 01-12, day 01-31;
@@ -53,7 +53,6 @@ export async function GET(request: Request): Promise<Response> {
     // Use Date.UTC calendar arithmetic so from/to are always exact UTC midnight
     // boundaries regardless of DST or leap seconds in the server's local timezone.
     const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-    const MS_PER_DAY = 24 * 60 * 60 * 1000;
     let from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - DEFAULT_DAYS));
     let to = tomorrowMidnight;
 
@@ -126,7 +125,7 @@ export async function GET(request: Request): Promise<Response> {
       error: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     });
-    return new Response(JSON.stringify({ error: "Internal server error" }), {
+    return new Response(JSON.stringify({ error: "Internal server error", errorId }), {
       status: 500,
       headers: { "content-type": "application/json", "cache-control": "no-store", "x-error-id": errorId },
     });
