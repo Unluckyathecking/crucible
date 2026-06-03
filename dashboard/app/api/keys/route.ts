@@ -52,19 +52,9 @@ export async function POST(request: Request): Promise<Response> {
     return new Response("Failed to generate a unique key after 3 attempts", { status: 500 });
   }
 
-  // Show the full key ONCE — minimal HTML so the user can copy it.
-  // Full UX with one-time-secret modal lands in Sprint 5b.
-  const html = `<!doctype html>
-<html><head><meta charset="utf-8"><title>New API key</title>
-<style>body{font-family:system-ui;padding:2rem;max-width:42rem;margin:auto}
-code{display:block;padding:1rem;background:#f4f4f5;border-radius:.5rem;font-size:1rem;word-break:break-all;margin:1rem 0}
-a{color:#18181b}</style>
-</head><body>
-<h1>Your new API key</h1>
-<p>Copy it now — it won't be shown again.</p>
-<code>${full!}</code>
-<p><a href="/dashboard">&larr; Back to dashboard</a></p>
-</body></html>`;
-
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  // Return the full key ONCE as JSON — shown inline in the dashboard.
+  // Never returned again; the client must display and copy from this response.
+  return new Response(JSON.stringify({ key: full! }), {
+    headers: { "content-type": "application/json" },
+  });
 }
