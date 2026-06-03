@@ -85,7 +85,7 @@ export default async function DashboardPage() {
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
-          <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
+          <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last {USAGE_WINDOW_DAYS} days)</h2>
           {opBreakdown.length === 0 ? (
             <p className="text-sm text-zinc-500">No usage in this period.</p>
           ) : (

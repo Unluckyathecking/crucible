@@ -9,18 +9,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) {
+func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 	reqID := "req-" + uuid.New().String()[:8]
-	_, err := pool.Exec(ctx,
+	var id uuid.UUID
+	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		customerID, apiKeyID, operation, units, reqID,
-	)
+	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert usage_event: %v", err)
 	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_events WHERE id = $1`, id)
+	})
+	return id
 }
 
 func TestQueryByOperation_emptyWindow(t *testing.T) {

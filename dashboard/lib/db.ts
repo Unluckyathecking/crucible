@@ -247,7 +247,7 @@ export async function listAuditEvents(
 // the same query path and validation logic.
 export async function sumUsage(customerId: string, days: number): Promise<number> {
   if (!Number.isFinite(days) || days < 0) {
-    throw new Error("days must be a non-negative finite number");
+    return 0;
   }
   const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const to = new Date();
