@@ -143,11 +143,13 @@ describe("DELETE /api/keys/[id] — idempotency", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Source-text assertions: verify the actual db.ts revokeApiKey implementation
-// uses the correct SQL patterns. Reading the real source avoids the tautology
-// of a re-implemented mirror that can drift silently.
+// Drift-detection smoke tests — NOT behavioral guarantees.
+// These read the actual db.ts source and assert that specific SQL patterns are
+// present so that the re-implementation above cannot silently diverge from the
+// real code without a test failure. They do not execute SQL or call the real
+// function; they are a lint-like guard against structural drift.
 // ---------------------------------------------------------------------------
-describe("revokeApiKey in db.ts — SQL pattern guards", () => {
+describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   const src = fs.readFileSync(path.resolve(__dirname, "../../../../../lib/db.ts"), "utf8");
 
   // Extract only the revokeApiKey function body using a regex so this doesn't

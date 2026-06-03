@@ -1,10 +1,18 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, sumUsage, listAuditEvents } from "@/lib/db";
+import { ensureCustomer, listKeys, sumUsage, listAuditEvents, AuditEventRow } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
+
+function getAuditEventLabel(e: AuditEventRow): string {
+  const details = e.details as Record<string, unknown> | null;
+  if (typeof details?.prefix === "string") return details.prefix;
+  if (typeof details?.name === "string") return details.name;
+  if (e.target_type === "api_key" && e.target_id) return e.target_id.slice(0, 8) + "…";
+  return "";
+}
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -78,11 +86,7 @@ export default async function DashboardPage() {
           ) : (
             <ul className="space-y-2">
               {auditEvents.map((e) => {
-                const details = e.details as Record<string, unknown> | null;
-                const label =
-                  (typeof details?.prefix === "string" ? details.prefix : undefined) ||
-                  (typeof details?.name === "string" ? details.name : undefined) ||
-                  (e.target_type === "api_key" && e.target_id ? e.target_id.slice(0, 8) + "…" : "");
+                const label = getAuditEventLabel(e);
                 return (
                   <li key={e.id} className="flex items-center justify-between text-sm gap-2">
                     <span className="font-mono text-zinc-800">{e.action}</span>

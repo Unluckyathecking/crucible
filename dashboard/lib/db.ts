@@ -11,6 +11,10 @@ const pool: Pool =
   global._crucible_pool ?? new Pool({ connectionString: process.env.DATABASE_URL });
 if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 
+// Must match gateway/internal/auth/store.go Redis key format: "auth:<prefix>".
+// Both sides changing this independently would silently break cache invalidation.
+const AUTH_CACHE_PREFIX = "auth:";
+
 export interface Customer {
   id: string;
   email: string;
@@ -133,7 +137,7 @@ export async function revokeApiKey(
     // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
     const redis = getRedis();
     if (redis) {
-      void redis.del(`auth:${prefix}`).catch((err) => {
+      void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
         console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
       });
     }

@@ -36,7 +36,9 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 }
 
 func TestEmit_RejectsInvalidActorType(t *testing.T) {
-	// No Postgres needed — validation fires before any DB call.
+	// nil pool is safe here: actor_type validation returns an error before Emit
+	// touches db, so no DB call is ever issued. If Emit is refactored to query
+	// db before validating, this test will panic and must be updated.
 	err := audit.Emit(context.Background(), nil, audit.Event{
 		ActorType: "invalid",
 		Action:    "test.action",
