@@ -239,26 +239,24 @@ export async function listAuditEvents(
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
-  // CTEs give each branch its own LIMIT so Postgres uses idx_audit_actor_id and
-  // idx_audit_target_id for efficient per-branch index scans. In PostgreSQL 12+,
-  // single-reference CTEs are inlined by default (NOT MATERIALIZED), so the planner
-  // treats them identically to subqueries. actor_id = $1 uses = (not IS NOT DISTINCT
-  // FROM) so the b-tree index is used directly; customerId is always a non-null UUID.
+  // In PostgreSQL 12+, single-reference CTEs are inlined by default (NOT MATERIALIZED),
+  // so the planner treats them identically to subqueries and can push the outer LIMIT
+  // down through the Append node into each index scan. actor_id = $1 uses = (not IS NOT
+  // DISTINCT FROM) so the b-tree index is used directly; customerId is always non-null.
+  // No per-branch LIMIT: a single LIMIT on the final UNION ALL is both correct and
+  // avoids the subtle over-restriction that per-branch limits introduce when one branch
+  // is sparse and the other is dense.
   const r = await pool.query<AuditEventRow>(
     `WITH actor_events AS (
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE actor_id = $1
-       ORDER BY created_at DESC
-       LIMIT $2
      ),
      target_events AS (
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE target_id = $1
          AND actor_id IS DISTINCT FROM $1
-       ORDER BY created_at DESC
-       LIMIT $2
      )
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM actor_events
