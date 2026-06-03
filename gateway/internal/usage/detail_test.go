@@ -55,8 +55,8 @@ func TestQueryByOperation_singleOperationFilter(t *testing.T) {
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 	insertUsageEvent(t, pool, custID, keyID, "op.b", 10)
 
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, to, "op.a")
 	if err != nil {
@@ -85,8 +85,8 @@ func TestQueryByOperation_multiOperation(t *testing.T) {
 	insertUsageEvent(t, pool, custID, keyID, "op.y", 20)
 	insertUsageEvent(t, pool, custID, keyID, "op.y", 30)
 
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, to, "")
 	if err != nil {
@@ -106,8 +106,8 @@ func TestQueryByOperation_multiOperation(t *testing.T) {
 
 func TestQueryByOperation_unknownCustomer(t *testing.T) {
 	pool := newTestPool(t)
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 
 	// Use a fixed non-existent UUID rather than zero so the assertion is not
 	// coupled to whether the DB happens to contain a zero-UUID customer.
@@ -129,8 +129,8 @@ func TestQueryByOperation_emptyStringOperationReturnsAll(t *testing.T) {
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 1)
 	insertUsageEvent(t, pool, custID, keyID, "op.b", 2)
 
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 
 	// Empty string means "no filter" — should return all operations.
 	result, err := QueryByOperation(ctx, pool, custID, from, to, "")
@@ -163,8 +163,8 @@ func TestQueryByOperation_operationTooLong(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)
 
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 	longOp := string(make([]byte, 129))
 
 	_, err := QueryByOperation(context.Background(), pool, custID, from, to, longOp)
@@ -191,7 +191,7 @@ func TestQueryByOperation_halfOpenBoundary(t *testing.T) {
 
 	// Set the query window BEFORE inserting so the event's created_at (set by
 	// the DB to NOW()) is always after 'past', guaranteeing it falls outside [from, past).
-	past := time.Now().Add(-time.Minute)
+	past := time.Now().Add(-time.Hour)
 	from := past.Add(-time.Hour)
 
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 7)
@@ -216,8 +216,8 @@ func TestQueryByOperation_crossCustomerIsolation(t *testing.T) {
 	insertUsageEvent(t, pool, custA, keyA, "op.shared", 100)
 	insertUsageEvent(t, pool, custB, keyB, "op.shared", 999)
 
-	from := time.Now().Add(-time.Minute)
-	to := time.Now().Add(time.Minute)
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
 
 	resultA, err := QueryByOperation(ctx, pool, custA, from, to, "")
 	if err != nil {
@@ -267,7 +267,7 @@ func TestQueryByOperation_includesFromBoundary(t *testing.T) {
 	from := time.Now().Add(-time.Hour) // wide buffer eliminates clock-skew flakiness
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 
-	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(time.Hour), "")
+	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(24*time.Hour), "")
 	if err != nil {
 		t.Fatalf("QueryByOperation: %v", err)
 	}

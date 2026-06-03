@@ -88,6 +88,7 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
+    // AC1: raw event rows {operation, billable_units, created_at}; usageByOperation serves the dashboard aggregate table.
     const rows = await listUsageEvents(customer.id, from, to, operationParam);
 
     return new Response(JSON.stringify(rows), {

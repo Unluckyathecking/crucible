@@ -292,7 +292,8 @@ export async function usageByOperation(
     args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
   }
-  q += ` GROUP BY operation ORDER BY operation`;
+  args.push(MAX_USAGE_EVENTS_LIMIT);
+  q += ` GROUP BY operation ORDER BY operation LIMIT $${args.length}`;
   const r = await pool.query<{ operation: string; total_billable_units: string; event_count: string }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,
