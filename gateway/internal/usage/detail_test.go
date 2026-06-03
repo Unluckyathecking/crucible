@@ -241,3 +241,37 @@ func TestQueryByOperation_crossCustomerIsolation(t *testing.T) {
 		t.Errorf("custB total = %d, want 999 (must not include custA's 100)", resultB[0].TotalBillableUnits)
 	}
 }
+
+func TestQueryByOperation_zeroTime(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+	now := time.Now()
+
+	_, err := QueryByOperation(context.Background(), pool, custID, time.Time{}, now, "")
+	if err == nil {
+		t.Error("expected error for zero from, got nil")
+	}
+	_, err = QueryByOperation(context.Background(), pool, custID, now, time.Time{}, "")
+	if err == nil {
+		t.Error("expected error for zero to, got nil")
+	}
+}
+
+// TestQueryByOperation_includesFromBoundary verifies the half-open interval includes
+// events at exactly from (created_at >= from).
+func TestQueryByOperation_includesFromBoundary(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	from := time.Now()
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
+
+	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(time.Hour), "")
+	if err != nil {
+		t.Fatalf("QueryByOperation: %v", err)
+	}
+	if len(result) != 1 || result[0].TotalBillableUnits != 3 {
+		t.Errorf("expected event at >= from boundary to be included, got %+v", result)
+	}
+}

@@ -6,10 +6,9 @@ import { ensureCustomer, listUsageEvents } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 const MAX_RANGE_DAYS = 90;
-// Validates ISO 8601 month (01-12) and day (01-31) digit ranges.
-// Calendar validity (e.g. Feb 31) is enforced by round-trip check for date-only strings below;
-// for datetime strings, Date.parse returns NaN for out-of-range values per ES2015.
-const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?Z?)?$/;
+// Accepts ISO 8601 date-only (YYYY-MM-DD). Month bounded 01-12, day 01-31;
+// calendar validity (e.g. Feb 31) is enforced by the round-trip check below.
+const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 export async function GET(request: Request): Promise<Response> {
   try {
@@ -48,7 +47,7 @@ export async function GET(request: Request): Promise<Response> {
       }
       const parsed = new Date(fromParam);
       // Round-trip check catches calendar-invalid strings like 2023-02-31 that JS silently shifts.
-      if (isNaN(parsed.getTime()) || (fromParam.length === 10 && parsed.toISOString().slice(0, 10) !== fromParam)) {
+      if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== fromParam) {
         return new Response(JSON.stringify({ error: "invalid 'from' date" }), {
           status: 400,
           headers: { "content-type": "application/json" },
@@ -64,7 +63,7 @@ export async function GET(request: Request): Promise<Response> {
         });
       }
       const parsed = new Date(toParam);
-      if (isNaN(parsed.getTime()) || (toParam.length === 10 && parsed.toISOString().slice(0, 10) !== toParam)) {
+      if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== toParam) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
           status: 400,
           headers: { "content-type": "application/json" },
