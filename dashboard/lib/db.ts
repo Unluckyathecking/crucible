@@ -21,6 +21,7 @@ const MAX_USAGE_EVENTS_LIMIT = 1000;
 // Separate cap for per-operation aggregate rows (distinct operations per customer window).
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 const MAX_OPERATION_LENGTH = 128;
+const MAX_USAGE_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 
 export interface Customer {
   id: string;
@@ -272,6 +273,9 @@ function validateUsageQueryParams(
   if (from.getTime() > to.getTime()) {
     throw new Error("from must not be after to");
   }
+  if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_MS) {
+    throw new Error("date range exceeds maximum of 90 days");
+  }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
     throw new Error("operation too long");
@@ -334,7 +338,7 @@ export async function listUsageEvents(
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, billable_units, created_at
+  let q = `SELECT operation, billable_units::text, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (effectiveOp) {
