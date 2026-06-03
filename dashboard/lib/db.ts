@@ -356,21 +356,23 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  // Cast created_at to text so the type is explicit and independent of pg type-parser configuration.
-  type Row = { operation: string; billable_units: string; created_at: string };
+  // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
+  // the server's DateStyle setting; no ::text cast or to_char conversion needed.
+  type Row = { operation: string; billable_units: string; created_at: Date };
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
   const mapRow = (row: Row): UsageEventRow => {
     const rawUnits = BigInt(row.billable_units);
+    const d = row.created_at;
+    if (isNaN(d.getTime())) throw new Error("invalid created_at returned from database");
     return {
       operation: row.operation,
       billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
-      created_at: new Date(row.created_at),
+      created_at: d,
     };
   };
   if (effectiveOp) {
     const r = await pool.query<Row>(
-      `SELECT operation, billable_units::text AS billable_units,
-              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+      `SELECT operation, billable_units::text AS billable_units, created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -379,8 +381,7 @@ export async function listUsageEvents(
     return r.rows.map(mapRow);
   }
   const r = await pool.query<Row>(
-    `SELECT operation, billable_units::text AS billable_units,
-            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+    `SELECT operation, billable_units::text AS billable_units, created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,

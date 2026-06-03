@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
-			t.Logf("cleanup failed for usage_event %d: %v", id, err)
+			t.Errorf("cleanup failed for usage_event %d: %v", id, err)
 		}
 	})
 	err := pool.QueryRow(ctx,
@@ -176,7 +177,7 @@ func TestQueryByOperation_operationTooLong(t *testing.T) {
 
 	from := time.Now().Add(-time.Hour)
 	to := time.Now().Add(time.Hour)
-	longOp := string(make([]byte, 129))
+	longOp := strings.Repeat("a", 129)
 
 	_, err := QueryByOperation(context.Background(), pool, custID, from, to, longOp)
 	if err == nil {

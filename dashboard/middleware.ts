@@ -3,7 +3,7 @@ import authConfig from "./auth.config";
 
 const { auth } = NextAuth(authConfig);
 
-export default auth(async (req) => {
+export default auth((req) => {
   if (!req.auth) {
     // API routes need 401 JSON, not a 302 redirect to an HTML login page.
     // Decode percent-encoded characters (e.g. %61pi/usage → api/usage) then
@@ -28,5 +28,5 @@ export default auth(async (req) => {
 });
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/api/keys/:path*", "/api/usage"],
+  matcher: ["/dashboard/:path*", "/api/keys/:path*", "/api/usage/:path*"],
 };
