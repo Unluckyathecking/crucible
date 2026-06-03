@@ -26,7 +26,7 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    const operationParam = operationRaw ?? undefined;
+    const operationParam = operationRaw || undefined;
 
     const now = new Date();
     let from = new Date(now.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);
