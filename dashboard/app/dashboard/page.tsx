@@ -36,10 +36,9 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  const totalUnitsRaw = opBreakdown.reduce((sum, r) => sum + r.total_billable_units, 0);
-  const totalEventsRaw = opBreakdown.reduce((sum, r) => sum + r.event_count, 0);
-  const totalUnits = Math.min(Number.MAX_SAFE_INTEGER, totalUnitsRaw);
-  const totalEvents = Math.min(Number.MAX_SAFE_INTEGER, totalEventsRaw);
+  // Clamp the running total at each step so intermediate sums stay within safe integer range.
+  const totalUnits = opBreakdown.reduce((sum, r) => Math.min(Number.MAX_SAFE_INTEGER, sum + r.total_billable_units), 0);
+  const totalEvents = opBreakdown.reduce((sum, r) => Math.min(Number.MAX_SAFE_INTEGER, sum + r.event_count), 0);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">

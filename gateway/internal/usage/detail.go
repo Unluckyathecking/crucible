@@ -36,7 +36,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
-	if to.Sub(from) > maxUsageRangeDays*24*time.Hour {
+	// AddDate uses calendar days so the limit is DST-safe for non-UTC locations.
+	if to.After(from.AddDate(0, 0, maxUsageRangeDays)) {
 		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}
 	operationTrimmed := strings.TrimSpace(operation)

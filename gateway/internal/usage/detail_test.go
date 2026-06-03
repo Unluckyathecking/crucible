@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -268,6 +269,29 @@ func TestQueryByOperation_zeroTime(t *testing.T) {
 	}
 	if _, err := QueryByOperation(context.Background(), pool, custID, now, time.Time{}, ""); err == nil {
 		t.Error("expected error for zero to, got nil")
+	}
+}
+
+// TestQueryByOperation_limitCap verifies that results are capped at maxUsageOperationsLimit
+// even when more distinct operations exist for the customer.
+func TestQueryByOperation_limitCap(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	for i := 0; i <= maxUsageOperationsLimit; i++ {
+		insertUsageEvent(t, pool, custID, keyID, fmt.Sprintf("op-%04d", i), 1)
+	}
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+
+	result, err := QueryByOperation(ctx, pool, custID, from, to, "")
+	if err != nil {
+		t.Fatalf("QueryByOperation: %v", err)
+	}
+	if len(result) != maxUsageOperationsLimit {
+		t.Errorf("expected result capped at %d rows, got %d", maxUsageOperationsLimit, len(result))
 	}
 }
 
