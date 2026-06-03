@@ -346,6 +346,20 @@ func TestQueryByOperation_limitCap(t *testing.T) {
 	}
 }
 
+// TestQueryByOperation_futureToIsAllowed documents that QueryByOperation accepts a to
+// value in the future — the "no future dates" constraint lives only in the dashboard
+// API route (route.ts), not in this internal query helper.
+func TestQueryByOperation_futureToIsAllowed(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(24 * time.Hour) // 24 h in the future
+	if _, err := QueryByOperation(context.Background(), pool, custID, from, to, ""); err != nil {
+		t.Errorf("expected future to to be accepted by QueryByOperation, got: %v", err)
+	}
+}
+
 // TestQueryByOperation_includesFromBoundary verifies the half-open interval includes
 // events at exactly from (created_at >= from).
 func TestQueryByOperation_includesFromBoundary(t *testing.T) {

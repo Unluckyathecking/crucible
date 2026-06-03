@@ -41,8 +41,8 @@ export default async function DashboardPage() {
       const unitAddend = r.total_billable_units;
       const eventAddend = r.event_count;
       return {
-        totalUnits: acc.totalUnits >= Number.MAX_SAFE_INTEGER - unitAddend ? Number.MAX_SAFE_INTEGER : acc.totalUnits + unitAddend,
-        totalEvents: acc.totalEvents >= Number.MAX_SAFE_INTEGER - eventAddend ? Number.MAX_SAFE_INTEGER : acc.totalEvents + eventAddend,
+        totalUnits: unitAddend > Number.MAX_SAFE_INTEGER - acc.totalUnits ? Number.MAX_SAFE_INTEGER : acc.totalUnits + unitAddend,
+        totalEvents: eventAddend > Number.MAX_SAFE_INTEGER - acc.totalEvents ? Number.MAX_SAFE_INTEGER : acc.totalEvents + eventAddend,
       };
     },
     { totalUnits: 0, totalEvents: 0 },

@@ -33,14 +33,14 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    // Only reject explicitly empty string; whitespace-only trims to no-filter (consistent with gateway).
-    if (operationRaw === "") {
+    const operationTrimmed = operationRaw?.trim();
+    // Reject both explicitly empty and whitespace-only; both mean the caller omitted the value.
+    if (operationRaw !== null && operationTrimmed === "") {
       return new Response(JSON.stringify({ error: "operation parameter must not be empty" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
-    const operationTrimmed = operationRaw?.trim();
     if (operationTrimmed !== undefined && [...operationTrimmed].length > MAX_OPERATION_LENGTH) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,

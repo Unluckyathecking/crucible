@@ -38,6 +38,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.IsZero() || to.IsZero() {
 		return nil, fmt.Errorf("from and to must be non-zero")
 	}
+	// from == to is a valid empty interval [t, t) returning zero rows — not an error.
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
