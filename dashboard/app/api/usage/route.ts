@@ -27,7 +27,7 @@ export async function GET(request: Request): Promise<Response> {
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
     // Fast-path: reject before spread to avoid OOM on multi-megabyte inputs.
-    if (operationRaw !== null && operationRaw.length > MAX_OPERATION_LENGTH * 4) {
+    if (operationRaw !== null && operationRaw.length > MAX_OPERATION_LENGTH * 2) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
         headers: { "content-type": "application/json" },

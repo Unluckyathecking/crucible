@@ -42,8 +42,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
-	// Enforce a fixed 90-day wall-clock duration limit to match the dashboard validation.
-	// Both from and to are expected to be UTC midnight dates; for UTC inputs, 90*24h == 90 calendar days.
+	// Enforce a 90×24h wall-clock duration limit. With UTC midnight inputs this equals exactly
+	// 90 calendar days because UTC has no daylight saving time (every UTC day is 24h).
 	if to.Sub(from) > maxUsageRangeDays*24*time.Hour {
 		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}

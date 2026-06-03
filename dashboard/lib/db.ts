@@ -369,7 +369,8 @@ export async function listUsageEvents(
   };
   if (effectiveOp) {
     const r = await pool.query<Row>(
-      `SELECT operation, billable_units::text AS billable_units, created_at::text AS created_at
+      `SELECT operation, billable_units::text AS billable_units,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -378,7 +379,8 @@ export async function listUsageEvents(
     return r.rows.map(mapRow);
   }
   const r = await pool.query<Row>(
-    `SELECT operation, billable_units::text AS billable_units, created_at::text AS created_at
+    `SELECT operation, billable_units::text AS billable_units,
+            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,
