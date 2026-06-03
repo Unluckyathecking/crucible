@@ -36,13 +36,10 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  const { totalUnits, totalEvents } = opBreakdown.reduce(
-    (acc, r) => ({
-      totalUnits: Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units),
-      totalEvents: Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count),
-    }),
-    { totalUnits: 0, totalEvents: 0 },
-  );
+  const totalUnitsRaw = opBreakdown.reduce((sum, r) => sum + r.total_billable_units, 0);
+  const totalEventsRaw = opBreakdown.reduce((sum, r) => sum + r.event_count, 0);
+  const totalUnits = Math.min(Number.MAX_SAFE_INTEGER, totalUnitsRaw);
+  const totalEvents = Math.min(Number.MAX_SAFE_INTEGER, totalEventsRaw);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
