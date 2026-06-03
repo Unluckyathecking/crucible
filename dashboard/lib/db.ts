@@ -274,7 +274,7 @@ export async function usageByOperation(
   if (!UUID_RE.test(customerId)) {
     throw new Error("invalid customerId");
   }
-  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
     throw new Error("invalid date range");
   }
   if (from.getTime() > to.getTime()) {
@@ -326,7 +326,7 @@ export async function listUsageEvents(
   if (!UUID_RE.test(customerId)) {
     throw new Error("invalid customerId");
   }
-  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
     throw new Error("invalid date range");
   }
   if (from.getTime() > to.getTime()) {

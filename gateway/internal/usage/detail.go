@@ -10,6 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// maxUsageOperationsLimit caps distinct operation rows per query, matching dashboard/lib/db.ts MAX_USAGE_OPERATIONS_LIMIT.
+const maxUsageOperationsLimit = 1000
+
 // OperationAggregate holds per-operation totals from usage_events.
 type OperationAggregate struct {
 	Operation          string
@@ -40,7 +43,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 		args = append(args, operationTrimmed)
 		q += fmt.Sprintf(` AND operation = $%d`, len(args))
 	}
-	q += ` GROUP BY operation ORDER BY operation LIMIT 1000`
+	q += fmt.Sprintf(` GROUP BY operation ORDER BY operation LIMIT %d`, maxUsageOperationsLimit)
 	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err

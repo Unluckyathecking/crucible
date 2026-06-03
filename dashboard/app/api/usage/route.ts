@@ -36,8 +36,13 @@ export async function GET(request: Request): Promise<Response> {
     const operationParam = operationTrimmed || undefined;
 
     const now = new Date();
-    let from = new Date(now.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);
-    let to = now;
+    // Align defaults to UTC midnight boundaries so the half-open [from, to) interval
+    // behaves consistently whether params are supplied or not.
+    // to = start of tomorrow (exclusive upper bound) → all of today is included.
+    // from = to - 30 days = start of the day 30 days ago (inclusive lower bound).
+    const utcMidnightToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    let from = new Date(utcMidnightToday.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);
+    let to = new Date(utcMidnightToday.getTime() + 24 * 60 * 60 * 1000);
 
     if (fromParam) {
       if (!ISO_DATE_RE.test(fromParam)) {
