@@ -6,7 +6,9 @@ const { auth } = NextAuth(authConfig);
 export default auth((req) => {
   if (!req.auth) {
     // API routes need 401 JSON, not a 302 redirect to an HTML login page.
-    if (req.nextUrl.pathname.startsWith("/api/")) {
+    // Use decoded pathname to avoid path traversal via encoded slashes.
+    const decodedPath = decodeURIComponent(req.nextUrl.pathname);
+    if (decodedPath.startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "content-type": "application/json" },
