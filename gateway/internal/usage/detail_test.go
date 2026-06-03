@@ -111,6 +111,50 @@ func TestQueryByOperation_unknownCustomer(t *testing.T) {
 	}
 }
 
+func TestQueryByOperation_fromEqualTo(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 5)
+
+	now := time.Now()
+	_, err := QueryByOperation(context.Background(), pool, custID, now, now, "")
+	if err == nil {
+		t.Error("expected error when from == to, got nil")
+	}
+}
+
+func TestQueryByOperation_fromAfterTo(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+
+	now := time.Now()
+	_, err := QueryByOperation(context.Background(), pool, custID, now.Add(time.Minute), now, "")
+	if err == nil {
+		t.Error("expected error when from > to, got nil")
+	}
+}
+
+func TestQueryByOperation_halfOpenBoundary(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 7)
+
+	// Use a 'to' in the past so the event (inserted just now) falls at or after 'to'.
+	past := time.Now().Add(-time.Minute)
+	from := past.Add(-time.Hour)
+
+	result, err := QueryByOperation(ctx, pool, custID, from, past, "")
+	if err != nil {
+		t.Fatalf("QueryByOperation: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected event at >= to to be excluded, got %d rows", len(result))
+	}
+}
+
 // TestQueryByOperation_crossCustomerIsolation asserts the query never leaks another
 // customer's rows — customerID is always the scope boundary.
 func TestQueryByOperation_crossCustomerIsolation(t *testing.T) {

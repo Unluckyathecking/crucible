@@ -1,6 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, sumUsage, usageByOperation, listAuditEvents, AuditEventRow, UsageOperationRow } from "@/lib/db";
+import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, UsageOperationRow } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -28,9 +28,8 @@ export default async function DashboardPage() {
   const USAGE_WINDOW_DAYS = 30;
   const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
-  const [keys, usage, opBreakdown, auditEvents] = await Promise.all([
+  const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
-    sumUsage(customer.id, USAGE_WINDOW_DAYS),
     usageByOperation(customer.id, thirtyDaysAgo, now),
     listAuditEvents(customer.id),
   ]);
@@ -88,7 +87,7 @@ export default async function DashboardPage() {
           <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
           {opBreakdown.length === 0 ? (
             <>
-              <div className="text-3xl sm:text-4xl font-bold tabular-nums">{usage.toLocaleString()}</div>
+              <div className="text-3xl sm:text-4xl font-bold tabular-nums">{totalUnits.toLocaleString()}</div>
               <div className="text-sm text-zinc-500">billable units</div>
             </>
           ) : (

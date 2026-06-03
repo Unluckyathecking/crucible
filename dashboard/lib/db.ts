@@ -274,6 +274,9 @@ export async function usageByOperation(
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
     return [];
   }
+  if (operation !== undefined && operation.length > 128) {
+    return [];
+  }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation,
                   COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
@@ -313,6 +316,9 @@ export async function listUsageEvents(
     return [];
   }
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+    return [];
+  }
+  if (operation !== undefined && operation.length > 128) {
     return [];
   }
   const args: unknown[] = [customerId, from, to];

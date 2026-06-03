@@ -1,3 +1,7 @@
+// GET /api/usage — returns raw per-event rows {operation, billable_units, created_at}
+// matching acceptance criterion: "per-row fields {operation, billable_units, created_at}".
+// Per-operation aggregates (grouped by operation) are served by usageByOperation()
+// used directly in the server-rendered dashboard page, not via this endpoint.
 import { auth } from "@/auth";
 import { ensureCustomer, listUsageEvents } from "@/lib/db";
 

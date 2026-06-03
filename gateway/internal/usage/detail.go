@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,12 @@ type OperationAggregate struct {
 // QueryByOperation returns per-operation aggregates from usage_events for customerID
 // within [from, to) — from is inclusive, to is exclusive. Pass a non-empty operation to filter to one operation only.
 func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, from, to time.Time, operation string) ([]OperationAggregate, error) {
+	if from.IsZero() || to.IsZero() {
+		return nil, fmt.Errorf("from and to must be non-zero")
+	}
+	if !from.Before(to) {
+		return nil, fmt.Errorf("from must be before to")
+	}
 	// Half-open interval [from, to): from is inclusive, to is exclusive.
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
 	      FROM usage_events
