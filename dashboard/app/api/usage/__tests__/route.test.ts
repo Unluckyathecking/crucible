@@ -56,7 +56,7 @@ describe("listUsageEvents in db.ts — drift-detection smoke tests", () => {
   });
 
   it("listUsageEvents SQL scopes by customer_id (cross-customer isolation guard)", () => {
-    expect(fnSection).toContain("customer_id");
+    expect(fnSection).toMatch(/WHERE\s+customer_id\s*=\s*\$1/);
   });
 
   it("listUsageEvents SQL uses half-open lower bound: created_at >= $N (from inclusive)", () => {
@@ -85,7 +85,7 @@ describe("usageByOperation in db.ts — drift-detection smoke tests", () => {
   });
 
   it("usageByOperation SQL scopes by customer_id (cross-customer isolation guard)", () => {
-    expect(fnSection).toContain("customer_id");
+    expect(fnSection).toMatch(/WHERE\s+customer_id\s*=\s*\$1/);
   });
 
   it("usageByOperation SQL uses half-open interval (created_at >= and created_at <)", () => {

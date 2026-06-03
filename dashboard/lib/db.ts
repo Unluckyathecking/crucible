@@ -387,5 +387,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
      WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
-  return saturateBigIntString(r.rows[0].units);
+  const units = r.rows[0]?.units;
+  if (units === undefined || units === null) return 0;
+  return saturateBigIntString(units);
 }
