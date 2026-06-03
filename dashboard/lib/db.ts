@@ -158,6 +158,11 @@ export async function revokeApiKey(
     [keyId, customerId],
   );
 
+  // The scalar subqueries and CASE guarantee exactly one row. Guard defensively so
+  // an unexpected query plan change throws clearly instead of crashing on undefined.
+  if (r.rows.length === 0) {
+    throw new Error("revokeApiKey query returned no rows");
+  }
   const { result: rawResult, prefix, found_prefix } = r.rows[0];
 
   // Validate at runtime so a SQL change that introduces a new CASE branch
