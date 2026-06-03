@@ -51,7 +51,11 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
         if (typeof data.key !== "string") {
           return { error: "Invalid response from server", submitted: false, key: null };
         }
-        await router.refresh();
+        try {
+          await router.refresh();
+        } catch (refreshErr) {
+          console.error("Failed to refresh dashboard after key creation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+        }
         return { error: null, submitted: true, key: data.key };
       } catch {
         return { error: "Network error. Try again.", submitted: false, key: null };

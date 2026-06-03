@@ -170,7 +170,8 @@ export async function revokeApiKey(
   }
 
   // Row exists, owned by caller, but revoked_at IS NOT NULL — idempotent re-revocation.
-  if (foundPrefix) {
+  // Use != null (not truthiness) to distinguish null from empty string per schema typing.
+  if (foundPrefix != null) {
     // The first revocation may have succeeded in Postgres but transiently failed Redis.
     // Attempt DEL again so a stale cache entry cannot extend the key's validity.
     const alreadyRedis = getRedis();

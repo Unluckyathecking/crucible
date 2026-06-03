@@ -37,16 +37,20 @@ export function getRedis(): Redis | null {
   // Recreate the client if REDIS_URL changed (e.g., between test runs or a config reload).
   // Without URL tracking, a changed REDIS_URL would silently return the stale client
   // created for the old address, causing cache invalidation to hit the wrong server.
-  // Node.js runs on a single-threaded event loop; getRedis() is synchronous (no
-  // await), so two callers cannot interleave here. No lock or atomic swap is needed.
+  // getRedis() is fully synchronous (no await). The Node.js event loop is single-
+  // threaded, so no two invocations can interleave within the same process — no lock
+  // or atomic compare-and-swap is needed.
+  //
+  // Globals are cleared BEFORE disconnect() so any subsequent synchronous getRedis()
+  // call (on a later event-loop tick) sees no stale client and creates a new one.
+  // disconnect() triggers socket closure but does not await it; the old client object
+  // is fully dereferenced from the module scope at this point.
   if (global._crucible_redis && global._crucible_redis_url !== url) {
-    // Clear globals first so any concurrent getRedis() call sees no client and
-    // creates a fresh one rather than reusing the stale client being torn down.
     const oldRedis = global._crucible_redis;
     global._crucible_redis = undefined;
     global._crucible_redis_url = undefined;
-    // Remove the error listener before disconnecting so the old client's socket-close
-    // events don't produce spurious log noise after the client is replaced.
+    // Remove error listener first so socket-close events from the outgoing client
+    // do not produce spurious log noise after it is replaced.
     oldRedis.removeAllListeners("error");
     oldRedis.disconnect();
   }

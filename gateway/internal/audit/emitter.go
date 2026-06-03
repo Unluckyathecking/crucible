@@ -62,10 +62,10 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	// actor_id is NULL for system events; validation above ensures non-system events always
 	// carry a non-empty ActorID. Using a typed *string (not any) lets pgx map (*string)(nil)
 	// to SQL NULL without a typed pgtype sentinel.
-	var actorIDParam *string
+	actorIDParam := (*string)(nil)
 	if e.ActorType != ActorSystem {
-		id := e.ActorID
-		actorIDParam = &id
+		s := e.ActorID
+		actorIDParam = &s
 	}
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.
