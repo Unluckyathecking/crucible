@@ -131,6 +131,20 @@ func TestQueryByOperation_fromEqualTo(t *testing.T) {
 	}
 }
 
+func TestQueryByOperation_operationTooLong(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+
+	from := time.Now().Add(-time.Minute)
+	to := time.Now().Add(time.Minute)
+	longOp := string(make([]byte, 129))
+
+	_, err := QueryByOperation(context.Background(), pool, custID, from, to, longOp)
+	if err == nil {
+		t.Error("expected error for operation > 128 chars, got nil")
+	}
+}
+
 func TestQueryByOperation_fromAfterTo(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)

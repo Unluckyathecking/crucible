@@ -242,6 +242,16 @@ export async function listAuditEvents(
   return r.rows;
 }
 
+// sumUsage returns the total billable units for a customer over the last `days` days.
+// Implemented as a thin wrapper over usageByOperation so the two functions share
+// the same query path and validation logic.
+export async function sumUsage(customerId: string, days: number): Promise<number> {
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const to = new Date();
+  const rows = await usageByOperation(customerId, from, to);
+  return rows.reduce((s, r) => s + r.total_billable_units, 0);
+}
+
 export interface UsageOperationRow {
   operation: string;
   total_billable_units: number;

@@ -6,6 +6,8 @@ import { ensureCustomer, usageByOperation } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 const MAX_RANGE_DAYS = 90;
+// Accepts ISO 8601 date-only (2024-01-15) or date-time (2024-01-15T00:00:00Z).
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z?)?$/;
 
 export async function GET(request: Request): Promise<Response> {
   try {
@@ -33,6 +35,12 @@ export async function GET(request: Request): Promise<Response> {
     let to = now;
 
     if (fromParam) {
+      if (!ISO_DATE_RE.test(fromParam)) {
+        return new Response(JSON.stringify({ error: "invalid 'from' date, expected ISO 8601" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
       const parsed = new Date(fromParam);
       if (isNaN(parsed.getTime())) {
         return new Response(JSON.stringify({ error: "invalid 'from' date" }), {
@@ -43,6 +51,12 @@ export async function GET(request: Request): Promise<Response> {
       from = parsed;
     }
     if (toParam) {
+      if (!ISO_DATE_RE.test(toParam)) {
+        return new Response(JSON.stringify({ error: "invalid 'to' date, expected ISO 8601" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
       const parsed = new Date(toParam);
       if (isNaN(parsed.getTime())) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
