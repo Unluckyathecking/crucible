@@ -99,7 +99,7 @@ export async function insertApiKey(
     action: "api_key.created",
     targetType: "api_key",
     targetId: keyId,
-    details: { name: name || undefined, prefix },
+    details: { name: name || null, prefix },
   });
   return keyId;
 }
@@ -214,7 +214,7 @@ export async function revokeApiKey(
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
-      action: "api_key.revoke_attempted",
+      action: "api_key.revoke_redundant",
       targetType: "api_key",
       targetId: keyId,
       details: { prefix: found_prefix },

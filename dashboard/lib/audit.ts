@@ -22,11 +22,12 @@ export interface AuditEvent {
 export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<void> {
   // Mirror Go's symmetric validation: system events must not carry an actorId
   // (background jobs have no individual actor); non-system events must have one.
-  if (event.actorType === "system" && event.actorId) {
+  const isSystem = event.actorType === "system";
+  if (isSystem && event.actorId) {
     console.error("audit emit skipped: actor_id must be empty for system events", { action: event.action });
     return;
   }
-  if (event.actorType !== "system" && !event.actorId) {
+  if (!isSystem && !event.actorId) {
     console.error("audit emit skipped: actor_id required for non-system events", { action: event.action, actorType: event.actorType });
     return;
   }
@@ -36,7 +37,7 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         event.actorType,
-        event.actorType === "system" ? null : event.actorId,
+        isSystem ? null : event.actorId,
         event.action,
         event.targetType ?? null,
         event.targetId ?? null,

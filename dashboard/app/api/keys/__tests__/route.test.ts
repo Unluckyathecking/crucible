@@ -164,6 +164,30 @@ describe("retry logic on unique-constraint violation", () => {
     expect(insertMock).toHaveBeenCalledTimes(3);
   });
 
+  it("succeeds on second attempt after one 23505 collision", async () => {
+    const pgError = Object.assign(new Error("unique violation"), { code: "23505" });
+    let callCount = 0;
+    const insertMock = vi.fn().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) throw pgError;
+      return "new-id";
+    });
+
+    let inserted = false;
+    for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {
+      try {
+        await insertMock();
+        inserted = true;
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code !== "23505") throw e;
+      }
+    }
+
+    expect(inserted).toBe(true);
+    expect(insertMock).toHaveBeenCalledTimes(2);
+  });
+
   it("propagates non-23505 errors immediately without retrying", async () => {
     const otherError = Object.assign(new Error("connection lost"), { code: "08006" });
     const insertMock = vi.fn().mockRejectedValue(otherError);
