@@ -32,6 +32,13 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
+    // Cheap pre-filter: 128 runes fit in at most 256 UTF-16 code units (2 per surrogate pair).
+    if (operationTrimmed !== undefined && operationTrimmed.length > 256) {
+      return new Response(JSON.stringify({ error: "operation parameter too long" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (operationTrimmed !== undefined && [...operationTrimmed].length > 128) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
@@ -104,7 +111,8 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
-    // Returns raw usage event rows; usageByOperation is used by the dashboard server component for per-operation aggregates.
+    // Returns raw usage event rows (newest first, capped at MAX_USAGE_EVENTS_LIMIT).
+    // The dashboard server component uses usageByOperation for per-operation aggregates.
     const rows = await listUsageEvents(customer.id, from, to, operationParam);
 
     return new Response(JSON.stringify(rows), {
