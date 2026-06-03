@@ -134,29 +134,35 @@ export async function revokeApiKey(
   // MAX() over 0 rows = NULL; over 1 row = the value. Using aggregates instead of
   // scalar subqueries avoids repeated CTE scans and produces a guaranteed 1-row result
   // via CROSS JOIN of two aggregate subqueries (each always produces exactly 1 row).
-  const r = await pool.query<{ result: string; prefix: string | null }>(
+  // Scalar subqueries over the two CTEs are always safe here: `updated` returns
+  // 0 or 1 row (UPDATE on PK with WHERE), and `found` returns 0 or 1 row (SELECT on PK).
+  // The four cases are mutually exclusive:
+  //   1. 'revoked'        — UPDATE succeeded; updated has 1 row.
+  //   2. 'not_found'      — key does not exist; found has 0 rows.
+  //   3. 'forbidden'      — key exists but belongs to another customer.
+  //   4. 'already_revoked'— key exists, owned by caller, but revoked_at was already set.
+  const r = await pool.query<{ result: string; prefix: string | null; found_prefix: string | null }>(
     `WITH updated AS (
        UPDATE api_keys SET revoked_at = NOW()
        WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
        RETURNING prefix
      ),
      found AS (
-       SELECT customer_id FROM api_keys WHERE id = $1
+       SELECT customer_id, prefix FROM api_keys WHERE id = $1
      )
      SELECT
        CASE
-         WHEN u.prefix IS NOT NULL THEN 'revoked'
-         WHEN f.customer_id IS NULL THEN 'not_found'
-         WHEN f.customer_id != $2 THEN 'forbidden'
+         WHEN (SELECT prefix FROM updated) IS NOT NULL THEN 'revoked'
+         WHEN NOT EXISTS (SELECT 1 FROM found) THEN 'not_found'
+         WHEN (SELECT customer_id FROM found) != $2 THEN 'forbidden'
          ELSE 'already_revoked'
        END AS result,
-       u.prefix
-     FROM (SELECT MAX(prefix) AS prefix FROM updated) u
-     CROSS JOIN (SELECT MAX(customer_id) AS customer_id FROM found) f`,
+       (SELECT prefix FROM updated) AS prefix,
+       (SELECT prefix FROM found) AS found_prefix`,
     [keyId, customerId],
   );
 
-  const { result: rawResult, prefix } = r.rows[0];
+  const { result: rawResult, prefix, found_prefix } = r.rows[0];
 
   // Validate at runtime so a SQL change that introduces a new CASE branch
   // is caught immediately rather than silently falling through to the caller.
@@ -194,6 +200,22 @@ export async function revokeApiKey(
       console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
     return "revoked";
+  }
+
+  if (result === "already_revoked" && found_prefix) {
+    // Idempotent revocation: the key was already revoked by a prior request. Emit an
+    // audit event so every revocation attempt has an audit trail, regardless of whether
+    // it was the first or a subsequent call.
+    void emitAuditEvent(pool, {
+      actorType: "customer",
+      actorId: customerId,
+      action: "api_key.revoked",
+      targetType: "api_key",
+      targetId: keyId,
+      details: { prefix: found_prefix },
+    }).catch((err) => {
+      console.error("audit emit failed for api_key.revoked (already_revoked)", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
+    });
   }
 
   return result;

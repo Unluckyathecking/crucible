@@ -37,7 +37,8 @@ export async function POST(request: Request): Promise<Response> {
 
     // Retry on the rare prefix-collision (the unique partial index on active prefixes
     // catches the case). Three attempts is way more than statistically needed given
-    // 15 random base32 chars (PrefixLen=24 minus 4-char product prefix = ~10^11 values).
+    // 15 random base32 chars of entropy (keyspace 32^15 ≈ 3.5×10^22; birthday-paradox
+    // collision expected at ~1×10^11 active keys — far beyond any realistic deployment).
     const MAX_KEY_GEN_ATTEMPTS = 3;
     let full = "";
     let inserted = false;

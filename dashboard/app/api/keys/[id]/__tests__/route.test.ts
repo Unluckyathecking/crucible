@@ -184,17 +184,18 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   });
 
   it("audit emission in revokeApiKey is fire-and-forget (catch, not await-throw)", () => {
-    // The .catch() after emitAuditEvent in revokeApiKey must be present so audit failures
-    // don't surface as 500 to the customer after the key is already revoked.
-    expect(revokeSection).toContain(".catch(");
+    // emitAuditEvent must be followed by .catch() so audit failures don't surface
+    // as 500 to the customer after the key is already persisted-revoked in Postgres.
+    expect(revokeSection).toMatch(/emitAuditEvent[\s\S]*?\.catch\s*\(/);
   });
 
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {
     // If the lookup includes AND customer_id = $2, it cannot tell whether the key
     // doesn't exist or belongs to a different customer. The negative lookahead
     // ensures the pattern is present AND is not immediately followed by AND.
+    // The pattern allows additional selected columns (e.g. customer_id, prefix).
     const secondQueryMatch = revokeSection.match(
-      /SELECT customer_id FROM api_keys WHERE id = \$1(?!\s+AND)/,
+      /SELECT customer_id(?:,\s*\w+)*\s+FROM api_keys WHERE id = \$1(?!\s+AND)/,
     );
     expect(secondQueryMatch).not.toBeNull();
   });
