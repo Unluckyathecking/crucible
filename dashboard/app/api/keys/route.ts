@@ -33,10 +33,12 @@ export async function POST(request: Request): Promise<Response> {
   const customer = await ensureCustomer(session.user.email);
 
   // Retry on the rare prefix-collision (the unique partial index on active prefixes
-  // catches the case). 3 attempts is way more than statistically needed.
+  // catches the case). Three attempts is way more than statistically needed given
+  // 15 random base32 chars (PrefixLen=24 minus 4-char product prefix = ~10^11 values).
+  const MAX_KEY_GEN_ATTEMPTS = 3;
   let full = "";
   let inserted = false;
-  for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
+  for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {
     const generated = generateKey(productPrefix);
     full = generated.full;
     const hash = hashKey(salt, generated.full);

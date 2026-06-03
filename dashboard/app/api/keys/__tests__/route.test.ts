@@ -14,6 +14,9 @@
  */
 import { describe, it, expect, vi } from "vitest";
 
+// Must match the MAX_KEY_GEN_ATTEMPTS constant in the route handler.
+const MAX_KEY_GEN_ATTEMPTS = 3;
+
 // ---------------------------------------------------------------------------
 // Helpers extracted from the route handler logic — kept in sync manually;
 // if the route changes and tests break, fix the route OR the test together.
@@ -124,7 +127,7 @@ describe("retry logic on unique-constraint violation", () => {
 
     let full: string | undefined;
     let inserted = false;
-    for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
+    for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {
       const generated = generateMock();
       full = generated.full;
       const hash = hashMock("salt", generated.full);
@@ -146,7 +149,7 @@ describe("retry logic on unique-constraint violation", () => {
     const insertMock = vi.fn().mockRejectedValue(pgError);
 
     let inserted = false;
-    for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
+    for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {
       try {
         await insertMock();
         inserted = true;
@@ -167,7 +170,7 @@ describe("retry logic on unique-constraint violation", () => {
     let thrown: unknown;
     let callCount = 0;
     try {
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS; attempt++) {
         callCount++;
         try {
           await insertMock();

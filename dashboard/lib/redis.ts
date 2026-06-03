@@ -5,6 +5,10 @@ declare global {
   var _crucible_redis: Redis | undefined;
 }
 
+// Cap at 2 retries per command: enough to survive a transient blip without
+// stalling the revocation path while the gateway continues serving the old cache.
+const REDIS_MAX_RETRIES_PER_REQUEST = 2;
+
 // Returns a shared Redis client if REDIS_URL is configured, or null if not.
 // The dashboard uses Redis only for best-effort cache invalidation after key
 // revocation (clearing auth:{prefix} so the gateway re-checks Postgres
@@ -25,7 +29,7 @@ export function getRedis(): Redis | null {
 
   if (!global._crucible_redis) {
     const redis = new Redis(url, {
-      maxRetriesPerRequest: 2,
+      maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
     });
     redis.on("error", (err) => {
       console.error("Redis client error:", err.message);

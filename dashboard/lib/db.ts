@@ -186,14 +186,18 @@ export async function listAuditEvents(
 ): Promise<AuditEventRow[]> {
   const clampedLimit = Math.max(1, Math.min(limit, 100));
   const r = await pool.query<AuditEventRow>(
-    `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM audit_log
-     WHERE actor_id IS NOT DISTINCT FROM $1
+    `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+      FROM audit_log
+      WHERE actor_id IS NOT DISTINCT FROM $1
+      ORDER BY created_at DESC
+      LIMIT $2)
      UNION ALL
-     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM audit_log
-     WHERE target_id = $1
-       AND actor_id IS DISTINCT FROM $1
+     (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+      FROM audit_log
+      WHERE target_id = $1
+        AND actor_id IS DISTINCT FROM $1
+      ORDER BY created_at DESC
+      LIMIT $2)
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],
