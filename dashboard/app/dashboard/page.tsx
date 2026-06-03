@@ -1,6 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, UsageOperationRow } from "@/lib/db";
+import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -99,7 +99,7 @@ export default async function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {opBreakdown.map((row: UsageOperationRow) => (
+                  {opBreakdown.map((row) => (
                     <tr key={row.operation} className="border-b border-zinc-100">
                       <td className="py-2 pr-4 font-mono">{row.operation}</td>
                       <td className="py-2 pr-4 text-right tabular-nums">{row.total_billable_units.toLocaleString()}</td>

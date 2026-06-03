@@ -6,7 +6,9 @@ import { ensureCustomer, listUsageEvents } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 const MAX_RANGE_DAYS = 90;
-// Accepts ISO 8601 date-only or date-time with calendar-valid month (01-12) and day (01-31).
+// Validates ISO 8601 month (01-12) and day (01-31) digit ranges.
+// Calendar validity (e.g. Feb 31) is enforced by round-trip check for date-only strings below;
+// for datetime strings, Date.parse returns NaN for out-of-range values per ES2015.
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?Z?)?$/;
 
 export async function GET(request: Request): Promise<Response> {
