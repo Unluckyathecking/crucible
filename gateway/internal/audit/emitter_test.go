@@ -191,15 +191,29 @@ func TestEmit_AllActorTypes(t *testing.T) {
 
 func TestEmit_SystemWithEmptyActorID(t *testing.T) {
 	// System events are emitted by background jobs with no individual actor.
-	// Validation must accept ActorSystem with an empty ActorID and write it to DB.
+	// Validation must accept ActorSystem with an empty ActorID, and the DB row
+	// must store NULL (not empty string) for actor_id.
 	db := newTestPostgres(t)
-	err := audit.Emit(context.Background(), db, audit.Event{
+	ctx := context.Background()
+	uniqueAction := fmt.Sprintf("system.test.empty-actor-%d", time.Now().UnixNano())
+	err := audit.Emit(ctx, db, audit.Event{
 		ActorType: audit.ActorSystem,
 		ActorID:   "",
-		Action:    "system.test",
+		Action:    uniqueAction,
 	})
 	if err != nil {
 		t.Fatalf("ActorSystem with empty actor_id should be accepted: %v", err)
+	}
+	var actorID *string
+	err = db.QueryRow(ctx,
+		`SELECT actor_id FROM audit_log WHERE action = $1 ORDER BY id DESC LIMIT 1`,
+		uniqueAction,
+	).Scan(&actorID)
+	if err != nil {
+		t.Fatalf("query round-trip row: %v", err)
+	}
+	if actorID != nil {
+		t.Fatalf("expected NULL actor_id for system event, got %q", *actorID)
 	}
 }
 

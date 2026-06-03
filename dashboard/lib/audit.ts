@@ -25,7 +25,7 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         event.actorType,
-        event.actorId,
+        event.actorType === "system" && !event.actorId ? null : event.actorId,
         event.action,
         event.targetType ?? null,
         event.targetId ?? null,

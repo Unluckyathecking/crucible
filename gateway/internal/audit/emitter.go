@@ -35,12 +35,14 @@ type Event struct {
 // nullActorID returns nil for every ActorSystem event so pgx inserts SQL NULL,
 // enforcing the architectural rule that system events originate from background
 // jobs with no individual actor. Non-system events always carry a non-empty
-// ActorID (validated above) and are passed through unchanged.
-func nullActorID(actorType ActorType, id string) any {
+// ActorID (validated above) and are passed through as *string.
+// Returning *string (not any) avoids pgx nil-type-inference ambiguity: pgx maps
+// (*string)(nil) to SQL NULL reliably without needing a typed pgtype sentinel.
+func nullActorID(actorType ActorType, id string) *string {
 	if actorType == ActorSystem {
 		return nil
 	}
-	return id
+	return &id
 }
 
 // Emit writes one append-only row to audit_log.
