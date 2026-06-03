@@ -15,14 +15,14 @@ const REDIS_MAX_RETRIES_PER_REQUEST = 2;
 // immediately rather than waiting for the 60-second TTL).
 //
 // A global singleton is used so the connection is established once and reused;
-// creating a new client per call would leak TCP connections and ensure the
-// first DEL always fails before the connection reaches "ready".
+// creating a new client per call would leak TCP connections.
 //
-// enableOfflineQueue is left at its ioredis default (true): DELs issued on
-// a cold process before the TCP handshake completes are queued and sent once
-// the connection reaches "ready", rather than being rejected immediately.
-// In practice the queue drains within milliseconds of process start; the only
-// commands that accumulate are those issued during that brief window.
+// enableOfflineQueue: false rejects commands immediately if Redis is not yet
+// connected rather than accumulating them in an unbounded in-memory queue.
+// For best-effort cache invalidation this is the right trade-off: a failed DEL
+// means the key stays cached until TTL expiry (at most 60 s), which is
+// acceptable. The alternative — an unbounded offline queue — risks OOM under a
+// sustained Redis outage.
 export function getRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) return null;
@@ -30,6 +30,7 @@ export function getRedis(): Redis | null {
   if (!global._crucible_redis) {
     const redis = new Redis(url, {
       maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
+      enableOfflineQueue: false,
     });
     redis.on("error", (err) => {
       console.error("Redis client error:", err.message);

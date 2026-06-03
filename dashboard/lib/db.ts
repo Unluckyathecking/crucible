@@ -151,7 +151,16 @@ export async function revokeApiKey(
     [keyId, customerId],
   );
 
-  const { result, prefix } = r.rows[0];
+  const { result: rawResult, prefix } = r.rows[0];
+
+  // Validate at runtime so a SQL change that introduces a new CASE branch
+  // is caught immediately instead of silently falling through the cast.
+  const VALID_RESULTS = ["revoked", "already_revoked", "not_found", "forbidden"] as const;
+  type RevokeResult = (typeof VALID_RESULTS)[number];
+  if (!VALID_RESULTS.includes(rawResult as RevokeResult)) {
+    throw new Error(`Unexpected revokeApiKey result: ${rawResult}`);
+  }
+  const result = rawResult as RevokeResult;
 
   if (result === "revoked" && prefix) {
     // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
@@ -179,7 +188,7 @@ export async function revokeApiKey(
     return "revoked";
   }
 
-  return result as "already_revoked" | "not_found" | "forbidden";
+  return result;
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
@@ -205,19 +214,17 @@ export async function listAuditEvents(
   // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
   // customerId is always a non-null UUID so the two are semantically equivalent here,
   // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
+  // A single outer LIMIT is correct: any event in the top N overall must be in the top N
+  // of its branch, so per-branch LIMITs would be redundant and could confuse the planner.
   const r = await pool.query<AuditEventRow>(
-    `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-      FROM audit_log
-      WHERE actor_id = $1
-      ORDER BY created_at DESC
-      LIMIT $2)
+    `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM audit_log
+     WHERE actor_id = $1
      UNION ALL
-     (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-      FROM audit_log
-      WHERE target_id = $1
-        AND actor_id IS DISTINCT FROM $1
-      ORDER BY created_at DESC
-      LIMIT $2)
+     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM audit_log
+     WHERE target_id = $1
+       AND actor_id IS DISTINCT FROM $1
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],

@@ -152,10 +152,12 @@ describe("DELETE /api/keys/[id] — idempotency", () => {
 describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   const src = fs.readFileSync(path.resolve(__dirname, "../../../../../lib/db.ts"), "utf8");
 
-  // Extract only the revokeApiKey function body using a regex so this doesn't
-  // break if surrounding functions are renamed or reordered.
-  const revokeMatch = src.match(/export async function revokeApiKey[\s\S]*?^}/m);
-  const revokeSection = revokeMatch ? revokeMatch[0] : "";
+  // Use indexOf for extraction rather than `^}` regex so that nested objects or
+  // callbacks whose closing brace lands at column 0 don't truncate the match early.
+  const revokeStart = src.indexOf("export async function revokeApiKey");
+  const nextExport = src.indexOf("\nexport ", revokeStart + 1);
+  const revokeSection =
+    revokeStart >= 0 ? src.slice(revokeStart, nextExport > 0 ? nextExport : undefined) : "";
 
   it("revokeApiKey SQL includes ownership guard (customer_id)", () => {
     // Checks revokeSection (not full src) so a missing guard in revokeApiKey

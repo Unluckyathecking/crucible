@@ -7,21 +7,25 @@ export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  // Declared outside try so the catch block can include them in log context.
+  let keyId: string | undefined;
+  let customerId: string | undefined;
   try {
     const session = await auth();
     if (!session?.user?.email) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { id } = await params;
+    keyId = (await params).id;
     // Reject non-UUID path segments before hitting Postgres — otherwise pgx
     // throws "invalid input syntax for type uuid" which the catch turns into 500.
-    if (!UUID_RE.test(id)) {
+    if (!UUID_RE.test(keyId)) {
       return new Response("Not found", { status: 404 });
     }
     const customer = await ensureCustomer(session.user.email);
+    customerId = customer.id;
 
-    const result = await revokeApiKey(id, customer.id);
+    const result = await revokeApiKey(keyId, customer.id);
     if (result === "not_found") {
       return new Response("Not found", { status: 404 });
     }
@@ -33,7 +37,12 @@ export async function DELETE(
     return new Response(null, { status: 200 });
   } catch (err) {
     const errorId = crypto.randomUUID();
-    console.error("DELETE /api/keys/[id] failed:", { errorId, error: err instanceof Error ? err.message : String(err) });
+    console.error("DELETE /api/keys/[id] failed:", {
+      errorId,
+      keyId,
+      customerId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return new Response("Internal server error", { status: 500 });
   }
 }
