@@ -47,6 +47,7 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
     console.error("audit emit failed:", {
       action: event.action,
       actorId: event.actorId,
+      targetId: event.targetId,
       error: err instanceof Error ? err.message : String(err),
     });
   }
