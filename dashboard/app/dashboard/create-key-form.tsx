@@ -124,10 +124,10 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
-        // router.refresh() is fire-and-forget: the RSC re-fetch happens
-        // asynchronously, so the key may briefly remain visible while the
-        // server re-renders. This is a cosmetic race — the key is already
-        // revoked in Postgres and the Redis cache entry has been cleared.
+        // Small delay lets any in-flight Postgres commit settle before the
+        // server component re-fetches, avoiding a read-after-write race where
+        // the revoked key still appears active for one render cycle.
+        await new Promise((r) => setTimeout(r, 150));
         router.refresh();
         return { error: null };
       } catch {
