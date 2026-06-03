@@ -175,6 +175,14 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
+			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
+			// an empty Code would open an unlabelled code="" series. Mirrors the
+			// path=="unmatched" fallback used by the request middleware.
+			errCode := resp.Error.Code
+			if errCode == "" {
+				errCode = "unknown"
+			}
+			observability.WorkerErrorsTotal.WithLabelValues(errCode).Inc()
 			if errorExposure == "full" {
 				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else {
