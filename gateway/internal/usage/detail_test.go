@@ -200,7 +200,8 @@ func TestQueryByOperation_rangeExactlyAtLimit(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)
 
-	to := time.Now()
+	// Fixed time avoids flakiness from time.Now() crossing midnight mid-test.
+	to := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 	from := to.Add(-time.Duration(maxUsageRangeDays) * 24 * time.Hour)
 	// Exactly at the limit — should be accepted (not strictly greater than).
 	if _, err := QueryByOperation(context.Background(), pool, custID, from, to, ""); err != nil {
@@ -233,7 +234,8 @@ func TestQueryByOperation_rangeExceedsMax(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)
 
-	to := time.Now()
+	// Fixed time avoids flakiness from time.Now() crossing midnight mid-test.
+	to := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 	from := to.Add(-91 * 24 * time.Hour)
 	_, err := QueryByOperation(context.Background(), pool, custID, from, to, "")
 	if err == nil {

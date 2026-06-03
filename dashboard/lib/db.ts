@@ -269,7 +269,7 @@ function validateUsageQueryParams(
     throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
   }
   const effectiveOp = operation?.trim() || undefined;
-  if (effectiveOp !== undefined && Array.from(effectiveOp).length > MAX_OPERATION_LENGTH) {
+  if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
     throw new Error(`operation too long (max ${MAX_OPERATION_LENGTH} characters)`);
   }
   return { effectiveOp };
@@ -366,7 +366,7 @@ export async function listUsageEvents(
   if (effectiveOp) {
     // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
-      `SELECT operation, billable_units::text AS billable_units, created_at
+      `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -376,7 +376,7 @@ export async function listUsageEvents(
   }
   // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
   const r = await pool.query<Row>(
-    `SELECT operation, billable_units::text AS billable_units, created_at
+    `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,
