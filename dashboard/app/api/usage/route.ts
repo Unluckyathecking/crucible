@@ -26,8 +26,9 @@ export async function GET(request: Request): Promise<Response> {
     const fromParam = url.searchParams.get("from");
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
-    // Fast-path: reject before spread to avoid OOM on multi-megabyte inputs.
-    if (operationRaw !== null && operationRaw.length > MAX_OPERATION_LENGTH * 2) {
+    // Fast-path: reject absurdly long inputs before the spread-to-code-points check.
+    const MAX_OPERATION_INPUT_LENGTH = 10_000;
+    if (operationRaw !== null && operationRaw.length > MAX_OPERATION_INPUT_LENGTH) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
         headers: { "content-type": "application/json" },
@@ -81,7 +82,8 @@ export async function GET(request: Request): Promise<Response> {
           headers: { "content-type": "application/json" },
         });
       }
-      // Append explicit UTC midnight so the semantics match the database (UTC timestamps).
+      // Append explicit UTC midnight. 'to' is an EXCLUSIVE upper bound: to=2024-01-31
+      // means events up to 2024-01-30 23:59:59.999Z; pass to=2024-02-01 to include Jan 31.
       const parsed = new Date(toParam + 'T00:00:00.000Z');
       if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== toParam) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
@@ -104,6 +106,8 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
+    // Default to (tomorrowMidnight) is never > tomorrowMidnight; this only rejects
+    // explicitly-provided to values that exceed the maximum allowed date.
     if (to.getTime() > tomorrowMidnight.getTime()) {
       return new Response(JSON.stringify({ error: "'to' date cannot be after tomorrow" }), {
         status: 400,

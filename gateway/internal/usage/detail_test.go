@@ -24,7 +24,7 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 		if id == 0 {
 			return
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
 			t.Errorf("cleanup failed for usage_event %d: %v", id, err)
