@@ -169,6 +169,12 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   const revokeSection =
     revokeStart >= 0 ? src.slice(revokeStart, nextExport > 0 ? nextExport : undefined) : "";
 
+  it("revokeApiKey function can be extracted from db.ts (extraction guard)", () => {
+    // Explicit failure if extraction fails — prevents silent false-passes on an empty string.
+    expect(revokeStart).toBeGreaterThanOrEqual(0);
+    expect(revokeSection.length).toBeGreaterThan(0);
+  });
+
   it("revokeApiKey SQL includes ownership guard (customer_id)", () => {
     // Checks revokeSection (not full src) so a missing guard in revokeApiKey
     // is not masked by customer_id references in other functions.

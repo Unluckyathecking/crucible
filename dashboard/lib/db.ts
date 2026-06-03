@@ -209,6 +209,9 @@ export async function listAuditEvents(
   // which would cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
+  // Parameterizing the cutoff (vs. inline INTERVAL) lets the planner use idx_audit_actor_id
+  // and idx_audit_target_id with a stable bound rather than re-evaluating NOW() per-plan.
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
   // Per-branch ORDER BY + LIMIT allows each branch to use its index with an index scan + limit,
   // then the outer sort merges at most 2*clampedLimit rows instead of the full table.
   const r = await pool.query<AuditEventRow>(
@@ -217,7 +220,7 @@ export async function listAuditEvents(
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
         WHERE actor_id = $1::uuid
-          AND created_at >= NOW() - INTERVAL '90 days'
+          AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
        UNION ALL
@@ -225,13 +228,13 @@ export async function listAuditEvents(
         FROM audit_log
         WHERE target_id = $1::uuid
           AND actor_id IS DISTINCT FROM $1::uuid
-          AND created_at >= NOW() - INTERVAL '90 days'
+          AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
      ) combined
      ORDER BY created_at DESC
      LIMIT $2`,
-    [customerId, clampedLimit],
+    [customerId, clampedLimit, cutoff],
   );
   return r.rows;
 }

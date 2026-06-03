@@ -78,6 +78,11 @@ export async function POST(request: Request): Promise<Response> {
     if (!inserted || !full) {
       return new Response(`Failed to generate a unique key after ${MAX_KEY_GEN_ATTEMPTS} attempts`, { status: 500 });
     }
+    if (!full.startsWith(productPrefix)) {
+      const errorId = crypto.randomUUID();
+      console.error("Generated key has invalid prefix:", { errorId, productPrefix });
+      return new Response("Internal server error", { status: 500, headers: { "x-error-id": errorId } });
+    }
 
     // Return the full key ONCE as JSON — shown inline in the dashboard.
     // Never returned again; the client must display and copy from this response.

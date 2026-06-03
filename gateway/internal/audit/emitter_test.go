@@ -88,16 +88,21 @@ func TestEmit_RejectsEmptyActorIDForNonSystem(t *testing.T) {
 	}
 }
 
-func TestEmit_NonSerializableDetails(t *testing.T) {
-	// nil pool is safe: JSON marshal failure fires before any DB call.
-	err := audit.Emit(context.Background(), nil, audit.Event{
+func TestEmit_NonSerializableDetailsAreRedacted(t *testing.T) {
+	// sanitizeDetails converts non-allowed keys and complex-typed values to "[REDACTED]"
+	// or "[REDACTED:complex]" before json.Marshal, so non-serializable values never cause
+	// a marshal error. The emit proceeds to the DB call and completes successfully.
+	db := newTestPostgres(t)
+	ctx := context.Background()
+	uniqueAction := fmt.Sprintf("test.complex-details.%s", t.Name())
+	err := audit.Emit(ctx, db, audit.Event{
 		ActorType: audit.ActorCustomer,
-		ActorID:   "cust-1",
-		Action:    "test.action",
-		Details:   map[string]any{"bad": make(chan int)},
+		ActorID:   fmt.Sprintf("cust-%s", t.Name()),
+		Action:    uniqueAction,
+		Details:   map[string]any{"bad": make(chan int), "name": make(chan int)},
 	})
-	if err == nil {
-		t.Fatal("expected error for non-JSON-serializable details, got nil")
+	if err != nil {
+		t.Fatalf("complex/non-allowed detail values should be redacted, not error: %v", err)
 	}
 }
 

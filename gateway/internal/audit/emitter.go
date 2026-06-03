@@ -36,6 +36,36 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
+// allowedDetailKeys mirrors dashboard/lib/audit.ts ALLOWED_DETAIL_KEYS.
+// Both sides must stay in sync — add keys here and there together.
+var allowedDetailKeys = map[string]bool{
+	"name": true, "prefix": true, "plan_id": true, "attempt": true,
+}
+
+// sanitizeDetails redacts map entries whose key is not in allowedDetailKeys, and
+// replaces complex-typed values (maps, slices, channels, structs) with "[REDACTED:complex]"
+// even for allowed keys — preventing nested objects from leaking secrets or PII into JSONB.
+// Mirrors the TypeScript sanitizeDetails in dashboard/lib/audit.ts.
+func sanitizeDetails(details map[string]any) map[string]any {
+	sanitized := make(map[string]any, len(details))
+	for k, v := range details {
+		if !allowedDetailKeys[k] {
+			sanitized[k] = "[REDACTED]"
+			continue
+		}
+		switch v.(type) {
+		case string, bool,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64, uintptr,
+			float32, float64, nil:
+			sanitized[k] = v
+		default:
+			sanitized[k] = "[REDACTED:complex]"
+		}
+	}
+	return sanitized
+}
+
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
 // Validation order: invalid type → empty action → non-system empty ID → system non-empty ID.
@@ -60,7 +90,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	}
 	var detailsJSON []byte
 	if e.Details != nil {
-		b, err := json.Marshal(e.Details)
+		b, err := json.Marshal(sanitizeDetails(e.Details))
 		if err != nil {
 			return fmt.Errorf("audit: details not serializable: %w", err)
 		}
