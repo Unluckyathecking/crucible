@@ -1,6 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow } from "@/lib/db";
+import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, MS_PER_DAY } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -29,8 +29,8 @@ export default async function DashboardPage() {
   const customer = await ensureCustomer(session.user.email);
   const now = new Date();
   const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  // Use Date.UTC calendar arithmetic so the 30-day window is exact regardless of DST or leap seconds.
-  const thirtyDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - USAGE_WINDOW_DAYS));
+  // Subtract in milliseconds from tomorrowMidnight for an unambiguous USAGE_WINDOW_DAYS × 24 h window.
+  const thirtyDaysAgo = new Date(tomorrowMidnight.getTime() - USAGE_WINDOW_DAYS * MS_PER_DAY);
   const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),

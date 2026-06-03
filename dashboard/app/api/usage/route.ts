@@ -52,10 +52,13 @@ export async function GET(request: Request): Promise<Response> {
     const operationParam = operationTrimmed || undefined;
 
     const now = new Date();
-    // Use Date.UTC calendar arithmetic so from/to are always exact UTC midnight
-    // boundaries regardless of DST or leap seconds in the server's local timezone.
+    // tomorrowMidnight is the exclusive upper default bound: [from, tomorrowMidnight).
+    // Using Date.UTC ensures the result is always exact UTC midnight regardless of
+    // the server's local timezone or DST.
     const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-    let from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - DEFAULT_DAYS));
+    // Subtract DEFAULT_DAYS in milliseconds from tomorrowMidnight so the default window
+    // is always exactly DEFAULT_DAYS × 24 h wide with no calendar-arithmetic ambiguity.
+    let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
     let to = tomorrowMidnight;
 
     if (fromParam) {
