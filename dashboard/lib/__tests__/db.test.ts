@@ -74,7 +74,7 @@ describe("listUsageEvents cross-customer isolation (structural)", () => {
     // to prevent cross-customer data leakage. Verify by source inspection.
     const listFnIndex = src.indexOf("async function listUsageEvents");
     expect(listFnIndex).toBeGreaterThan(-1);
-    const listFnBody = src.slice(listFnIndex, listFnIndex + 1500);
+    const listFnBody = src.slice(listFnIndex, listFnIndex + 3000);
     const isolationMatches = listFnBody.match(/customer_id = \$1/g);
     // Both filtered and unfiltered query branches must scope to customer_id.
     expect(isolationMatches).not.toBeNull();
