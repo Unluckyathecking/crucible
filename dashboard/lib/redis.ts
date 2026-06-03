@@ -3,6 +3,8 @@ import Redis from "ioredis";
 declare global {
   // eslint-disable-next-line no-var
   var _crucible_redis: Redis | undefined;
+  // eslint-disable-next-line no-var
+  var _crucible_redis_url: string | undefined;
 }
 
 // Cap at 2 retries per command: enough to survive a transient blip without
@@ -32,6 +34,15 @@ export function getRedis(): Redis | null {
     return null;
   }
 
+  // Recreate the client if REDIS_URL changed (e.g., between test runs or a config reload).
+  // Without URL tracking, a changed REDIS_URL would silently return the stale client
+  // created for the old address, causing cache invalidation to hit the wrong server.
+  if (global._crucible_redis && global._crucible_redis_url !== url) {
+    global._crucible_redis.disconnect();
+    global._crucible_redis = undefined;
+    global._crucible_redis_url = undefined;
+  }
+
   if (!global._crucible_redis) {
     const redis = new Redis(url, {
       maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
@@ -41,6 +52,7 @@ export function getRedis(): Redis | null {
       console.error("Redis client error:", err.message);
     });
     global._crucible_redis = redis;
+    global._crucible_redis_url = url;
   }
   return global._crucible_redis;
 }

@@ -26,8 +26,8 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
 
 - `gateway/proto/tool.proto` — frozen across all clones. The contract is product-agnostic. Wanting to add a field here means you're solving the wrong problem.
 - `gateway/internal/{auth,billing,ratelimit,usage,proxy}/` — framework owns these.
-- `gateway/internal/audit/` — **shared audit emitter; do not fork per product.** Every clone writes sensitive actions (key create/revoke, plan changes) through this single `audit.Emit(ctx, db, Event)` call. Adding a product-specific field to `Event` or duplicating the emitter defeats the shared-trail guarantee. If you need extra context, put it in `Event.Details` (JSONB freeform).
-- `dashboard/lib/audit.ts` — **mirrors the Go emitter field-for-field.** Same rule: extend `details`, never fork.
+- `gateway/internal/audit/` — shared audit emitter; do not fork per product. Every clone writes sensitive actions (key create/revoke, plan changes) through this single `audit.Emit(ctx, db, Event)` call. Adding a product-specific field to `Event` or duplicating the emitter defeats the shared-trail guarantee. If you need extra context, put it in `Event.Details` (JSONB freeform).
+- `dashboard/lib/audit.ts` — mirrors the Go emitter field-for-field. Same rule: extend `details`, never fork.
 - `workers/sdk-go/` (or other host-lang SDKs) — shared infrastructure.
 
 ## The contract

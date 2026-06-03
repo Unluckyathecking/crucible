@@ -14,6 +14,7 @@ if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 // Must match gateway/internal/auth/store.go Redis key format: "auth:<prefix>".
 // Both sides changing this independently would silently break cache invalidation.
 const AUTH_CACHE_PREFIX = "auth:";
+const MAX_AUDIT_LIMIT = 100;
 
 export interface Customer {
   id: string;
@@ -209,16 +210,17 @@ export async function revokeApiKey(
         console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
       });
     }
-    // Emit an audit event so every revocation attempt has an audit trail.
+    // Use a distinct action so retry attempts don't create duplicate "api_key.revoked" rows
+    // that would make the audit trail appear as if the key was revoked multiple times.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
-      action: "api_key.revoked",
+      action: "api_key.revoke_attempted",
       targetType: "api_key",
       targetId: keyId,
       details: { prefix: found_prefix },
     }).catch((err) => {
-      console.error("audit emit failed for api_key.revoked (already_revoked)", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
+      console.error("audit emit failed for api_key.revoke_attempted", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
   }
 
@@ -240,7 +242,6 @@ export async function listAuditEvents(
 ): Promise<AuditEventRow[]> {
   // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
-  const MAX_AUDIT_LIMIT = 100;
   const safeLimit = Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // Per-branch subquery limits let Postgres use idx_audit_actor_id and idx_audit_target_id
