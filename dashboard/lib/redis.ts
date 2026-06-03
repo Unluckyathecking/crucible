@@ -14,11 +14,11 @@ declare global {
 // creating a new client per call would leak TCP connections and ensure the
 // first DEL always fails before the connection reaches "ready".
 //
-// The offline queue is enabled (ioredis default) so DELs issued on a cold
-// process — before the TCP handshake completes — are queued and sent once
-// ready rather than rejected. maxOfflineQueue:50 caps memory if Redis is
-// persistently unreachable; commands beyond the cap are dropped, which is
-// acceptable for best-effort invalidation (the 60 s TTL is the fallback).
+// enableOfflineQueue is left at its ioredis default (true): DELs issued on
+// a cold process before the TCP handshake completes are queued and sent once
+// the connection reaches "ready", rather than being rejected immediately.
+// In practice the queue drains within milliseconds of process start; the only
+// commands that accumulate are those issued during that brief window.
 export function getRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) return null;
@@ -26,7 +26,6 @@ export function getRedis(): Redis | null {
   if (!global._crucible_redis) {
     const redis = new Redis(url, {
       maxRetriesPerRequest: 2,
-      maxOfflineQueue: 50,
     });
     redis.on("error", (err) => {
       console.error("Redis client error:", err.message);
