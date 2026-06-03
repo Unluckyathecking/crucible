@@ -13,6 +13,9 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
 )
 
+// strPtr returns a pointer to s, for constructing optional *string Event fields inline.
+func strPtr(s string) *string { return &s }
+
 // newTestPostgres returns a pgxpool connected to the local Postgres instance or
 // skips the test if unreachable. Mirrors the helper in gateway/internal/auth.
 // If TEST_DATABASE_URL is explicitly set, connection failures are fatal (not skip)
@@ -109,8 +112,8 @@ func TestEmit_RoundTrip(t *testing.T) {
 		ActorType:  audit.ActorCustomer,
 		ActorID:    uniqueActorID,
 		Action:     "api_key.created",
-		TargetType: "api_key",
-		TargetID:   "test-key-id",
+		TargetType: strPtr("api_key"),
+		TargetID:   strPtr("test-key-id"),
 		Details:    map[string]any{"name": "integration-test", "attempt": 1},
 	}
 
@@ -145,11 +148,11 @@ func TestEmit_RoundTrip(t *testing.T) {
 	if action != e.Action {
 		t.Errorf("action = %q, want %q", action, e.Action)
 	}
-	if targetType != e.TargetType {
-		t.Errorf("target_type = %q, want %q", targetType, e.TargetType)
+	if e.TargetType != nil && targetType != *e.TargetType {
+		t.Errorf("target_type = %q, want %q", targetType, *e.TargetType)
 	}
-	if targetID != e.TargetID {
-		t.Errorf("target_id = %q, want %q", targetID, e.TargetID)
+	if e.TargetID != nil && targetID != *e.TargetID {
+		t.Errorf("target_id = %q, want %q", targetID, *e.TargetID)
 	}
 
 	// Verify the Details JSONB round-trip.
@@ -176,8 +179,8 @@ func TestEmit_AllActorTypes(t *testing.T) {
 				ActorType:  at,
 				ActorID:    "actor-id",
 				Action:     "test.event",
-				TargetType: "resource",
-				TargetID:   "resource-id",
+				TargetType: strPtr("resource"),
+				TargetID:   strPtr("resource-id"),
 			})
 			if err != nil {
 				t.Errorf("Emit with actor_type=%q: %v", at, err)
@@ -204,13 +207,27 @@ func TestEmit_NilDetails(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()
 
+	uniqueActorID := fmt.Sprintf("test-sys-%d", time.Now().UnixNano())
+
+	// Emit with nil TargetType, TargetID, and Details — all three should be SQL NULL.
 	if err := audit.Emit(ctx, db, audit.Event{
-		ActorType:  audit.ActorSystem,
-		ActorID:    "system",
-		Action:     "api_key.revoked",
-		TargetType: "api_key",
-		TargetID:   "some-key-id",
+		ActorType: audit.ActorSystem,
+		ActorID:   uniqueActorID,
+		Action:    "system.test",
 	}); err != nil {
-		t.Fatalf("Emit with nil Details: %v", err)
+		t.Fatalf("Emit with nil optional fields: %v", err)
+	}
+
+	// Verify details IS NULL in the database (not an empty object or "null" literal).
+	var detailsJSON []byte
+	err := db.QueryRow(ctx,
+		`SELECT details FROM audit_log WHERE actor_id = $1 ORDER BY id DESC LIMIT 1`,
+		uniqueActorID,
+	).Scan(&detailsJSON)
+	if err != nil {
+		t.Fatalf("query round-trip row: %v", err)
+	}
+	if detailsJSON != nil {
+		t.Fatalf("expected NULL details, got %q", detailsJSON)
 	}
 }

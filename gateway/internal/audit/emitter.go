@@ -21,19 +21,20 @@ const (
 
 // Event is a single audit-log entry. Fields mirror audit_log exactly.
 // Field set must stay identical with dashboard/lib/audit.ts.
+// TargetType and TargetID are optional (*string nil → SQL NULL) to match the TS
+// interface's optional targetType?/targetId? fields; pgx maps nil *string to NULL.
 type Event struct {
 	ActorType  ActorType
 	ActorID    string
 	Action     string         // e.g. "api_key.created", "api_key.revoked", "plan.changed"
-	TargetType string         // e.g. "api_key", "customer"
-	TargetID   string         // UUID or other stable identifier
+	TargetType *string        // optional: nil → SQL NULL (e.g. "api_key", "customer")
+	TargetID   *string        // optional: nil → SQL NULL (UUID or other stable identifier)
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
-// nullStr converts an empty string to nil so pgx inserts SQL NULL for optional
-// fields (ActorID for system events, TargetType, TargetID). The TS emitter uses
-// `?? null` which maps undefined/null → null; both emitters produce SQL NULL
-// for absent fields. Callers must not pass "" for a field they intend to store.
+// nullStr converts an empty ActorID string to nil so pgx inserts SQL NULL for
+// system events (which have no individual actor). The TS emitter uses `?? null`;
+// both produce SQL NULL for absent fields.
 func nullStr(s string) any {
 	if s == "" {
 		return nil
@@ -68,7 +69,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)`
 	_, err := db.Exec(ctx, insertSQL,
 		string(e.ActorType), nullStr(e.ActorID), e.Action,
-		nullStr(e.TargetType), nullStr(e.TargetID), detailsJSON)
+		e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
 	}

@@ -203,9 +203,15 @@ export async function revokeApiKey(
   }
 
   if (result === "already_revoked" && found_prefix) {
-    // Idempotent revocation: the key was already revoked by a prior request. Emit an
-    // audit event so every revocation attempt has an audit trail, regardless of whether
-    // it was the first or a subsequent call.
+    // The first revocation may have succeeded in Postgres but transiently failed Redis.
+    // Attempt DEL again so a stale cache entry cannot extend the key's validity.
+    const alreadyRedis = getRedis();
+    if (alreadyRedis) {
+      void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${found_prefix}`).catch((err) => {
+        console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
+      });
+    }
+    // Emit an audit event so every revocation attempt has an audit trail.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
@@ -239,20 +245,29 @@ export async function listAuditEvents(
   const MAX_AUDIT_LIMIT = 100;
   const safeLimit = Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
-  // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
-  // customerId is always a non-null UUID so the two are semantically equivalent here,
-  // but = allows an index equality seek while IS NOT DISTINCT FROM uses a less selective path.
-  // A single outer LIMIT is correct: any event in the top N overall must be in the top N
-  // of its branch, so per-branch LIMITs would be redundant and could confuse the planner.
+  // Per-branch subquery limits let Postgres use idx_audit_actor_id and idx_audit_target_id
+  // for efficient index scans. Without them, Postgres must materialize both branches before
+  // the outer LIMIT applies. actor_id = $1 uses = (not IS NOT DISTINCT FROM) so the b-tree
+  // index is used directly; customerId is always a non-null UUID.
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM audit_log
-     WHERE actor_id = $1
+     FROM (
+       SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+       FROM audit_log
+       WHERE actor_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2
+     ) actor_events
      UNION ALL
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM audit_log
-     WHERE target_id = $1
-       AND actor_id IS DISTINCT FROM $1
+     FROM (
+       SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+       FROM audit_log
+       WHERE target_id = $1
+         AND actor_id IS DISTINCT FROM $1
+       ORDER BY created_at DESC
+       LIMIT $2
+     ) target_events
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],
