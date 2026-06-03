@@ -205,22 +205,15 @@ export async function revokeApiKey(
     if (found_prefix) {
       // The first revocation may have succeeded in Postgres but transiently failed Redis.
       // Attempt DEL again so a stale cache entry cannot extend the key's validity.
+      // already_revoked is only returned by the CASE when customer_id = $2 (the
+      // forbidden branch fires first for cross-customer keys), so found_prefix is
+      // always this customer's key.
       const alreadyRedis = getRedis();
       if (alreadyRedis) {
         void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${found_prefix}`).catch((err) => {
           console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
         });
       }
-      // Use a distinct action so retry attempts don't create duplicate "api_key.revoked" rows
-      // that would make the audit trail appear as if the key was revoked multiple times.
-      void emitAuditEvent(pool, {
-        actorType: "customer",
-        actorId: customerId,
-        action: "api_key.revoke_redundant",
-        targetType: "api_key",
-        targetId: keyId,
-        details: { prefix: found_prefix },
-      });
     }
     return "already_revoked";
   }
