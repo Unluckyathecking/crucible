@@ -69,10 +69,17 @@ export function getRedis(): Redis | null {
       console.error("Redis client error:", err);
     });
     // Graceful shutdown: close the connection on process exit to avoid dangling
-    // TCP connections (close-wait) on the Redis server under SIGTERM/beforeExit.
-    const gracefulClose = () => { redis.quit().catch(() => {}); };
+    // TCP connections (close-wait) on the Redis server under SIGTERM/SIGINT/beforeExit.
+    // Guard checks that this client is still the current singleton before quitting —
+    // a URL change may have already replaced it and called quit() on the old instance.
+    const gracefulClose = () => {
+      if (global._crucible_redis === redis) {
+        redis.quit().catch(() => {});
+      }
+    };
     process.once("beforeExit", gracefulClose);
     process.once("SIGTERM", gracefulClose);
+    process.once("SIGINT", gracefulClose);
     global._crucible_redis = redis;
     global._crucible_redis_url = url;
   }

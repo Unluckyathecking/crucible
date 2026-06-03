@@ -94,8 +94,6 @@ export async function insertApiKey(
   );
   const keyId = r.rows[0].id;
   // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-  // .catch() guards against a synchronous throw escaping as an unhandled rejection
-  // before emitAuditEvent's internal try/catch can handle it, and logs for observability.
   void emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
@@ -103,8 +101,6 @@ export async function insertApiKey(
     targetType: "api_key",
     targetId: keyId,
     details: { name, prefix },
-  }).catch((err) => {
-    console.error("audit emit failed for api_key.created:", { keyId, error: err instanceof Error ? err.message : String(err) });
   });
   return keyId;
 }
@@ -154,8 +150,6 @@ export async function revokeApiKey(
     // never roll back a completed Postgres revocation. Including the audit INSERT in the
     // same transaction would make audit errors silently undo the revocation — the opposite
     // of what we want. Best-effort: errors caught and logged inside emitAuditEvent.
-    // .catch() guards against a synchronous throw before the internal try/catch,
-    // and logs for observability so audit failures are not silently lost.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
@@ -163,8 +157,6 @@ export async function revokeApiKey(
       targetType: "api_key",
       targetId: keyId,
       details: { prefix },
-    }).catch((err) => {
-      console.error("audit emit failed for api_key.revoked:", { keyId, error: err instanceof Error ? err.message : String(err) });
     });
     return "revoked";
   }
@@ -224,7 +216,7 @@ export async function listAuditEvents(
      FROM (
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
-        WHERE actor_id = $1
+        WHERE actor_id = $1::uuid
           AND created_at >= NOW() - INTERVAL '90 days'
         ORDER BY created_at DESC
         LIMIT $2)
@@ -232,7 +224,7 @@ export async function listAuditEvents(
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
         WHERE target_id = $1
-          AND actor_id IS DISTINCT FROM $1
+          AND actor_id IS DISTINCT FROM $1::uuid
           AND created_at >= NOW() - INTERVAL '90 days'
         ORDER BY created_at DESC
         LIMIT $2)

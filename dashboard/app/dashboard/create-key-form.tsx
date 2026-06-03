@@ -63,7 +63,8 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           return { error: null, submitted: true, key: data.key, stale: true };
         }
         return { error: null, submitted: true, key: data.key };
-      } catch {
+      } catch (err) {
+        console.error("CreateKeyForm fetch failed:", err instanceof Error ? err.message : String(err));
         return { error: "Network error. Try again.", submitted: false, key: null };
       }
     },

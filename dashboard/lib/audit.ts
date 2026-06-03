@@ -33,17 +33,21 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
     console.error("audit emit skipped: actor_id required for non-system events", { action: event.action, actorType: event.actorType });
     return;
   }
+  let detailsJSON: string | null = null;
+  if (event.details != null) {
+    detailsJSON = JSON.stringify(event.details);
+  }
   try {
     await pool.query(
       `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
       [
         event.actorType,
         isSystem ? null : event.actorId,
         event.action,
         event.targetType ?? null,
         event.targetId ?? null,
-        event.details ?? null,
+        detailsJSON,
       ],
     );
   } catch (err) {

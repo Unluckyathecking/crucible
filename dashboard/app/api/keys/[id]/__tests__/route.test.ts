@@ -21,6 +21,12 @@ import * as path from "path";
 // ---------------------------------------------------------------------------
 // Re-implementations of the route's business logic for isolated testing.
 // If the route changes these rules, fix both the route AND these tests.
+//
+// NOTE: These are tautological unit tests — they verify the test author's
+// re-implementation, not the actual route handler. The drift-detection smoke
+// tests below are the stronger guard. Full E2E coverage of the real DELETE
+// route (including NextAuth session wiring and real Postgres) is out of scope
+// here and should be added in a follow-up integration/Playwright test suite.
 // ---------------------------------------------------------------------------
 
 type RevokeResult = "revoked" | "already_revoked" | "not_found" | "forbidden";
@@ -192,12 +198,14 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {
     // If the lookup adds AND customer_id = $2, it cannot tell whether the key
     // doesn't exist or belongs to a different customer — so the WHERE must be id-only.
-    const normalizedSection = revokeSection.replace(/\s+/g, " ");
+    // Extract the second query by anchoring to its SELECT rather than scanning the full section.
+    const secondQueryStart = revokeSection.indexOf("SELECT customer_id");
+    const secondQuerySection = secondQueryStart >= 0 ? revokeSection.slice(secondQueryStart) : "";
+    const normalizedSecond = secondQuerySection.replace(/\s+/g, " ");
     // Second query selects customer_id so the caller can distinguish ownership.
-    // Using dotAll /s flag + lazy quantifiers so innocent reformatting doesn't break the regex.
-    expect(normalizedSection).toMatch(/SELECT\s+[^;]*?customer_id[^;]*?FROM\s+api_keys\s+WHERE\s+id\s*=\s*\$1/s);
+    expect(normalizedSecond).toMatch(/SELECT\s+customer_id,\s*prefix\s+FROM\s+api_keys\s+WHERE\s+id\s*=\s*\$1/i);
     // Must NOT add a customer_id filter in the WHERE clause.
-    expect(normalizedSection).not.toMatch(/FROM api_keys WHERE id = \$1 AND customer_id/);
+    expect(normalizedSecond).not.toMatch(/WHERE\s+id\s*=\s*\$1\s+AND\s+customer_id/);
   });
 });
 
