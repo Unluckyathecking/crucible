@@ -29,12 +29,15 @@ export default async function DashboardPage() {
   const customer = await ensureCustomer(session.user.email);
   const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
-  // All three queries are bounded (index+LIMIT for usageByOperation; 20-row cap for
-  // auditEvents). Server-level timeout (Next.js/Vercel) is the backstop for hung connections.
-  const [keys, opBreakdown, auditEvents] = await Promise.all([
-    listKeys(customer.id),
-    usageByOperation(customer.id, thirtyDaysAgo, now),
-    listAuditEvents(customer.id),
+  const [keys, opBreakdown, auditEvents] = await Promise.race([
+    Promise.all([
+      listKeys(customer.id),
+      usageByOperation(customer.id, thirtyDaysAgo, now),
+      listAuditEvents(customer.id),
+    ]),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("dashboard data fetch timeout")), 10000)
+    ),
   ]);
   const totalUnits = opBreakdown.reduce((s, r) => s + r.total_billable_units, 0);
   const totalEvents = opBreakdown.reduce((s, r) => s + r.event_count, 0);

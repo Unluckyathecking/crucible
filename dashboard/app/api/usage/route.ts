@@ -87,8 +87,14 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
+    if (to.getTime() > now.getTime() + 24 * 60 * 60 * 1000) {
+      return new Response(JSON.stringify({ error: "'to' date cannot be more than 1 day in the future" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
 
-    // AC1: raw event rows {operation, billable_units, created_at}; usageByOperation serves the dashboard aggregate table.
+    // Returns raw usage event rows; usageByOperation is used by the dashboard server component for per-operation aggregates.
     const rows = await listUsageEvents(customer.id, from, to, operationParam);
 
     return new Response(JSON.stringify(rows), {
