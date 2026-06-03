@@ -25,14 +25,17 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const USAGE_WINDOW_DAYS = 30;
+  const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
   const [keys, usage, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
-    sumUsage(customer.id, 30),
+    sumUsage(customer.id, USAGE_WINDOW_DAYS),
     usageByOperation(customer.id, thirtyDaysAgo, now),
     listAuditEvents(customer.id),
   ]);
+  const totalUnits = opBreakdown.reduce((s, r) => s + r.total_billable_units, 0);
+  const totalEvents = opBreakdown.reduce((s, r) => s + r.event_count, 0);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
@@ -110,9 +113,9 @@ export default async function DashboardPage() {
                 <tfoot>
                   <tr className="text-zinc-600 font-medium">
                     <td className="pt-2 pr-4">Total</td>
-                    <td className="pt-2 pr-4 text-right tabular-nums">{opBreakdown.reduce((s, r) => s + r.total_billable_units, 0).toLocaleString()}</td>
+                    <td className="pt-2 pr-4 text-right tabular-nums">{totalUnits.toLocaleString()}</td>
                     <td className="pt-2 text-right tabular-nums text-zinc-500">
-                      {opBreakdown.reduce((s, r) => s + r.event_count, 0).toLocaleString()}
+                      {totalEvents.toLocaleString()}
                     </td>
                   </tr>
                 </tfoot>

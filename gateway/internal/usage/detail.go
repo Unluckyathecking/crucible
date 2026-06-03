@@ -16,7 +16,7 @@ type OperationAggregate struct {
 }
 
 // QueryByOperation returns per-operation aggregates from usage_events for customerID
-// within [from, to]. Pass a non-empty operation to filter to one operation only.
+// within [from, to) — from is inclusive, to is exclusive. Pass a non-empty operation to filter to one operation only.
 func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, from, to time.Time, operation string) ([]OperationAggregate, error) {
 	// Half-open interval [from, to): from is inclusive, to is exclusive.
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint

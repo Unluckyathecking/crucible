@@ -16,7 +16,14 @@ export async function GET(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const fromParam = url.searchParams.get("from");
     const toParam = url.searchParams.get("to");
-    const operationParam = url.searchParams.get("operation") ?? undefined;
+    const operationRaw = url.searchParams.get("operation");
+    if (operationRaw !== null && operationRaw.length > 128) {
+      return new Response(JSON.stringify({ error: "operation parameter too long" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const operationParam = operationRaw ?? undefined;
 
     const now = new Date();
     let from = new Date(now.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);

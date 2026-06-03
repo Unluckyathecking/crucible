@@ -97,6 +97,20 @@ func TestQueryByOperation_multiOperation(t *testing.T) {
 	}
 }
 
+func TestQueryByOperation_unknownCustomer(t *testing.T) {
+	pool := newTestPool(t)
+	from := time.Now().Add(-time.Minute)
+	to := time.Now().Add(time.Minute)
+
+	result, err := QueryByOperation(context.Background(), pool, uuid.UUID{}, from, to, "")
+	if err != nil {
+		t.Fatalf("QueryByOperation with zero UUID: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty result for unknown customer, got %d rows", len(result))
+	}
+}
+
 // TestQueryByOperation_crossCustomerIsolation asserts the query never leaks another
 // customer's rows — customerID is always the scope boundary.
 func TestQueryByOperation_crossCustomerIsolation(t *testing.T) {

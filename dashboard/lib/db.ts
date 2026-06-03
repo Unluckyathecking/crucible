@@ -271,6 +271,9 @@ export async function usageByOperation(
   if (!UUID_RE.test(customerId)) {
     return [];
   }
+  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+    return [];
+  }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation,
                   COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
@@ -309,6 +312,9 @@ export async function listUsageEvents(
   if (!UUID_RE.test(customerId)) {
     return [];
   }
+  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+    return [];
+  }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation, billable_units::text AS billable_units, created_at
            FROM usage_events
@@ -317,7 +323,8 @@ export async function listUsageEvents(
     args.push(operation);
     q += ` AND operation = $${args.length}`;
   }
-  q += ` ORDER BY created_at DESC LIMIT ${MAX_USAGE_EVENTS_LIMIT}`;
+  q += ` ORDER BY created_at DESC LIMIT $${args.length + 1}`;
+  args.push(MAX_USAGE_EVENTS_LIMIT);
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,
