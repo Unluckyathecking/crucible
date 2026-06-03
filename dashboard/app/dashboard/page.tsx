@@ -1,6 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, sumUsage, listAuditEvents, AuditEventRow } from "@/lib/db";
+import { ensureCustomer, listKeys, sumUsage, usageByOperation, listAuditEvents, AuditEventRow, UsageOperationRow } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -25,9 +25,12 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const [keys, usage, auditEvents] = await Promise.all([
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const now = new Date();
+  const [keys, usage, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
     sumUsage(customer.id, 30),
+    usageByOperation(customer.id, thirtyDaysAgo, now),
     listAuditEvents(customer.id),
   ]);
 
@@ -80,8 +83,42 @@ export default async function DashboardPage() {
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
           <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
-          <div className="text-3xl sm:text-4xl font-bold font-variant-numeric-tabular">{usage.toLocaleString()}</div>
-          <div className="text-sm text-zinc-500">billable units</div>
+          {opBreakdown.length === 0 ? (
+            <>
+              <div className="text-3xl sm:text-4xl font-bold tabular-nums">{usage.toLocaleString()}</div>
+              <div className="text-sm text-zinc-500">billable units</div>
+            </>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-zinc-500 border-b border-zinc-200">
+                    <th className="pb-2 pr-4 font-medium">Operation</th>
+                    <th className="pb-2 pr-4 font-medium text-right">Units</th>
+                    <th className="pb-2 font-medium text-right">Calls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {opBreakdown.map((row: UsageOperationRow) => (
+                    <tr key={row.operation} className="border-b border-zinc-100">
+                      <td className="py-2 pr-4 font-mono">{row.operation}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">{row.total_billable_units.toLocaleString()}</td>
+                      <td className="py-2 text-right tabular-nums text-zinc-500">{row.event_count.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="text-zinc-600 font-medium">
+                    <td className="pt-2 pr-4">Total</td>
+                    <td className="pt-2 pr-4 text-right tabular-nums">{usage.toLocaleString()}</td>
+                    <td className="pt-2 text-right tabular-nums text-zinc-500">
+                      {opBreakdown.reduce((s, r) => s + r.event_count, 0).toLocaleString()}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5" aria-label="Recent activity">

@@ -250,3 +250,75 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   );
   return Number(r.rows[0].units);
 }
+
+export interface UsageOperationRow {
+  operation: string;
+  total_billable_units: number;
+  event_count: number;
+}
+
+// usageByOperation returns per-operation aggregates from usage_events for a customer
+// within [from, to]. Pass a non-empty operation to filter to one operation only.
+// Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
+export async function usageByOperation(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): Promise<UsageOperationRow[]> {
+  if (!UUID_RE.test(customerId)) {
+    return [];
+  }
+  const args: unknown[] = [customerId, from, to];
+  let q = `SELECT operation,
+                  COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
+                  COUNT(*)::text AS event_count
+           FROM usage_events
+           WHERE customer_id = $1 AND created_at >= $2 AND created_at <= $3`;
+  if (operation) {
+    args.push(operation);
+    q += ` AND operation = $${args.length}`;
+  }
+  q += ` GROUP BY operation ORDER BY operation`;
+  const r = await pool.query<{ operation: string; total_billable_units: string; event_count: string }>(q, args);
+  return r.rows.map((row) => ({
+    operation: row.operation,
+    total_billable_units: Number(row.total_billable_units),
+    event_count: Number(row.event_count),
+  }));
+}
+
+export interface UsageEventRow {
+  operation: string;
+  billable_units: number;
+  created_at: Date;
+}
+
+// listUsageEvents returns raw usage_events rows for a customer within [from, to],
+// newest first, capped at 1000 rows. Pass a non-empty operation to filter by operation.
+// Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
+export async function listUsageEvents(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): Promise<UsageEventRow[]> {
+  if (!UUID_RE.test(customerId)) {
+    return [];
+  }
+  const args: unknown[] = [customerId, from, to];
+  let q = `SELECT operation, billable_units::text AS billable_units, created_at
+           FROM usage_events
+           WHERE customer_id = $1 AND created_at >= $2 AND created_at <= $3`;
+  if (operation) {
+    args.push(operation);
+    q += ` AND operation = $${args.length}`;
+  }
+  q += ` ORDER BY created_at DESC LIMIT 1000`;
+  const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
+  return r.rows.map((row) => ({
+    operation: row.operation,
+    billable_units: Number(row.billable_units),
+    created_at: row.created_at,
+  }));
+}
