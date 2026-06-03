@@ -86,10 +86,7 @@ export default async function DashboardPage() {
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
           <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
           {opBreakdown.length === 0 ? (
-            <>
-              <div className="text-3xl sm:text-4xl font-bold tabular-nums">{totalUnits.toLocaleString()}</div>
-              <div className="text-sm text-zinc-500">billable units</div>
-            </>
+            <p className="text-sm text-zinc-500">No usage in this period.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
