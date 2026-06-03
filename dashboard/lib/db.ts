@@ -338,8 +338,11 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, billable_units::text, created_at
+  // $4 is the JS-safe integer ceiling; LEAST clamps in SQL so Number() never
+  // receives a value whose integer part exceeds 2^53-1, eliminating the
+  // precision-loss window between the cast and the JS Math.min call.
+  const args: unknown[] = [customerId, from, to, Number.MAX_SAFE_INTEGER];
+  let q = `SELECT operation, LEAST(billable_units::bigint, $4)::text AS billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (effectiveOp) {
@@ -351,7 +354,7 @@ export async function listUsageEvents(
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,
-    billable_units: Math.min(Number.MAX_SAFE_INTEGER, Number(row.billable_units)),
+    billable_units: Number(row.billable_units),
     created_at: row.created_at,
   }));
 }
