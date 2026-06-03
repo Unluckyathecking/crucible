@@ -26,7 +26,7 @@ jobs:
       # Go is always needed: the conformance suite itself is written in Go.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.25.11"
           cache: true
           cache-dependency-path: |
             workers/sdk-go/go.sum

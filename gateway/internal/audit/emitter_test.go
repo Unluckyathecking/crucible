@@ -104,9 +104,8 @@ func TestEmit_RoundTrip(t *testing.T) {
 	if err := json.Unmarshal(detailsJSON, &gotDetails); err != nil {
 		t.Fatalf("unmarshal details: %v", err)
 	}
-	wantDetails := e.Details.(map[string]any)
-	if gotDetails["name"] != wantDetails["name"] {
-		t.Errorf("details.name = %v, want %v", gotDetails["name"], wantDetails["name"])
+	if gotDetails["name"] != e.Details["name"] {
+		t.Errorf("details.name = %v, want %v", gotDetails["name"], e.Details["name"])
 	}
 	// JSON numbers decode as float64.
 	if gotDetails["attempt"] != float64(1) {

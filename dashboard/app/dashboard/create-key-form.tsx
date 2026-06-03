@@ -46,8 +46,11 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           return { error: text, submitted: false, key: null };
         }
 
-        const { key } = (await res.json()) as { key: string };
-        return { error: null, submitted: true, key };
+        const data = (await res.json()) as unknown;
+        if (typeof (data as Record<string, unknown>)?.key !== "string") {
+          return { error: "Invalid response from server", submitted: false, key: null };
+        }
+        return { error: null, submitted: true, key: (data as { key: string }).key };
       } catch {
         return { error: "Network error. Try again.", submitted: false, key: null };
       }

@@ -162,7 +162,7 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE actor_id = $1
+     WHERE actor_id IS NOT DISTINCT FROM $1
         OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,

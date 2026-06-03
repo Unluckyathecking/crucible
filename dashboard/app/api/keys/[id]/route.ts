@@ -30,7 +30,8 @@ export async function DELETE(
     // Both "revoked" and "already_revoked" are success — idempotent.
     return new Response(null, { status: 200 });
   } catch (err) {
-    console.error("DELETE /api/keys/[id] failed:", err instanceof Error ? err.message : String(err));
-    return new Response("Internal server error", { status: 500 });
+    const errorId = crypto.randomUUID();
+    console.error("DELETE /api/keys/[id] failed:", { errorId, error: err instanceof Error ? err.message : String(err) });
+    return new Response(`Internal server error (${errorId})`, { status: 500 });
   }
 }
