@@ -33,7 +33,7 @@ export default async function DashboardPage() {
   const thirtyDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - USAGE_WINDOW_DAYS));
   const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
-    usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
+    usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight, undefined),
     listAuditEvents(customer.id),
   ]);
   const { totalUnits, totalEvents } = opBreakdown.reduce(
