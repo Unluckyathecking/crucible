@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { emitAuditEvent } from "@/lib/audit";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -20,6 +21,17 @@ export interface ApiKeyRow {
   prefix: string;
   name: string | null;
   last_used_at: Date | null;
+}
+
+export interface AuditEventRow {
+  id: string;
+  actor_type: string;
+  actor_id: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: Date;
 }
 
 /**
@@ -73,7 +85,74 @@ export async function insertApiKey(
      VALUES ($1, $2, $3, $4) RETURNING id`,
     [customerId, prefix, hash, name],
   );
-  return r.rows[0].id;
+  const keyId = r.rows[0].id;
+  // Best-effort: audit emit must not fail the key creation.
+  // The key is already persisted; if audit fails the customer still gets their key.
+  emitAuditEvent(pool, {
+    actorType: "customer",
+    actorId: customerId,
+    action: "api_key.created",
+    targetType: "api_key",
+    targetId: keyId,
+    details: { name: name || null, prefix },
+  }).catch(() => {});
+  return keyId;
+}
+
+// revokeApiKey sets revoked_at on a key that belongs to customerId.
+// Returns "revoked" on success, "already_revoked" when the key was already inactive (idempotent),
+// or "not_found" when the key doesn't exist or belongs to another customer.
+//
+// Gateway Redis hot cache: the gateway caches the key at "auth:{prefix}" with a 60 s TTL.
+// That cache entry will expire naturally — revocation is immediately durable in Postgres
+// (the gateway's source of truth) but may take up to 60 s to propagate through the cache.
+// This matches the documented behaviour in CLAUDE.md invariant #7.
+export async function revokeApiKey(
+  keyId: string,
+  customerId: string,
+): Promise<"revoked" | "already_revoked" | "not_found"> {
+  // Only update if the key is still active, so we can detect true revocation vs idempotent call.
+  const r = await pool.query<{ id: string; prefix: string }>(
+    `UPDATE api_keys SET revoked_at = NOW()
+     WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
+     RETURNING id, prefix`,
+    [keyId, customerId],
+  );
+
+  if (r.rows.length > 0) {
+    await emitAuditEvent(pool, {
+      actorType: "customer",
+      actorId: customerId,
+      action: "api_key.revoked",
+      targetType: "api_key",
+      targetId: keyId,
+      details: { prefix: r.rows[0].prefix },
+    });
+    return "revoked";
+  }
+
+  // Distinguish already-revoked (owned, idempotent → 200) from not-found/not-owned (→ 404).
+  const check = await pool.query<{ id: string }>(
+    `SELECT id FROM api_keys WHERE id = $1 AND customer_id = $2`,
+    [keyId, customerId],
+  );
+  return check.rows.length > 0 ? "already_revoked" : "not_found";
+}
+
+// listAuditEvents returns the most recent audit events attributed to customerId.
+export async function listAuditEvents(
+  customerId: string,
+  limit = 20,
+): Promise<AuditEventRow[]> {
+  const r = await pool.query<AuditEventRow>(
+    `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM audit_log
+     WHERE actor_type = 'customer' AND actor_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [customerId, limit],
+  );
+  return r.rows;
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { useRouter } from "next/navigation";
 
 interface CreateKeyFormProps {
   existingNames: string[];
@@ -92,5 +93,55 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
         {isPending ? "Creating…" : "Create key"}
       </button>
     </form>
+  );
+}
+
+// Suppress unused warning — existingNames is kept for future duplicate-name validation.
+void ([] as string[]);
+
+interface RevokeKeyButtonProps {
+  keyId: string;
+  keyPrefix: string;
+}
+
+type RevokeState = { error: string | null };
+
+export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
+  const router = useRouter();
+  const [state, formAction, isPending] = useActionState(
+    async (_prev: RevokeState): Promise<RevokeState> => {
+      try {
+        const res = await fetch(`/api/keys/${keyId}`, { method: "DELETE" });
+        if (!res.ok) {
+          const text = await res.text();
+          return { error: text || "Failed to revoke key" };
+        }
+        router.refresh();
+        return { error: null };
+      } catch {
+        return { error: "Network error. Try again." };
+      }
+    },
+    { error: null },
+  );
+
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      <form action={formAction}>
+        <button
+          type="submit"
+          disabled={isPending}
+          aria-label={`Revoke key ${keyPrefix}`}
+          className="px-2 py-0.5 text-xs text-red-600 border border-red-300 rounded hover:bg-red-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isPending ? "Revoking…" : "Revoke"}
+        </button>
+      </form>
+      {state.error && (
+        <p className="text-xs text-red-600" role="alert">
+          {state.error}
+        </p>
+      )}
+    </span>
   );
 }
