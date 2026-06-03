@@ -147,8 +147,9 @@ export async function revokeApiKey(
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
-// events the customer performed AND events that targeted them (e.g. plan changes by admin/system).
-// The actor branch uses idx_audit_actor (0001); the target branch uses idx_audit_target (0005).
+// events the customer performed (actor_id = customerId) AND events that targeted
+// them by UUID (target_id = customerId, e.g. plan changes by admin/system).
+// idx_audit_actor (0001) covers the actor branch; idx_audit_target_id (0005) covers the target branch.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -156,8 +157,8 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE (actor_type = 'customer' AND actor_id = $1)
-        OR (target_type = 'customer' AND target_id = $1)
+     WHERE actor_id = $1
+        OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, limit],

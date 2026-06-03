@@ -34,7 +34,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Retry on the rare prefix-collision (the unique partial index on active prefixes
   // catches the case). 3 attempts is way more than statistically needed.
-  let full: string;
+  let full = "";
   let inserted = false;
   for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
     const generated = generateKey(productPrefix);
@@ -54,7 +54,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Return the full key ONCE as JSON — shown inline in the dashboard.
   // Never returned again; the client must display and copy from this response.
-  return new Response(JSON.stringify({ key: full! }), {
+  return new Response(JSON.stringify({ key: full }), {
     headers: { "content-type": "application/json" },
   });
 }

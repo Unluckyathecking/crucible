@@ -82,7 +82,7 @@ export default async function DashboardPage() {
                 const label =
                   (typeof details?.prefix === "string" ? details.prefix : undefined) ||
                   (typeof details?.name === "string" ? details.name : undefined) ||
-                  (e.target_id ? e.target_id.slice(0, 8) + "…" : "");
+                  (e.target_type === "api_key" && e.target_id ? e.target_id.slice(0, 8) + "…" : "");
                 return (
                   <li key={e.id} className="flex items-center justify-between text-sm gap-2">
                     <span className="font-mono text-zinc-800">{e.action}</span>

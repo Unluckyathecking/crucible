@@ -4,8 +4,12 @@
 
 BEGIN;
 
--- Reverse lookup by target: "show all events touching api_key X"
+-- Reverse lookup by target type + id: "show all events touching api_key X"
 CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type, target_id, created_at DESC);
+
+-- Reverse lookup by target id alone: supports "show all events targeting customer Y"
+-- where target_type varies (used by listAuditEvents OR target_id = $1 branch).
+CREATE INDEX IF NOT EXISTS idx_audit_target_id ON audit_log(target_id, created_at DESC);
 
 -- Filter by action type: "show all api_key.revoked events"
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action, created_at DESC);
