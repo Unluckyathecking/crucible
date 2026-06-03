@@ -31,6 +31,7 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 		t.Skipf("postgres ping failed, skipping: %v", err)
 	}
+	t.Cleanup(pool.Close)
 	return pool
 }
 
@@ -47,7 +48,6 @@ func TestEmit_RejectsInvalidActorType(t *testing.T) {
 
 func TestEmit_RoundTrip(t *testing.T) {
 	db := newTestPostgres(t)
-	defer db.Close()
 	ctx := context.Background()
 
 	uniqueActorID := fmt.Sprintf("test-cust-%d", time.Now().UnixNano())
@@ -115,7 +115,6 @@ func TestEmit_RoundTrip(t *testing.T) {
 
 func TestEmit_AllActorTypes(t *testing.T) {
 	db := newTestPostgres(t)
-	defer db.Close()
 	ctx := context.Background()
 
 	for _, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin, audit.ActorSystem} {
@@ -136,7 +135,6 @@ func TestEmit_AllActorTypes(t *testing.T) {
 
 func TestEmit_NilDetails(t *testing.T) {
 	db := newTestPostgres(t)
-	defer db.Close()
 	ctx := context.Background()
 
 	if err := audit.Emit(ctx, db, audit.Event{

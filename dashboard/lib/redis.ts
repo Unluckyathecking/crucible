@@ -10,16 +10,24 @@ declare global {
 // revocation (clearing auth:{prefix} so the gateway re-checks Postgres
 // immediately rather than waiting for the 60-second TTL).
 //
-// A single singleton is used across all invocations so that the connection is
-// already established by the time revokeApiKey fires a DEL command.
-// Using lazyConnect+enableOfflineQueue:false would reject the first command
-// before the connection reaches "ready", silently leaving the cache entry live.
+// A global singleton is used so the connection is established once and reused;
+// creating a new client per call would leak TCP connections and ensure the
+// first DEL always fails before the connection reaches "ready".
+// enableOfflineQueue:false lets cache-miss DELs fail fast rather than pile up
+// in memory when Redis is temporarily unreachable — acceptable for best-effort.
 export function getRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) return null;
 
   if (!global._crucible_redis) {
-    global._crucible_redis = new Redis(url);
+    const redis = new Redis(url, {
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+    });
+    redis.on("error", (err) => {
+      console.error("Redis client error:", err.message);
+    });
+    global._crucible_redis = redis;
   }
   return global._crucible_redis;
 }

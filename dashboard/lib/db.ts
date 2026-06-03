@@ -167,13 +167,11 @@ export async function revokeApiKey(
 // listAuditEvents returns the most recent audit events for a customer:
 // events the customer performed (actor_id = customerId) AND events that targeted
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
-// idx_audit_actor (0001) covers the actor branch; idx_audit_target_id (0005) covers the target branch.
+// idx_audit_actor_id (0005) covers the actor branch; idx_audit_target_id (0005) covers the target branch.
 //
-// actor_id is nullable in the schema (system events have no actor). The explicit
-// NULL guard makes it clear this function intentionally skips actor-less rows that
-// don't target this customer — it is not a silent omission bug. Since $1 is always
-// a non-null UUID, (actor_id IS NULL AND $1::text IS NULL) is always false at
-// runtime and the planner can still use the actor_id index.
+// actor_id is nullable in the schema for system events with no identified actor.
+// Those rows are intentionally excluded from the actor branch and surface only
+// when target_id = customerId (the second OR branch).
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -182,7 +180,7 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE (actor_id = $1 OR (actor_id IS NULL AND $1::text IS NULL))
+     WHERE actor_id = $1
         OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,
