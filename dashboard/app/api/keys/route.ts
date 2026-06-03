@@ -51,7 +51,7 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
   if (!inserted) {
-    return new Response("Failed to generate a unique key after 3 attempts", { status: 500 });
+    return new Response(`Failed to generate a unique key after ${MAX_KEY_GEN_ATTEMPTS} attempts`, { status: 500 });
   }
 
   // Return the full key ONCE as JSON — shown inline in the dashboard.

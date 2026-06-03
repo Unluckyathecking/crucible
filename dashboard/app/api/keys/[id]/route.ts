@@ -4,13 +4,19 @@ import { ensureCustomer, revokeApiKey } from "@/lib/db";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   // Declared outside try so the catch block can include them in log context.
   let keyId: string | undefined;
   let customerId: string | undefined;
   try {
+    // Reject cross-origin form submissions: browsers cannot set X-Requested-With
+    // on cross-origin requests without a preflight (which the server doesn't allow).
+    if (request.headers.get("X-Requested-With") !== "XMLHttpRequest") {
+      return new Response("Forbidden", { status: 403 });
+    }
+
     const session = await auth();
     if (!session?.user?.email) {
       return new Response("Unauthorized", { status: 401 });

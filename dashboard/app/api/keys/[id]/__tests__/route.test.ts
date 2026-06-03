@@ -9,6 +9,10 @@
  *   4. Idempotency: 200 on second revocation of an already-revoked key.
  *   5. Source-text assertions: verify the actual db.ts implementation uses the
  *      correct SQL patterns (ownership + idempotency guards), not a local mirror.
+ *
+ * Note: the CSRF guard (X-Requested-With: XMLHttpRequest check) is enforced in
+ * route.ts before auth. It is not reproduced here because simulateDeleteRoute tests
+ * DB-level semantics only. Verify the header check in route.ts directly.
  */
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";

@@ -119,7 +119,10 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
   const [state, formAction, isPending] = useActionState(
     async (_prev: RevokeState, _formData: FormData): Promise<RevokeState> => {
       try {
-        const res = await fetch(`/api/keys/${keyId}`, { method: "DELETE" });
+        const res = await fetch(`/api/keys/${keyId}`, {
+          method: "DELETE",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+        });
         if (!res.ok) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };

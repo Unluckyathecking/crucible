@@ -69,6 +69,44 @@ func TestEmit_RejectsEmptyAction(t *testing.T) {
 	}
 }
 
+func TestEmit_RejectsEmptyActorIDForNonSystem(t *testing.T) {
+	// nil pool is safe: actor_id validation fires before any DB call.
+	for _, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin} {
+		t.Run(string(at), func(t *testing.T) {
+			err := audit.Emit(context.Background(), nil, audit.Event{
+				ActorType: at,
+				ActorID:   "",
+				Action:    "test.action",
+			})
+			if err == nil {
+				t.Fatalf("expected error for empty actor_id with actor_type %q, got nil", at)
+			}
+		})
+	}
+}
+
+func TestEmit_AllowsEmptyActorIDForSystem(t *testing.T) {
+	// System events are emitted by background jobs; no individual actor UUID exists.
+	// Validation must not reject ActorSystem with an empty ActorID.
+	// We use recover() because a nil pool panics when Exec is called — that panic
+	// proves validation passed (otherwise error would have returned before the DB call).
+	var validationErrMsg string
+	func() {
+		defer func() { recover() }() //nolint:errcheck
+		err := audit.Emit(context.Background(), nil, audit.Event{
+			ActorType: audit.ActorSystem,
+			ActorID:   "",
+			Action:    "test.action",
+		})
+		if err != nil {
+			validationErrMsg = err.Error()
+		}
+	}()
+	if validationErrMsg != "" {
+		t.Fatalf("system actor_type should allow empty actor_id, but validation rejected it: %s", validationErrMsg)
+	}
+}
+
 func TestEmit_MalformedDetails(t *testing.T) {
 	// nil pool is safe: JSON marshal failure fires before any DB call.
 	err := audit.Emit(context.Background(), nil, audit.Event{

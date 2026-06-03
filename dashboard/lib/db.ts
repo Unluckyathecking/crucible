@@ -195,14 +195,15 @@ export async function revokeApiKey(
 // events the customer performed (actor_id = customerId) AND events that targeted
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 //
-// UNION ALL gives the planner two separate index scans (idx_audit_actor_id for the
+// UNION gives the planner two separate index scans (idx_audit_actor_id for the
 // actor branch, idx_audit_target_id for the target branch) rather than a single
 // BitmapOr scan over both indexes. The second branch uses IS DISTINCT FROM so that
 // system events (actor_id IS NULL) targeting this customer are included without
-// appearing in both branches. Duplicates are impossible: each branch filters on a
-// different column, and the same event cannot have actor_id = customerId AND
-// target_id = customerId simultaneously given the current schema conventions
-// (target_id stores resource UUIDs, not customer UUIDs, for key events).
+// appearing in both branches. UNION (not UNION ALL) deduplicates by row identity;
+// duplicates are impossible in practice (the two branches filter on different columns
+// and the same event cannot have actor_id = customerId AND target_id = customerId
+// simultaneously under current schema conventions), but UNION is a correctness guard
+// against future event types that might set both fields to the customer UUID.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -216,11 +217,11 @@ export async function listAuditEvents(
   // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
   // A single outer LIMIT is correct: any event in the top N overall must be in the top N
   // of its branch, so per-branch LIMITs would be redundant and could confuse the planner.
-  // UNION (not UNION ALL) deduplicates by row identity, providing a correctness
-  // guarantee even if a future event type sets both actor_id and target_id to the
-  // customer UUID. The second branch's IS DISTINCT FROM guard makes duplicates
-  // impossible in practice today, but UNION is safer and the overhead is negligible
-  // at the ≤100-row scale this function operates at.
+  // UNION (not UNION ALL) deduplicates by row identity, so the planner merges the two
+  // branch result sets before sorting. The second branch's IS DISTINCT FROM guard makes
+  // duplicates impossible in practice today, but UNION adds a correctness guarantee if a
+  // future event type sets both actor_id and target_id to the customer UUID.
+  // The dedup overhead is negligible at the ≤100-row scale this function operates at.
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log

@@ -51,6 +51,11 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.Action == "" {
 		return fmt.Errorf("audit: action must not be empty")
 	}
+	// System events originate from background jobs with no individual actor; customer and
+	// admin events must always carry an ActorID so audit rows remain attributable.
+	if e.ActorType != ActorSystem && e.ActorID == "" {
+		return fmt.Errorf("audit: actor_id must not be empty for actor_type %q", e.ActorType)
+	}
 	var detailsJSON []byte
 	if e.Details != nil {
 		b, err := json.Marshal(e.Details)
