@@ -7,7 +7,13 @@ export default auth((req) => {
   if (!req.auth) {
     // API routes need 401 JSON, not a 302 redirect to an HTML login page.
     // Use decoded pathname to avoid path traversal via encoded slashes.
-    const decodedPath = decodeURIComponent(req.nextUrl.pathname);
+    // Fall back to raw pathname if decoding fails (malformed UTF-8 like %E0%A0).
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(req.nextUrl.pathname);
+    } catch {
+      decodedPath = req.nextUrl.pathname;
+    }
     if (decodedPath.startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
