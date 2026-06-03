@@ -170,8 +170,8 @@ export async function revokeApiKey(
   }
 
   // Row exists, owned by caller, but revoked_at IS NOT NULL — idempotent re-revocation.
-  // Use != null (not truthiness) to distinguish null from empty string per schema typing.
-  if (foundPrefix != null) {
+  // Truthiness excludes both null and empty-string prefixes (schema guarantees non-empty, but belt-and-suspenders).
+  if (foundPrefix) {
     // The first revocation may have succeeded in Postgres but transiently failed Redis.
     // Attempt DEL again so a stale cache entry cannot extend the key's validity.
     const alreadyRedis = getRedis();
@@ -180,15 +180,6 @@ export async function revokeApiKey(
         console.error("redis cache invalidation failed for already_revoked key", { prefix: foundPrefix, error: err instanceof Error ? err.message : String(err) });
       });
     }
-    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-    void emitAuditEvent(pool, {
-      actorType: "customer",
-      actorId: customerId,
-      action: "api_key.revoked",
-      targetType: "api_key",
-      targetId: keyId,
-      details: { prefix: foundPrefix, idempotent: true },
-    });
   }
   return "already_revoked";
 }
@@ -197,11 +188,10 @@ export async function revokeApiKey(
 // events the customer performed (actor_id = customerId) AND events that targeted
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 //
-// UNION ALL gives the planner two separate index scans (idx_audit_actor_id for the
-// actor branch, idx_audit_target_id for the target branch). No row can appear in both
-// branches: a single actor_id value cannot both equal customerId (actor branch) and be
-// DISTINCT from customerId (target branch) at the same time. UNION ALL avoids the
-// dedup sort/hash overhead of UNION without any correctness risk.
+// Parenthesized subqueries give the planner two separate index scans
+// (idx_audit_actor_id for the actor branch, idx_audit_target_id for the target branch).
+// No row can appear in both branches: actor_id = $1 excludes rows where
+// actor_id IS DISTINCT FROM $1. UNION ALL avoids the dedup overhead of UNION.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -215,32 +205,21 @@ export async function listAuditEvents(
   // which would cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
-  // In PostgreSQL 12+, single-reference CTEs are inlined by default (NOT MATERIALIZED),
-  // so the planner treats them identically to subqueries and can push the outer LIMIT
-  // down through the Append node into each index scan. actor_id = $1 uses = (not IS NOT
-  // DISTINCT FROM) so the b-tree index is used directly; customerId is always non-null.
-  // No per-branch LIMIT: a single LIMIT on the final UNION ALL is both correct and
-  // avoids the subtle over-restriction that per-branch limits introduce when one branch
-  // is sparse and the other is dense.
   const r = await pool.query<AuditEventRow>(
-    `WITH actor_events AS (
-       SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-       FROM audit_log
-       WHERE actor_id = $1
-         AND created_at >= NOW() - INTERVAL '90 days'
-     ),
-     target_events AS (
-       SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-       FROM audit_log
-       WHERE target_id = $1
-         AND actor_id IS DISTINCT FROM $1 -- null-safe <>: includes system events (NULL actor_id)
-         AND created_at >= NOW() - INTERVAL '90 days'
-     )
-     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM actor_events
+    `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+      FROM audit_log
+      WHERE actor_id = $1
+        AND created_at >= NOW() - INTERVAL '90 days'
+      ORDER BY created_at DESC
+      LIMIT $2)
      UNION ALL
-     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM target_events
+     (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+      FROM audit_log
+      WHERE target_id = $1
+        AND actor_id IS DISTINCT FROM $1
+        AND created_at >= NOW() - INTERVAL '90 days'
+      ORDER BY created_at DESC
+      LIMIT $2)
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],

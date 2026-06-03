@@ -133,7 +133,11 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
-        await router.refresh();
+        try {
+          await router.refresh();
+        } catch (refreshErr) {
+          console.error("Failed to refresh dashboard after key revocation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+        }
         return { error: null };
       } catch (err) {
         console.error("RevokeKeyButton fetch failed:", err instanceof Error ? err.message : String(err));
