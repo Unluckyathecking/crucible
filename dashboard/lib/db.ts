@@ -107,11 +107,12 @@ export async function insertApiKey(
 // "forbidden" when the key exists but belongs to another customer (caller should 403),
 // or "not_found" when the key doesn't exist at all.
 //
-// Redis note: the gateway caches valid keys at "auth:{prefix}" for up to 60 s. The dashboard
-// has no Redis connection, so that entry is not explicitly cleared here. Revocation is immediate
-// in Postgres (the gateway's source of truth). For instant cache invalidation run:
-//   redis-cli DEL auth:{prefix}
-// On the gateway side, Store.Revoke() handles this automatically (CLAUDE.md invariant #7).
+// CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
+// ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
+// This function does that: after the Postgres UPDATE succeeds it fires a best-effort Redis DEL.
+// If REDIS_URL is not configured in the dashboard's environment the DEL is skipped; the key
+// remains valid in the gateway's cache until the TTL expires. Set REDIS_URL to share the same
+// Redis instance as the gateway to get immediate invalidation.
 export async function revokeApiKey(
   keyId: string,
   customerId: string,
@@ -167,6 +168,12 @@ export async function revokeApiKey(
 // events the customer performed (actor_id = customerId) AND events that targeted
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 // idx_audit_actor (0001) covers the actor branch; idx_audit_target_id (0005) covers the target branch.
+//
+// actor_id is nullable in the schema (system events have no actor). The explicit
+// NULL guard makes it clear this function intentionally skips actor-less rows that
+// don't target this customer — it is not a silent omission bug. Since $1 is always
+// a non-null UUID, (actor_id IS NULL AND $1::text IS NULL) is always false at
+// runtime and the planner can still use the actor_id index.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -175,7 +182,7 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE actor_id = $1
+     WHERE (actor_id = $1 OR (actor_id IS NULL AND $1::text IS NULL))
         OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,
