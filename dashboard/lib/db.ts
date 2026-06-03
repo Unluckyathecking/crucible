@@ -269,7 +269,7 @@ function validateUsageQueryParams(
     throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
   }
   const effectiveOp = operation?.trim() || undefined;
-  if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
+  if (effectiveOp !== undefined && Array.from(effectiveOp).length > MAX_OPERATION_LENGTH) {
     throw new Error(`operation too long (max ${MAX_OPERATION_LENGTH} characters)`);
   }
   return { effectiveOp };

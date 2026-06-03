@@ -24,7 +24,8 @@ const maxOperationLength = 128
 // Callers should pass UTC midnight values; this normalises sub-day precision
 // so the 90-day duration check measures whole calendar days, not partial hours.
 func truncateToUTCMidnight(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	ut := t.UTC()
+	return time.Date(ut.Year(), ut.Month(), ut.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // OperationAggregate holds per-operation totals from usage_events.
@@ -86,7 +87,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	}
 	defer rows.Close()
 
-	var result []OperationAggregate
+	result := make([]OperationAggregate, 0, maxUsageOperationsLimit)
 	for rows.Next() {
 		var a OperationAggregate
 		if err := rows.Scan(&a.Operation, &a.TotalBillableUnits, &a.EventCount); err != nil {
