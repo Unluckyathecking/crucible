@@ -188,6 +188,39 @@ func TestQueryByOperation_fromAfterTo(t *testing.T) {
 	}
 }
 
+func TestQueryByOperation_rangeExactlyAtLimit(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+
+	to := time.Now()
+	from := to.Add(-time.Duration(maxUsageRangeDays) * 24 * time.Hour)
+	// Exactly at the limit — should be accepted (not strictly greater than).
+	if _, err := QueryByOperation(context.Background(), pool, custID, from, to, ""); err != nil {
+		t.Errorf("expected exactly-%d-day range to be accepted, got: %v", maxUsageRangeDays, err)
+	}
+}
+
+func TestQueryByOperation_whitespaceOperation(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 1)
+	insertUsageEvent(t, pool, custID, keyID, "op.b", 2)
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+
+	// Whitespace-only operation trims to empty → treated as no filter, returns all operations.
+	result, err := QueryByOperation(ctx, pool, custID, from, to, "   ")
+	if err != nil {
+		t.Fatalf("QueryByOperation with whitespace operation: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected whitespace-only operation to return all operations (no filter), got %d rows", len(result))
+	}
+}
+
 func TestQueryByOperation_rangeExceedsMax(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)

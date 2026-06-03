@@ -2,7 +2,7 @@
 // for the authenticated customer over the requested time window.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS } from "@/lib/db";
+import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 // Accepts ISO 8601 date-only (YYYY-MM-DD). Month bounded 01-12, day 01-31;
@@ -32,8 +32,7 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    // Fast O(1) guard first (128 runes ≤ 256 UTF-16 code units), then precise rune count.
-    if (operationTrimmed !== undefined && (operationTrimmed.length > 256 || [...operationTrimmed].length > 128)) {
+    if (operationTrimmed !== undefined && [...operationTrimmed].length > MAX_OPERATION_LENGTH) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
         headers: { "content-type": "application/json" },

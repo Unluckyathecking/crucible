@@ -20,7 +20,7 @@ const AUDIT_LOOKBACK_DAYS = 90;
 const MAX_USAGE_EVENTS_LIMIT = 1000;
 // Separate cap for per-operation aggregate rows (distinct operations per customer window).
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
-const MAX_OPERATION_LENGTH = 128;
+export const MAX_OPERATION_LENGTH = 128;
 export const MAX_USAGE_RANGE_DAYS = 90;
 const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * 24 * 60 * 60 * 1000;
 
