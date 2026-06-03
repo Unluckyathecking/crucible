@@ -1,4 +1,4 @@
-// GET /api/usage — returns per-operation aggregates {operation, total_billable_units, event_count}
+// GET /api/usage — returns raw usage events {operation, billable_units, created_at}
 // for the authenticated customer over the requested time window.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
