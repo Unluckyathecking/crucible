@@ -17,6 +17,8 @@ export async function DELETE(
     // so the invariant is clear — header must be present AND match.
     const xrw = request.headers.get("X-Requested-With");
     if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
+      const safeHeader = xrw ? xrw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20) : "missing";
+      console.warn("CSRF check failed for DELETE /api/keys/[id]", { header: safeHeader });
       return new Response("Forbidden", { status: 403 });
     }
 

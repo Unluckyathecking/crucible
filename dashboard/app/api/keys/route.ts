@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { ensureCustomer, insertApiKey } from "@/lib/db";
 import { generateKey, hashKey } from "@/lib/keys";
+import { KEY_NAME_RE } from "@/lib/validation";
 
 const MAX_KEY_GEN_ATTEMPTS = 3;
 const PG_UNIQUE_VIOLATION = "23505";
@@ -51,7 +52,7 @@ export async function POST(request: Request): Promise<Response> {
     if (name.length > 64) {
       return new Response("Name must be 64 characters or fewer", { status: 400 });
     }
-    if (name.length > 0 && !/^[a-zA-Z0-9 _\-./]+$/.test(name)) {
+    if (name.length > 0 && !KEY_NAME_RE.test(name)) {
       return new Response("Name contains invalid characters", { status: 400 });
     }
 

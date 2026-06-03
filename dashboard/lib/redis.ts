@@ -11,6 +11,28 @@ declare global {
 // stalling the revocation path while the gateway continues serving the old cache.
 const REDIS_MAX_RETRIES_PER_REQUEST = 2;
 
+// Shutdown handlers are registered once per module lifetime rather than per-client
+// creation. Registering inside getRedis() on each URL change accumulates stale
+// process.once() closures (one per call), which never fire but waste memory and
+// trigger MaxListenersExceededWarning in test environments with many URL changes.
+// The single handler closes the current singleton at the time of shutdown.
+let _shutdownHandlersInstalled = false;
+function installShutdownHandlers(): void {
+  if (_shutdownHandlersInstalled) return;
+  _shutdownHandlersInstalled = true;
+  const gracefulClose = (): void => {
+    const redis = global._crucible_redis;
+    if (redis) {
+      global._crucible_redis = undefined;
+      global._crucible_redis_url = undefined;
+      redis.quit().catch(() => {});
+    }
+  };
+  process.once("beforeExit", gracefulClose);
+  process.once("SIGTERM", gracefulClose);
+  process.once("SIGINT", gracefulClose);
+}
+
 // Returns a shared Redis client if REDIS_URL is configured, or null if not.
 // The dashboard uses Redis only for best-effort cache invalidation after key
 // revocation (clearing auth:{prefix} so the gateway re-checks Postgres
@@ -66,18 +88,7 @@ export function getRedis(): Redis | null {
     redis.on("error", (err) => {
       console.error("Redis client error:", err);
     });
-    // Graceful shutdown: close the connection on process exit to avoid dangling
-    // TCP connections (close-wait) on the Redis server under SIGTERM/SIGINT/beforeExit.
-    // Guard checks that this client is still the current singleton before quitting —
-    // a URL change may have already replaced it and called quit() on the old instance.
-    const gracefulClose = () => {
-      if (global._crucible_redis === redis) {
-        redis.quit().catch(() => {});
-      }
-    };
-    process.once("beforeExit", gracefulClose);
-    process.once("SIGTERM", gracefulClose);
-    process.once("SIGINT", gracefulClose);
+    installShutdownHandlers();
     global._crucible_redis = redis;
     global._crucible_redis_url = url;
   }

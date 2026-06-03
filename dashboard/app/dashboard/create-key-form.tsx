@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { useRouter } from "next/navigation";
+import { KEY_NAME_RE } from "@/lib/validation";
 
 interface CreateKeyFormProps {
   existingNames: string[];
@@ -24,7 +25,7 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
       if (name.length > 64) {
         return { error: "Name must be 64 characters or fewer", submitted: false, key: null };
       }
-      if (!/^[a-zA-Z0-9 _\-./]+$/.test(name)) {
+      if (!KEY_NAME_RE.test(name)) {
         return {
           error: "Name can only contain letters, numbers, spaces, hyphens, underscores, dots, and slashes",
           submitted: false,
