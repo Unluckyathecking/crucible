@@ -208,7 +208,7 @@ func TestQueryByOperation_whitespaceOperation(t *testing.T) {
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 1)
 	insertUsageEvent(t, pool, custID, keyID, "op.b", 2)
 
-	from := time.Now().Add(-time.Hour)
+	from := time.Now().Add(-24 * time.Hour)
 	to := time.Now().Add(time.Hour)
 
 	// Whitespace-only operation trims to empty → treated as no filter, returns all operations.
@@ -316,7 +316,7 @@ func TestQueryByOperation_limitCap(t *testing.T) {
 		insertUsageEvent(t, pool, custID, keyID, fmt.Sprintf("op-%04d", i), 1)
 	}
 
-	from := time.Now().Add(-time.Hour)
+	from := time.Now().Add(-24 * time.Hour)
 	to := time.Now().Add(time.Hour)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, to, "")
