@@ -13,9 +13,10 @@ export async function DELETE(
     // Lightweight CSRF signal: custom headers require CORS preflight on cross-origin
     // requests, making it harder for cross-origin pages to trigger this endpoint.
     // Primary defense is the session cookie's SameSite attribute; this is defense-in-depth.
-    // Convention: clients send "XMLHttpRequest"; compare case-insensitively so
-    // proxies that normalize header values do not break the guard.
-    if (request.headers.get("X-Requested-With")?.toLowerCase() !== "xmlhttprequest") {
+    // Explicit presence check: a missing header and a wrong value are both rejected,
+    // so the invariant is clear — header must be present AND match.
+    const xrw = request.headers.get("X-Requested-With");
+    if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
       return new Response("Forbidden", { status: 403 });
     }
 

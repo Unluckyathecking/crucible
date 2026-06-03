@@ -7,6 +7,13 @@ const MAX_KEY_GEN_ATTEMPTS = 3;
 export async function POST(request: Request): Promise<Response> {
   let customerId: string | undefined;
   try {
+    // Lightweight CSRF signal matching the DELETE route: custom headers require CORS
+    // preflight on cross-origin requests. Defense-in-depth alongside SameSite cookies.
+    const xrw = request.headers.get("X-Requested-With");
+    if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
+      return new Response("Forbidden", { status: 403 });
+    }
+
     const session = await auth();
     if (!session?.user?.email) {
       return new Response("Unauthorized", { status: 401 });

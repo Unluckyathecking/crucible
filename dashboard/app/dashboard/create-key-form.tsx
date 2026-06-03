@@ -38,7 +38,10 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
       try {
         const res = await fetch("/api/keys", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+          },
           body: JSON.stringify({ name }),
         });
 
