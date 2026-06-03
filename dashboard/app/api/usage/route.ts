@@ -33,7 +33,7 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    if (operationTrimmed !== undefined && operationTrimmed.length > 128) {
+    if (operationTrimmed !== undefined && [...operationTrimmed].length > 128) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
         headers: { "content-type": "application/json" },

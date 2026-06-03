@@ -36,13 +36,17 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  const { totalUnits, totalEvents } = opBreakdown.reduce(
-    (acc, r) => ({
-      totalUnits: Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units),
-      totalEvents: Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count),
-    }),
-    { totalUnits: 0, totalEvents: 0 },
-  );
+  // BigInt arithmetic avoids any floating-point precision loss when accumulating
+  // up to MAX_USAGE_OPERATIONS_LIMIT rows each capped at Number.MAX_SAFE_INTEGER.
+  const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+  let totalUnitsBig = 0n;
+  let totalEventsBig = 0n;
+  for (const row of opBreakdown) {
+    totalUnitsBig += BigInt(row.total_billable_units);
+    totalEventsBig += BigInt(row.event_count);
+  }
+  const totalUnits = Number(totalUnitsBig > MAX_SAFE ? MAX_SAFE : totalUnitsBig);
+  const totalEvents = Number(totalEventsBig > MAX_SAFE ? MAX_SAFE : totalEventsBig);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">

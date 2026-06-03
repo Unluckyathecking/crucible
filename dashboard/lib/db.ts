@@ -273,7 +273,7 @@ function validateUsageQueryParams(
     throw new Error("from must not be after to");
   }
   const effectiveOp = operation?.trim() || undefined;
-  if (effectiveOp !== undefined && effectiveOp.length > MAX_OPERATION_LENGTH) {
+  if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
     throw new Error("operation too long");
   }
   return { effectiveOp };
