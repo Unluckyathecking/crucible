@@ -32,14 +32,15 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
-// nullStr converts an empty ActorID string to nil so pgx inserts SQL NULL for
-// system events (which have no individual actor). The TS emitter uses `?? null`;
-// both produce SQL NULL for absent fields.
-func nullStr(s string) any {
-	if s == "" {
+// nullActorID converts the ActorID to nil only for system events, so pgx inserts
+// SQL NULL for background jobs that have no individual actor. Non-system events are
+// validated to have a non-empty ActorID before reaching SQL, but this function makes
+// the intent explicit rather than relying on that invariant implicitly.
+func nullActorID(actorType ActorType, id string) any {
+	if actorType == ActorSystem && id == "" {
 		return nil
 	}
-	return s
+	return id
 }
 
 // Emit writes one append-only row to audit_log.
@@ -68,7 +69,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	// fixed at compile time, never constructed from user input or runtime data.
 	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)`
 	_, err := db.Exec(ctx, insertSQL,
-		string(e.ActorType), nullStr(e.ActorID), e.Action,
+		string(e.ActorType), nullActorID(e.ActorType, e.ActorID), e.Action,
 		e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)

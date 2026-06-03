@@ -14,7 +14,9 @@ export interface AuditEvent {
   details?: Record<string, unknown>;
 }
 
-// emitAuditEvent writes one append-only row to audit_log.
+// emitAuditEvent writes one append-only row to audit_log. Errors from the INSERT
+// propagate to the caller; callers are responsible for fire-and-forget semantics
+// (void ... .catch()) so that an audit failure does not surface as a user-visible error.
 // Takes the pool as a parameter to mirror the Go Emit(ctx, db, event) signature.
 export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<void> {
   await pool.query(

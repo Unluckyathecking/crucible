@@ -137,7 +137,7 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
   );
 
   return (
-    <span className="inline-flex flex-col items-start gap-0.5">
+    <div className="inline-flex flex-col items-start gap-0.5">
       <form
         action={formAction}
         onSubmit={(e) => {
@@ -160,6 +160,6 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           {state.error}
         </p>
       )}
-    </span>
+    </div>
   );
 }
