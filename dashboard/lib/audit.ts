@@ -13,6 +13,19 @@ export interface AuditEvent {
   details?: Record<string, unknown>;
 }
 
+// Keys permitted in audit event details. Any other key is redacted before storage.
+// Keeping an explicit allowlist prevents secrets or PII from leaking into the audit
+// trail if a caller ever adds sensitive fields (e.g. fullKey, hash) to the details map.
+const ALLOWED_DETAIL_KEYS = new Set(["name", "prefix", "plan_id", "attempt"]);
+
+function sanitizeDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(details)) {
+    sanitized[k] = ALLOWED_DETAIL_KEYS.has(k) ? v : "[REDACTED]";
+  }
+  return sanitized;
+}
+
 // emitAuditEvent writes one append-only row to audit_log. Mirrors Go validation:
 // system events must have empty actorId (they always store NULL); non-system events
 // must have non-empty actorId. Validation failures and INSERT errors are both caught
@@ -33,11 +46,13 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
     console.error("audit emit skipped: actor_id required for non-system events", { action: event.action, actorType: event.actorType });
     return;
   }
-  let detailsJSON: string | null = null;
-  if (event.details != null) {
-    detailsJSON = JSON.stringify(event.details);
-  }
+  // JSON.stringify and sanitizeDetails are inside the try block so any serialization
+  // error (e.g. circular reference) is caught and logged rather than escaping as an
+  // unhandled rejection from this async function.
   try {
+    const detailsJSON = event.details != null
+      ? JSON.stringify(sanitizeDetails(event.details))
+      : null;
     await pool.query(
       `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,

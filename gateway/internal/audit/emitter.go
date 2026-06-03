@@ -38,6 +38,9 @@ type Event struct {
 
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
+// Validation order: invalid type → empty action → non-system empty ID → system non-empty ID.
+// The TypeScript mirror (dashboard/lib/audit.ts) applies the same rules in the same order but
+// logs-and-swallows instead of returning errors. Keep both sides in sync when modifying.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType != ActorCustomer && e.ActorType != ActorAdmin && e.ActorType != ActorSystem {
 		return fmt.Errorf("audit: invalid actor_type %q: must be customer|admin|system", e.ActorType)

@@ -52,12 +52,10 @@ export function getRedis(): Redis | null {
     // Remove ALL listeners (not just "error") so no connect/ready/close callbacks
     // fire after the client is dereferenced and replaced.
     oldRedis.removeAllListeners();
-    // quit() sends QUIT to Redis and waits for acknowledgement before closing;
-    // disconnect() forces the socket closed immediately. Both are fire-and-forget
-    // here (we already dereferenced the client above). Suppress shutdown errors.
-    oldRedis.quit().catch((err) => {
-      console.debug("redis quit during URL change:", err instanceof Error ? err.message : String(err));
-    });
+    // disconnect() forces the socket closed immediately without a QUIT round-trip;
+    // avoids the async quit() window where a second concurrent getRedis() call could
+    // briefly see two live connections. Already dereferenced above so errors are harmless.
+    oldRedis.disconnect();
   }
 
   if (!global._crucible_redis) {

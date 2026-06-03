@@ -12,7 +12,8 @@ export async function POST(request: Request): Promise<Response> {
     // preflight on cross-origin requests. Defense-in-depth alongside SameSite cookies.
     const xrw = request.headers.get("X-Requested-With");
     if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
-      console.warn("CSRF check failed for POST /api/keys", { header: xrw ? xrw.slice(0, 50) : "missing" });
+      const safeHeader = xrw ? xrw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20) : "missing";
+      console.warn("CSRF check failed for POST /api/keys", { header: safeHeader });
       return new Response("Forbidden", { status: 403 });
     }
 
@@ -48,6 +49,9 @@ export async function POST(request: Request): Promise<Response> {
     // Validate name
     if (name.length > 64) {
       return new Response("Name must be 64 characters or fewer", { status: 400 });
+    }
+    if (name.length > 0 && !/^[a-zA-Z0-9 _\-./]+$/.test(name)) {
+      return new Response("Name contains invalid characters", { status: 400 });
     }
 
     const customer = await ensureCustomer(session.user.email);

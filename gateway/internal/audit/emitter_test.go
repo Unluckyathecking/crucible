@@ -186,11 +186,11 @@ func TestEmit_AllActorTypes(t *testing.T) {
 	ctx := context.Background()
 
 	// Customer and admin events carry a non-empty ActorID.
-	for _, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin} {
+	for i, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin} {
 		t.Run(string(at), func(t *testing.T) {
 			err := audit.Emit(ctx, db, audit.Event{
 				ActorType:  at,
-				ActorID:    "actor-id",
+				ActorID:    fmt.Sprintf("actor-%s-%d", t.Name(), i),
 				Action:     "test.event",
 				TargetType: strPtr("resource"),
 				TargetID:   strPtr("resource-id"),
