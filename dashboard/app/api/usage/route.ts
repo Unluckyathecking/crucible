@@ -19,12 +19,19 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
-    const customer = await ensureCustomer(session.user.email);
+    const customer = await ensureCustomer(session.user!.email);
 
     const url = new URL(request.url);
     const fromParam = url.searchParams.get("from");
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
+    // Fast-path: reject before spread to avoid OOM on multi-megabyte inputs.
+    if (operationRaw !== null && operationRaw.length > MAX_OPERATION_LENGTH * 4) {
+      return new Response(JSON.stringify({ error: "operation parameter too long" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const operationTrimmed = operationRaw?.trim();
     if (operationTrimmed === "") {
       return new Response(JSON.stringify({ error: "operation parameter must not be empty" }), {

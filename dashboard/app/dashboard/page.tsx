@@ -28,10 +28,11 @@ export default async function DashboardPage() {
   }
   const customer = await ensureCustomer(session.user.email);
   const now = new Date();
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
   const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
   // Derive from relative to tomorrowMidnight so the window is exactly USAGE_WINDOW_DAYS.
   // [tomorrowMidnight - 30 days, tomorrowMidnight) = 30 calendar days including today.
-  const thirtyDaysAgo = new Date(tomorrowMidnight.getTime() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(tomorrowMidnight.getTime() - USAGE_WINDOW_DAYS * MS_PER_DAY);
   const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
@@ -39,12 +40,12 @@ export default async function DashboardPage() {
   ]);
   const totalUnits = opBreakdown.reduce((sum, r) => {
     const addend = r.total_billable_units;
-    if (sum > Number.MAX_SAFE_INTEGER - addend) return Number.MAX_SAFE_INTEGER;
+    if (sum >= Number.MAX_SAFE_INTEGER - addend) return Number.MAX_SAFE_INTEGER;
     return sum + addend;
   }, 0);
   const totalEvents = opBreakdown.reduce((sum, r) => {
     const addend = r.event_count;
-    if (sum > Number.MAX_SAFE_INTEGER - addend) return Number.MAX_SAFE_INTEGER;
+    if (sum >= Number.MAX_SAFE_INTEGER - addend) return Number.MAX_SAFE_INTEGER;
     return sum + addend;
   }, 0);
 

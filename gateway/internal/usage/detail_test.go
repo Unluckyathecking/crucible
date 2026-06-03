@@ -15,6 +15,16 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 	ctx := context.Background()
 	reqID := uuid.New().String()
 	var id int64
+	// Register cleanup before insert: closure captures id by reference, so the
+	// DELETE uses the value assigned by Scan. If Scan never runs (t.Fatalf exits),
+	// id remains 0 and the DELETE is a no-op.
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
+			t.Logf("cleanup failed for usage_event %d: %v", id, err)
+		}
+	})
 	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -23,13 +33,6 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 	if err != nil {
 		t.Fatalf("insert usage_event: %v", err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
-			t.Logf("cleanup failed for usage_event %d: %v", id, err)
-		}
-	})
 	return id
 }
 
@@ -344,10 +347,10 @@ func TestQueryByOperation_includesFromBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	from := time.Now().Add(-24 * time.Hour) // wide buffer absorbs any DB/test clock skew
+	from := time.Now().Add(-48 * time.Hour) // wide buffer absorbs any DB/test clock skew
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 
-	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(48*time.Hour), "")
+	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(96*time.Hour), "")
 	if err != nil {
 		t.Fatalf("QueryByOperation: %v", err)
 	}
