@@ -5,7 +5,7 @@ const { auth } = NextAuth(authConfig);
 
 export default auth((req) => {
   if (!req.auth) {
-    // nextUrl.pathname is already decoded and lowercased by Next.js.
+    // nextUrl.pathname is already percent-decoded by Next.js.
     // API routes get 401 JSON; page routes redirect to login.
     if (req.nextUrl.pathname.startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {

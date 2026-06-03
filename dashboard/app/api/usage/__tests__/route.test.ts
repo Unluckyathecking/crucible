@@ -23,4 +23,103 @@ describe("GET /api/usage route.ts — CSRF guard drift-detection", () => {
     expect(forbiddenIdx).toBeGreaterThan(csrfIdx);
     expect(forbiddenIdx).toBeLessThan(authIdx);
   });
+
+  it("500 error response does not include errorId in JSON body (CLAUDE.md: internal IDs never escape)", () => {
+    // errorId must only appear in the x-error-id header, never in the response body.
+    const errorBodyIdx = routeSrc.indexOf('"Internal server error"');
+    expect(errorBodyIdx).toBeGreaterThanOrEqual(0);
+    // Find the JSON.stringify call that builds the 500 body
+    const stringifyIdx = routeSrc.lastIndexOf("JSON.stringify", errorBodyIdx + 100);
+    const closingBrace = routeSrc.indexOf(")", stringifyIdx);
+    const bodyExpr = stringifyIdx >= 0 ? routeSrc.slice(stringifyIdx, closingBrace + 1) : "";
+    // The body expression must NOT reference errorId — only the header may.
+    expect(bodyExpr).not.toContain("errorId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drift-detection smoke tests for db.ts usage functions.
+// These read the actual source and verify key SQL invariants so that structural
+// regressions (e.g. removing customer_id filter or dropping the LIMIT cap) fail
+// a test rather than silently reaching production.
+// ---------------------------------------------------------------------------
+
+describe("listUsageEvents in db.ts — drift-detection smoke tests", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../lib/db.ts"), "utf8");
+  const fnStart = src.indexOf("export async function listUsageEvents");
+  const nextExport = src.indexOf("\nexport ", fnStart + 1);
+  const fnSection = fnStart >= 0 ? src.slice(fnStart, nextExport > 0 ? nextExport : undefined) : "";
+
+  it("listUsageEvents can be extracted from db.ts (extraction guard)", () => {
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnSection.length).toBeGreaterThan(0);
+  });
+
+  it("listUsageEvents SQL scopes by customer_id (cross-customer isolation guard)", () => {
+    expect(fnSection).toContain("customer_id");
+  });
+
+  it("listUsageEvents SQL uses half-open lower bound: created_at >= $N (from inclusive)", () => {
+    expect(fnSection).toContain("created_at >= $");
+  });
+
+  it("listUsageEvents SQL uses half-open upper bound: created_at < $N (to exclusive)", () => {
+    expect(fnSection).toContain("created_at < $");
+  });
+
+  it("listUsageEvents orders newest-first and is bounded (ORDER BY created_at DESC LIMIT)", () => {
+    expect(fnSection).toContain("ORDER BY created_at DESC");
+    expect(fnSection).toContain("LIMIT");
+  });
+});
+
+describe("usageByOperation in db.ts — drift-detection smoke tests", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../lib/db.ts"), "utf8");
+  const fnStart = src.indexOf("export async function usageByOperation");
+  const nextExport = src.indexOf("\nexport ", fnStart + 1);
+  const fnSection = fnStart >= 0 ? src.slice(fnStart, nextExport > 0 ? nextExport : undefined) : "";
+
+  it("usageByOperation can be extracted from db.ts (extraction guard)", () => {
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnSection.length).toBeGreaterThan(0);
+  });
+
+  it("usageByOperation SQL scopes by customer_id (cross-customer isolation guard)", () => {
+    expect(fnSection).toContain("customer_id");
+  });
+
+  it("usageByOperation SQL uses half-open interval (created_at >= and created_at <)", () => {
+    expect(fnSection).toContain("created_at >= $");
+    expect(fnSection).toContain("created_at < $");
+  });
+
+  it("usageByOperation SQL aggregates per operation (GROUP BY operation)", () => {
+    expect(fnSection).toContain("GROUP BY operation");
+  });
+
+  it("usageByOperation results are bounded (LIMIT)", () => {
+    expect(fnSection).toContain("LIMIT");
+  });
+});
+
+describe("sumUsage in db.ts — drift-detection smoke tests", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../lib/db.ts"), "utf8");
+  const fnStart = src.indexOf("export async function sumUsage");
+  const nextExport = src.indexOf("\nexport ", fnStart + 1);
+  const fnSection = fnStart >= 0 ? src.slice(fnStart, nextExport > 0 ? nextExport : undefined) : "";
+
+  it("sumUsage can be extracted from db.ts (extraction guard)", () => {
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnSection.length).toBeGreaterThan(0);
+  });
+
+  it("sumUsage SQL scopes by customer_id", () => {
+    expect(fnSection).toContain("customer_id");
+  });
+
+  it("sumUsage SQL uses INTERVAL '1 day' * $N syntax (correct PostgreSQL interval operand order)", () => {
+    // PostgreSQL requires INTERVAL '1 day' * $N — not $N * INTERVAL '1 day'.
+    // The reversed order has no interval * unknown overload and would cause a query error.
+    expect(fnSection).toContain("INTERVAL '1 day' * $");
+  });
 });
