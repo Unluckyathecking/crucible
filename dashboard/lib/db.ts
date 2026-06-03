@@ -88,7 +88,7 @@ export async function insertApiKey(
   const keyId = r.rows[0].id;
   // Best-effort: audit emit must not fail the key creation.
   // The key is already persisted; if audit fails the customer still gets their key.
-  emitAuditEvent(pool, {
+  void emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
     action: "api_key.created",
@@ -126,7 +126,7 @@ export async function revokeApiKey(
   if (r.rows.length > 0) {
     // Best-effort: same invariant as insertApiKey — revocation is already durable in Postgres;
     // an audit failure must not surface as a 500 to the customer.
-    emitAuditEvent(pool, {
+    void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
       action: "api_key.revoked",
@@ -162,7 +162,7 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE actor_id IS NOT DISTINCT FROM $1
+     WHERE actor_id = $1
         OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,

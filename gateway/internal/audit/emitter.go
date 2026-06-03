@@ -5,7 +5,6 @@ package audit
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,7 +34,7 @@ type Event struct {
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType != ActorCustomer && e.ActorType != ActorAdmin && e.ActorType != ActorSystem {
-		return errors.New("audit: actor_type must be customer|admin|system")
+		return fmt.Errorf("audit: invalid actor_type %q: must be customer|admin|system", e.ActorType)
 	}
 	var detailsJSON []byte
 	if e.Details != nil {
