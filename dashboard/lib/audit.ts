@@ -23,9 +23,7 @@ function sanitizeDetails(details: Record<string, unknown>): Record<string, unkno
   for (const [k, v] of Object.entries(details)) {
     if (!ALLOWED_DETAIL_KEYS.has(k)) {
       sanitized[k] = "[REDACTED]";
-    } else if (v === null) {
-      sanitized[k] = null;
-    } else if (typeof v === "object") {
+    } else if (v !== null && typeof v === "object") {
       // Disallow nested objects/arrays for allowed keys — prevents secrets from leaking
       // via a caller that passes {prefix: {fullKey: "secret"}} or similar nested shapes.
       sanitized[k] = "[REDACTED:complex]";

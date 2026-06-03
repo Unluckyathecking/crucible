@@ -233,6 +233,7 @@ export async function listAuditEvents(
         ORDER BY created_at DESC
         LIMIT $2)
      ) combined
+     WHERE created_at >= $3
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit, cutoff],
