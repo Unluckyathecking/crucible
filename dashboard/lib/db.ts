@@ -385,17 +385,11 @@ export async function listUsageEvents(
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
-  if (!UUID_RE.test(customerId)) throw new Error("invalid customerId");
-  // Clamp days: reject NaN/Infinity/non-positive; default to 30 if invalid.
-  // Upper-bounded by MAX_USAGE_RANGE_DAYS to prevent Postgres interval overflow on very large inputs.
-  const safeDays = Number.isFinite(days) && days > 0
-    ? Math.min(Math.round(days), MAX_USAGE_RANGE_DAYS)
-    : 30;
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
-    [customerId, safeDays],
+    [customerId, days],
   );
   return saturateBigIntString(r.rows[0].units);
 }

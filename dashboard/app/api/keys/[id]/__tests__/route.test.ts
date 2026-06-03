@@ -153,6 +153,25 @@ describe("DELETE /api/keys/[id] — idempotency", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Drift-detection: insertApiKey fire-and-forget audit emission.
+// ---------------------------------------------------------------------------
+describe("insertApiKey in db.ts — audit fire-and-forget drift-detection", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../../lib/db.ts"), "utf8");
+  const insertStart = src.indexOf("export async function insertApiKey");
+  const nextExport = src.indexOf("\nexport ", insertStart + 1);
+  const insertSection =
+    insertStart >= 0 ? src.slice(insertStart, nextExport > 0 ? nextExport : undefined) : "";
+
+  it("insertApiKey emitAuditEvent uses fire-and-forget .catch() pattern", () => {
+    expect(insertStart).toBeGreaterThanOrEqual(0);
+    const emitIdx = insertSection.indexOf("emitAuditEvent");
+    expect(emitIdx).toBeGreaterThanOrEqual(0);
+    const catchIdx = insertSection.indexOf(".catch(", emitIdx);
+    expect(catchIdx).toBeGreaterThan(emitIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Drift-detection smoke tests — NOT behavioral guarantees.
 // These read the actual db.ts source and assert that specific SQL patterns are
 // present so that the re-implementation above cannot silently diverge from the
