@@ -30,19 +30,18 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if operationTrimmed != "" && len(operationTrimmed) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
-	// Half-open interval [from, to): from is inclusive, to is exclusive.
-	// $4 is NULL to return all operations, or a specific name to filter to one.
-	// Using a nullable parameter keeps the query shape static — no fmt.Sprintf.
+	// Build the query dynamically so the placeholder index stays correct if parameters
+	// are ever reordered. $4 is only appended when operation is non-empty.
+	args := []any{customerID, from, to}
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
 	      FROM usage_events
-	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
-	        AND ($4::text IS NULL OR operation = $4)
-	      GROUP BY operation ORDER BY operation LIMIT 1000`
-	var opArg any
+	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`
 	if operationTrimmed != "" {
-		opArg = operationTrimmed
+		args = append(args, operationTrimmed)
+		q += fmt.Sprintf(` AND operation = $%d`, len(args))
 	}
-	rows, err := db.Query(ctx, q, customerID, from, to, opArg)
+	q += ` GROUP BY operation ORDER BY operation LIMIT 1000`
+	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
