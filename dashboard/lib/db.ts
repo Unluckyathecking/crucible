@@ -337,7 +337,7 @@ export async function listUsageEvents(
     throw new Error("operation too long");
   }
   const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, billable_units::text AS billable_units, created_at
+  let q = `SELECT operation, billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (effectiveOp) {

@@ -88,7 +88,7 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
     if (to.getTime() > now.getTime() + 24 * 60 * 60 * 1000) {
-      return new Response(JSON.stringify({ error: "'to' date cannot be more than 1 day in the future" }), {
+      return new Response(JSON.stringify({ error: "'to' date cannot be more than 24 hours in the future" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });

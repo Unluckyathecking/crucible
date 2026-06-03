@@ -37,7 +37,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	      FROM usage_events
 	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
 	        AND ($4::text IS NULL OR operation = $4)
-	      GROUP BY operation ORDER BY operation`
+	      GROUP BY operation ORDER BY operation LIMIT 1000`
 	var opArg any
 	if operationTrimmed != "" {
 		opArg = operationTrimmed

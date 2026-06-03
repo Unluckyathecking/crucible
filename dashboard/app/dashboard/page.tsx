@@ -29,6 +29,9 @@ export default async function DashboardPage() {
   const customer = await ensureCustomer(session.user.email);
   const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
+  // Known limitation: Promise.race does not cancel the losing Promise.all — queries continue
+  // consuming pg pool connections until they complete. pg does not support AbortController,
+  // so this is the best available guard against slow DB responses causing page hangs.
   const [keys, opBreakdown, auditEvents] = await Promise.race([
     Promise.all([
       listKeys(customer.id),
