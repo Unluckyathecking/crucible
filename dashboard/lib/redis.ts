@@ -27,6 +27,11 @@ export function getRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) return null;
 
+  if (!url.startsWith("redis://") && !url.startsWith("rediss://")) {
+    console.error("REDIS_URL must start with redis:// or rediss://; skipping Redis client");
+    return null;
+  }
+
   if (!global._crucible_redis) {
     const redis = new Redis(url, {
       maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,

@@ -32,15 +32,22 @@ export async function DELETE(
     customerId = customer.id;
 
     const result = await revokeApiKey(keyId, customer.id);
-    if (result === "not_found") {
-      return new Response("Not found", { status: 404 });
+    switch (result) {
+      case "not_found":
+        return new Response("Not found", { status: 404 });
+      case "forbidden":
+        return new Response("Forbidden", { status: 403 });
+      case "revoked":
+      case "already_revoked":
+        // Both are success — idempotent.
+        return new Response(null, { status: 200 });
+      default: {
+        // Compile-time exhaustiveness: TypeScript flags this if a new RevokeResult
+        // variant is added without updating this switch.
+        const _exhaustive: never = result;
+        throw new Error(`Unexpected revokeApiKey result: ${_exhaustive}`);
+      }
     }
-    if (result === "forbidden") {
-      return new Response("Forbidden", { status: 403 });
-    }
-
-    // Both "revoked" and "already_revoked" are success — idempotent.
-    return new Response(null, { status: 200 });
   } catch (err) {
     const errorId = crypto.randomUUID();
     console.error("DELETE /api/keys/[id] failed:", {

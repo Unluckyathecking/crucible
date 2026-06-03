@@ -159,13 +159,16 @@ export async function revokeApiKey(
   const { result: rawResult, prefix } = r.rows[0];
 
   // Validate at runtime so a SQL change that introduces a new CASE branch
-  // is caught immediately instead of silently falling through the cast.
+  // is caught immediately rather than silently falling through to the caller.
   const VALID_RESULTS = ["revoked", "already_revoked", "not_found", "forbidden"] as const;
   type RevokeResult = (typeof VALID_RESULTS)[number];
-  if (!VALID_RESULTS.includes(rawResult as RevokeResult)) {
+  // Type guard lets TypeScript narrow rawResult without a cast.
+  const isRevokeResult = (s: string): s is RevokeResult =>
+    (VALID_RESULTS as readonly string[]).includes(s);
+  if (!isRevokeResult(rawResult)) {
     throw new Error(`Unexpected revokeApiKey result: ${rawResult}`);
   }
-  const result = rawResult as RevokeResult;
+  const result = rawResult; // narrowed to RevokeResult by the type guard above
 
   if (result === "revoked" && prefix) {
     // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
@@ -211,8 +214,9 @@ export async function listAuditEvents(
 ): Promise<AuditEventRow[]> {
   // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
+  const MAX_AUDIT_LIMIT = 100;
   const safeLimit = Number.isFinite(limit) ? limit : 20;
-  const clampedLimit = Math.max(1, Math.min(safeLimit, 100));
+  const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
   // customerId is always a non-null UUID so the two are semantically equivalent here,
   // but = allows an index equality seek while IS NOT DISTINCT FROM uses a less selective path.
