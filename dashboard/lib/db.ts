@@ -306,6 +306,7 @@ export async function usageByOperation(
     };
   };
   if (effectiveOp) {
+    // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
       `SELECT operation,
               COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
@@ -317,6 +318,7 @@ export async function usageByOperation(
     );
     return r.rows.map(mapRow);
   }
+  // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
   const r = await pool.query<Row>(
     `SELECT operation,
             COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
@@ -362,6 +364,7 @@ export async function listUsageEvents(
     };
   };
   if (effectiveOp) {
+    // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
       `SELECT operation, billable_units::text AS billable_units, created_at
        FROM usage_events
@@ -371,6 +374,7 @@ export async function listUsageEvents(
     );
     return r.rows.map(mapRow);
   }
+  // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
   const r = await pool.query<Row>(
     `SELECT operation, billable_units::text AS billable_units, created_at
      FROM usage_events
