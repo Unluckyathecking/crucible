@@ -220,15 +220,15 @@ export async function listAuditEvents(
      FROM (
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
-        WHERE actor_id = $1::text
+        WHERE actor_id = $1
           AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
        UNION ALL
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
-        WHERE target_id = $1::text
-          AND actor_id IS DISTINCT FROM $1::text
+        WHERE target_id = $1
+          AND actor_id IS DISTINCT FROM $1
           AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
