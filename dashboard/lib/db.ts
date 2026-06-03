@@ -131,6 +131,9 @@ export async function revokeApiKey(
   //
   // CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
   // ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
+  // MAX() over 0 rows = NULL; over 1 row = the value. Using aggregates instead of
+  // scalar subqueries avoids repeated CTE scans and produces a guaranteed 1-row result
+  // via CROSS JOIN of two aggregate subqueries (each always produces exactly 1 row).
   const r = await pool.query<{ result: string; prefix: string | null }>(
     `WITH updated AS (
        UPDATE api_keys SET revoked_at = NOW()
@@ -142,12 +145,14 @@ export async function revokeApiKey(
      )
      SELECT
        CASE
-         WHEN (SELECT prefix FROM updated) IS NOT NULL THEN 'revoked'
-         WHEN NOT EXISTS (SELECT 1 FROM found) THEN 'not_found'
-         WHEN (SELECT customer_id FROM found) != $2 THEN 'forbidden'
+         WHEN u.prefix IS NOT NULL THEN 'revoked'
+         WHEN f.customer_id IS NULL THEN 'not_found'
+         WHEN f.customer_id != $2 THEN 'forbidden'
          ELSE 'already_revoked'
        END AS result,
-       (SELECT prefix FROM updated) AS prefix`,
+       u.prefix
+     FROM (SELECT MAX(prefix) AS prefix FROM updated) u
+     CROSS JOIN (SELECT MAX(customer_id) AS customer_id FROM found) f`,
     [keyId, customerId],
   );
 
@@ -195,15 +200,11 @@ export async function revokeApiKey(
 // events the customer performed (actor_id = customerId) AND events that targeted
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 //
-// UNION gives the planner two separate index scans (idx_audit_actor_id for the
-// actor branch, idx_audit_target_id for the target branch) rather than a single
-// BitmapOr scan over both indexes. The second branch uses IS DISTINCT FROM so that
-// system events (actor_id IS NULL) targeting this customer are included without
-// appearing in both branches. UNION (not UNION ALL) deduplicates by row identity;
-// duplicates are impossible in practice (the two branches filter on different columns
-// and the same event cannot have actor_id = customerId AND target_id = customerId
-// simultaneously under current schema conventions), but UNION is a correctness guard
-// against future event types that might set both fields to the customer UUID.
+// UNION ALL gives the planner two separate index scans (idx_audit_actor_id for the
+// actor branch, idx_audit_target_id for the target branch). Duplicates between the two
+// branches are impossible: the WHERE conditions are mutually exclusive — a row satisfying
+// `actor_id = $1` cannot satisfy `actor_id IS DISTINCT FROM $1` simultaneously. UNION ALL
+// avoids the dedup sort/hash overhead of UNION without any correctness risk.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -214,19 +215,14 @@ export async function listAuditEvents(
   const clampedLimit = Math.max(1, Math.min(safeLimit, 100));
   // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
   // customerId is always a non-null UUID so the two are semantically equivalent here,
-  // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
+  // but = allows an index equality seek while IS NOT DISTINCT FROM uses a less selective path.
   // A single outer LIMIT is correct: any event in the top N overall must be in the top N
   // of its branch, so per-branch LIMITs would be redundant and could confuse the planner.
-  // UNION (not UNION ALL) deduplicates by row identity, so the planner merges the two
-  // branch result sets before sorting. The second branch's IS DISTINCT FROM guard makes
-  // duplicates impossible in practice today, but UNION adds a correctness guarantee if a
-  // future event type sets both actor_id and target_id to the customer UUID.
-  // The dedup overhead is negligible at the ≤100-row scale this function operates at.
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
      WHERE actor_id = $1
-     UNION
+     UNION ALL
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
      WHERE target_id = $1

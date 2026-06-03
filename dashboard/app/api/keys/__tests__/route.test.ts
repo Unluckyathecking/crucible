@@ -141,6 +141,7 @@ describe("retry logic on unique-constraint violation", () => {
     }
 
     expect(inserted).toBe(true);
+    expect(full).toBe("cru_live_AAA");
     expect(insertMock).toHaveBeenCalledTimes(1);
   });
 
