@@ -323,7 +323,7 @@ export async function usageByOperation(
 
 export interface UsageEventRow {
   operation: string;
-  billable_units: number;
+  billable_units: string;
   created_at: Date;
 }
 
@@ -351,7 +351,7 @@ export async function listUsageEvents(
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,
-    billable_units: Math.min(Number.MAX_SAFE_INTEGER, Number(row.billable_units)),
+    billable_units: row.billable_units,
     created_at: row.created_at,
   }));
 }

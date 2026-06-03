@@ -12,7 +12,7 @@ import (
 func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) int64 {
 	t.Helper()
 	ctx := context.Background()
-	reqID := "req-" + uuid.New().String()[:8]
+	reqID := "req-" + uuid.New().String()
 	var id int64
 	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
@@ -183,6 +183,18 @@ func TestQueryByOperation_fromAfterTo(t *testing.T) {
 	_, err := QueryByOperation(context.Background(), pool, custID, now.Add(time.Minute), now, "")
 	if err == nil {
 		t.Error("expected error when from > to, got nil")
+	}
+}
+
+func TestQueryByOperation_rangeExceedsMax(t *testing.T) {
+	pool := newTestPool(t)
+	custID, _ := setupTestCustomer(t, pool)
+
+	to := time.Now()
+	from := to.Add(-91 * 24 * time.Hour)
+	_, err := QueryByOperation(context.Background(), pool, custID, from, to, "")
+	if err == nil {
+		t.Error("expected error for range > 90 days, got nil")
 	}
 }
 

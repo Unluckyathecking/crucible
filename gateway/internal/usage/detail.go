@@ -14,6 +14,9 @@ import (
 // maxUsageOperationsLimit caps distinct operation rows per query, matching dashboard/lib/db.ts MAX_USAGE_OPERATIONS_LIMIT.
 const maxUsageOperationsLimit = 1000
 
+// maxUsageRangeDays mirrors dashboard/lib/db.ts MAX_USAGE_RANGE_DAYS: callers must not request more than 90 days.
+const maxUsageRangeDays = 90
+
 // OperationAggregate holds per-operation totals from usage_events.
 type OperationAggregate struct {
 	Operation          string
@@ -29,6 +32,9 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	}
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
+	}
+	if to.Sub(from) > maxUsageRangeDays*24*time.Hour {
+		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}
 	operationTrimmed := strings.TrimSpace(operation)
 	if operationTrimmed != "" && utf8.RuneCountInString(operationTrimmed) > 128 {
