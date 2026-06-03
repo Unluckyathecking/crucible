@@ -20,6 +20,7 @@ const AUDIT_LOOKBACK_DAYS = 90;
 const MAX_USAGE_EVENTS_LIMIT = 1000;
 // Separate cap for per-operation aggregate rows (distinct operations per customer window).
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
+const MAX_OPERATION_LENGTH = 128;
 
 export interface Customer {
   id: string;
@@ -255,6 +256,29 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   return Number(r.rows[0].units);
 }
 
+function validateUsageQueryParams(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): { effectiveOp: string | undefined } {
+  if (!UUID_RE.test(customerId)) {
+    throw new Error("invalid customerId");
+  }
+  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
+    throw new Error("invalid date range");
+  }
+  // Strict greater-than: from === to is a valid empty half-open interval [t, t) returning zero rows.
+  if (from.getTime() > to.getTime()) {
+    throw new Error("from must not be after to");
+  }
+  const effectiveOp = operation?.trim() || undefined;
+  if (effectiveOp !== undefined && effectiveOp.length > MAX_OPERATION_LENGTH) {
+    throw new Error("operation too long");
+  }
+  return { effectiveOp };
+}
+
 export interface UsageOperationRow {
   operation: string;
   total_billable_units: number;
@@ -271,19 +295,7 @@ export async function usageByOperation(
   to: Date,
   operation?: string,
 ): Promise<UsageOperationRow[]> {
-  if (!UUID_RE.test(customerId)) {
-    throw new Error("invalid customerId");
-  }
-  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
-    throw new Error("invalid date range");
-  }
-  if (from.getTime() > to.getTime()) {
-    throw new Error("from must not be after to");
-  }
-  const effectiveOp = operation?.trim() || undefined;
-  if (effectiveOp !== undefined && effectiveOp.length > 128) {
-    throw new Error("operation too long");
-  }
+  const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation,
                   COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
@@ -320,19 +332,7 @@ export async function listUsageEvents(
   to: Date,
   operation?: string,
 ): Promise<UsageEventRow[]> {
-  if (!UUID_RE.test(customerId)) {
-    throw new Error("invalid customerId");
-  }
-  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
-    throw new Error("invalid date range");
-  }
-  if (from.getTime() > to.getTime()) {
-    throw new Error("from must not be after to");
-  }
-  const effectiveOp = operation?.trim() || undefined;
-  if (effectiveOp !== undefined && effectiveOp.length > 128) {
-    throw new Error("operation too long");
-  }
+  const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation, billable_units, created_at
            FROM usage_events

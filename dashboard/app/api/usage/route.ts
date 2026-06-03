@@ -27,6 +27,12 @@ export async function GET(request: Request): Promise<Response> {
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
     const operationTrimmed = operationRaw?.trim();
+    if (operationTrimmed !== undefined && operationTrimmed.length === 0) {
+      return new Response(JSON.stringify({ error: "operation parameter must not be empty" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (operationTrimmed !== undefined && operationTrimmed.length > 128) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,

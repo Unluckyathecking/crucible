@@ -110,7 +110,7 @@ export default async function DashboardPage() {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr className="text-zinc-600 font-medium">
+                  <tr key="total" className="text-zinc-600 font-medium">
                     <td className="pt-2 pr-4">Total</td>
                     <td className="pt-2 pr-4 text-right tabular-nums">{totalUnits.toLocaleString()}</td>
                     <td className="pt-2 text-right tabular-nums text-zinc-500">
