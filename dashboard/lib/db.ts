@@ -214,6 +214,15 @@ export async function revokeApiKey(
           console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
         });
       }
+      // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+      void emitAuditEvent(pool, {
+        actorType: "customer",
+        actorId: customerId,
+        action: "api_key.revoked",
+        targetType: "api_key",
+        targetId: keyId,
+        details: { prefix: found_prefix, idempotent: true },
+      });
     }
     return "already_revoked";
   }
@@ -236,7 +245,7 @@ export async function listAuditEvents(
 ): Promise<AuditEventRow[]> {
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!customerId || !UUID_RE.test(customerId)) {
-    throw new Error("customerId must be a valid UUID");
+    return [];
   }
   // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.

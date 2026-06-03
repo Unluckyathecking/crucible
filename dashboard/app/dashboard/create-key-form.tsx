@@ -129,7 +129,8 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
         }
         router.refresh();
         return { error: null };
-      } catch {
+      } catch (err) {
+        console.error("RevokeKeyButton fetch failed:", err instanceof Error ? err.message : String(err));
         return { error: "Network error. Try again." };
       }
     },
