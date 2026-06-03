@@ -87,7 +87,7 @@ type Metrics struct {
 	RequestsTotal      *prometheus.CounterVec
 	RequestDuration    *prometheus.HistogramVec
 	WorkerCallDuration prometheus.Histogram
-	WorkerErrors       *prometheus.CounterVec
+	WorkerErrorsTotal  *prometheus.CounterVec
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
@@ -114,7 +114,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Help:    "Latency of gateway → worker HTTP calls.",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		}),
-		WorkerErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+		WorkerErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "crucible_worker_errors_total",
 			Help: "Number of worker error responses, by structured error code.",
 		}, []string{"code"}),
@@ -143,7 +143,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RequestsTotal,
 		m.RequestDuration,
 		m.WorkerCallDuration,
-		m.WorkerErrors,
+		m.WorkerErrorsTotal,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,
