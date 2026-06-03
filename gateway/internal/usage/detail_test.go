@@ -319,7 +319,9 @@ func TestQueryByOperation_limitCap(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	for i := 0; i <= maxUsageOperationsLimit; i++ {
+	// Insert in reverse order so the DB receives them out of alphabetical sequence,
+	// ensuring the ORDER BY in QueryByOperation actually sorts the result.
+	for i := maxUsageOperationsLimit; i >= 0; i-- {
 		insertUsageEvent(t, pool, custID, keyID, fmt.Sprintf("op-%04d", i), 1)
 	}
 

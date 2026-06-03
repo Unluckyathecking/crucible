@@ -29,6 +29,8 @@ type OperationAggregate struct {
 
 // QueryByOperation returns per-operation aggregates from usage_events for customerID
 // within [from, to) — from is inclusive, to is exclusive. Pass a non-empty operation to filter to one operation only.
+// from and to are normalized to UTC on entry so that Sub() measures wall-clock seconds rather than
+// local-timezone offsets; callers should pass UTC midnight values to get exact calendar-day boundaries.
 func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, from, to time.Time, operation string) ([]OperationAggregate, error) {
 	// Normalize to UTC so Sub() measures wall-clock seconds, not local-timezone offsets.
 	from = from.UTC()
