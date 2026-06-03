@@ -36,8 +36,10 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  const totalUnits = opBreakdown.reduce((s, r) => s + r.total_billable_units, 0);
-  const totalEvents = opBreakdown.reduce((s, r) => s + r.event_count, 0);
+  const { totalUnits, totalEvents } = opBreakdown.reduce(
+    (acc, r) => ({ totalUnits: acc.totalUnits + r.total_billable_units, totalEvents: acc.totalEvents + r.event_count }),
+    { totalUnits: 0, totalEvents: 0 },
+  );
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">

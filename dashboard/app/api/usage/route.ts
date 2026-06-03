@@ -86,7 +86,7 @@ export async function GET(request: Request): Promise<Response> {
       to = parsed;
     }
 
-    if (from > to) {
+    if (from.getTime() > to.getTime()) {
       return new Response(JSON.stringify({ error: "'from' must not be after 'to'" }), {
         status: 400,
         headers: { "content-type": "application/json" },

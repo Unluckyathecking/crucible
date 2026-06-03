@@ -250,12 +250,10 @@ func TestQueryByOperation_zeroTime(t *testing.T) {
 	custID, _ := setupTestCustomer(t, pool)
 	now := time.Now()
 
-	_, err := QueryByOperation(context.Background(), pool, custID, time.Time{}, now, "")
-	if err == nil {
+	if _, err := QueryByOperation(context.Background(), pool, custID, time.Time{}, now, ""); err == nil {
 		t.Error("expected error for zero from, got nil")
 	}
-	_, err = QueryByOperation(context.Background(), pool, custID, now, time.Time{}, "")
-	if err == nil {
+	if _, err := QueryByOperation(context.Background(), pool, custID, now, time.Time{}, ""); err == nil {
 		t.Error("expected error for zero to, got nil")
 	}
 }
