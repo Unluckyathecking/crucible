@@ -93,10 +93,10 @@ export default async function DashboardPage() {
               {auditEvents.map((e) => {
                 const label = getAuditEventLabel(e);
                 return (
-                  <li key={e.id} className="flex items-center justify-between text-sm gap-2">
-                    <span className="font-mono text-zinc-800">{e.action}</span>
-                    {label && <span className="text-zinc-500 text-xs">{label}</span>}
-                    <span className="text-zinc-400 text-xs ml-auto whitespace-nowrap">
+                  <li key={e.id} className="flex items-center justify-between text-sm gap-2 min-w-0">
+                    <span className="font-mono text-zinc-800 truncate">{e.action}</span>
+                    {label && <span className="text-zinc-500 text-xs truncate">{label}</span>}
+                    <span className="text-zinc-400 text-xs ml-auto whitespace-nowrap shrink-0">
                       {new Date(e.created_at).toLocaleString()}
                     </span>
                   </li>

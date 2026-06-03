@@ -46,7 +46,7 @@ export async function POST(request: Request): Promise<Response> {
     // 15 random base32 chars of entropy (keyspace 32^15 ≈ 3.5×10^22; birthday-paradox
     // collision expected at ~1×10^11 active keys — far beyond any realistic deployment).
     const MAX_KEY_GEN_ATTEMPTS = 3;
-    let full = "";
+    let full: string | undefined;
     let inserted = false;
     for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {
       const generated = generateKey(productPrefix);
@@ -60,7 +60,7 @@ export async function POST(request: Request): Promise<Response> {
         if (code !== "23505") throw e; // 23505 = Postgres unique_violation
       }
     }
-    if (!inserted) {
+    if (!inserted || !full) {
       return new Response(`Failed to generate a unique key after ${MAX_KEY_GEN_ATTEMPTS} attempts`, { status: 500 });
     }
 

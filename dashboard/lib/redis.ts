@@ -54,7 +54,7 @@ export function getRedis(): Redis | null {
       enableOfflineQueue: false,
     });
     redis.on("error", (err) => {
-      console.error("Redis client error:", err.message);
+      console.error("Redis client error:", err);
     });
     global._crucible_redis = redis;
     global._crucible_redis_url = url;
