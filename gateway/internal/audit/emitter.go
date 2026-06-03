@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -67,6 +68,11 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 		s := e.ActorID
 		actorIDParam = &s
 	}
+	// Cap the INSERT at 2 s so a slow or unresponsive Postgres cannot stall the caller.
+	// Callers using fire-and-forget (goroutine + context.Background) won't be affected,
+	// but request-path callers are protected from audit logging blocking the response.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.
 	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)`

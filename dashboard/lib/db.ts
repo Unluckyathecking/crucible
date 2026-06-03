@@ -141,7 +141,10 @@ export async function revokeApiKey(
         console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
       });
     }
-    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+    // Audit is intentionally fire-and-forget and outside the UPDATE: audit failures must
+    // never roll back a completed Postgres revocation. Including the audit INSERT in the
+    // same transaction would make audit errors silently undo the revocation — the opposite
+    // of what we want. Best-effort: errors caught and logged inside emitAuditEvent.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
@@ -173,8 +176,9 @@ export async function revokeApiKey(
   // Row exists, owned by caller, but revoked_at IS NOT NULL — idempotent re-revocation.
   // Truthiness excludes both null and empty-string prefixes (schema guarantees non-empty, but belt-and-suspenders).
   if (foundPrefix) {
-    // The first revocation may have succeeded in Postgres but transiently failed Redis.
-    // Attempt DEL again so a stale cache entry cannot extend the key's validity.
+    // Best-effort retry DEL: the original revocation may have committed to Postgres but
+    // failed the Redis DEL transiently (network blip, Redis restart). Re-issuing DEL here
+    // is safe because Redis DEL is idempotent — deleting an already-absent key returns 0.
     const alreadyRedis = getRedis();
     if (alreadyRedis) {
       void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${foundPrefix}`).catch((err) => {
@@ -211,17 +215,13 @@ export async function listAuditEvents(
     `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
       FROM audit_log
       WHERE actor_id = $1
-        AND created_at >= NOW() - INTERVAL '90 days'
-      ORDER BY created_at DESC
-      LIMIT $2)
+        AND created_at >= NOW() - INTERVAL '90 days')
      UNION ALL
      (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
       FROM audit_log
       WHERE target_id = $1
         AND actor_id IS DISTINCT FROM $1
-        AND created_at >= NOW() - INTERVAL '90 days'
-      ORDER BY created_at DESC
-      LIMIT $2)
+        AND created_at >= NOW() - INTERVAL '90 days')
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],

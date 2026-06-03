@@ -55,7 +55,7 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           await router.refresh();
         } catch (refreshErr) {
           console.error("Failed to refresh dashboard after key creation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
-          return { error: null, submitted: true, key: data.key, stale: true };
+          return { error: "Key created but dashboard refresh failed — reload the page.", submitted: true, key: data.key, stale: true };
         }
         return { error: null, submitted: true, key: data.key };
       } catch {
