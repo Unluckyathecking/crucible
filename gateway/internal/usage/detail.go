@@ -26,8 +26,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
-	operation = strings.TrimSpace(operation)
-	if operation != "" && len(operation) > 128 {
+	operationTrimmed := strings.TrimSpace(operation)
+	if operationTrimmed != "" && len(operationTrimmed) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
 	// Half-open interval [from, to): from is inclusive, to is exclusive.
@@ -39,8 +39,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	        AND ($4::text IS NULL OR operation = $4)
 	      GROUP BY operation ORDER BY operation`
 	var opArg any
-	if operation != "" {
-		opArg = operation
+	if operationTrimmed != "" {
+		opArg = operationTrimmed
 	}
 	rows, err := db.Query(ctx, q, customerID, from, to, opArg)
 	if err != nil {

@@ -9,11 +9,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) uuid.UUID {
+func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) int64 {
 	t.Helper()
 	ctx := context.Background()
 	reqID := "req-" + uuid.New().String()[:8]
-	var id uuid.UUID
+	var id int64
 	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -24,7 +24,7 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 	}
 	t.Cleanup(func() {
 		if _, err := pool.Exec(context.Background(), `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
-			t.Logf("cleanup failed for usage_event %s: %v", id, err)
+			t.Logf("cleanup failed for usage_event %d: %v", id, err)
 		}
 	})
 	return id
@@ -264,7 +264,7 @@ func TestQueryByOperation_includesFromBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	from := time.Now()
+	from := time.Now().Add(-time.Second) // buffer for clock skew between client and DB
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(time.Hour), "")

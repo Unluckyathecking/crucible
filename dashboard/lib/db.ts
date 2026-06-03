@@ -275,7 +275,8 @@ export async function usageByOperation(
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
     return [];
   }
-  if (operation !== undefined && operation.length > 128) {
+  const effectiveOp = operation?.trim() || undefined;
+  if (effectiveOp !== undefined && effectiveOp.length > 128) {
     return [];
   }
   const args: unknown[] = [customerId, from, to];
@@ -284,8 +285,8 @@ export async function usageByOperation(
                   COUNT(*)::text AS event_count
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
-  if (operation) {
-    args.push(operation);
+  if (effectiveOp) {
+    args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
   }
   q += ` GROUP BY operation ORDER BY operation`;
@@ -319,15 +320,16 @@ export async function listUsageEvents(
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
     return [];
   }
-  if (operation !== undefined && operation.length > 128) {
+  const effectiveOp = operation?.trim() || undefined;
+  if (effectiveOp !== undefined && effectiveOp.length > 128) {
     return [];
   }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation, billable_units::text AS billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
-  if (operation) {
-    args.push(operation);
+  if (effectiveOp) {
+    args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
   }
   q += ` ORDER BY created_at DESC LIMIT $${args.length + 1}`;
