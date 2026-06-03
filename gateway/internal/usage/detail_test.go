@@ -102,9 +102,12 @@ func TestQueryByOperation_unknownCustomer(t *testing.T) {
 	from := time.Now().Add(-time.Minute)
 	to := time.Now().Add(time.Minute)
 
-	result, err := QueryByOperation(context.Background(), pool, uuid.UUID{}, from, to, "")
+	// Use a fixed non-existent UUID rather than zero so the assertion is not
+	// coupled to whether the DB happens to contain a zero-UUID customer.
+	nonExistent := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	result, err := QueryByOperation(context.Background(), pool, nonExistent, from, to, "")
 	if err != nil {
-		t.Fatalf("QueryByOperation with zero UUID: %v", err)
+		t.Fatalf("QueryByOperation with non-existent UUID: %v", err)
 	}
 	if len(result) != 0 {
 		t.Errorf("expected empty result for unknown customer, got %d rows", len(result))
@@ -117,10 +120,14 @@ func TestQueryByOperation_fromEqualTo(t *testing.T) {
 
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 5)
 
+	// from == to is a valid half-open interval [t, t) that returns zero rows; not an error.
 	now := time.Now()
-	_, err := QueryByOperation(context.Background(), pool, custID, now, now, "")
-	if err == nil {
-		t.Error("expected error when from == to, got nil")
+	result, err := QueryByOperation(context.Background(), pool, custID, now, now, "")
+	if err != nil {
+		t.Fatalf("QueryByOperation from==to: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 rows for empty interval, got %d", len(result))
 	}
 }
 

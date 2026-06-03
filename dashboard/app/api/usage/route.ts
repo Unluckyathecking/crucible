@@ -2,6 +2,7 @@
 // matching acceptance criterion: "per-row fields {operation, billable_units, created_at}".
 // Per-operation aggregates (grouped by operation) are served by usageByOperation()
 // used directly in the server-rendered dashboard page, not via this endpoint.
+import { randomUUID } from "crypto";
 import { auth } from "@/auth";
 import { ensureCustomer, listUsageEvents } from "@/lib/db";
 
@@ -54,8 +55,8 @@ export async function GET(request: Request): Promise<Response> {
       to = parsed;
     }
 
-    if (from >= to) {
-      return new Response(JSON.stringify({ error: "'from' must be before 'to'" }), {
+    if (from > to) {
+      return new Response(JSON.stringify({ error: "'from' must not be after 'to'" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
@@ -73,7 +74,7 @@ export async function GET(request: Request): Promise<Response> {
       headers: { "content-type": "application/json", "cache-control": "no-store" },
     });
   } catch (err) {
-    const errorId = crypto.randomUUID();
+    const errorId = randomUUID();
     console.error("GET /api/usage failed:", {
       errorId,
       error: err instanceof Error ? err.message : String(err),

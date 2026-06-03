@@ -22,8 +22,11 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.IsZero() || to.IsZero() {
 		return nil, fmt.Errorf("from and to must be non-zero")
 	}
-	if !from.Before(to) {
-		return nil, fmt.Errorf("from must be before to")
+	if from.After(to) {
+		return nil, fmt.Errorf("from must not be after to")
+	}
+	if len(operation) > 128 {
+		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
 	// Half-open interval [from, to): from is inclusive, to is exclusive.
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
@@ -32,7 +35,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	args := []any{customerID, from, to}
 	if operation != "" {
 		args = append(args, operation)
-		q += ` AND operation = $4`
+		q += fmt.Sprintf(` AND operation = $%d`, len(args))
 	}
 	q += ` GROUP BY operation ORDER BY operation`
 
