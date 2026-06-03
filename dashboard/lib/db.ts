@@ -275,9 +275,11 @@ function validateUsageQueryParams(
   return { effectiveOp };
 }
 
-function saturateBigIntString(value: string): number {
+function saturateBigIntString(value: string | bigint): number {
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  const n = BigInt(value);
+  // pg returns SQL bigint as a JS string by default; accept bigint too in case
+  // a custom type parser overrides the default OID-20 behaviour.
+  const n = typeof value === "bigint" ? value : BigInt(value);
   return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
 }
 
@@ -382,7 +384,7 @@ export async function listUsageEvents(
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
   const r = await pool.query<{ units: string }>(
-    `SELECT COALESCE(SUM(billable_units), 0)::bigint AS units
+    `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
