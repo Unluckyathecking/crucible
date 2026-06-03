@@ -31,7 +31,10 @@ type Event struct {
 }
 
 // nullStr converts an empty string to nil so pgx inserts SQL NULL for optional
-// fields, matching the TS emitter's `?? null` semantics for unset fields.
+// fields (TargetType, TargetID). The TS emitter uses `?? null` which maps
+// undefined → null but leaves "" as ""; Go and TS therefore agree on the
+// common case (field not set → nil/undefined), but diverge for the rarely-used
+// empty-string case. Callers must not pass "" for a field they intend to store.
 func nullStr(s string) any {
 	if s == "" {
 		return nil

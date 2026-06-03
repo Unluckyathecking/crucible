@@ -57,6 +57,31 @@ func TestEmit_RejectsInvalidActorType(t *testing.T) {
 	}
 }
 
+func TestEmit_RejectsEmptyAction(t *testing.T) {
+	// nil pool is safe: action validation fires before any DB call.
+	err := audit.Emit(context.Background(), nil, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   "cust-1",
+		Action:    "",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty action, got nil")
+	}
+}
+
+func TestEmit_MalformedDetails(t *testing.T) {
+	// nil pool is safe: JSON marshal failure fires before any DB call.
+	err := audit.Emit(context.Background(), nil, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   "cust-1",
+		Action:    "test.action",
+		Details:   map[string]any{"bad": make(chan int)},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-JSON-serializable details, got nil")
+	}
+}
+
 func TestEmit_RoundTrip(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()

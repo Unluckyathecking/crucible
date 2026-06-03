@@ -198,7 +198,10 @@ export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
-  const clampedLimit = Math.max(1, Math.min(limit, 100));
+  // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
+  // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
+  const safeLimit = Number.isFinite(limit) ? limit : 20;
+  const clampedLimit = Math.max(1, Math.min(safeLimit, 100));
   // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
   // customerId is always a non-null UUID so the two are semantically equivalent here,
   // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
