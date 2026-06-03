@@ -36,14 +36,11 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  const { totalUnits, totalEvents } = opBreakdown.reduce(
-    (acc, r) => {
-      const nextUnits = acc.totalUnits >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units);
-      const nextEvents = acc.totalEvents >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count);
-      return { totalUnits: nextUnits, totalEvents: nextEvents };
-    },
-    { totalUnits: 0, totalEvents: 0 },
-  );
+  const cap = BigInt(Number.MAX_SAFE_INTEGER);
+  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
+  const rawEvents = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
+  const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
+  const totalEvents = rawEvents > cap ? Number.MAX_SAFE_INTEGER : Number(rawEvents);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
