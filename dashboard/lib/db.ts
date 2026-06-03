@@ -332,8 +332,8 @@ export async function listUsageEvents(
     args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
   }
-  q += ` ORDER BY created_at DESC LIMIT $${args.length + 1}`;
   args.push(MAX_USAGE_EVENTS_LIMIT);
+  q += ` ORDER BY created_at DESC LIMIT $${args.length}`;
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,
