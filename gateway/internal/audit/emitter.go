@@ -60,6 +60,9 @@ func sanitizeDetails(details map[string]any) map[string]any {
 			float32, float64, nil:
 			sanitized[k] = v
 		default:
+			// All other types — maps, slices, structs, channels, funcs, pointers —
+			// are redacted to prevent nested or non-serialisable values from leaking
+			// secrets or PII into the JSONB audit trail.
 			sanitized[k] = "[REDACTED:complex]"
 		}
 	}

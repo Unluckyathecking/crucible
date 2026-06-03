@@ -44,7 +44,13 @@ export async function POST(request: Request): Promise<Response> {
       const nameValue = (body as Record<string, unknown>).name;
       name = typeof nameValue === "string" ? nameValue.trim() : "";
     } else {
-      const formData = await request.formData();
+      let formData: FormData;
+      try {
+        formData = await request.formData();
+      } catch (err) {
+        console.error("POST /api/keys FormData parse failed:", err instanceof Error ? err.message : String(err));
+        return new Response("Invalid form data", { status: 400 });
+      }
       name = (formData.get("name") as string | undefined || "").trim();
     }
 
