@@ -242,16 +242,6 @@ export async function listAuditEvents(
   return r.rows;
 }
 
-export async function sumUsage(customerId: string, days: number): Promise<number> {
-  const r = await pool.query<{ units: string }>(
-    `SELECT COALESCE(SUM(billable_units), 0)::text AS units
-     FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
-    [customerId, days],
-  );
-  return Number(r.rows[0].units);
-}
-
 export interface UsageOperationRow {
   operation: string;
   total_billable_units: number;
