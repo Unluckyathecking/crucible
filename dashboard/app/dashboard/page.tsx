@@ -1,10 +1,23 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, sumUsage } from "@/lib/db";
-import { CreateKeyForm } from "./create-key-form";
+import { ensureCustomer, listKeys, sumUsage, listAuditEvents, AuditEventRow } from "@/lib/db";
+import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
+
+function getAuditEventLabel(e: AuditEventRow): string {
+  const details =
+    typeof e.details === "object" && e.details !== null
+      ? (e.details as Record<string, unknown>)
+      : null;
+  if (typeof details?.prefix === "string") return details.prefix;
+  if (typeof details?.name === "string") return details.name;
+  if (e.target_type && e.target_id) return `${e.target_type}:${e.target_id.slice(0, 8)}`;
+  if (e.target_id) return e.target_id.slice(0, 8);
+  // No supplementary label — action is already rendered in its own span.
+  return "";
+}
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -12,9 +25,10 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const [keys, usage] = await Promise.all([
+  const [keys, usage, auditEvents] = await Promise.all([
     listKeys(customer.id),
     sumUsage(customer.id, 30),
+    listAuditEvents(customer.id),
   ]);
 
   return (
@@ -49,22 +63,47 @@ export default async function DashboardPage() {
           ) : (
             <ul className="space-y-2">
               {keys.map((k) => (
-                <li key={k.id} className="text-sm font-mono break-all">
-                  {k.prefix}…{" "}
-                  <span className="text-zinc-500">
-                    ({k.name || "unnamed"} · last used{" "}
-                    {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"})
+                <li key={k.id} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-mono break-all">
+                    {k.prefix}…{" "}
+                    <span className="text-zinc-500">
+                      ({k.name || "unnamed"} · last used{" "}
+                      {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"})
+                    </span>
                   </span>
+                  <RevokeKeyButton keyId={k.id} keyPrefix={k.prefix} />
                 </li>
               ))}
             </ul>
           )}
         </section>
 
-        <section className="border border-zinc-200 rounded-lg p-4 sm:p-5" aria-label="Usage stats">
+        <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
           <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
           <div className="text-3xl sm:text-4xl font-bold font-variant-numeric-tabular">{usage.toLocaleString()}</div>
           <div className="text-sm text-zinc-500">billable units</div>
+        </section>
+
+        <section className="border border-zinc-200 rounded-lg p-4 sm:p-5" aria-label="Recent activity">
+          <h2 className="text-lg sm:text-xl font-semibold mb-3">Recent activity</h2>
+          {auditEvents.length === 0 ? (
+            <p className="text-sm text-zinc-500">No recent activity.</p>
+          ) : (
+            <ul className="space-y-2">
+              {auditEvents.map((e) => {
+                const label = getAuditEventLabel(e);
+                return (
+                  <li key={e.id} className="flex items-center justify-between text-sm gap-2 min-w-0">
+                    <span className="font-mono text-zinc-800 truncate">{e.action}</span>
+                    {label && <span className="text-zinc-500 text-xs truncate">{label}</span>}
+                    <span className="text-zinc-400 text-xs ml-auto whitespace-nowrap shrink-0">
+                      {new Date(e.created_at).toLocaleString()}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
       </div>
     </main>
