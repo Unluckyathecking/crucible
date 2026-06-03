@@ -246,6 +246,9 @@ export async function listAuditEvents(
 // Implemented as a thin wrapper over usageByOperation so the two functions share
 // the same query path and validation logic.
 export async function sumUsage(customerId: string, days: number): Promise<number> {
+  if (!Number.isFinite(days) || days < 0) {
+    throw new Error("days must be a non-negative finite number");
+  }
   const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const to = new Date();
   const rows = await usageByOperation(customerId, from, to);

@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
+	operation = strings.TrimSpace(operation)
 	if len(operation) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}

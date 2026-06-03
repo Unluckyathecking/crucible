@@ -13,7 +13,10 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const session = await auth();
     if (!session?.user?.email) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     const customer = await ensureCustomer(session.user.email);
@@ -42,7 +45,8 @@ export async function GET(request: Request): Promise<Response> {
         });
       }
       const parsed = new Date(fromParam);
-      if (isNaN(parsed.getTime())) {
+      // Round-trip check catches calendar-invalid strings like 2023-02-31 that JS silently shifts.
+      if (isNaN(parsed.getTime()) || (fromParam.length === 10 && parsed.toISOString().slice(0, 10) !== fromParam)) {
         return new Response(JSON.stringify({ error: "invalid 'from' date" }), {
           status: 400,
           headers: { "content-type": "application/json" },
@@ -58,7 +62,7 @@ export async function GET(request: Request): Promise<Response> {
         });
       }
       const parsed = new Date(toParam);
-      if (isNaN(parsed.getTime())) {
+      if (isNaN(parsed.getTime()) || (toParam.length === 10 && parsed.toISOString().slice(0, 10) !== toParam)) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
           status: 400,
           headers: { "content-type": "application/json" },
@@ -91,9 +95,9 @@ export async function GET(request: Request): Promise<Response> {
       errorId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return new Response("Internal server error", {
+    return new Response(JSON.stringify({ error: "Internal server error" }), {
       status: 500,
-      headers: { "x-error-id": errorId },
+      headers: { "content-type": "application/json", "x-error-id": errorId },
     });
   }
 }

@@ -6,6 +6,8 @@ import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
 
+const USAGE_WINDOW_DAYS = 30;
+
 function getAuditEventLabel(e: AuditEventRow): string {
   const details =
     typeof e.details === "object" && e.details !== null
@@ -25,7 +27,6 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const USAGE_WINDOW_DAYS = 30;
   const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
   const [keys, opBreakdown, auditEvents] = await Promise.all([
