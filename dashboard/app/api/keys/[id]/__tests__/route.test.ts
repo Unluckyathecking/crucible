@@ -194,7 +194,8 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
     // doesn't exist or belongs to a different customer — so the WHERE must be id-only.
     const normalizedSection = revokeSection.replace(/\s+/g, " ");
     // Second query selects customer_id so the caller can distinguish ownership.
-    expect(normalizedSection).toMatch(/SELECT [^;]*customer_id[^;]* FROM api_keys WHERE id = \$1/);
+    // Using dotAll /s flag + lazy quantifiers so innocent reformatting doesn't break the regex.
+    expect(normalizedSection).toMatch(/SELECT\s+[^;]*?customer_id[^;]*?FROM\s+api_keys\s+WHERE\s+id\s*=\s*\$1/s);
     // Must NOT add a customer_id filter in the WHERE clause.
     expect(normalizedSection).not.toMatch(/FROM api_keys WHERE id = \$1 AND customer_id/);
   });

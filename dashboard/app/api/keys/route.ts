@@ -3,6 +3,7 @@ import { ensureCustomer, insertApiKey } from "@/lib/db";
 import { generateKey, hashKey } from "@/lib/keys";
 
 const MAX_KEY_GEN_ATTEMPTS = 3;
+const PG_UNIQUE_VIOLATION = "23505";
 
 export async function POST(request: Request): Promise<Response> {
   let customerId: string | undefined;
@@ -67,7 +68,7 @@ export async function POST(request: Request): Promise<Response> {
         inserted = true;
       } catch (e) {
         const code = (e as { code?: string }).code;
-        if (code !== "23505") throw e; // 23505 = Postgres unique_violation
+        if (code !== PG_UNIQUE_VIOLATION) throw e;
       }
     }
     if (!inserted || !full) {

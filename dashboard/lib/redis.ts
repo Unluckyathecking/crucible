@@ -49,9 +49,9 @@ export function getRedis(): Redis | null {
     const oldRedis = global._crucible_redis;
     global._crucible_redis = undefined;
     global._crucible_redis_url = undefined;
-    // Remove error listener first so socket-close events from the outgoing client
-    // do not produce spurious log noise after it is replaced.
-    oldRedis.removeAllListeners("error");
+    // Remove ALL listeners (not just "error") so no connect/ready/close callbacks
+    // fire after the client is dereferenced and replaced.
+    oldRedis.removeAllListeners();
     // quit() sends QUIT to Redis and waits for acknowledgement before closing;
     // disconnect() forces the socket closed immediately. Both are fire-and-forget
     // here (we already dereferenced the client above). Suppress shutdown errors.
