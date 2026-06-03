@@ -30,6 +30,15 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
+// nullStr converts an empty string to nil so pgx inserts SQL NULL for optional
+// fields, matching the TS emitter's `?? null` semantics for unset fields.
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
@@ -47,7 +56,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, string(e.ActorType), e.ActorID, e.Action, e.TargetType, e.TargetID, detailsJSON)
+	`, string(e.ActorType), e.ActorID, e.Action, nullStr(e.TargetType), nullStr(e.TargetID), detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
 	}

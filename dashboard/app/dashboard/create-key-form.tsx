@@ -139,7 +139,14 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
 
   return (
     <span className="inline-flex flex-col items-start gap-0.5">
-      <form action={formAction}>
+      <form
+        action={formAction}
+        onSubmit={(e) => {
+          if (!window.confirm(`Revoke key ${keyPrefix}? This cannot be undone.`)) {
+            e.preventDefault();
+          }
+        }}
+      >
         <button
           type="submit"
           disabled={isPending}

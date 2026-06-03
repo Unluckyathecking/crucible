@@ -3,8 +3,8 @@ import type { Pool } from "pg";
 // AuditEvent mirrors audit_log and gateway/internal/audit.Event.
 // The column set (actor_type, actor_id, action, target_type, target_id, details) must
 // stay in sync with the Go emitter — any rename here requires a matching rename there.
-// Note: unset optional fields (targetType, targetId, details) insert SQL NULL; the Go
-// zero value inserts an empty string. All current callers set these fields explicitly.
+// Optional fields (targetType, targetId, details) insert SQL NULL when absent; both
+// the Go emitter (nullStr helper) and this emitter (?? null) agree on NULL semantics.
 export interface AuditEvent {
   actorType: "customer" | "admin" | "system";
   actorId: string;
