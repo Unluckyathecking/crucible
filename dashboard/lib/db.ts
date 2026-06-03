@@ -275,6 +275,12 @@ function validateUsageQueryParams(
   return { effectiveOp };
 }
 
+function saturateBigIntString(value: string): number {
+  const cap = BigInt(Number.MAX_SAFE_INTEGER);
+  const n = BigInt(value);
+  return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
+}
+
 export interface UsageOperationRow {
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true sum exceeds it. */
@@ -295,16 +301,11 @@ export async function usageByOperation(
 ): Promise<UsageOperationRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   type Row = { operation: string; total_billable_units: string; event_count: string };
-  const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  const mapRow = (row: Row): UsageOperationRow => {
-    const rawUnits = BigInt(row.total_billable_units);
-    const rawCount = BigInt(row.event_count);
-    return {
-      operation: row.operation,
-      total_billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
-      event_count: rawCount > cap ? Number.MAX_SAFE_INTEGER : Number(rawCount),
-    };
-  };
+  const mapRow = (row: Row): UsageOperationRow => ({
+    operation: row.operation,
+    total_billable_units: saturateBigIntString(row.total_billable_units),
+    event_count: saturateBigIntString(row.event_count),
+  });
   if (effectiveOp) {
     // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
@@ -352,14 +353,12 @@ export async function listUsageEvents(
   // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
   // the server's DateStyle setting; no ::text cast or to_char conversion needed.
   type Row = { operation: string; billable_units: string; created_at: Date };
-  const cap = BigInt(Number.MAX_SAFE_INTEGER);
   const mapRow = (row: Row): UsageEventRow => {
-    const rawUnits = BigInt(row.billable_units);
     const d = row.created_at;
     if (isNaN(d.getTime())) throw new Error("invalid created_at returned from database");
     return {
       operation: row.operation,
-      billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
+      billable_units: saturateBigIntString(row.billable_units),
       created_at: d,
     };
   };
@@ -383,4 +382,11 @@ export async function listUsageEvents(
     [customerId, from, to, MAX_USAGE_EVENTS_LIMIT],
   );
   return r.rows.map(mapRow);
+}
+
+export async function sumUsage(customerId: string, days: number): Promise<number> {
+  const to = new Date();
+  const from = new Date(to.getTime() - days * MS_PER_DAY);
+  const rows = await usageByOperation(customerId, from, to);
+  return rows.reduce((s, r) => s + r.total_billable_units, 0);
 }

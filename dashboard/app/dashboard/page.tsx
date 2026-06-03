@@ -38,9 +38,9 @@ export default async function DashboardPage() {
   ]);
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
   const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
-  const rawEvents = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
+  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
   const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
-  const totalEvents = rawEvents > cap ? Number.MAX_SAFE_INTEGER : Number(rawEvents);
+  const totalCalls = rawCalls > cap ? Number.MAX_SAFE_INTEGER : Number(rawCalls);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
@@ -117,7 +117,7 @@ export default async function DashboardPage() {
                     <td className="pt-2 pr-4">Total</td>
                     <td className="pt-2 pr-4 text-right tabular-nums">{totalUnits.toLocaleString()}</td>
                     <td className="pt-2 text-right tabular-nums text-zinc-500">
-                      {totalEvents.toLocaleString()}
+                      {totalCalls.toLocaleString()}
                     </td>
                   </tr>
                 </tfoot>

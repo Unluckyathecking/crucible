@@ -274,8 +274,8 @@ func TestQueryByOperation_halfOpenBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	// Set the query window BEFORE inserting so the event's created_at (set by
-	// the DB to NOW()) is always after 'past', guaranteeing it falls outside [from, past).
+	// Window [from, past) ends 24h ago; event inserted at NOW() is always after past,
+	// so it should be excluded by the half-open upper bound.
 	// 24h buffers absorb any clock skew between the Go test clock and the DB clock.
 	past := time.Now().Add(-24 * time.Hour)
 	from := past.Add(-24 * time.Hour)
