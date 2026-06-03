@@ -248,20 +248,6 @@ export async function listAuditEvents(
   return r.rows;
 }
 
-/**
- * @deprecated Use usageByOperation for per-operation breakdowns.
- * sumUsage returns the total billable units for a customer over the last `days` days.
- */
-export async function sumUsage(customerId: string, days: number): Promise<number> {
-  const r = await pool.query<{ units: string }>(
-    `SELECT COALESCE(SUM(billable_units), 0)::text AS units
-     FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
-    [customerId, days],
-  );
-  return Number(r.rows[0].units);
-}
-
 function validateUsageQueryParams(
   customerId: string,
   from: Date,
