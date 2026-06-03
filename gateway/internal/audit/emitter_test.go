@@ -88,8 +88,7 @@ func TestEmit_RejectsEmptyActorIDForNonSystem(t *testing.T) {
 	}
 }
 
-
-func TestEmit_MalformedDetails(t *testing.T) {
+func TestEmit_NonSerializableDetails(t *testing.T) {
 	// nil pool is safe: JSON marshal failure fires before any DB call.
 	err := audit.Emit(context.Background(), nil, audit.Event{
 		ActorType: audit.ActorCustomer,

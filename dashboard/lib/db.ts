@@ -150,7 +150,7 @@ export async function revokeApiKey(
        CASE
          WHEN (SELECT prefix FROM updated) IS NOT NULL THEN 'revoked'
          WHEN NOT EXISTS (SELECT 1 FROM found) THEN 'not_found'
-         WHEN (SELECT customer_id FROM found) != $2 THEN 'forbidden'
+         WHEN (SELECT customer_id FROM found) <> $2 THEN 'forbidden'
          ELSE 'already_revoked'
        END AS result,
        (SELECT prefix FROM updated) AS prefix,

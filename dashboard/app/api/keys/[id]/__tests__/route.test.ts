@@ -195,7 +195,7 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
     // ensures the pattern is present AND is not immediately followed by AND.
     // The pattern allows additional selected columns (e.g. customer_id, prefix).
     const secondQueryMatch = revokeSection.match(
-      /SELECT customer_id(?:,\s*\w+)*\s+FROM api_keys WHERE id = \$1(?!\s+AND)/,
+      /SELECT\s+(?:\w+\s*,\s*)*customer_id(?:\s*,\s*\w+)*\s+FROM api_keys WHERE id = \$1(?!\s+AND)/,
     );
     expect(secondQueryMatch).not.toBeNull();
   });
