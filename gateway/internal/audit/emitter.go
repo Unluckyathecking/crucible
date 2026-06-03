@@ -31,10 +31,10 @@ type Event struct {
 }
 
 // nullStr converts an empty string to nil so pgx inserts SQL NULL for optional
-// fields (TargetType, TargetID). The TS emitter uses `?? null` which maps
-// undefined → null but leaves "" as ""; Go and TS therefore agree on the
-// common case (field not set → nil/undefined), but diverge for the rarely-used
-// empty-string case. Callers must not pass "" for a field they intend to store.
+// fields (ActorID for system events, TargetType, TargetID). The TS emitter uses
+// `?? null` which maps undefined → null but leaves "" as ""; Go and TS therefore
+// agree on the common case (field not set → nil/undefined), but diverge for the
+// rarely-used empty-string case. Callers must not pass "" for a field they intend to store.
 func nullStr(s string) any {
 	if s == "" {
 		return nil
@@ -67,7 +67,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, string(e.ActorType), e.ActorID, e.Action, nullStr(e.TargetType), nullStr(e.TargetID), detailsJSON)
+	`, string(e.ActorType), nullStr(e.ActorID), e.Action, nullStr(e.TargetType), nullStr(e.TargetID), detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
 	}

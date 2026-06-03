@@ -15,7 +15,8 @@ function getAuditEventLabel(e: AuditEventRow): string {
   if (typeof details?.name === "string") return details.name;
   if (e.target_type && e.target_id) return `${e.target_type}:${e.target_id.slice(0, 8)}`;
   if (e.target_id) return e.target_id.slice(0, 8);
-  return e.action;
+  // No supplementary label — action is already rendered in its own span.
+  return "";
 }
 
 export default async function DashboardPage() {
