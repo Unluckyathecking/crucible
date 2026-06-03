@@ -113,7 +113,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	defer cancel()
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.
-	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)`
+	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`
 	_, err := db.Exec(auditCtx, insertSQL,
 		string(e.ActorType), actorIDParam, e.Action,
 		e.TargetType, e.TargetID, detailsJSON)

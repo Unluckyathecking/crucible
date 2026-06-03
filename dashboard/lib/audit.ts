@@ -43,6 +43,10 @@ function sanitizeDetails(details: Record<string, unknown>): Record<string, unkno
 export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<void> {
   // Mirror Go's symmetric validation: system events must not carry an actorId
   // (background jobs have no individual actor); non-system events must have one.
+  if (!event.action) {
+    console.error("audit emit skipped: action must not be empty", { actorType: event.actorType, actorId: event.actorId });
+    return;
+  }
   const isSystem = event.actorType === "system";
   // Explicit empty-string checks mirror Go's e.ActorID == "" / e.ActorID != "" checks.
   // Truthiness would treat "0" or "false" differently; explicit comparison avoids drift.

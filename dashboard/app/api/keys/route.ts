@@ -24,7 +24,8 @@ export async function POST(request: Request): Promise<Response> {
 
     const salt = process.env.API_KEY_HASH_SALT;
     if (!salt || salt.length < 32) {
-      return new Response("API_KEY_HASH_SALT not configured (>= 32 bytes)", { status: 500 });
+      console.error("POST /api/keys: API_KEY_HASH_SALT not configured or too short");
+      return new Response("Internal server error", { status: 500 });
     }
     const productPrefix = process.env.API_KEY_PREFIX || "cru_";
 
@@ -96,6 +97,6 @@ export async function POST(request: Request): Promise<Response> {
       customerId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return new Response("Internal server error", { status: 500 });
+    return new Response("Internal server error", { status: 500, headers: { "x-error-id": errorId } });
   }
 }

@@ -7,7 +7,7 @@ interface CreateKeyFormProps {
   existingNames: string[];
 }
 
-type State = { error: string | null; submitted: boolean; key: string | null; stale?: boolean };
+type State = { error: string | null; submitted: boolean; key: string | null };
 
 export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
   const router = useRouter();
@@ -54,14 +54,7 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
         if (typeof data.key !== "string") {
           return { error: "Invalid response from server", submitted: false, key: null };
         }
-        try {
-          await router.refresh();
-        } catch (refreshErr) {
-          console.error("Failed to refresh dashboard after key creation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
-          // Return error:null so the success block (with the key) renders; stale:true
-          // shows the yellow reload prompt instead of blocking the key display.
-          return { error: null, submitted: true, key: data.key, stale: true };
-        }
+        router.refresh();
         return { error: null, submitted: true, key: data.key };
       } catch (err) {
         console.error("CreateKeyForm fetch failed:", err instanceof Error ? err.message : String(err));
@@ -114,11 +107,6 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           <code className="block text-xs font-mono bg-white border border-emerald-200 px-2 py-1 rounded break-all select-all">
             {state.key}
           </code>
-          {state.stale && (
-            <p className="text-xs text-amber-600">
-              The key list may be stale — reload the page to see the latest keys.
-            </p>
-          )}
         </div>
       )}
     </form>
@@ -130,7 +118,7 @@ interface RevokeKeyButtonProps {
   keyPrefix: string;
 }
 
-type RevokeState = { error: string | null; stale?: boolean };
+type RevokeState = { error: string | null };
 
 export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
   const router = useRouter();
@@ -145,12 +133,7 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
-        try {
-          await router.refresh();
-        } catch (refreshErr) {
-          console.error("Failed to refresh dashboard after key revocation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
-          return { error: null, stale: true };
-        }
+        router.refresh();
         return { error: null };
       } catch (err) {
         console.error("RevokeKeyButton fetch failed:", err instanceof Error ? err.message : String(err));
@@ -182,11 +165,6 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
       {state.error && (
         <p className="text-xs text-red-600" role="alert">
           {state.error}
-        </p>
-      )}
-      {state.stale && !state.error && (
-        <p className="text-xs text-amber-600">
-          Key revoked — reload the page to see the latest keys.
         </p>
       )}
     </div>
