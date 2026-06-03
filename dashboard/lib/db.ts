@@ -219,15 +219,15 @@ export async function listAuditEvents(
      FROM (
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
-        WHERE actor_id = $1::uuid
+        WHERE actor_id = $1::text
           AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
        UNION ALL
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
-        WHERE target_id = $1::uuid
-          AND actor_id IS DISTINCT FROM $1::uuid
+        WHERE target_id = $1::text
+          AND actor_id IS DISTINCT FROM $1::text
           AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
@@ -240,11 +240,12 @@ export async function listAuditEvents(
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - ($2 * INTERVAL '1 day')`,
-    [customerId, days],
+     WHERE customer_id = $1 AND created_at >= $2`,
+    [customerId, cutoff],
   );
   return Number(r.rows[0].units);
 }
