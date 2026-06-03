@@ -37,7 +37,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	// fmt.Sprintf only interpolates len(args) — an integer controlled by this function,
 	// never user input. All user-supplied values go through args as $N parameters.
 	args := []any{customerID, from, to}
-	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
+	q := `SELECT operation, COALESCE(SUM(billable_units), 0)::bigint, COUNT(*)::bigint
 	      FROM usage_events
 	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`
 	if operationTrimmed != "" {
