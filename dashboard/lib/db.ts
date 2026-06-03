@@ -16,6 +16,7 @@ if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 // Both sides changing this independently would silently break cache invalidation.
 const AUTH_CACHE_PREFIX = "auth:";
 const MAX_AUDIT_LIMIT = 100;
+const AUDIT_LOOKBACK_DAYS = 90;
 
 export interface Customer {
   id: string;
@@ -211,7 +212,6 @@ export async function listAuditEvents(
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // Parameterizing the cutoff (vs. inline INTERVAL) lets the planner use idx_audit_actor_id
   // and idx_audit_target_id with a stable bound rather than re-evaluating NOW() per-plan.
-  const AUDIT_LOOKBACK_DAYS = 90;
   const cutoff = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   // Per-branch ORDER BY + LIMIT allows each branch to use its index with an index scan + limit,
   // then the outer sort merges at most 2*clampedLimit rows instead of the full table.
