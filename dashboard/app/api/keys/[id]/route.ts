@@ -48,7 +48,9 @@ export async function DELETE(
         // Compile-time exhaustiveness: TypeScript flags this if a new RevokeResult
         // variant is added without updating this switch.
         const _exhaustive: never = result;
-        throw new Error(`Unexpected revokeApiKey result: ${_exhaustive}`);
+        const errorId = crypto.randomUUID();
+        console.error("Unexpected revokeApiKey result:", { errorId, result: _exhaustive });
+        return new Response("Internal server error", { status: 500, headers: { "x-error-id": errorId } });
       }
     }
   } catch (err) {

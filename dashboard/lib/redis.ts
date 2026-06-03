@@ -68,6 +68,11 @@ export function getRedis(): Redis | null {
     redis.on("error", (err) => {
       console.error("Redis client error:", err);
     });
+    // Graceful shutdown: close the connection on process exit to avoid dangling
+    // TCP connections (close-wait) on the Redis server under SIGTERM/beforeExit.
+    const gracefulClose = () => { redis.quit().catch(() => {}); };
+    process.once("beforeExit", gracefulClose);
+    process.once("SIGTERM", gracefulClose);
     global._crucible_redis = redis;
     global._crucible_redis_url = url;
   }

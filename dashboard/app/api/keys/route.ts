@@ -11,6 +11,7 @@ export async function POST(request: Request): Promise<Response> {
     // preflight on cross-origin requests. Defense-in-depth alongside SameSite cookies.
     const xrw = request.headers.get("X-Requested-With");
     if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
+      console.warn("CSRF check failed for POST /api/keys", { header: xrw ?? "missing" });
       return new Response("Forbidden", { status: 403 });
     }
 
