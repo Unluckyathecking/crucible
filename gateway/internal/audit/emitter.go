@@ -59,7 +59,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.Details != nil {
 		b, err := json.Marshal(e.Details)
 		if err != nil {
-			return fmt.Errorf("audit: marshal details: %w", err)
+			return fmt.Errorf("audit: details not serializable")
 		}
 		detailsJSON = b
 	}
