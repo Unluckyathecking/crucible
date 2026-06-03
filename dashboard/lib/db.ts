@@ -286,7 +286,9 @@ function validateUsageQueryParams(
 
 export interface UsageOperationRow {
   operation: string;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true sum exceeds it. */
   total_billable_units: number;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true count exceeds it. */
   event_count: number;
 }
 
@@ -338,6 +340,7 @@ export async function usageByOperation(
 
 export interface UsageEventRow {
   operation: string;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;
   created_at: Date;
 }
@@ -353,19 +356,20 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  type Row = { operation: string; billable_units: string; created_at: Date };
+  // Cast created_at to text so the type is explicit and independent of pg type-parser configuration.
+  type Row = { operation: string; billable_units: string; created_at: string };
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
   const mapRow = (row: Row): UsageEventRow => {
     const rawUnits = BigInt(row.billable_units);
     return {
       operation: row.operation,
       billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
-      created_at: row.created_at,
+      created_at: new Date(row.created_at),
     };
   };
   if (effectiveOp) {
     const r = await pool.query<Row>(
-      `SELECT operation, billable_units::text AS billable_units, created_at
+      `SELECT operation, billable_units::text AS billable_units, created_at::text AS created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -374,7 +378,7 @@ export async function listUsageEvents(
     return r.rows.map(mapRow);
   }
   const r = await pool.query<Row>(
-    `SELECT operation, billable_units::text AS billable_units, created_at
+    `SELECT operation, billable_units::text AS billable_units, created_at::text AS created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,

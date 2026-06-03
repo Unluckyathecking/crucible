@@ -1,5 +1,6 @@
-// GET /api/usage — returns raw usage events {operation, billable_units, created_at}
+// GET /api/usage — returns raw usage events [{operation, billable_units, created_at}]
 // for the authenticated customer over the requested time window.
+// All date parameters are interpreted as UTC midnight. Clients should express dates in UTC.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
 import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
