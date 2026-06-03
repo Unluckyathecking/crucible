@@ -32,6 +32,6 @@ export async function DELETE(
   } catch (err) {
     const errorId = crypto.randomUUID();
     console.error("DELETE /api/keys/[id] failed:", { errorId, error: err instanceof Error ? err.message : String(err) });
-    return new Response(`Internal server error (${errorId})`, { status: 500 });
+    return new Response("Internal server error", { status: 500 });
   }
 }

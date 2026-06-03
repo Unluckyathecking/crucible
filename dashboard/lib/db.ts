@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { emitAuditEvent } from "@/lib/audit";
+import { getRedis } from "@/lib/redis";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -124,6 +125,18 @@ export async function revokeApiKey(
   );
 
   if (r.rows.length > 0) {
+    const prefix = r.rows[0].prefix;
+
+    // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
+    // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
+    // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
+    const redis = getRedis();
+    if (redis) {
+      void redis.del(`auth:${prefix}`).catch((err) => {
+        console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
+      });
+    }
+
     // Best-effort: same invariant as insertApiKey — revocation is already durable in Postgres;
     // an audit failure must not surface as a 500 to the customer.
     void emitAuditEvent(pool, {
@@ -132,7 +145,7 @@ export async function revokeApiKey(
       action: "api_key.revoked",
       targetType: "api_key",
       targetId: keyId,
-      details: { prefix: r.rows[0].prefix },
+      details: { prefix },
     }).catch((err) => {
       console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
