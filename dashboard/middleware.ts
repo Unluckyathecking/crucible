@@ -16,7 +16,7 @@ export default auth((req) => {
       decodedPath = req.nextUrl.pathname;
     }
     const normalizedPath = decodedPath.replace(/\/+/g, "/");
-    if (normalizedPath.startsWith("/api/")) {
+    if (normalizedPath.toLowerCase().startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { "content-type": "application/json" },
