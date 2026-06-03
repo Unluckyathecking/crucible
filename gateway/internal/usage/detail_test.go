@@ -23,7 +23,9 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 		t.Fatalf("insert usage_event: %v", err)
 	}
 	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
 			t.Logf("cleanup failed for usage_event %d: %v", id, err)
 		}
 	})
