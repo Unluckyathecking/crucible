@@ -27,7 +27,8 @@ export async function GET(request: Request): Promise<Response> {
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
     // Fast-path: reject absurdly long inputs before the spread-to-code-points check.
-    const MAX_OPERATION_INPUT_LENGTH = 10_000;
+    // 10× the canonical limit is generous but bounded; avoids an unbounded O(n) spread.
+    const MAX_OPERATION_INPUT_LENGTH = MAX_OPERATION_LENGTH * 10;
     if (operationRaw !== null && operationRaw.length > MAX_OPERATION_INPUT_LENGTH) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,

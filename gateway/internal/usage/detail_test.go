@@ -345,6 +345,13 @@ func TestQueryByOperation_limitCap(t *testing.T) {
 	if result[0].TotalBillableUnits != 1 || result[0].EventCount != 1 {
 		t.Errorf("expected units=1, count=1 for first row, got %+v", result[0])
 	}
+	// Verify the (limit+1)th operation is absent — confirms LIMIT is enforced, not off-by-one.
+	excluded := fmt.Sprintf("op-%04d", maxUsageOperationsLimit)
+	for _, r := range result {
+		if r.Operation == excluded {
+			t.Errorf("operation %s should be excluded by LIMIT %d cap", excluded, maxUsageOperationsLimit)
+		}
+	}
 }
 
 // TestQueryByOperation_futureToIsAllowed documents that QueryByOperation accepts a to

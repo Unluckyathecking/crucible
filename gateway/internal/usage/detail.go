@@ -20,6 +20,13 @@ const maxUsageRangeDays = 90
 // maxOperationLength mirrors dashboard/lib/db.ts MAX_OPERATION_LENGTH.
 const maxOperationLength = 128
 
+// truncateToUTCMidnight floors t to 00:00:00 UTC on the same calendar day.
+// Callers should pass UTC midnight values; this normalises sub-day precision
+// so the 90-day duration check measures whole calendar days, not partial hours.
+func truncateToUTCMidnight(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 // OperationAggregate holds per-operation totals from usage_events.
 type OperationAggregate struct {
 	Operation          string
@@ -42,9 +49,9 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
-	// Enforce a 90×24h wall-clock duration limit. With UTC midnight inputs this equals exactly
-	// 90 calendar days because UTC has no daylight saving time (every UTC day is 24h).
-	if to.Sub(from) > maxUsageRangeDays*24*time.Hour {
+	// Truncate to midnight for the calendar-day range check so that a 90-day window is
+	// measured in whole days regardless of the time-of-day component of the inputs.
+	if truncateToUTCMidnight(to).Sub(truncateToUTCMidnight(from)) > maxUsageRangeDays*24*time.Hour {
 		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}
 	operationTrimmed := strings.TrimSpace(operation)
