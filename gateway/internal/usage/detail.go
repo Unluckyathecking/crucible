@@ -34,8 +34,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if operationTrimmed != "" && utf8.RuneCountInString(operationTrimmed) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
-	// Build the query dynamically so the placeholder index stays correct if parameters
-	// are ever reordered. $4 is only appended when operation is non-empty.
+	// fmt.Sprintf only interpolates len(args) — an integer controlled by this function,
+	// never user input. All user-supplied values go through args as $N parameters.
 	args := []any{customerID, from, to}
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
 	      FROM usage_events

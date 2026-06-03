@@ -193,8 +193,9 @@ func TestQueryByOperation_halfOpenBoundary(t *testing.T) {
 
 	// Set the query window BEFORE inserting so the event's created_at (set by
 	// the DB to NOW()) is always after 'past', guaranteeing it falls outside [from, past).
-	past := time.Now().Add(-time.Hour)
-	from := past.Add(-time.Hour)
+	// 24h buffers absorb any clock skew between the Go test clock and the DB clock.
+	past := time.Now().Add(-24 * time.Hour)
+	from := past.Add(-24 * time.Hour)
 
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 7)
 
@@ -266,10 +267,10 @@ func TestQueryByOperation_includesFromBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	from := time.Now().Add(-time.Hour) // wide buffer eliminates clock-skew flakiness
+	from := time.Now().Add(-24 * time.Hour) // wide buffer absorbs any DB/test clock skew
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 
-	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(24*time.Hour), "")
+	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(48*time.Hour), "")
 	if err != nil {
 		t.Fatalf("QueryByOperation: %v", err)
 	}
