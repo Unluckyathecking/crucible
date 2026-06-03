@@ -20,6 +20,9 @@ const (
 	ActorSystem   ActorType = "system"
 )
 
+// defaultInsertTimeout caps the audit INSERT so a slow Postgres cannot stall callers.
+const defaultInsertTimeout = 2 * time.Second
+
 // Event is a single audit-log entry. Fields mirror audit_log exactly.
 // Field set must stay identical with dashboard/lib/audit.ts.
 // TargetType and TargetID are optional (*string nil → SQL NULL) to match the TS
@@ -71,7 +74,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	// Cap the INSERT at 2 s so a slow or unresponsive Postgres cannot stall the caller.
 	// Callers using fire-and-forget (goroutine + context.Background) won't be affected,
 	// but request-path callers are protected from audit logging blocking the response.
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, defaultInsertTimeout)
 	defer cancel()
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.

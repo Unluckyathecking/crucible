@@ -105,6 +105,17 @@ export async function insertApiKey(
   return keyId;
 }
 
+// invalidateAuthCache fires a best-effort Redis DEL for auth:{prefix}.
+// DEL is idempotent: deleting an absent key returns 0, so calling this when the
+// cache entry no longer exists is safe. Fire-and-forget — caller must not await.
+function invalidateAuthCache(prefix: string): void {
+  const redis = getRedis();
+  if (!redis) return;
+  void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
+    console.error("redis cache invalidation failed", { prefix, error: err instanceof Error ? err.message : String(err) });
+  });
+}
+
 // revokeApiKey sets revoked_at on a key that belongs to customerId.
 // Returns "revoked" on success, "already_revoked" when the key was already inactive (idempotent),
 // "forbidden" when the key exists but belongs to another customer (caller should 403),
@@ -131,16 +142,10 @@ export async function revokeApiKey(
 
   if (updateResult.rows.length > 0) {
     const { prefix } = updateResult.rows[0];
-    // Best-effort Redis cache invalidation (CLAUDE.md invariant #7): a DEL is fired
-    // after the Postgres commit to minimise the stale-cache window. This is not atomic
-    // with the UPDATE — a transient Redis failure leaves the key cached until the 60 s
-    // TTL expires. Fire-and-forget: a Redis failure must not fail a completed Postgres revocation.
-    const redis = getRedis();
-    if (redis) {
-      void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
-        console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
-      });
-    }
+    // Best-effort Redis cache invalidation (CLAUDE.md invariant #7): minimises the stale-cache
+    // window after Postgres commits. Not atomic with the UPDATE — a transient Redis failure
+    // leaves the key cached until the 60 s TTL. Fire-and-forget by design.
+    invalidateAuthCache(prefix);
     // Audit is intentionally fire-and-forget and outside the UPDATE: audit failures must
     // never roll back a completed Postgres revocation. Including the audit INSERT in the
     // same transaction would make audit errors silently undo the revocation — the opposite
@@ -175,16 +180,9 @@ export async function revokeApiKey(
 
   // Row exists, owned by caller, but revoked_at IS NOT NULL — idempotent re-revocation.
   // Truthiness excludes both null and empty-string prefixes (schema guarantees non-empty, but belt-and-suspenders).
+  // Retry DEL in case the original revocation committed to Postgres but its Redis DEL failed transiently.
   if (foundPrefix) {
-    // Best-effort retry DEL: the original revocation may have committed to Postgres but
-    // failed the Redis DEL transiently (network blip, Redis restart). Re-issuing DEL here
-    // is safe because Redis DEL is idempotent — deleting an already-absent key returns 0.
-    const alreadyRedis = getRedis();
-    if (alreadyRedis) {
-      void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${foundPrefix}`).catch((err) => {
-        console.error("redis cache invalidation failed for already_revoked key", { prefix: foundPrefix, error: err instanceof Error ? err.message : String(err) });
-      });
-    }
+    invalidateAuthCache(foundPrefix);
   }
   return "already_revoked";
 }
@@ -204,24 +202,33 @@ export async function listAuditEvents(
   // customerId is always a UUID produced by ensureCustomer (PostgreSQL gen_random_uuid()).
   // UUID_RE validates the *parameter*, not the database column — defense-in-depth to short-circuit
   // if the caller ever passes a non-UUID (e.g. an email address) before issuing the query.
-  if (!customerId || !UUID_RE.test(customerId)) {
+  if (!UUID_RE.test(customerId)) {
     return [];
   }
   // Guard against non-numbers and NaN/Infinity: Math.max/min propagate NaN silently,
   // which would cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
+  // Per-branch ORDER BY + LIMIT allows each branch to use its index with an index scan + limit,
+  // then the outer sort merges at most 2*clampedLimit rows instead of the full table.
   const r = await pool.query<AuditEventRow>(
-    `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-      FROM audit_log
-      WHERE actor_id = $1
-        AND created_at >= NOW() - INTERVAL '90 days')
-     UNION ALL
-     (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-      FROM audit_log
-      WHERE target_id = $1
-        AND actor_id IS DISTINCT FROM $1
-        AND created_at >= NOW() - INTERVAL '90 days')
+    `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM (
+       (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+        FROM audit_log
+        WHERE actor_id = $1
+          AND created_at >= NOW() - INTERVAL '90 days'
+        ORDER BY created_at DESC
+        LIMIT $2)
+       UNION ALL
+       (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+        FROM audit_log
+        WHERE target_id = $1
+          AND actor_id IS DISTINCT FROM $1
+          AND created_at >= NOW() - INTERVAL '90 days'
+        ORDER BY created_at DESC
+        LIMIT $2)
+     ) combined
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],
@@ -233,7 +240,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
+     WHERE customer_id = $1 AND created_at >= NOW() - $2 * INTERVAL '1 day'`,
     [customerId, days],
   );
   return Number(r.rows[0].units);

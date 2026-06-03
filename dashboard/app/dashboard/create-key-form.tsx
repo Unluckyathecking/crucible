@@ -180,7 +180,7 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
       )}
       {state.stale && !state.error && (
         <p className="text-xs text-amber-600">
-          Key revoked — reload the page to update the list.
+          Key revoked — reload the page to see the latest keys.
         </p>
       )}
     </div>
