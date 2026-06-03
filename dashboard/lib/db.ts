@@ -103,7 +103,8 @@ export async function insertApiKey(
 
 // revokeApiKey sets revoked_at on a key that belongs to customerId.
 // Returns "revoked" on success, "already_revoked" when the key was already inactive (idempotent),
-// or "not_found" when the key doesn't exist or belongs to another customer.
+// "forbidden" when the key exists but belongs to another customer (caller should 403),
+// or "not_found" when the key doesn't exist at all.
 //
 // Redis note: the gateway caches valid keys at "auth:{prefix}" for up to 60 s. The dashboard
 // has no Redis connection, so that entry is not explicitly cleared here. Revocation is immediate
@@ -113,7 +114,7 @@ export async function insertApiKey(
 export async function revokeApiKey(
   keyId: string,
   customerId: string,
-): Promise<"revoked" | "already_revoked" | "not_found"> {
+): Promise<"revoked" | "already_revoked" | "not_found" | "forbidden"> {
   // Only update if the key is still active, so we can detect true revocation vs idempotent call.
   const r = await pool.query<{ id: string; prefix: string }>(
     `UPDATE api_keys SET revoked_at = NOW()
@@ -138,12 +139,15 @@ export async function revokeApiKey(
     return "revoked";
   }
 
-  // Distinguish already-revoked (owned, idempotent → 200) from not-found/not-owned (→ 404).
-  const check = await pool.query<{ id: string }>(
-    `SELECT id FROM api_keys WHERE id = $1 AND customer_id = $2`,
-    [keyId, customerId],
+  // Distinguish not-found, forbidden (wrong owner), and already-revoked (owned, idempotent).
+  // Query without customer_id filter so we can tell ownership from existence.
+  const check = await pool.query<{ customer_id: string }>(
+    `SELECT customer_id FROM api_keys WHERE id = $1`,
+    [keyId],
   );
-  return check.rows.length > 0 ? "already_revoked" : "not_found";
+  if (check.rows.length === 0) return "not_found";
+  if (check.rows[0].customer_id !== customerId) return "forbidden";
+  return "already_revoked";
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
@@ -154,6 +158,7 @@ export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
+  const clampedLimit = Math.max(1, Math.min(limit, 100));
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
@@ -161,7 +166,7 @@ export async function listAuditEvents(
         OR target_id = $1
      ORDER BY created_at DESC
      LIMIT $2`,
-    [customerId, limit],
+    [customerId, clampedLimit],
   );
   return r.rows;
 }

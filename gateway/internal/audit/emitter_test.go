@@ -2,7 +2,9 @@ package audit_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -15,9 +17,13 @@ import (
 // skips the test if unreachable. Mirrors the helper in gateway/internal/auth.
 func newTestPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Skipf("postgres unavailable, skipping: %v", err)
 	}
@@ -60,18 +66,19 @@ func TestEmit_RoundTrip(t *testing.T) {
 	}
 
 	var (
-		actorType  string
-		actorID    string
-		action     string
-		targetType string
-		targetID   string
+		actorType   string
+		actorID     string
+		action      string
+		targetType  string
+		targetID    string
+		detailsJSON []byte
 	)
 	err := db.QueryRow(ctx, `
-		SELECT actor_type, actor_id, action, target_type, target_id
+		SELECT actor_type, actor_id, action, target_type, target_id, details
 		FROM audit_log
 		WHERE actor_id = $1 AND action = $2
 		ORDER BY id DESC LIMIT 1
-	`, uniqueActorID, e.Action).Scan(&actorType, &actorID, &action, &targetType, &targetID)
+	`, uniqueActorID, e.Action).Scan(&actorType, &actorID, &action, &targetType, &targetID, &detailsJSON)
 	if err != nil {
 		t.Fatalf("query round-trip row: %v", err)
 	}
@@ -90,6 +97,20 @@ func TestEmit_RoundTrip(t *testing.T) {
 	}
 	if targetID != e.TargetID {
 		t.Errorf("target_id = %q, want %q", targetID, e.TargetID)
+	}
+
+	// Verify the Details JSONB round-trip.
+	var gotDetails map[string]any
+	if err := json.Unmarshal(detailsJSON, &gotDetails); err != nil {
+		t.Fatalf("unmarshal details: %v", err)
+	}
+	wantDetails := e.Details.(map[string]any)
+	if gotDetails["name"] != wantDetails["name"] {
+		t.Errorf("details.name = %v, want %v", gotDetails["name"], wantDetails["name"])
+	}
+	// JSON numbers decode as float64.
+	if gotDetails["attempt"] != float64(1) {
+		t.Errorf("details.attempt = %v, want 1", gotDetails["attempt"])
 	}
 }
 
@@ -120,11 +141,11 @@ func TestEmit_NilDetails(t *testing.T) {
 	ctx := context.Background()
 
 	if err := audit.Emit(ctx, db, audit.Event{
-		ActorType: audit.ActorSystem,
-		ActorID:   "system",
-		Action:    "api_key.revoked",
+		ActorType:  audit.ActorSystem,
+		ActorID:    "system",
+		Action:     "api_key.revoked",
 		TargetType: "api_key",
-		TargetID:  "some-key-id",
+		TargetID:   "some-key-id",
 	}); err != nil {
 		t.Fatalf("Emit with nil Details: %v", err)
 	}
