@@ -6,6 +6,7 @@ import { auth } from "@/auth";
 import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH, MS_PER_DAY } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
+const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 // Accepts ISO 8601 date-only (YYYY-MM-DD). Month bounded 01-12, day 01-31;
 // calendar validity (e.g. Feb 31) is enforced by the round-trip check below.
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -69,7 +70,7 @@ export async function GET(request: Request): Promise<Response> {
         });
       }
       // Append explicit UTC midnight so the semantics match the database (UTC timestamps).
-      const parsed = new Date(fromParam + 'T00:00:00.000Z');
+      const parsed = new Date(fromParam + ISO_MIDNIGHT_SUFFIX);
       // Round-trip check catches calendar-invalid strings like 2023-02-31 that JS silently shifts.
       if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== fromParam) {
         return new Response(JSON.stringify({ error: "invalid 'from' date" }), {
@@ -88,7 +89,7 @@ export async function GET(request: Request): Promise<Response> {
       }
       // Append explicit UTC midnight. 'to' is an EXCLUSIVE upper bound: to=2024-01-31
       // means events up to 2024-01-30 23:59:59.999Z; pass to=2024-02-01 to include Jan 31.
-      const parsed = new Date(toParam + 'T00:00:00.000Z');
+      const parsed = new Date(toParam + ISO_MIDNIGHT_SUFFIX);
       if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== toParam) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
           status: 400,

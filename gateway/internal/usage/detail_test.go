@@ -230,6 +230,32 @@ func TestQueryByOperation_whitespaceOperation(t *testing.T) {
 	}
 }
 
+// TestQueryByOperation_paddedOperation verifies that a whitespace-padded operation like
+// "  op.a  " is trimmed and matched against the stored "op.a" row.
+func TestQueryByOperation_paddedOperation(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 5)
+	insertUsageEvent(t, pool, custID, keyID, "op.b", 10)
+
+	from := time.Now().Add(-24 * time.Hour)
+	to := time.Now().Add(time.Hour)
+
+	// "  op.a  " trims to "op.a" → should filter to only op.a rows.
+	result, err := QueryByOperation(ctx, pool, custID, from, to, "  op.a  ")
+	if err != nil {
+		t.Fatalf("QueryByOperation with padded operation: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 row for padded operation filter, got %d", len(result))
+	}
+	if result[0].Operation != "op.a" || result[0].TotalBillableUnits != 5 {
+		t.Errorf("got %+v, want {op.a 5 1}", result[0])
+	}
+}
+
 func TestQueryByOperation_rangeExceedsMax(t *testing.T) {
 	pool := newTestPool(t)
 	custID, _ := setupTestCustomer(t, pool)

@@ -61,6 +61,27 @@ describe("ApiKeyRow interface shape", () => {
   });
 });
 
+describe("listUsageEvents cross-customer isolation (structural)", () => {
+  it("listUsageEvents always scopes queries to customer_id = $1", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const src = fs.readFileSync(
+      path.resolve(__dirname, "../db.ts"),
+      "utf8"
+    ) as string;
+
+    // Both query branches in listUsageEvents must include `customer_id = $1`
+    // to prevent cross-customer data leakage. Verify by source inspection.
+    const listFnIndex = src.indexOf("async function listUsageEvents");
+    expect(listFnIndex).toBeGreaterThan(-1);
+    const listFnBody = src.slice(listFnIndex, listFnIndex + 1500);
+    const isolationMatches = listFnBody.match(/customer_id = \$1/g);
+    // Both filtered and unfiltered query branches must scope to customer_id.
+    expect(isolationMatches).not.toBeNull();
+    expect(isolationMatches!.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("Pool singleton pattern (structural)", () => {
   it("DATABASE_URL env var is used for connection (not hardcoded)", () => {
     // Regression guard: the pool must use process.env.DATABASE_URL.

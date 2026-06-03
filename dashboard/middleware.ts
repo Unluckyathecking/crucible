@@ -10,7 +10,7 @@ export default auth((req) => {
     if (req.nextUrl.pathname.startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
       });
     }
     const url = new URL("/login", req.nextUrl.origin);

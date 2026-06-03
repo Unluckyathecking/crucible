@@ -20,9 +20,8 @@ const maxUsageRangeDays = 90
 // maxOperationLength mirrors dashboard/lib/db.ts MAX_OPERATION_LENGTH.
 const maxOperationLength = 128
 
-// truncateToUTCMidnight floors t to 00:00:00 UTC on the same calendar day.
-// Callers should pass UTC midnight values; this normalises sub-day precision
-// so the 90-day duration check measures whole calendar days, not partial hours.
+// truncateToUTCMidnight converts t to UTC and floors it to 00:00:00 UTC on that calendar day.
+// This measures whole UTC calendar days, not the caller's local timezone.
 func truncateToUTCMidnight(t time.Time) time.Time {
 	ut := t.UTC()
 	return time.Date(ut.Year(), ut.Month(), ut.Day(), 0, 0, 0, 0, time.UTC)
