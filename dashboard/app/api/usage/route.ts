@@ -41,14 +41,13 @@ export async function GET(request: Request): Promise<Response> {
     const operationParam = operationTrimmed || undefined;
 
     const now = new Date();
-    // Align defaults to UTC midnight boundaries so the half-open [from, to) interval
-    // behaves consistently whether params are supplied or not.
-    // tomorrowMidnight = exclusive upper bound for today; used for both the default
-    // value of `to` and the future-date guard so the same anchor is never stale.
-    const todayMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    // tomorrowMidnight = exclusive upper bound; used for the default `to` and the
+    // future-date guard so both always anchor to the same instant.
+    // Deriving `from` relative to tomorrowMidnight gives exactly DEFAULT_DAYS of
+    // coverage: [tomorrowMidnight - DEFAULT_DAYS, tomorrowMidnight) = 30 calendar days.
     const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
-    let from = new Date(todayMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
+    let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
     let to = tomorrowMidnight;
 
     if (fromParam) {
