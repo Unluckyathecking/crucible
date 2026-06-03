@@ -18,6 +18,8 @@ const AUTH_CACHE_PREFIX = "auth:";
 const MAX_AUDIT_LIMIT = 100;
 const AUDIT_LOOKBACK_DAYS = 90;
 const MAX_USAGE_EVENTS_LIMIT = 1000;
+// Separate cap for per-operation aggregate rows (distinct operations per customer window).
+const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 
 export interface Customer {
   id: string;
@@ -270,17 +272,17 @@ export async function usageByOperation(
   operation?: string,
 ): Promise<UsageOperationRow[]> {
   if (!UUID_RE.test(customerId)) {
-    return [];
+    throw new Error("invalid customerId");
   }
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-    return [];
+    throw new Error("invalid date range");
   }
   if (from.getTime() > to.getTime()) {
-    return [];
+    throw new Error("from must not be after to");
   }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && effectiveOp.length > 128) {
-    return [];
+    throw new Error("operation too long");
   }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation,
@@ -292,9 +294,10 @@ export async function usageByOperation(
     args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
   }
-  args.push(MAX_USAGE_EVENTS_LIMIT);
+  args.push(MAX_USAGE_OPERATIONS_LIMIT);
   q += ` GROUP BY operation ORDER BY operation LIMIT $${args.length}`;
   const r = await pool.query<{ operation: string; total_billable_units: string; event_count: string }>(q, args);
+  // Number() on text-cast bigint is safe for practical billable_units values (<2^53).
   return r.rows.map((row) => ({
     operation: row.operation,
     total_billable_units: Number(row.total_billable_units),
@@ -319,17 +322,17 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   if (!UUID_RE.test(customerId)) {
-    return [];
+    throw new Error("invalid customerId");
   }
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-    return [];
+    throw new Error("invalid date range");
   }
   if (from.getTime() > to.getTime()) {
-    return [];
+    throw new Error("from must not be after to");
   }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && effectiveOp.length > 128) {
-    return [];
+    throw new Error("operation too long");
   }
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation, billable_units::text AS billable_units, created_at

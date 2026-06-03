@@ -99,6 +99,7 @@ export async function GET(request: Request): Promise<Response> {
     console.error("GET /api/usage failed:", {
       errorId,
       error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
     });
     return new Response(JSON.stringify({ error: "Internal server error" }), {
       status: 500,
