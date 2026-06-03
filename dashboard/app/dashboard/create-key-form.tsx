@@ -117,7 +117,7 @@ type RevokeState = { error: string | null };
 export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
   const router = useRouter();
   const [state, formAction, isPending] = useActionState(
-    async (_prev: RevokeState): Promise<RevokeState> => {
+    async (_prev: RevokeState, _formData: FormData): Promise<RevokeState> => {
       try {
         const res = await fetch(`/api/keys/${keyId}`, { method: "DELETE" });
         if (!res.ok) {

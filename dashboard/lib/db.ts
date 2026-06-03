@@ -216,11 +216,16 @@ export async function listAuditEvents(
   // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
   // A single outer LIMIT is correct: any event in the top N overall must be in the top N
   // of its branch, so per-branch LIMITs would be redundant and could confuse the planner.
+  // UNION (not UNION ALL) deduplicates by row identity, providing a correctness
+  // guarantee even if a future event type sets both actor_id and target_id to the
+  // customer UUID. The second branch's IS DISTINCT FROM guard makes duplicates
+  // impossible in practice today, but UNION is safer and the overhead is negligible
+  // at the ≤100-row scale this function operates at.
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
      WHERE actor_id = $1
-     UNION ALL
+     UNION
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
      WHERE target_id = $1
