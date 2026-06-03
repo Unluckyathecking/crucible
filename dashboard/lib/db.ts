@@ -131,9 +131,10 @@ export async function revokeApiKey(
 
   if (updateResult.rows.length > 0) {
     const { prefix } = updateResult.rows[0];
-    // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
-    // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
-    // Fire-and-forget — a Redis failure must not fail the revocation already in Postgres.
+    // Best-effort Redis cache invalidation (CLAUDE.md invariant #7): a DEL is fired
+    // after the Postgres commit to minimise the stale-cache window. This is not atomic
+    // with the UPDATE — a transient Redis failure leaves the key cached until the 60 s
+    // TTL expires. Fire-and-forget: a Redis failure must not fail a completed Postgres revocation.
     const redis = getRedis();
     if (redis) {
       void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
@@ -196,8 +197,9 @@ export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
-  // customerId comes from ensureCustomer (trusted DB value), but we validate anyway
-  // as defense-in-depth using the shared UUID_RE from @/lib/validation.
+  // customerId is always a UUID produced by ensureCustomer (PostgreSQL gen_random_uuid()).
+  // UUID_RE validates the *parameter*, not the database column — defense-in-depth to short-circuit
+  // if the caller ever passes a non-UUID (e.g. an email address) before issuing the query.
   if (!customerId || !UUID_RE.test(customerId)) {
     return [];
   }

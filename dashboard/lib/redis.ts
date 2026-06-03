@@ -52,7 +52,11 @@ export function getRedis(): Redis | null {
     // Remove error listener first so socket-close events from the outgoing client
     // do not produce spurious log noise after it is replaced.
     oldRedis.removeAllListeners("error");
-    oldRedis.disconnect();
+    try {
+      oldRedis.disconnect();
+    } catch (e) {
+      console.error("Redis disconnect failed during URL change:", e instanceof Error ? e.message : String(e));
+    }
   }
 
   if (!global._crucible_redis) {

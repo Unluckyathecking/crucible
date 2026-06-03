@@ -2,6 +2,8 @@ import { auth } from "@/auth";
 import { ensureCustomer, insertApiKey } from "@/lib/db";
 import { generateKey, hashKey } from "@/lib/keys";
 
+const MAX_KEY_GEN_ATTEMPTS = 3;
+
 export async function POST(request: Request): Promise<Response> {
   let customerId: string | undefined;
   try {
@@ -45,7 +47,6 @@ export async function POST(request: Request): Promise<Response> {
     // catches the case). Three attempts is way more than statistically needed given
     // 15 random base32 chars of entropy (keyspace 32^15 ≈ 3.5×10^22; birthday-paradox
     // collision expected at ~1×10^11 active keys — far beyond any realistic deployment).
-    const MAX_KEY_GEN_ATTEMPTS = 3;
     let full: string | undefined;
     let inserted = false;
     for (let attempt = 0; attempt < MAX_KEY_GEN_ATTEMPTS && !inserted; attempt++) {

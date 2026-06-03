@@ -7,7 +7,7 @@ interface CreateKeyFormProps {
   existingNames: string[];
 }
 
-type State = { error: string | null; submitted: boolean; key: string | null };
+type State = { error: string | null; submitted: boolean; key: string | null; stale?: boolean };
 
 export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
   const router = useRouter();
@@ -55,6 +55,7 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           await router.refresh();
         } catch (refreshErr) {
           console.error("Failed to refresh dashboard after key creation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+          return { error: null, submitted: true, key: data.key, stale: true };
         }
         return { error: null, submitted: true, key: data.key };
       } catch {
@@ -107,6 +108,11 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
           <code className="block text-xs font-mono bg-white border border-emerald-200 px-2 py-1 rounded break-all select-all">
             {state.key}
           </code>
+          {state.stale && (
+            <p className="text-xs text-amber-600">
+              The key list may be stale — reload the page to see the latest keys.
+            </p>
+          )}
         </div>
       )}
     </form>
@@ -118,7 +124,7 @@ interface RevokeKeyButtonProps {
   keyPrefix: string;
 }
 
-type RevokeState = { error: string | null };
+type RevokeState = { error: string | null; stale?: boolean };
 
 export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
   const router = useRouter();
@@ -137,6 +143,7 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           await router.refresh();
         } catch (refreshErr) {
           console.error("Failed to refresh dashboard after key revocation:", refreshErr instanceof Error ? refreshErr.message : String(refreshErr));
+          return { error: null, stale: true };
         }
         return { error: null };
       } catch (err) {
@@ -169,6 +176,11 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
       {state.error && (
         <p className="text-xs text-red-600" role="alert">
           {state.error}
+        </p>
+      )}
+      {state.stale && !state.error && (
+        <p className="text-xs text-amber-600">
+          Key revoked — reload the page to update the list.
         </p>
       )}
     </div>
