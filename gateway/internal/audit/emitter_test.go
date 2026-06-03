@@ -173,7 +173,8 @@ func TestEmit_AllActorTypes(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()
 
-	for _, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin, audit.ActorSystem} {
+	// Customer and admin events carry a non-empty ActorID.
+	for _, at := range []audit.ActorType{audit.ActorCustomer, audit.ActorAdmin} {
 		t.Run(string(at), func(t *testing.T) {
 			err := audit.Emit(ctx, db, audit.Event{
 				ActorType:  at,
@@ -186,6 +187,32 @@ func TestEmit_AllActorTypes(t *testing.T) {
 				t.Errorf("Emit with actor_type=%q: %v", at, err)
 			}
 		})
+	}
+
+	// System events must have empty ActorID (background jobs have no individual actor).
+	t.Run(string(audit.ActorSystem), func(t *testing.T) {
+		err := audit.Emit(ctx, db, audit.Event{
+			ActorType:  audit.ActorSystem,
+			ActorID:    "",
+			Action:     "test.event",
+			TargetType: strPtr("resource"),
+			TargetID:   strPtr("resource-id"),
+		})
+		if err != nil {
+			t.Errorf("Emit with actor_type=%q and empty actor_id: %v", audit.ActorSystem, err)
+		}
+	})
+}
+
+func TestEmit_RejectsNonEmptyActorIDForSystem(t *testing.T) {
+	// nil pool is safe: validation fires before any DB call.
+	err := audit.Emit(context.Background(), nil, audit.Event{
+		ActorType: audit.ActorSystem,
+		ActorID:   "should-not-have-id",
+		Action:    "system.test",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-empty actor_id with actor_type system, got nil")
 	}
 }
 

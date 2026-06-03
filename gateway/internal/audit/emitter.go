@@ -59,6 +59,11 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType != ActorSystem && e.ActorID == "" {
 		return fmt.Errorf("audit: actor_id must not be empty for actor_type %q", e.ActorType)
 	}
+	// Symmetric: system events must NOT carry an ActorID; a non-empty ActorID on a
+	// system event indicates a caller bug (e.g. passing a customer ID to a background job).
+	if e.ActorType == ActorSystem && e.ActorID != "" {
+		return fmt.Errorf("audit: actor_id must be empty for actor_type %q", e.ActorType)
+	}
 	var detailsJSON []byte
 	if e.Details != nil {
 		b, err := json.Marshal(e.Details)

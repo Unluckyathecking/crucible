@@ -236,29 +236,32 @@ export async function listAuditEvents(
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
-  // Per-branch subquery limits let Postgres use idx_audit_actor_id and idx_audit_target_id
-  // for efficient index scans. Without them, Postgres must materialize both branches before
-  // the outer LIMIT applies. actor_id = $1 uses = (not IS NOT DISTINCT FROM) so the b-tree
-  // index is used directly; customerId is always a non-null UUID.
+  // CTEs give each branch its own LIMIT so Postgres uses idx_audit_actor_id and
+  // idx_audit_target_id for efficient per-branch index scans. In PostgreSQL 12+,
+  // single-reference CTEs are inlined by default (NOT MATERIALIZED), so the planner
+  // treats them identically to subqueries. actor_id = $1 uses = (not IS NOT DISTINCT
+  // FROM) so the b-tree index is used directly; customerId is always a non-null UUID.
   const r = await pool.query<AuditEventRow>(
-    `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM (
+    `WITH actor_events AS (
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE actor_id = $1
        ORDER BY created_at DESC
        LIMIT $2
-     ) actor_events
-     UNION ALL
-     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
-     FROM (
+     ),
+     target_events AS (
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE target_id = $1
          AND actor_id IS DISTINCT FROM $1
        ORDER BY created_at DESC
        LIMIT $2
-     ) target_events
+     )
+     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM actor_events
+     UNION ALL
+     SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
+     FROM target_events
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, clampedLimit],
