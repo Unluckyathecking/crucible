@@ -15,20 +15,29 @@ import (
 
 // newTestPostgres returns a pgxpool connected to the local Postgres instance or
 // skips the test if unreachable. Mirrors the helper in gateway/internal/auth.
+// If TEST_DATABASE_URL is explicitly set, connection failures are fatal (not skip)
+// so CI configuration errors surface immediately rather than silently passing.
 func newTestPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
+	explicit := dsn != ""
+	if !explicit {
 		dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
+		if explicit {
+			t.Fatalf("TEST_DATABASE_URL set but postgres unavailable: %v", err)
+		}
 		t.Skipf("postgres unavailable, skipping: %v", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
+		if explicit {
+			t.Fatalf("TEST_DATABASE_URL set but postgres ping failed: %v", err)
+		}
 		t.Skipf("postgres ping failed, skipping: %v", err)
 	}
 	t.Cleanup(pool.Close)

@@ -14,7 +14,7 @@ export async function DELETE(
     const { id } = await params;
     // Reject non-UUID path segments before hitting Postgres — otherwise pgx
     // throws "invalid input syntax for type uuid" which the catch turns into 500.
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
       return new Response("Not found", { status: 404 });
     }
     const customer = await ensureCustomer(session.user.email);

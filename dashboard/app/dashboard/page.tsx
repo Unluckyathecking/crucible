@@ -7,7 +7,10 @@ import { SignOutButton } from "./sign-out-button";
 export const dynamic = "force-dynamic";
 
 function getAuditEventLabel(e: AuditEventRow): string {
-  const details = e.details as Record<string, unknown> | null;
+  const details =
+    typeof e.details === "object" && e.details !== null
+      ? (e.details as Record<string, unknown>)
+      : null;
   if (typeof details?.prefix === "string") return details.prefix;
   if (typeof details?.name === "string") return details.name;
   if (e.target_type === "api_key" && e.target_id) return e.target_id.slice(0, 8) + "…";

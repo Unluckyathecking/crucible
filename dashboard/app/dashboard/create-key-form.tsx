@@ -124,10 +124,6 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
-        // Small delay lets any in-flight Postgres commit settle before the
-        // server component re-fetches, avoiding a read-after-write race where
-        // the revoked key still appears active for one render cycle.
-        await new Promise((r) => setTimeout(r, 150));
         router.refresh();
         return { error: null };
       } catch {
