@@ -211,7 +211,8 @@ describe("DELETE /api/keys/[id] route.ts — CSRF guard drift-detection", () => 
   it("route enforces X-Requested-With header as CSRF signal before auth check", () => {
     // The header check must exist in the route source.
     expect(routeSrc).toContain("X-Requested-With");
-    expect(routeSrc).toContain("XMLHttpRequest");
+    // Route uses case-insensitive comparison via .toLowerCase() against "xmlhttprequest".
+    expect(routeSrc).toContain("xmlhttprequest");
   });
 
   it("CSRF check returns 403 before reaching auth logic", () => {
