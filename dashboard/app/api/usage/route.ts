@@ -26,13 +26,14 @@ export async function GET(request: Request): Promise<Response> {
     const fromParam = url.searchParams.get("from");
     const toParam = url.searchParams.get("to");
     const operationRaw = url.searchParams.get("operation");
-    if (operationRaw !== null && operationRaw.length > 128) {
+    const operationTrimmed = operationRaw?.trim();
+    if (operationTrimmed !== undefined && operationTrimmed.length > 128) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
-    const operationParam = operationRaw || undefined;
+    const operationParam = operationTrimmed || undefined;
 
     const now = new Date();
     let from = new Date(now.getTime() - DEFAULT_DAYS * 24 * 60 * 60 * 1000);
@@ -100,7 +101,7 @@ export async function GET(request: Request): Promise<Response> {
     });
     return new Response(JSON.stringify({ error: "Internal server error" }), {
       status: 500,
-      headers: { "content-type": "application/json", "x-error-id": errorId },
+      headers: { "content-type": "application/json", "cache-control": "no-store", "x-error-id": errorId },
     });
   }
 }

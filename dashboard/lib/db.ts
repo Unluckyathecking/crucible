@@ -275,6 +275,9 @@ export async function usageByOperation(
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
     return [];
   }
+  if (from.getTime() > to.getTime()) {
+    return [];
+  }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && effectiveOp.length > 128) {
     return [];
@@ -318,6 +321,9 @@ export async function listUsageEvents(
     return [];
   }
   if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+    return [];
+  }
+  if (from.getTime() > to.getTime()) {
     return [];
   }
   const effectiveOp = operation?.trim() || undefined;
