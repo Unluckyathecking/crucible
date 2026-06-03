@@ -37,7 +37,10 @@ export default async function DashboardPage() {
     listAuditEvents(customer.id),
   ]);
   const { totalUnits, totalEvents } = opBreakdown.reduce(
-    (acc, r) => ({ totalUnits: acc.totalUnits + r.total_billable_units, totalEvents: acc.totalEvents + r.event_count }),
+    (acc, r) => ({
+      totalUnits: Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units),
+      totalEvents: Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count),
+    }),
     { totalUnits: 0, totalEvents: 0 },
   );
 
