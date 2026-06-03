@@ -10,6 +10,7 @@ interface CreateKeyFormProps {
 type State = { error: string | null; submitted: boolean; key: string | null };
 
 export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
+  const router = useRouter();
   const [state, formAction, isPending] = useActionState(
     async (_prev: State, formData: FormData): Promise<State> => {
       const name = (formData.get("name") as string)?.trim() ?? "";
@@ -50,6 +51,7 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
         if (typeof data.key !== "string") {
           return { error: "Invalid response from server", submitted: false, key: null };
         }
+        await router.refresh();
         return { error: null, submitted: true, key: data.key };
       } catch {
         return { error: "Network error. Try again.", submitted: false, key: null };
@@ -127,7 +129,7 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
-        router.refresh();
+        await router.refresh();
         return { error: null };
       } catch (err) {
         console.error("RevokeKeyButton fetch failed:", err instanceof Error ? err.message : String(err));

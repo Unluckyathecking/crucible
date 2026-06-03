@@ -39,7 +39,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 		return fmt.Errorf("audit: invalid actor_type %q: must be customer|admin|system", e.ActorType)
 	}
 	if e.Action == "" {
-		return fmt.Errorf("audit: action must not be empty")
+		return fmt.Errorf("audit: action must not be empty (got %q)", e.Action)
 	}
 	// System events originate from background jobs with no individual actor; customer and
 	// admin events must always carry an ActorID so audit rows remain attributable.

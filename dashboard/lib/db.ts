@@ -119,115 +119,76 @@ export async function revokeApiKey(
   keyId: string,
   customerId: string,
 ): Promise<"revoked" | "already_revoked" | "not_found" | "forbidden"> {
-  // Single atomic CTE: UPDATE + ownership classification in one round-trip.
-  // The two-query pattern (UPDATE then SELECT) has a TOCTOU race where the key
-  // could be deleted or transferred between the queries, causing "forbidden" to
-  // incorrectly return "already_revoked". The CTE runs at a single snapshot.
-  //
-  // The `found` subquery reads api_keys at the pre-UPDATE snapshot (CTE data-modification
-  // semantics in Postgres), so it sees the key's original state regardless of the UPDATE result.
-  //
-  // CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
-  // ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
-  //
-  // Scalar subqueries over the two CTEs are safe here: `updated` returns 0 or 1 row
-  // (UPDATE on PK with WHERE), and `found` returns 0 or 1 row (SELECT on PK).
-  // The four cases are mutually exclusive:
-  //   1. 'revoked'        — UPDATE succeeded; updated has 1 row.
-  //   2. 'not_found'      — key does not exist; found has 0 rows.
-  //   3. 'forbidden'      — key exists but belongs to another customer.
-  //   4. 'already_revoked'— key exists, owned by caller, but revoked_at was already set.
-  const r = await pool.query<{ result: string; prefix: string | null; found_prefix: string | null }>(
-    `WITH updated AS (
-       UPDATE api_keys SET revoked_at = NOW()
-       WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
-       RETURNING prefix
-     ),
-     found AS (
-       SELECT customer_id, prefix FROM api_keys WHERE id = $1
-     )
-     SELECT
-       CASE
-         WHEN (SELECT prefix FROM updated) IS NOT NULL THEN 'revoked'
-         WHEN NOT EXISTS (SELECT 1 FROM found) THEN 'not_found'
-         WHEN (SELECT customer_id FROM found) <> $2 THEN 'forbidden'
-         ELSE 'already_revoked'
-       END AS result,
-       (SELECT prefix FROM updated) AS prefix,
-       (SELECT prefix FROM found) AS found_prefix`,
+  // Phase 1: attempt the revocation. If the key exists, belongs to this customer,
+  // and is not yet revoked, the UPDATE succeeds and RETURNING gives us the prefix.
+  const updateResult = await pool.query<{ prefix: string }>(
+    `UPDATE api_keys SET revoked_at = NOW()
+     WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
+     RETURNING prefix`,
     [keyId, customerId],
   );
 
-  // The scalar subqueries and CASE guarantee exactly one row. Guard defensively so
-  // an unexpected query plan change throws clearly instead of crashing on undefined.
-  if (r.rows.length === 0) {
-    throw new Error("revokeApiKey query returned no rows");
-  }
-  const { result: rawResult, prefix, found_prefix } = r.rows[0];
-
-  // Validate at runtime so a SQL change that introduces a new CASE branch
-  // is caught immediately rather than silently falling through to the caller.
-  const VALID_RESULTS = ["revoked", "already_revoked", "not_found", "forbidden"] as const;
-  type RevokeResult = (typeof VALID_RESULTS)[number];
-  // Type guard lets TypeScript narrow rawResult without a cast.
-  const isRevokeResult = (s: string): s is RevokeResult =>
-    (VALID_RESULTS as readonly string[]).includes(s);
-  if (!isRevokeResult(rawResult)) {
-    throw new Error(`Unexpected revokeApiKey result: ${rawResult}`);
-  }
-  const result = rawResult; // narrowed to RevokeResult by the type guard above
-
-  if (result === "revoked") {
-    if (prefix) {
-      // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
-      // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
-      // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
-      const redis = getRedis();
-      if (redis) {
-        void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
-          console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
-        });
-      }
-      // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-      void emitAuditEvent(pool, {
-        actorType: "customer",
-        actorId: customerId,
-        action: "api_key.revoked",
-        targetType: "api_key",
-        targetId: keyId,
-        details: { prefix },
+  if (updateResult.rows.length > 0) {
+    const { prefix } = updateResult.rows[0];
+    // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
+    // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
+    // Fire-and-forget — a Redis failure must not fail the revocation already in Postgres.
+    const redis = getRedis();
+    if (redis) {
+      void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
+        console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
       });
     }
+    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+    void emitAuditEvent(pool, {
+      actorType: "customer",
+      actorId: customerId,
+      action: "api_key.revoked",
+      targetType: "api_key",
+      targetId: keyId,
+      details: { prefix },
+    });
     return "revoked";
   }
 
-  if (result === "already_revoked") {
-    if (found_prefix) {
-      // The first revocation may have succeeded in Postgres but transiently failed Redis.
-      // Attempt DEL again so a stale cache entry cannot extend the key's validity.
-      // already_revoked is only returned by the CASE when customer_id = $2 (the
-      // forbidden branch fires first for cross-customer keys), so found_prefix is
-      // always this customer's key.
-      const alreadyRedis = getRedis();
-      if (alreadyRedis) {
-        void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${found_prefix}`).catch((err) => {
-          console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
-        });
-      }
-      // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-      void emitAuditEvent(pool, {
-        actorType: "customer",
-        actorId: customerId,
-        action: "api_key.revoke_attempt",
-        targetType: "api_key",
-        targetId: keyId,
-        details: { prefix: found_prefix, idempotent: true },
-      });
-    }
-    return "already_revoked";
+  // Phase 2: UPDATE touched 0 rows — distinguish not_found / forbidden / already_revoked.
+  // A separate query uses a fresh snapshot; concurrent deletions are correctly visible.
+  // Does not filter by customer_id so ownership vs non-existence is distinguishable.
+  const lookupResult = await pool.query<{ customer_id: string; prefix: string | null }>(
+    `SELECT customer_id, prefix FROM api_keys WHERE id = $1`,
+    [keyId],
+  );
+
+  if (lookupResult.rows.length === 0) {
+    return "not_found";
   }
 
-  return result;
+  const { customer_id: foundCustomerId, prefix: foundPrefix } = lookupResult.rows[0];
+  if (foundCustomerId !== customerId) {
+    return "forbidden";
+  }
+
+  // Row exists, owned by caller, but revoked_at IS NOT NULL — idempotent re-revocation.
+  if (foundPrefix) {
+    // The first revocation may have succeeded in Postgres but transiently failed Redis.
+    // Attempt DEL again so a stale cache entry cannot extend the key's validity.
+    const alreadyRedis = getRedis();
+    if (alreadyRedis) {
+      void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${foundPrefix}`).catch((err) => {
+        console.error("redis cache invalidation failed for already_revoked key", { prefix: foundPrefix, error: err instanceof Error ? err.message : String(err) });
+      });
+    }
+    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+    void emitAuditEvent(pool, {
+      actorType: "customer",
+      actorId: customerId,
+      action: "api_key.revoked",
+      targetType: "api_key",
+      targetId: keyId,
+      details: { prefix: foundPrefix, idempotent: true },
+    });
+  }
+  return "already_revoked";
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
@@ -247,9 +208,9 @@ export async function listAuditEvents(
   if (!customerId || !UUID_RE.test(customerId)) {
     return [];
   }
-  // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
-  // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
-  const safeLimit = Number.isFinite(limit) ? limit : 20;
+  // Guard against non-numbers and NaN/Infinity: Math.max/min propagate NaN silently,
+  // which would cause Postgres to receive NaN as the LIMIT parameter and return a query error.
+  const safeLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 20;
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // In PostgreSQL 12+, single-reference CTEs are inlined by default (NOT MATERIALIZED),
   // so the planner treats them identically to subqueries and can push the outer LIMIT
