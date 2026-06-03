@@ -99,7 +99,7 @@ export async function insertApiKey(
     action: "api_key.created",
     targetType: "api_key",
     targetId: keyId,
-    details: { name: name || null, prefix },
+    details: { name, prefix },
   });
   return keyId;
 }
@@ -218,7 +218,7 @@ export async function revokeApiKey(
       void emitAuditEvent(pool, {
         actorType: "customer",
         actorId: customerId,
-        action: "api_key.revoked",
+        action: "api_key.revoke_attempt",
         targetType: "api_key",
         targetId: keyId,
         details: { prefix: found_prefix, idempotent: true },
@@ -268,7 +268,7 @@ export async function listAuditEvents(
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE target_id = $1
-         AND actor_id IS DISTINCT FROM $1
+         AND actor_id IS DISTINCT FROM $1 -- null-safe <>: includes system events (NULL actor_id)
      )
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM actor_events

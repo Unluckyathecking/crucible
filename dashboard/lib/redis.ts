@@ -40,12 +40,15 @@ export function getRedis(): Redis | null {
   // Node.js runs on a single-threaded event loop; getRedis() is synchronous (no
   // await), so two callers cannot interleave here. No lock or atomic swap is needed.
   if (global._crucible_redis && global._crucible_redis_url !== url) {
-    // Remove the error listener before disconnecting so the old client's socket-close
-    // events don't produce spurious log noise after the client is replaced.
-    global._crucible_redis.removeAllListeners("error");
-    global._crucible_redis.disconnect();
+    // Clear globals first so any concurrent getRedis() call sees no client and
+    // creates a fresh one rather than reusing the stale client being torn down.
+    const oldRedis = global._crucible_redis;
     global._crucible_redis = undefined;
     global._crucible_redis_url = undefined;
+    // Remove the error listener before disconnecting so the old client's socket-close
+    // events don't produce spurious log noise after the client is replaced.
+    oldRedis.removeAllListeners("error");
+    oldRedis.disconnect();
   }
 
   if (!global._crucible_redis) {

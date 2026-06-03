@@ -41,7 +41,7 @@ export async function DELETE(
       case "revoked":
       case "already_revoked":
         // Both are success — idempotent.
-        return new Response(null, { status: 200 });
+        return new Response(null, { status: 200, headers: { "cache-control": "no-store" } });
       default: {
         // Compile-time exhaustiveness: TypeScript flags this if a new RevokeResult
         // variant is added without updating this switch.
