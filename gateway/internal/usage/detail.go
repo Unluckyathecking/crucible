@@ -30,6 +30,9 @@ type OperationAggregate struct {
 // QueryByOperation returns per-operation aggregates from usage_events for customerID
 // within [from, to) — from is inclusive, to is exclusive. Pass a non-empty operation to filter to one operation only.
 func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, from, to time.Time, operation string) ([]OperationAggregate, error) {
+	// Normalize to UTC so Sub() measures wall-clock seconds, not local-timezone offsets.
+	from = from.UTC()
+	to = to.UTC()
 	if from.IsZero() || to.IsZero() {
 		return nil, fmt.Errorf("from and to must be non-zero")
 	}

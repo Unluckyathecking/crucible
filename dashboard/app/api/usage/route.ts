@@ -99,7 +99,7 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    if (to > tomorrowMidnight) {
+    if (to.getTime() > tomorrowMidnight.getTime()) {
       return new Response(JSON.stringify({ error: "'to' date cannot be after tomorrow" }), {
         status: 400,
         headers: { "content-type": "application/json" },

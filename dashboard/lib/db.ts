@@ -301,21 +301,9 @@ export async function usageByOperation(
   operation?: string,
 ): Promise<UsageOperationRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation,
-                  COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
-                  COUNT(*)::text AS event_count
-           FROM usage_events
-           WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
-  if (effectiveOp) {
-    args.push(effectiveOp);
-    q += ` AND operation = $${args.length}`;
-  }
-  args.push(MAX_USAGE_OPERATIONS_LIMIT);
-  q += ` GROUP BY operation ORDER BY operation LIMIT $${args.length}`;
-  const r = await pool.query<{ operation: string; total_billable_units: string; event_count: string }>(q, args);
+  type Row = { operation: string; total_billable_units: string; event_count: string };
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  return r.rows.map((row) => {
+  const mapRow = (row: Row): UsageOperationRow => {
     const rawUnits = BigInt(row.total_billable_units);
     const rawCount = BigInt(row.event_count);
     return {
@@ -323,7 +311,29 @@ export async function usageByOperation(
       total_billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
       event_count: rawCount > cap ? Number.MAX_SAFE_INTEGER : Number(rawCount),
     };
-  });
+  };
+  if (effectiveOp) {
+    const r = await pool.query<Row>(
+      `SELECT operation,
+              COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
+              COUNT(*)::text AS event_count
+       FROM usage_events
+       WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
+       GROUP BY operation ORDER BY operation LIMIT $5`,
+      [customerId, from, to, effectiveOp, MAX_USAGE_OPERATIONS_LIMIT],
+    );
+    return r.rows.map(mapRow);
+  }
+  const r = await pool.query<Row>(
+    `SELECT operation,
+            COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
+            COUNT(*)::text AS event_count
+     FROM usage_events
+     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
+     GROUP BY operation ORDER BY operation LIMIT $4`,
+    [customerId, from, to, MAX_USAGE_OPERATIONS_LIMIT],
+  );
+  return r.rows.map(mapRow);
 }
 
 export interface UsageEventRow {
@@ -343,24 +353,32 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, billable_units::text AS billable_units, created_at
-           FROM usage_events
-           WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
-  if (effectiveOp) {
-    args.push(effectiveOp);
-    q += ` AND operation = $${args.length}`;
-  }
-  args.push(MAX_USAGE_EVENTS_LIMIT);
-  q += ` ORDER BY created_at DESC LIMIT $${args.length}`;
-  const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
+  type Row = { operation: string; billable_units: string; created_at: Date };
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  return r.rows.map((row) => {
+  const mapRow = (row: Row): UsageEventRow => {
     const rawUnits = BigInt(row.billable_units);
     return {
       operation: row.operation,
       billable_units: rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits),
       created_at: row.created_at,
     };
-  });
+  };
+  if (effectiveOp) {
+    const r = await pool.query<Row>(
+      `SELECT operation, billable_units::text AS billable_units, created_at
+       FROM usage_events
+       WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
+       ORDER BY created_at DESC LIMIT $5`,
+      [customerId, from, to, effectiveOp, MAX_USAGE_EVENTS_LIMIT],
+    );
+    return r.rows.map(mapRow);
+  }
+  const r = await pool.query<Row>(
+    `SELECT operation, billable_units::text AS billable_units, created_at
+     FROM usage_events
+     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
+     ORDER BY created_at DESC LIMIT $4`,
+    [customerId, from, to, MAX_USAGE_EVENTS_LIMIT],
+  );
+  return r.rows.map(mapRow);
 }

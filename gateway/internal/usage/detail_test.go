@@ -13,7 +13,7 @@ import (
 func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uuid.UUID, operation string, units int64) int64 {
 	t.Helper()
 	ctx := context.Background()
-	reqID := "req-" + uuid.New().String()
+	reqID := uuid.New().String()
 	var id int64
 	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
@@ -325,6 +325,15 @@ func TestQueryByOperation_limitCap(t *testing.T) {
 	}
 	if len(result) != maxUsageOperationsLimit {
 		t.Errorf("expected result capped at %d rows, got %d", maxUsageOperationsLimit, len(result))
+	}
+	if result[0].Operation != "op-0000" {
+		t.Errorf("expected first operation op-0000 (alphabetical order), got %s", result[0].Operation)
+	}
+	if result[len(result)-1].Operation != fmt.Sprintf("op-%04d", maxUsageOperationsLimit-1) {
+		t.Errorf("expected last operation op-%04d, got %s", maxUsageOperationsLimit-1, result[len(result)-1].Operation)
+	}
+	if result[0].TotalBillableUnits != 1 || result[0].EventCount != 1 {
+		t.Errorf("expected units=1, count=1 for first row, got %+v", result[0])
 	}
 }
 
