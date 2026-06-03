@@ -110,7 +110,7 @@ export default async function DashboardPage() {
                 <tfoot>
                   <tr className="text-zinc-600 font-medium">
                     <td className="pt-2 pr-4">Total</td>
-                    <td className="pt-2 pr-4 text-right tabular-nums">{usage.toLocaleString()}</td>
+                    <td className="pt-2 pr-4 text-right tabular-nums">{opBreakdown.reduce((s, r) => s + r.total_billable_units, 0).toLocaleString()}</td>
                     <td className="pt-2 text-right tabular-nums text-zinc-500">
                       {opBreakdown.reduce((s, r) => s + r.event_count, 0).toLocaleString()}
                     </td>

@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { ensureCustomer, listUsageEvents } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
+const MAX_RANGE_DAYS = 90;
 
 export async function GET(request: Request): Promise<Response> {
   try {
@@ -42,6 +43,19 @@ export async function GET(request: Request): Promise<Response> {
       to = parsed;
     }
 
+    if (from >= to) {
+      return new Response(JSON.stringify({ error: "'from' must be before 'to'" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+      return new Response(JSON.stringify({ error: `date range exceeds maximum of ${MAX_RANGE_DAYS} days` }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     const rows = await listUsageEvents(customer.id, from, to, operationParam);
 
     return new Response(JSON.stringify(rows), {
@@ -53,9 +67,9 @@ export async function GET(request: Request): Promise<Response> {
       errorId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return new Response(JSON.stringify({ error: "internal server error", errorId }), {
+    return new Response("Internal server error", {
       status: 500,
-      headers: { "content-type": "application/json", "x-error-id": errorId },
+      headers: { "x-error-id": errorId },
     });
   }
 }

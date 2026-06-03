@@ -17,6 +17,7 @@ if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 const AUTH_CACHE_PREFIX = "auth:";
 const MAX_AUDIT_LIMIT = 100;
 const AUDIT_LOOKBACK_DAYS = 90;
+const MAX_USAGE_EVENTS_LIMIT = 1000;
 
 export interface Customer {
   id: string;
@@ -258,7 +259,8 @@ export interface UsageOperationRow {
 }
 
 // usageByOperation returns per-operation aggregates from usage_events for a customer
-// within [from, to]. Pass a non-empty operation to filter to one operation only.
+// over the half-open interval [from, to) — from is inclusive, to is exclusive.
+// Pass a non-empty operation to filter to one operation only.
 // Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
 export async function usageByOperation(
   customerId: string,
@@ -274,7 +276,7 @@ export async function usageByOperation(
                   COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
                   COUNT(*)::text AS event_count
            FROM usage_events
-           WHERE customer_id = $1 AND created_at >= $2 AND created_at <= $3`;
+           WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (operation) {
     args.push(operation);
     q += ` AND operation = $${args.length}`;
@@ -294,8 +296,9 @@ export interface UsageEventRow {
   created_at: Date;
 }
 
-// listUsageEvents returns raw usage_events rows for a customer within [from, to],
-// newest first, capped at 1000 rows. Pass a non-empty operation to filter by operation.
+// listUsageEvents returns raw usage_events rows for a customer over the half-open
+// interval [from, to) — from is inclusive, to is exclusive. Newest first,
+// capped at MAX_USAGE_EVENTS_LIMIT rows. Pass a non-empty operation to filter.
 // Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
 export async function listUsageEvents(
   customerId: string,
@@ -309,12 +312,12 @@ export async function listUsageEvents(
   const args: unknown[] = [customerId, from, to];
   let q = `SELECT operation, billable_units::text AS billable_units, created_at
            FROM usage_events
-           WHERE customer_id = $1 AND created_at >= $2 AND created_at <= $3`;
+           WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (operation) {
     args.push(operation);
     q += ` AND operation = $${args.length}`;
   }
-  q += ` ORDER BY created_at DESC LIMIT 1000`;
+  q += ` ORDER BY created_at DESC LIMIT ${MAX_USAGE_EVENTS_LIMIT}`;
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
   return r.rows.map((row) => ({
     operation: row.operation,

@@ -18,9 +18,10 @@ type OperationAggregate struct {
 // QueryByOperation returns per-operation aggregates from usage_events for customerID
 // within [from, to]. Pass a non-empty operation to filter to one operation only.
 func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, from, to time.Time, operation string) ([]OperationAggregate, error) {
+	// Half-open interval [from, to): from is inclusive, to is exclusive.
 	q := `SELECT operation, SUM(billable_units)::bigint, COUNT(*)::bigint
 	      FROM usage_events
-	      WHERE customer_id = $1 AND created_at >= $2 AND created_at <= $3`
+	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`
 	args := []any{customerID, from, to}
 	if operation != "" {
 		args = append(args, operation)
