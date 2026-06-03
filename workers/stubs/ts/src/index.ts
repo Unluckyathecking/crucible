@@ -23,7 +23,7 @@ import type { WorkerHandler } from '@crucible/worker-sdk-ts';
 // integer, it returns that as billable_units — useful for testing per-unit billing end-to-end.
 const handler: WorkerHandler = (req) => {
   let units = 1;
-  const raw = req.metadata['units'];
+  const raw = req.metadata?.['units'];
   if (raw !== undefined) {
     const n = parseInt(raw, 10);
     if (Number.isFinite(n) && n >= 1) units = n;
