@@ -51,6 +51,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	}
 	// Truncate to midnight for the calendar-day range check so that a 90-day window is
 	// measured in whole days regardless of the time-of-day component of the inputs.
+	// Strict greater-than: exactly maxUsageRangeDays is allowed (the limit is inclusive).
+	// TestQueryByOperation_rangeExactlyAtLimit documents and verifies this boundary.
 	if truncateToUTCMidnight(to).Sub(truncateToUTCMidnight(from)) > maxUsageRangeDays*24*time.Hour {
 		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}
@@ -93,7 +95,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 		result = append(result, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query usage by operation: %w", err)
 	}
 	return result, nil
 }

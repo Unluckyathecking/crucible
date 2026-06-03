@@ -264,6 +264,7 @@ function validateUsageQueryParams(
   if (from.getTime() > to.getTime()) {
     throw new Error("from must not be after to");
   }
+  // Strict greater-than: exactly MAX_USAGE_RANGE_DAYS is allowed (the limit is inclusive).
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_MS) {
     throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
   }
