@@ -279,7 +279,7 @@ function validateUsageQueryParams(
   }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
-    throw new Error("operation too long");
+    throw new Error(`operation too long (max ${MAX_OPERATION_LENGTH} characters)`);
   }
   return { effectiveOp };
 }
@@ -338,13 +338,11 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  // 9007199254740991 = Number.MAX_SAFE_INTEGER: inlined as a SQL integer literal
-  // so LEAST clamps before Number() ever sees the value, with no extra $N parameter
-  // that could collide with the dynamic operation/limit placeholders below.
   const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, LEAST(billable_units::bigint, 9007199254740991)::text AS billable_units, created_at
+  let q = `SELECT operation, LEAST(billable_units::bigint, $${args.length + 1})::text AS billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
+  args.push(Number.MAX_SAFE_INTEGER);
   if (effectiveOp) {
     args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
