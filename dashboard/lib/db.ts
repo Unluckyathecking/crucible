@@ -224,14 +224,17 @@ export async function revokeApiKey(
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 //
 // UNION ALL gives the planner two separate index scans (idx_audit_actor_id for the
-// actor branch, idx_audit_target_id for the target branch). Duplicates between the two
-// branches are impossible: the WHERE conditions are mutually exclusive — a row satisfying
-// `actor_id = $1` cannot satisfy `actor_id IS DISTINCT FROM $1` simultaneously. UNION ALL
-// avoids the dedup sort/hash overhead of UNION without any correctness risk.
+// actor branch, idx_audit_target_id for the target branch). No row can appear in both
+// branches: a single actor_id value cannot both equal customerId (actor branch) and be
+// DISTINCT from customerId (target branch) at the same time. UNION ALL avoids the
+// dedup sort/hash overhead of UNION without any correctness risk.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
+  if (!customerId) {
+    throw new Error("customerId is required");
+  }
   // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
   const safeLimit = Number.isFinite(limit) ? limit : 20;

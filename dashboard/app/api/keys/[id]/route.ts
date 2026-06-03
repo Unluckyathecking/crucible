@@ -11,8 +11,9 @@ export async function DELETE(
   let keyId: string | undefined;
   let customerId: string | undefined;
   try {
-    // Reject cross-origin form submissions: browsers cannot set X-Requested-With
-    // on cross-origin requests without a preflight (which the server doesn't allow).
+    // Lightweight CSRF signal: custom headers require CORS preflight on cross-origin
+    // requests, making it harder for cross-origin pages to trigger this endpoint.
+    // Primary defense is the session cookie's SameSite attribute; this is defense-in-depth.
     if (request.headers.get("X-Requested-With") !== "XMLHttpRequest") {
       return new Response("Forbidden", { status: 403 });
     }

@@ -38,6 +38,9 @@ export function getRedis(): Redis | null {
   // Without URL tracking, a changed REDIS_URL would silently return the stale client
   // created for the old address, causing cache invalidation to hit the wrong server.
   if (global._crucible_redis && global._crucible_redis_url !== url) {
+    // Remove the error listener before disconnecting so the old client's socket-close
+    // events don't produce spurious log noise after the client is replaced.
+    global._crucible_redis.removeAllListeners("error");
     global._crucible_redis.disconnect();
     global._crucible_redis = undefined;
     global._crucible_redis_url = undefined;
