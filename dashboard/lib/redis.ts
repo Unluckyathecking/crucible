@@ -51,8 +51,7 @@ export function getRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) return null;
 
-  const urlLower = url.toLowerCase();
-  if (!urlLower.startsWith("redis://") && !urlLower.startsWith("rediss://")) {
+  if (!url.startsWith("redis://") && !url.startsWith("rediss://")) {
     console.error("REDIS_URL must start with redis:// or rediss://; skipping Redis client");
     return null;
   }
