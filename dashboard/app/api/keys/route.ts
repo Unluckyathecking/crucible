@@ -20,8 +20,13 @@ export async function POST(request: Request): Promise<Response> {
     let name = "";
     const contentType = request.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
-      const body = (await request.json()) as { name?: string };
-      name = (body.name || "").trim();
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+      name = ((body as { name?: string }).name || "").trim();
     } else {
       const formData = await request.formData();
       name = (formData.get("name") as string | undefined || "").trim();

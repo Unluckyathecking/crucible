@@ -11,8 +11,8 @@
  *      correct SQL patterns (ownership + idempotency guards), not a local mirror.
  *
  * Note: the CSRF guard (X-Requested-With: XMLHttpRequest check) is enforced in
- * route.ts before auth. It is not reproduced here because simulateDeleteRoute tests
- * DB-level semantics only. Verify the header check in route.ts directly.
+ * route.ts before auth. simulateDeleteRoute tests DB-level semantics only; the
+ * header check is covered by the drift-detection smoke test at the bottom of this file.
  */
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
@@ -198,5 +198,29 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
       /SELECT customer_id(?:,\s*\w+)*\s+FROM api_keys WHERE id = \$1(?!\s+AND)/,
     );
     expect(secondQueryMatch).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drift-detection smoke tests for route.ts — CSRF security control.
+// These assert the actual route source contains the guard so that removing it
+// fails a test rather than silently regressing. They do not execute the route.
+// ---------------------------------------------------------------------------
+describe("DELETE /api/keys/[id] route.ts — CSRF guard drift-detection", () => {
+  const routeSrc = fs.readFileSync(path.resolve(__dirname, "../route.ts"), "utf8");
+
+  it("route enforces X-Requested-With header as CSRF signal before auth check", () => {
+    // The header check must exist in the route source.
+    expect(routeSrc).toContain("X-Requested-With");
+    expect(routeSrc).toContain("XMLHttpRequest");
+  });
+
+  it("CSRF check returns 403 before reaching auth logic", () => {
+    // The 403 Forbidden response must appear before the auth() call in source order.
+    const csrfIdx = routeSrc.indexOf("X-Requested-With");
+    const forbiddenIdx = routeSrc.indexOf('"Forbidden"', csrfIdx);
+    const authIdx = routeSrc.indexOf("await auth()", csrfIdx);
+    expect(forbiddenIdx).toBeGreaterThan(csrfIdx);
+    expect(forbiddenIdx).toBeLessThan(authIdx);
   });
 });

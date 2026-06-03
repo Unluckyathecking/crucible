@@ -42,7 +42,8 @@ func nullActorID(actorType ActorType, id string) *string {
 	if actorType == ActorSystem {
 		return nil
 	}
-	return &id
+	s := id
+	return &s
 }
 
 // Emit writes one append-only row to audit_log.
