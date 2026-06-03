@@ -124,6 +124,10 @@ export function RevokeKeyButton({ keyId, keyPrefix }: RevokeKeyButtonProps) {
           const text = await res.text();
           return { error: text || "Failed to revoke key" };
         }
+        // router.refresh() is fire-and-forget: the RSC re-fetch happens
+        // asynchronously, so the key may briefly remain visible while the
+        // server re-renders. This is a cosmetic race — the key is already
+        // revoked in Postgres and the Redis cache entry has been cleared.
         router.refresh();
         return { error: null };
       } catch {

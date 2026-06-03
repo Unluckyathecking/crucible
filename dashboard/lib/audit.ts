@@ -1,8 +1,10 @@
 import type { Pool } from "pg";
 
-// AuditEvent mirrors audit_log and gateway/internal/audit.Event exactly.
-// Field set (actor_type, actor_id, action, target_type, target_id, details) must
-// stay byte-identical with the Go emitter — any rename here requires a matching rename there.
+// AuditEvent mirrors audit_log and gateway/internal/audit.Event.
+// The column set (actor_type, actor_id, action, target_type, target_id, details) must
+// stay in sync with the Go emitter — any rename here requires a matching rename there.
+// Note: unset optional fields (targetType, targetId, details) insert SQL NULL; the Go
+// zero value inserts an empty string. All current callers set these fields explicitly.
 export interface AuditEvent {
   actorType: "customer" | "admin" | "system";
   actorId: string;

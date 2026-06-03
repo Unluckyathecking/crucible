@@ -158,15 +158,17 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   const revokeSection = revokeMatch ? revokeMatch[0] : "";
 
   it("revokeApiKey SQL includes ownership guard (customer_id)", () => {
-    expect(src).toContain("customer_id");
+    // Checks revokeSection (not full src) so a missing guard in revokeApiKey
+    // is not masked by customer_id references in other functions.
+    expect(revokeSection).toContain("customer_id");
   });
 
   it("revokeApiKey SQL includes revoked_at IS NULL guard for idempotency", () => {
-    expect(src).toContain("revoked_at IS NULL");
+    expect(revokeSection).toContain("revoked_at IS NULL");
   });
 
-  it("revokeApiKey RETURNING prefix so Redis comment can reference it", () => {
-    expect(src).toContain("RETURNING id, prefix");
+  it("revokeApiKey RETURNING prefix so Redis cache invalidation can reference it", () => {
+    expect(revokeSection).toContain("RETURNING id, prefix");
   });
 
   it("revokeApiKey returns a typed result distinguishing already_revoked, not_found, and forbidden", () => {
