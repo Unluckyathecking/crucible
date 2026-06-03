@@ -339,10 +339,9 @@ export async function listUsageEvents(
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   const args: unknown[] = [customerId, from, to];
-  let q = `SELECT operation, LEAST(billable_units::bigint, $${args.length + 1})::text AS billable_units, created_at
+  let q = `SELECT operation, billable_units::text AS billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
-  args.push(Number.MAX_SAFE_INTEGER);
   if (effectiveOp) {
     args.push(effectiveOp);
     q += ` AND operation = $${args.length}`;
