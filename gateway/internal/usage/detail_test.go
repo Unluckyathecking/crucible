@@ -16,20 +16,6 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 	ctx := context.Background()
 	reqID := uuid.New().String()
 	var id int64
-	// Register cleanup before insert: closure captures id by reference, so the
-	// DELETE uses the value assigned by Scan. Guard against id==0 (zero value)
-	// in case Scan never ran — BIGSERIAL starts at 1 so 0 is never a real row id,
-	// but the guard keeps the intent explicit.
-	t.Cleanup(func() {
-		if id == 0 {
-			return
-		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
-			t.Errorf("cleanup failed for usage_event %d: %v", id, err)
-		}
-	})
 	err := pool.QueryRow(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -38,6 +24,13 @@ func insertUsageEvent(t testing.TB, pool *pgxpool.Pool, customerID, apiKeyID uui
 	if err != nil {
 		t.Fatalf("insert usage_event: %v", err)
 	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, `DELETE FROM usage_events WHERE id = $1`, id); err != nil {
+			t.Errorf("cleanup failed for usage_event %d: %v", id, err)
+		}
+	})
 	return id
 }
 

@@ -102,14 +102,14 @@ export async function insertApiKey(
   );
   const keyId = r.rows[0].id;
   // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-  void emitAuditEvent(pool, {
+  emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
     action: "api_key.created",
     targetType: "api_key",
     targetId: keyId,
     details: { name, prefix },
-  });
+  }).catch(() => {});
   return keyId;
 }
 
@@ -158,14 +158,14 @@ export async function revokeApiKey(
     // never roll back a completed Postgres revocation. Including the audit INSERT in the
     // same transaction would make audit errors silently undo the revocation — the opposite
     // of what we want. Best-effort: errors caught and logged inside emitAuditEvent.
-    void emitAuditEvent(pool, {
+    emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
       action: "api_key.revoked",
       targetType: "api_key",
       targetId: keyId,
       details: { prefix },
-    });
+    }).catch(() => {});
     return "revoked";
   }
 
@@ -385,8 +385,11 @@ export async function listUsageEvents(
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * MS_PER_DAY);
-  const rows = await usageByOperation(customerId, from, to);
-  return rows.reduce((s, r) => s + r.total_billable_units, 0);
+  const r = await pool.query<{ units: string }>(
+    `SELECT COALESCE(SUM(billable_units), 0)::text AS units
+     FROM usage_events
+     WHERE customer_id = $1 AND created_at >= NOW() - $2 * INTERVAL '1 day'`,
+    [customerId, days],
+  );
+  return Number(r.rows[0].units);
 }
