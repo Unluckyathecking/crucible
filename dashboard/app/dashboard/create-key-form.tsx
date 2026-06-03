@@ -36,10 +36,13 @@ async function createKeyAction(_prev: State, formData: FormData): Promise<State>
     }
 
     const html = await res.text();
-    // Open the key reveal page in a new tab so the dashboard stays intact
+    // Open the key reveal page in a new tab so the dashboard stays intact.
+    // Revoke the object URL immediately after opening — the browser has already
+    // captured it, so revoking does not affect the tab that just opened.
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank");
+    URL.revokeObjectURL(url);
     return { error: null, submitted: true };
   } catch {
     return { error: "Network error. Try again.", submitted: false };
@@ -95,9 +98,6 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
     </form>
   );
 }
-
-// Suppress unused warning — existingNames is kept for future duplicate-name validation.
-void ([] as string[]);
 
 interface RevokeKeyButtonProps {
   keyId: string;
