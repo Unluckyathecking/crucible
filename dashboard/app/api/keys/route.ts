@@ -78,7 +78,7 @@ export async function POST(request: Request): Promise<Response> {
     // Return the full key ONCE as JSON — shown inline in the dashboard.
     // Never returned again; the client must display and copy from this response.
     return new Response(JSON.stringify({ key: full }), {
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
     });
   } catch (err) {
     const errorId = crypto.randomUUID();
