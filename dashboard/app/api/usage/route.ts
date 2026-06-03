@@ -6,8 +6,8 @@ import { ensureCustomer, usageByOperation } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 const MAX_RANGE_DAYS = 90;
-// Accepts ISO 8601 date-only (2024-01-15) or date-time (2024-01-15T00:00:00Z).
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z?)?$/;
+// Accepts ISO 8601 date-only or date-time with calendar-valid month (01-12) and day (01-31).
+const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?Z?)?$/;
 
 export async function GET(request: Request): Promise<Response> {
   try {

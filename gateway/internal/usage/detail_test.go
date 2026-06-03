@@ -114,6 +114,27 @@ func TestQueryByOperation_unknownCustomer(t *testing.T) {
 	}
 }
 
+func TestQueryByOperation_emptyStringOperationReturnsAll(t *testing.T) {
+	pool := newTestPool(t)
+	custID, keyID := setupTestCustomer(t, pool)
+	ctx := context.Background()
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 1)
+	insertUsageEvent(t, pool, custID, keyID, "op.b", 2)
+
+	from := time.Now().Add(-time.Minute)
+	to := time.Now().Add(time.Minute)
+
+	// Empty string means "no filter" — should return all operations.
+	result, err := QueryByOperation(ctx, pool, custID, from, to, "")
+	if err != nil {
+		t.Fatalf("QueryByOperation empty string: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 rows for empty-string operation (no filter), got %d", len(result))
+	}
+}
+
 func TestQueryByOperation_fromEqualTo(t *testing.T) {
 	pool := newTestPool(t)
 	custID, keyID := setupTestCustomer(t, pool)
@@ -161,11 +182,12 @@ func TestQueryByOperation_halfOpenBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	insertUsageEvent(t, pool, custID, keyID, "op.a", 7)
-
-	// Use a 'to' in the past so the event (inserted just now) falls at or after 'to'.
+	// Set the query window BEFORE inserting so the event's created_at (set by
+	// the DB to NOW()) is always after 'past', guaranteeing it falls outside [from, past).
 	past := time.Now().Add(-time.Minute)
 	from := past.Add(-time.Hour)
+
+	insertUsageEvent(t, pool, custID, keyID, "op.a", 7)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, past, "")
 	if err != nil {
