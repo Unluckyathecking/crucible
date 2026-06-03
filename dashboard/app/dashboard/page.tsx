@@ -36,9 +36,8 @@ export default async function DashboardPage() {
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
-  // Clamp per-row before summing to avoid intermediate overflow.
-  const totalUnitsRaw = opBreakdown.reduce((sum, r) => sum + Math.min(Number.MAX_SAFE_INTEGER, r.total_billable_units), 0);
-  const totalEventsRaw = opBreakdown.reduce((sum, r) => sum + Math.min(Number.MAX_SAFE_INTEGER, r.event_count), 0);
+  const totalUnitsRaw = opBreakdown.reduce((sum, r) => sum + r.total_billable_units, 0);
+  const totalEventsRaw = opBreakdown.reduce((sum, r) => sum + r.event_count, 0);
   const totalUnits = Math.min(Number.MAX_SAFE_INTEGER, totalUnitsRaw);
   const totalEvents = Math.min(Number.MAX_SAFE_INTEGER, totalEventsRaw);
 
