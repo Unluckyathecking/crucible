@@ -44,7 +44,8 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 		args = append(args, operationTrimmed)
 		q += fmt.Sprintf(` AND operation = $%d`, len(args))
 	}
-	q += fmt.Sprintf(` GROUP BY operation ORDER BY operation LIMIT %d`, maxUsageOperationsLimit)
+	args = append(args, maxUsageOperationsLimit)
+	q += fmt.Sprintf(` GROUP BY operation ORDER BY operation LIMIT $%d`, len(args))
 	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err

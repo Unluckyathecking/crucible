@@ -27,8 +27,9 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const thirtyDaysAgo = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const now = new Date();
+  const utcMidnightToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const thirtyDaysAgo = new Date(utcMidnightToday.getTime() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
     usageByOperation(customer.id, thirtyDaysAgo, now),

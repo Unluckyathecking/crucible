@@ -297,14 +297,11 @@ export async function usageByOperation(
   args.push(MAX_USAGE_OPERATIONS_LIMIT);
   q += ` GROUP BY operation ORDER BY operation LIMIT $${args.length}`;
   const r = await pool.query<{ operation: string; total_billable_units: string; event_count: string }>(q, args);
-  return r.rows.map((row) => {
-    const total_billable_units = Number(row.total_billable_units);
-    const event_count = Number(row.event_count);
-    if (!Number.isSafeInteger(total_billable_units) || !Number.isSafeInteger(event_count)) {
-      throw new Error(`usage aggregate out of safe integer range: units=${row.total_billable_units} events=${row.event_count}`);
-    }
-    return { operation: row.operation, total_billable_units, event_count };
-  });
+  return r.rows.map((row) => ({
+    operation: row.operation,
+    total_billable_units: Math.min(Number.MAX_SAFE_INTEGER, Number(row.total_billable_units)),
+    event_count: Math.min(Number.MAX_SAFE_INTEGER, Number(row.event_count)),
+  }));
 }
 
 export interface UsageEventRow {
@@ -347,11 +344,9 @@ export async function listUsageEvents(
   args.push(MAX_USAGE_EVENTS_LIMIT);
   q += ` ORDER BY created_at DESC LIMIT $${args.length}`;
   const r = await pool.query<{ operation: string; billable_units: string; created_at: Date }>(q, args);
-  return r.rows.map((row) => {
-    const billable_units = Number(row.billable_units);
-    if (!Number.isSafeInteger(billable_units)) {
-      throw new Error(`billable_units ${row.billable_units} exceeds safe integer range`);
-    }
-    return { operation: row.operation, billable_units, created_at: row.created_at };
-  });
+  return r.rows.map((row) => ({
+    operation: row.operation,
+    billable_units: Math.min(Number.MAX_SAFE_INTEGER, Number(row.billable_units)),
+    created_at: row.created_at,
+  }));
 }
