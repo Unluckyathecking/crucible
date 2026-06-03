@@ -105,7 +105,7 @@ func TestEmit_RoundTrip(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()
 
-	uniqueActorID := fmt.Sprintf("test-cust-%d", time.Now().UnixNano())
+	uniqueActorID := fmt.Sprintf("test-cust-%s", t.Name())
 
 	e := audit.Event{
 		ActorType:  audit.ActorCustomer,
@@ -221,7 +221,7 @@ func TestEmit_SystemWithEmptyActorID(t *testing.T) {
 	// must store NULL (not empty string) for actor_id.
 	db := newTestPostgres(t)
 	ctx := context.Background()
-	uniqueAction := fmt.Sprintf("system.test.empty-actor-%d", time.Now().UnixNano())
+	uniqueAction := fmt.Sprintf("system.test.%s", t.Name())
 	err := audit.Emit(ctx, db, audit.Event{
 		ActorType: audit.ActorSystem,
 		ActorID:   "",
@@ -247,7 +247,7 @@ func TestEmit_NilTargetTypeAndID(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()
 
-	uniqueAction := fmt.Sprintf("test.nil-target-%d", time.Now().UnixNano())
+	uniqueAction := fmt.Sprintf("test.nil-target.%s", t.Name())
 
 	if err := audit.Emit(ctx, db, audit.Event{
 		ActorType: audit.ActorCustomer,
@@ -281,7 +281,7 @@ func TestEmit_NilDetails(t *testing.T) {
 	// Use a unique action to locate the row: system events always get NULL actor_id
 	// (nullActorID returns nil for all ActorSystem events), so querying by actor_id
 	// would not match any row.
-	uniqueAction := fmt.Sprintf("system.test.nil-details-%d", time.Now().UnixNano())
+	uniqueAction := fmt.Sprintf("system.test.nil-details.%s", t.Name())
 
 	// Emit with nil TargetType, TargetID, and Details — all three should be SQL NULL.
 	if err := audit.Emit(ctx, db, audit.Event{

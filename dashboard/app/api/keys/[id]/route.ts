@@ -1,7 +1,6 @@
 import { auth } from "@/auth";
 import { ensureCustomer, revokeApiKey } from "@/lib/db";
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_RE } from "@/lib/validation";
 
 export async function DELETE(
   request: Request,
@@ -59,6 +58,6 @@ export async function DELETE(
       customerId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return new Response("Internal server error", { status: 500 });
+    return new Response("Internal server error", { status: 500, headers: { "x-error-id": errorId } });
   }
 }

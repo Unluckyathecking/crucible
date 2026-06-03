@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { emitAuditEvent } from "@/lib/audit";
 import { getRedis } from "@/lib/redis";
+import { UUID_RE } from "@/lib/validation";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -204,7 +205,8 @@ export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // customerId comes from ensureCustomer (trusted DB value), but we validate anyway
+  // as defense-in-depth using the shared UUID_RE from @/lib/validation.
   if (!customerId || !UUID_RE.test(customerId)) {
     return [];
   }
@@ -224,12 +226,14 @@ export async function listAuditEvents(
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE actor_id = $1
+         AND created_at >= NOW() - INTERVAL '90 days'
      ),
      target_events AS (
        SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
        FROM audit_log
        WHERE target_id = $1
          AND actor_id IS DISTINCT FROM $1 -- null-safe <>: includes system events (NULL actor_id)
+         AND created_at >= NOW() - INTERVAL '90 days'
      )
      SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM actor_events

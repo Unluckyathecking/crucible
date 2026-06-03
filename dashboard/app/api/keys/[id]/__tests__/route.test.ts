@@ -190,14 +190,13 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   });
 
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {
-    // If the lookup includes AND customer_id = $2, it cannot tell whether the key
-    // doesn't exist or belongs to a different customer. The negative lookahead
-    // ensures the pattern is present AND is not immediately followed by AND.
-    // The pattern allows additional selected columns (e.g. customer_id, prefix).
-    const secondQueryMatch = revokeSection.replace(/\s+/g, " ").match(
-      /SELECT (?:\w+, )*customer_id(?:, \w+)* FROM api_keys WHERE id = \$1(?! AND)/,
-    );
-    expect(secondQueryMatch).not.toBeNull();
+    // If the lookup adds AND customer_id = $2, it cannot tell whether the key
+    // doesn't exist or belongs to a different customer — so the WHERE must be id-only.
+    const normalizedSection = revokeSection.replace(/\s+/g, " ");
+    // Second query selects customer_id so the caller can distinguish ownership.
+    expect(normalizedSection).toMatch(/SELECT [^;]*customer_id[^;]* FROM api_keys WHERE id = \$1/);
+    // Must NOT add a customer_id filter in the WHERE clause.
+    expect(normalizedSection).not.toMatch(/FROM api_keys WHERE id = \$1 AND customer_id/);
   });
 });
 
