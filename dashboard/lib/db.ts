@@ -131,11 +131,9 @@ export async function revokeApiKey(
   //
   // CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
   // ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
-  // MAX() over 0 rows = NULL; over 1 row = the value. Using aggregates instead of
-  // scalar subqueries avoids repeated CTE scans and produces a guaranteed 1-row result
-  // via CROSS JOIN of two aggregate subqueries (each always produces exactly 1 row).
-  // Scalar subqueries over the two CTEs are always safe here: `updated` returns
-  // 0 or 1 row (UPDATE on PK with WHERE), and `found` returns 0 or 1 row (SELECT on PK).
+  //
+  // Scalar subqueries over the two CTEs are safe here: `updated` returns 0 or 1 row
+  // (UPDATE on PK with WHERE), and `found` returns 0 or 1 row (SELECT on PK).
   // The four cases are mutually exclusive:
   //   1. 'revoked'        — UPDATE succeeded; updated has 1 row.
   //   2. 'not_found'      — key does not exist; found has 0 rows.
