@@ -34,18 +34,26 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if operationTrimmed != "" && utf8.RuneCountInString(operationTrimmed) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
-	// fmt.Sprintf only interpolates len(args) — an integer controlled by this function,
-	// never user input. All user-supplied values go through args as $N parameters.
-	args := []any{customerID, from, to}
-	q := `SELECT operation, COALESCE(SUM(billable_units), 0)::bigint, COUNT(*)::bigint
-	      FROM usage_events
-	      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`
-	if operationTrimmed != "" {
-		args = append(args, operationTrimmed)
-		q += fmt.Sprintf(` AND operation = $%d`, len(args))
+
+	// Two static queries with fixed $N placeholders avoid any dynamic SQL construction.
+	// All caller-supplied values reach the DB exclusively through the args slice.
+	var (
+		q    string
+		args []any
+	)
+	if operationTrimmed == "" {
+		q = `SELECT operation, COALESCE(SUM(billable_units), 0)::bigint, COUNT(*)::bigint
+		     FROM usage_events
+		     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
+		     GROUP BY operation ORDER BY operation LIMIT $4`
+		args = []any{customerID, from, to, maxUsageOperationsLimit}
+	} else {
+		q = `SELECT operation, COALESCE(SUM(billable_units), 0)::bigint, COUNT(*)::bigint
+		     FROM usage_events
+		     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
+		     GROUP BY operation ORDER BY operation LIMIT $5`
+		args = []any{customerID, from, to, operationTrimmed, maxUsageOperationsLimit}
 	}
-	args = append(args, maxUsageOperationsLimit)
-	q += fmt.Sprintf(` GROUP BY operation ORDER BY operation LIMIT $%d`, len(args))
 	rows, err := db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
