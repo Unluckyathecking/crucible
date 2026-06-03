@@ -151,8 +151,9 @@ func TestQueryByOperation_fromEqualTo(t *testing.T) {
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 5)
 
 	// from == to is a valid half-open interval [t, t) that returns zero rows; not an error.
-	now := time.Now()
-	result, err := QueryByOperation(context.Background(), pool, custID, now, now, "")
+	// Use a time well in the past to avoid DB/test clock skew from the event inserted above.
+	past := time.Now().Add(-time.Hour)
+	result, err := QueryByOperation(context.Background(), pool, custID, past, past, "")
 	if err != nil {
 		t.Fatalf("QueryByOperation from==to: %v", err)
 	}

@@ -275,7 +275,7 @@ function validateUsageQueryParams(
     throw new Error("from must not be after to");
   }
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_MS) {
-    throw new Error("date range exceeds maximum of 90 days");
+    throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
   }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
@@ -338,11 +338,11 @@ export async function listUsageEvents(
   operation?: string,
 ): Promise<UsageEventRow[]> {
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
-  // $4 is the JS-safe integer ceiling; LEAST clamps in SQL so Number() never
-  // receives a value whose integer part exceeds 2^53-1, eliminating the
-  // precision-loss window between the cast and the JS Math.min call.
-  const args: unknown[] = [customerId, from, to, Number.MAX_SAFE_INTEGER];
-  let q = `SELECT operation, LEAST(billable_units::bigint, $4)::text AS billable_units, created_at
+  // 9007199254740991 = Number.MAX_SAFE_INTEGER: inlined as a SQL integer literal
+  // so LEAST clamps before Number() ever sees the value, with no extra $N parameter
+  // that could collide with the dynamic operation/limit placeholders below.
+  const args: unknown[] = [customerId, from, to];
+  let q = `SELECT operation, LEAST(billable_units::bigint, 9007199254740991)::text AS billable_units, created_at
            FROM usage_events
            WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3`;
   if (effectiveOp) {
