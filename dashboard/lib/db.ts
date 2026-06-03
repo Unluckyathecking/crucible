@@ -173,6 +173,12 @@ export async function revokeApiKey(
 // them by UUID (target_id = customerId, e.g. plan changes by admin/system).
 // idx_audit_actor_id (0005) covers the actor branch; idx_audit_target_id (0005) covers the target branch.
 //
+// OR in a WHERE clause filters rows — it does not duplicate them. A row can only
+// appear once in the result even if both predicates are true. In this schema
+// actor_id is the customer UUID and target_id is the resource UUID (e.g. api_key UUID),
+// so they are always distinct values; both predicates matching the same row is not
+// possible with the current event types.
+//
 // actor_id is nullable in the schema for system events with no identified actor.
 // Those rows are intentionally excluded from the actor branch and surface only
 // when target_id = customerId (the second OR branch).
@@ -197,7 +203,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - ($2 * INTERVAL '1 day')`,
+     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
   return Number(r.rows[0].units);
