@@ -2,7 +2,7 @@
 // for the authenticated customer over the requested time window.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, usageByOperation } from "@/lib/db";
+import { ensureCustomer, listUsageEvents } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
 const MAX_RANGE_DAYS = 90;
@@ -84,7 +84,7 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
-    const rows = await usageByOperation(customer.id, from, to, operationParam);
+    const rows = await listUsageEvents(customer.id, from, to, operationParam);
 
     return new Response(JSON.stringify(rows), {
       headers: { "content-type": "application/json", "cache-control": "no-store" },
