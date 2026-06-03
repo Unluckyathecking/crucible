@@ -244,6 +244,37 @@ func TestEmit_SystemWithEmptyActorID(t *testing.T) {
 	}
 }
 
+func TestEmit_NilTargetTypeAndID(t *testing.T) {
+	db := newTestPostgres(t)
+	ctx := context.Background()
+
+	uniqueAction := fmt.Sprintf("test.nil-target-%d", time.Now().UnixNano())
+
+	if err := audit.Emit(ctx, db, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   "test-cust-nil-target",
+		Action:    uniqueAction,
+		// TargetType and TargetID intentionally omitted — both must be stored as SQL NULL.
+	}); err != nil {
+		t.Fatalf("Emit with nil TargetType/TargetID: %v", err)
+	}
+
+	var targetType, targetID *string
+	err := db.QueryRow(ctx,
+		`SELECT target_type, target_id FROM audit_log WHERE action = $1 ORDER BY id DESC LIMIT 1`,
+		uniqueAction,
+	).Scan(&targetType, &targetID)
+	if err != nil {
+		t.Fatalf("query round-trip row: %v", err)
+	}
+	if targetType != nil {
+		t.Fatalf("expected NULL target_type, got %q", *targetType)
+	}
+	if targetID != nil {
+		t.Fatalf("expected NULL target_id, got %q", *targetID)
+	}
+}
+
 func TestEmit_NilDetails(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()

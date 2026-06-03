@@ -32,20 +32,6 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
-// nullActorID returns nil for every ActorSystem event so pgx inserts SQL NULL,
-// enforcing the architectural rule that system events originate from background
-// jobs with no individual actor. Non-system events always carry a non-empty
-// ActorID (validated above) and are passed through as *string.
-// Returning *string (not any) avoids pgx nil-type-inference ambiguity: pgx maps
-// (*string)(nil) to SQL NULL reliably without needing a typed pgtype sentinel.
-func nullActorID(actorType ActorType, id string) *string {
-	if actorType == ActorSystem {
-		return nil
-	}
-	s := id
-	return &s
-}
-
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
@@ -73,11 +59,19 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 		}
 		detailsJSON = b
 	}
+	// actor_id is NULL for system events; validation above ensures non-system events always
+	// carry a non-empty ActorID. Using a typed *string (not any) lets pgx map (*string)(nil)
+	// to SQL NULL without a typed pgtype sentinel.
+	var actorIDParam *string
+	if e.ActorType != ActorSystem {
+		id := e.ActorID
+		actorIDParam = &id
+	}
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.
 	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)`
 	_, err := db.Exec(ctx, insertSQL,
-		string(e.ActorType), nullActorID(e.ActorType, e.ActorID), e.Action,
+		string(e.ActorType), actorIDParam, e.Action,
 		e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)

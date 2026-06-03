@@ -26,7 +26,8 @@ export async function POST(request: Request): Promise<Response> {
       } catch {
         return new Response("Invalid JSON", { status: 400 });
       }
-      name = ((body as { name?: string }).name || "").trim();
+      const nameValue = (body as Record<string, unknown>).name;
+      name = typeof nameValue === "string" ? nameValue.trim() : "";
     } else {
       const formData = await request.formData();
       name = (formData.get("name") as string | undefined || "").trim();

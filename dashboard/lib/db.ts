@@ -99,7 +99,7 @@ export async function insertApiKey(
     action: "api_key.created",
     targetType: "api_key",
     targetId: keyId,
-    details: { name: name || null, prefix },
+    details: { name: name || undefined, prefix },
   });
   return keyId;
 }
@@ -232,8 +232,9 @@ export async function listAuditEvents(
   customerId: string,
   limit = 20,
 ): Promise<AuditEventRow[]> {
-  if (!customerId) {
-    throw new Error("customerId is required");
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!customerId || !UUID_RE.test(customerId)) {
+    throw new Error("customerId must be a valid UUID");
   }
   // Guard against NaN/Infinity: Math.max/min propagate NaN silently, which would
   // cause Postgres to receive NaN as the LIMIT parameter and return a query error.
