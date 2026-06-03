@@ -38,9 +38,9 @@ export default async function DashboardPage() {
   ]);
   const { totalUnits, totalEvents } = opBreakdown.reduce(
     (acc, r) => {
-      const totalUnits = Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units);
-      const totalEvents = Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count);
-      return { totalUnits, totalEvents };
+      const nextUnits = acc.totalUnits >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : Math.min(Number.MAX_SAFE_INTEGER, acc.totalUnits + r.total_billable_units);
+      const nextEvents = acc.totalEvents >= Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : Math.min(Number.MAX_SAFE_INTEGER, acc.totalEvents + r.event_count);
+      return { totalUnits: nextUnits, totalEvents: nextEvents };
     },
     { totalUnits: 0, totalEvents: 0 },
   );

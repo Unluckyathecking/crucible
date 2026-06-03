@@ -20,13 +20,6 @@ const maxUsageRangeDays = 90
 // maxOperationLength mirrors dashboard/lib/db.ts MAX_OPERATION_LENGTH.
 const maxOperationLength = 128
 
-// truncateToUTCMidnight converts t to UTC and floors it to 00:00:00 UTC on that calendar day.
-// This measures whole UTC calendar days, not the caller's local timezone.
-func truncateToUTCMidnight(t time.Time) time.Time {
-	ut := t.UTC()
-	return time.Date(ut.Year(), ut.Month(), ut.Day(), 0, 0, 0, 0, time.UTC)
-}
-
 // OperationAggregate holds per-operation totals from usage_events.
 type OperationAggregate struct {
 	Operation          string
@@ -49,11 +42,11 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 	if from.After(to) {
 		return nil, fmt.Errorf("from must not be after to")
 	}
-	// Truncate to midnight for the calendar-day range check so that a 90-day window is
-	// measured in whole days regardless of the time-of-day component of the inputs.
-	// Strict greater-than: exactly maxUsageRangeDays is allowed (the limit is inclusive).
+	// Measure the actual wall-clock span so the limit is applied consistently regardless
+	// of the time-of-day components of from and to. Strict greater-than: exactly
+	// maxUsageRangeDays*24h is allowed (the limit is inclusive).
 	// TestQueryByOperation_rangeExactlyAtLimit documents and verifies this boundary.
-	if truncateToUTCMidnight(to).Sub(truncateToUTCMidnight(from)) > maxUsageRangeDays*24*time.Hour {
+	if to.Sub(from) > maxUsageRangeDays*24*time.Hour {
 		return nil, fmt.Errorf("date range exceeds maximum of %d days", maxUsageRangeDays)
 	}
 	operationTrimmed := strings.TrimSpace(operation)
@@ -95,7 +88,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 		result = append(result, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("query usage by operation: %w", err)
+		return nil, fmt.Errorf("iterate usage by operation: %w", err)
 	}
 	return result, nil
 }
