@@ -211,7 +211,8 @@ export async function listAuditEvents(
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // Parameterizing the cutoff (vs. inline INTERVAL) lets the planner use idx_audit_actor_id
   // and idx_audit_target_id with a stable bound rather than re-evaluating NOW() per-plan.
-  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const AUDIT_LOOKBACK_DAYS = 90;
+  const cutoff = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   // Per-branch ORDER BY + LIMIT allows each branch to use its index with an index scan + limit,
   // then the outer sort merges at most 2*clampedLimit rows instead of the full table.
   const r = await pool.query<AuditEventRow>(
@@ -243,7 +244,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - $2 * INTERVAL '1 day'`,
+     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
   return Number(r.rows[0].units);
