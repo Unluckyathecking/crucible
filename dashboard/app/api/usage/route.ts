@@ -2,10 +2,9 @@
 // for the authenticated customer over the requested time window.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, listUsageEvents } from "@/lib/db";
+import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS } from "@/lib/db";
 
 const DEFAULT_DAYS = 30;
-const MAX_RANGE_DAYS = 90;
 // Accepts ISO 8601 date-only (YYYY-MM-DD). Month bounded 01-12, day 01-31;
 // calendar validity (e.g. Feb 31) is enforced by the round-trip check below.
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -92,8 +91,8 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * 24 * 60 * 60 * 1000) {
-      return new Response(JSON.stringify({ error: `date range exceeds maximum of ${MAX_RANGE_DAYS} days` }), {
+    if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+      return new Response(JSON.stringify({ error: `date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days` }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
