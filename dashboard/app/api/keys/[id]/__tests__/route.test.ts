@@ -168,7 +168,7 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
   });
 
   it("revokeApiKey RETURNING prefix so Redis cache invalidation can reference it", () => {
-    expect(revokeSection).toContain("RETURNING id, prefix");
+    expect(revokeSection).toContain("RETURNING prefix");
   });
 
   it("revokeApiKey returns a typed result distinguishing already_revoked, not_found, and forbidden", () => {

@@ -45,6 +45,9 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType != ActorCustomer && e.ActorType != ActorAdmin && e.ActorType != ActorSystem {
 		return fmt.Errorf("audit: invalid actor_type %q: must be customer|admin|system", e.ActorType)
 	}
+	if e.Action == "" {
+		return fmt.Errorf("audit: action must not be empty")
+	}
 	var detailsJSON []byte
 	if e.Details != nil {
 		b, err := json.Marshal(e.Details)

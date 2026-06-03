@@ -121,17 +121,39 @@ export async function revokeApiKey(
   keyId: string,
   customerId: string,
 ): Promise<"revoked" | "already_revoked" | "not_found" | "forbidden"> {
-  // Only update if the key is still active, so we can detect true revocation vs idempotent call.
-  const r = await pool.query<{ id: string; prefix: string }>(
-    `UPDATE api_keys SET revoked_at = NOW()
-     WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
-     RETURNING id, prefix`,
+  // Single atomic CTE: UPDATE + ownership classification in one round-trip.
+  // The two-query pattern (UPDATE then SELECT) has a TOCTOU race where the key
+  // could be deleted or transferred between the queries, causing "forbidden" to
+  // incorrectly return "already_revoked". The CTE runs at a single snapshot.
+  //
+  // The `found` subquery reads api_keys at the pre-UPDATE snapshot (CTE data-modification
+  // semantics in Postgres), so it sees the key's original state regardless of the UPDATE result.
+  //
+  // CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
+  // ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
+  const r = await pool.query<{ result: string; prefix: string | null }>(
+    `WITH updated AS (
+       UPDATE api_keys SET revoked_at = NOW()
+       WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
+       RETURNING prefix
+     ),
+     found AS (
+       SELECT customer_id FROM api_keys WHERE id = $1
+     )
+     SELECT
+       CASE
+         WHEN (SELECT prefix FROM updated) IS NOT NULL THEN 'revoked'
+         WHEN NOT EXISTS (SELECT 1 FROM found) THEN 'not_found'
+         WHEN (SELECT customer_id FROM found) != $2 THEN 'forbidden'
+         ELSE 'already_revoked'
+       END AS result,
+       (SELECT prefix FROM updated) AS prefix`,
     [keyId, customerId],
   );
 
-  if (r.rows.length > 0) {
-    const prefix = r.rows[0].prefix;
+  const { result, prefix } = r.rows[0];
 
+  if (result === "revoked" && prefix) {
     // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
     // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
     // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
@@ -157,15 +179,7 @@ export async function revokeApiKey(
     return "revoked";
   }
 
-  // Distinguish not-found, forbidden (wrong owner), and already-revoked (owned, idempotent).
-  // Query without customer_id filter so we can tell ownership from existence.
-  const check = await pool.query<{ customer_id: string }>(
-    `SELECT customer_id FROM api_keys WHERE id = $1`,
-    [keyId],
-  );
-  if (check.rows.length === 0) return "not_found";
-  if (check.rows[0].customer_id !== customerId) return "forbidden";
-  return "already_revoked";
+  return result as "already_revoked" | "not_found" | "forbidden";
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
@@ -185,10 +199,13 @@ export async function listAuditEvents(
   limit = 20,
 ): Promise<AuditEventRow[]> {
   const clampedLimit = Math.max(1, Math.min(limit, 100));
+  // actor_id = $1 (not IS NOT DISTINCT FROM) so Postgres uses idx_audit_actor_id (b-tree).
+  // customerId is always a non-null UUID so the two are semantically equivalent here,
+  // but = allows the index seek while IS NOT DISTINCT FROM may force a seq scan.
   const r = await pool.query<AuditEventRow>(
     `(SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
       FROM audit_log
-      WHERE actor_id IS NOT DISTINCT FROM $1
+      WHERE actor_id = $1
       ORDER BY created_at DESC
       LIMIT $2)
      UNION ALL
