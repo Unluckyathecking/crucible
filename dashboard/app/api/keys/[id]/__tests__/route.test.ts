@@ -183,10 +183,10 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
     expect(revokeSection).toContain('"forbidden"');
   });
 
-  it("audit emission in revokeApiKey is fire-and-forget (catch, not await-throw)", () => {
-    // emitAuditEvent must be followed by .catch() so audit failures don't surface
-    // as 500 to the customer after the key is already persisted-revoked in Postgres.
-    expect(revokeSection).toMatch(/emitAuditEvent[\s\S]*?\.catch\s*\(/);
+  it("audit emission in revokeApiKey is fire-and-forget (void, errors handled inside emitAuditEvent)", () => {
+    // emitAuditEvent internally catches errors; callers mark intent with void.
+    // Audits failures must not surface as 500 to the customer.
+    expect(revokeSection).toMatch(/void\s+emitAuditEvent\s*\(/);
   });
 
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {

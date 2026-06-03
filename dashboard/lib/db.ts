@@ -92,8 +92,7 @@ export async function insertApiKey(
     [customerId, prefix, hash, name],
   );
   const keyId = r.rows[0].id;
-  // Best-effort: audit emit must not fail the key creation.
-  // The key is already persisted; if audit fails the customer still gets their key.
+  // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
   void emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
@@ -101,8 +100,6 @@ export async function insertApiKey(
     targetType: "api_key",
     targetId: keyId,
     details: { name: name || null, prefix },
-  }).catch((err) => {
-    console.error("audit emit failed for api_key.created", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
   });
   return keyId;
 }
@@ -186,8 +183,7 @@ export async function revokeApiKey(
       });
     }
 
-    // Best-effort: same invariant as insertApiKey — revocation is already durable in Postgres;
-    // an audit failure must not surface as a 500 to the customer.
+    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
@@ -195,8 +191,6 @@ export async function revokeApiKey(
       targetType: "api_key",
       targetId: keyId,
       details: { prefix },
-    }).catch((err) => {
-      console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
     return "revoked";
   }
@@ -219,8 +213,6 @@ export async function revokeApiKey(
       targetType: "api_key",
       targetId: keyId,
       details: { prefix: found_prefix },
-    }).catch((err) => {
-      console.error("audit emit failed for api_key.revoke_attempted", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
   }
 

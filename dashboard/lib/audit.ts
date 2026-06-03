@@ -14,21 +14,29 @@ export interface AuditEvent {
   details?: Record<string, unknown>;
 }
 
-// emitAuditEvent writes one append-only row to audit_log. Errors from the INSERT
-// propagate to the caller; callers are responsible for fire-and-forget semantics
-// (void ... .catch()) so that an audit failure does not surface as a user-visible error.
+// emitAuditEvent writes one append-only row to audit_log. Errors are caught and logged
+// internally so an audit failure never propagates to the caller or surfaces as a user-visible
+// error. Callers use `void emitAuditEvent(...)` to mark the fire-and-forget intent explicitly.
 // Takes the pool as a parameter to mirror the Go Emit(ctx, db, event) signature.
 export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<void> {
-  await pool.query(
-    `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [
-      event.actorType,
-      event.actorId,
-      event.action,
-      event.targetType ?? null,
-      event.targetId ?? null,
-      event.details ?? null,
-    ],
-  );
+  try {
+    await pool.query(
+      `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        event.actorType,
+        event.actorId,
+        event.action,
+        event.targetType ?? null,
+        event.targetId ?? null,
+        event.details ?? null,
+      ],
+    );
+  } catch (err) {
+    console.error("audit emit failed:", {
+      action: event.action,
+      actorId: event.actorId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

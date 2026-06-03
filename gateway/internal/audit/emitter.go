@@ -32,12 +32,12 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
-// nullActorID converts the ActorID to nil only for system events, so pgx inserts
-// SQL NULL for background jobs that have no individual actor. Non-system events are
-// validated to have a non-empty ActorID before reaching SQL, but this function makes
-// the intent explicit rather than relying on that invariant implicitly.
+// nullActorID returns nil for every ActorSystem event so pgx inserts SQL NULL,
+// enforcing the architectural rule that system events originate from background
+// jobs with no individual actor. Non-system events always carry a non-empty
+// ActorID (validated above) and are passed through unchanged.
 func nullActorID(actorType ActorType, id string) any {
-	if actorType == ActorSystem && id == "" {
+	if actorType == ActorSystem {
 		return nil
 	}
 	return id

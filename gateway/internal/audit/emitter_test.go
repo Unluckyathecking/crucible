@@ -207,13 +207,15 @@ func TestEmit_NilDetails(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()
 
-	uniqueActorID := fmt.Sprintf("test-sys-%d", time.Now().UnixNano())
+	// Use a unique action to locate the row: system events always get NULL actor_id
+	// (nullActorID returns nil for all ActorSystem events), so querying by actor_id
+	// would not match any row.
+	uniqueAction := fmt.Sprintf("system.test.nil-details-%d", time.Now().UnixNano())
 
 	// Emit with nil TargetType, TargetID, and Details — all three should be SQL NULL.
 	if err := audit.Emit(ctx, db, audit.Event{
 		ActorType: audit.ActorSystem,
-		ActorID:   uniqueActorID,
-		Action:    "system.test",
+		Action:    uniqueAction,
 	}); err != nil {
 		t.Fatalf("Emit with nil optional fields: %v", err)
 	}
@@ -221,8 +223,8 @@ func TestEmit_NilDetails(t *testing.T) {
 	// Verify details IS NULL in the database (not an empty object or "null" literal).
 	var detailsJSON []byte
 	err := db.QueryRow(ctx,
-		`SELECT details FROM audit_log WHERE actor_id = $1 ORDER BY id DESC LIMIT 1`,
-		uniqueActorID,
+		`SELECT details FROM audit_log WHERE action = $1 ORDER BY id DESC LIMIT 1`,
+		uniqueAction,
 	).Scan(&detailsJSON)
 	if err != nil {
 		t.Fatalf("query round-trip row: %v", err)
