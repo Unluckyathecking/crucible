@@ -45,7 +45,8 @@ export async function GET(request: Request): Promise<Response> {
           headers: { "content-type": "application/json" },
         });
       }
-      const parsed = new Date(fromParam);
+      // Append explicit UTC midnight so the semantics match the database (UTC timestamps).
+      const parsed = new Date(fromParam + 'T00:00:00.000Z');
       // Round-trip check catches calendar-invalid strings like 2023-02-31 that JS silently shifts.
       if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== fromParam) {
         return new Response(JSON.stringify({ error: "invalid 'from' date" }), {
@@ -62,7 +63,8 @@ export async function GET(request: Request): Promise<Response> {
           headers: { "content-type": "application/json" },
         });
       }
-      const parsed = new Date(toParam);
+      // Append explicit UTC midnight so the semantics match the database (UTC timestamps).
+      const parsed = new Date(toParam + 'T00:00:00.000Z');
       if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== toParam) {
         return new Response(JSON.stringify({ error: "invalid 'to' date" }), {
           status: 400,

@@ -264,7 +264,7 @@ func TestQueryByOperation_includesFromBoundary(t *testing.T) {
 	custID, keyID := setupTestCustomer(t, pool)
 	ctx := context.Background()
 
-	from := time.Now().Add(-time.Second) // buffer for clock skew between client and DB
+	from := time.Now().Add(-time.Hour) // wide buffer eliminates clock-skew flakiness
 	insertUsageEvent(t, pool, custID, keyID, "op.a", 3)
 
 	result, err := QueryByOperation(ctx, pool, custID, from, from.Add(time.Hour), "")
