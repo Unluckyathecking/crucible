@@ -29,7 +29,7 @@ describe("GET /api/usage route.ts — CSRF guard drift-detection", () => {
     const errorBodyIdx = routeSrc.indexOf('"Internal server error"');
     expect(errorBodyIdx).toBeGreaterThanOrEqual(0);
     // Find the JSON.stringify call that builds the 500 body
-    const stringifyIdx = routeSrc.lastIndexOf("JSON.stringify", errorBodyIdx + 100);
+    const stringifyIdx = routeSrc.lastIndexOf("JSON.stringify", errorBodyIdx + 500);
     const closingBrace = routeSrc.indexOf(")", stringifyIdx);
     const bodyExpr = stringifyIdx >= 0 ? routeSrc.slice(stringifyIdx, closingBrace + 1) : "";
     // The body expression must NOT reference errorId — only the header may.

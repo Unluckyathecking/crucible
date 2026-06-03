@@ -353,15 +353,11 @@ export async function listUsageEvents(
   // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
   // the server's DateStyle setting; no ::text cast or to_char conversion needed.
   type Row = { operation: string; billable_units: string; created_at: Date };
-  const mapRow = (row: Row): UsageEventRow => {
-    const d = row.created_at;
-    if (isNaN(d.getTime())) throw new Error("invalid created_at returned from database");
-    return {
-      operation: row.operation,
-      billable_units: saturateBigIntString(row.billable_units),
-      created_at: d,
-    };
-  };
+  const mapRow = (row: Row): UsageEventRow => ({
+    operation: row.operation,
+    billable_units: saturateBigIntString(row.billable_units),
+    created_at: row.created_at,
+  });
   if (effectiveOp) {
     // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
