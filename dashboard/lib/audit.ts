@@ -24,7 +24,7 @@ export async function emitAuditEvent(pool: Pool, event: AuditEvent): Promise<voi
       event.action,
       event.targetType ?? null,
       event.targetId ?? null,
-      event.details !== undefined ? event.details : null,
+      event.details ?? null,
     ],
   );
 }

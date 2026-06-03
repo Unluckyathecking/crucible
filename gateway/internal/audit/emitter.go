@@ -31,20 +31,8 @@ type Event struct {
 	Details    map[string]any // optional freeform context; stored as JSONB
 }
 
-// nullOrString returns nil when s is the zero value, mapping to SQL NULL.
-// Optional audit fields (actor_id, target_type, target_id) use Go's string zero value to
-// mean "absent"; pgx maps nil *string to NULL, preserving that semantic in Postgres.
-func nullOrString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
-// Optional fields (ActorID, TargetType, TargetID) become SQL NULL when left as zero values,
-// consistent with the TS emitter which maps undefined → null.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType != ActorCustomer && e.ActorType != ActorAdmin && e.ActorType != ActorSystem {
 		return errors.New("audit: actor_type must be customer|admin|system")
@@ -60,7 +48,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, string(e.ActorType), nullOrString(e.ActorID), e.Action, nullOrString(e.TargetType), nullOrString(e.TargetID), detailsJSON)
+	`, string(e.ActorType), e.ActorID, e.Action, e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
 	}

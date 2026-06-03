@@ -21,7 +21,8 @@ export async function DELETE(
 
     // Both "revoked" and "already_revoked" are success — idempotent.
     return new Response(null, { status: 200 });
-  } catch {
+  } catch (err) {
+    console.error("DELETE /api/keys/[id] failed:", err instanceof Error ? err.message : String(err));
     return new Response("Internal server error", { status: 500 });
   }
 }

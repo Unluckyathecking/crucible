@@ -96,7 +96,7 @@ export async function insertApiKey(
     targetId: keyId,
     details: { name: name || null, prefix },
   }).catch((err) => {
-    console.error("audit emit failed for api_key.created", { keyId, customerId, error: err });
+    console.error("audit emit failed for api_key.created", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
   });
   return keyId;
 }
@@ -133,7 +133,7 @@ export async function revokeApiKey(
       targetId: keyId,
       details: { prefix: r.rows[0].prefix },
     }).catch((err) => {
-      console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err });
+      console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err instanceof Error ? err.message : String(err) });
     });
     return "revoked";
   }
@@ -146,7 +146,9 @@ export async function revokeApiKey(
   return check.rows.length > 0 ? "already_revoked" : "not_found";
 }
 
-// listAuditEvents returns the most recent audit events attributed to customerId.
+// listAuditEvents returns the most recent audit events for a customer:
+// events the customer performed AND events that targeted them (e.g. plan changes by admin/system).
+// The actor branch uses idx_audit_actor (0001); the target branch uses idx_audit_target (0005).
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -154,7 +156,8 @@ export async function listAuditEvents(
   const r = await pool.query<AuditEventRow>(
     `SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
      FROM audit_log
-     WHERE actor_type = 'customer' AND actor_id = $1
+     WHERE (actor_type = 'customer' AND actor_id = $1)
+        OR (target_type = 'customer' AND target_id = $1)
      ORDER BY created_at DESC
      LIMIT $2`,
     [customerId, limit],
