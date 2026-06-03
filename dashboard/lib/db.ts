@@ -240,12 +240,11 @@ export async function listAuditEvents(
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= $2`,
-    [customerId, cutoff],
+     WHERE customer_id = $1 AND created_at >= NOW() - $2 * INTERVAL '1 day'`,
+    [customerId, days],
   );
   return Number(r.rows[0].units);
 }
