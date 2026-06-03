@@ -199,7 +199,11 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
     // emitAuditEvent internally catches errors; callers chain .catch(() => {}) to
     // explicitly handle the promise without propagating failures.
     // Audit failures must not surface as 500 to the customer.
-    expect(revokeSection).toMatch(/emitAuditEvent\s*\([\s\S]*?\)\s*\.catch\s*\(/);
+    // Use indexOf rather than a cross-line regex so reformatting never breaks the test.
+    const emitIdx = revokeSection.indexOf("emitAuditEvent");
+    expect(emitIdx).toBeGreaterThanOrEqual(0);
+    const catchIdx = revokeSection.indexOf(".catch(", emitIdx);
+    expect(catchIdx).toBeGreaterThan(emitIdx);
   });
 
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {

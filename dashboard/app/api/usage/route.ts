@@ -14,6 +14,16 @@ const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 export async function GET(request: Request): Promise<Response> {
+  // Defense-in-depth CSRF signal: consistent with /api/keys/[id] which requires this header.
+  // GET is not state-changing, but the check keeps the API surface uniform and restricts
+  // callers to intentional programmatic access rather than passive browser navigation.
+  const requestedWith = request.headers.get("X-Requested-With") ?? "";
+  if (requestedWith.toLowerCase() !== "xmlhttprequest") {
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
   try {
     const session = await auth();
     if (!session?.user?.email) {
