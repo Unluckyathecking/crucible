@@ -80,8 +80,8 @@ export default async function DashboardPage() {
               {auditEvents.map((e) => {
                 const details = e.details as Record<string, unknown> | null;
                 const label =
-                  (details?.prefix as string | undefined) ||
-                  (details?.name as string | undefined) ||
+                  (typeof details?.prefix === "string" ? details.prefix : undefined) ||
+                  (typeof details?.name === "string" ? details.name : undefined) ||
                   (e.target_id ? e.target_id.slice(0, 8) + "…" : "");
                 return (
                   <li key={e.id} className="flex items-center justify-between text-sm gap-2">

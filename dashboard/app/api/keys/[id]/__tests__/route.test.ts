@@ -6,9 +6,12 @@
  *   1. Auth guard: 401 when no session / no email.
  *   2. Ownership check: 404 when key not owned by the requesting customer.
  *   3. Idempotency: 200 on second revocation of an already-revoked key.
- *   4. SQL pattern: ownership and revoked_at guards present in the query.
+ *   4. Source-text assertions: verify the actual db.ts implementation uses the
+ *      correct SQL patterns (ownership + idempotency guards), not a local mirror.
  */
 import { describe, it, expect } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
 
 // ---------------------------------------------------------------------------
 // Re-implementations of the route's business logic for isolated testing.
@@ -129,31 +132,35 @@ describe("DELETE /api/keys/[id] — idempotency", () => {
   });
 });
 
-describe("revokeApiKey — SQL ownership pattern", () => {
-  // Verify the SQL pattern used by revokeApiKey enforces ownership and idempotency.
-  // This mirrors what db.ts sends to Postgres.
-  function buildActiveRevokeSQL(keyId: string, customerId: string): { sql: string; params: string[] } {
-    return {
-      sql: `UPDATE api_keys SET revoked_at = NOW()
-            WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
-            RETURNING id, prefix`,
-      params: [keyId, customerId],
-    };
-  }
+// ---------------------------------------------------------------------------
+// Source-text assertions: verify the actual db.ts revokeApiKey implementation
+// uses the correct SQL patterns. Reading the real source avoids the tautology
+// of a re-implemented mirror that can drift silently.
+// ---------------------------------------------------------------------------
+describe("revokeApiKey in db.ts — SQL pattern guards", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../../lib/db.ts"), "utf8");
 
-  it("SQL includes ownership guard (customer_id = $2)", () => {
-    const { sql } = buildActiveRevokeSQL("key-id", "cust-id");
-    expect(sql).toContain("customer_id = $2");
+  it("revokeApiKey SQL includes ownership guard (customer_id)", () => {
+    expect(src).toContain("customer_id");
   });
 
-  it("SQL includes revoked_at IS NULL to skip already-revoked keys", () => {
-    const { sql } = buildActiveRevokeSQL("key-id", "cust-id");
-    expect(sql).toContain("revoked_at IS NULL");
+  it("revokeApiKey SQL includes revoked_at IS NULL guard for idempotency", () => {
+    expect(src).toContain("revoked_at IS NULL");
   });
 
-  it("SQL parameters are [keyId, customerId] in the correct order", () => {
-    const { params } = buildActiveRevokeSQL("key-abc", "cust-xyz");
-    expect(params[0]).toBe("key-abc");
-    expect(params[1]).toBe("cust-xyz");
+  it("revokeApiKey RETURNING prefix so Redis comment can reference it", () => {
+    expect(src).toContain("RETURNING id, prefix");
+  });
+
+  it("revokeApiKey returns a typed result (not boolean) distinguishing already_revoked from not_found", () => {
+    expect(src).toContain('"already_revoked"');
+    expect(src).toContain('"not_found"');
+  });
+
+  it("audit emission in revokeApiKey is fire-and-forget (catch, not await-throw)", () => {
+    // The .catch() after emitAuditEvent in revokeApiKey must be present so audit failures
+    // don't surface as 500 to the customer after the key is already revoked.
+    const revokeSection = src.slice(src.indexOf("export async function revokeApiKey"), src.indexOf("export async function listAuditEvents"));
+    expect(revokeSection).toContain(".catch(");
   });
 });

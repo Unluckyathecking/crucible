@@ -95,7 +95,9 @@ export async function insertApiKey(
     targetType: "api_key",
     targetId: keyId,
     details: { name: name || null, prefix },
-  }).catch(() => {});
+  }).catch((err) => {
+    console.error("audit emit failed for api_key.created", { keyId, customerId, error: err });
+  });
   return keyId;
 }
 
@@ -103,10 +105,11 @@ export async function insertApiKey(
 // Returns "revoked" on success, "already_revoked" when the key was already inactive (idempotent),
 // or "not_found" when the key doesn't exist or belongs to another customer.
 //
-// Gateway Redis hot cache: the gateway caches the key at "auth:{prefix}" with a 60 s TTL.
-// That cache entry will expire naturally — revocation is immediately durable in Postgres
-// (the gateway's source of truth) but may take up to 60 s to propagate through the cache.
-// This matches the documented behaviour in CLAUDE.md invariant #7.
+// Redis note: the gateway caches valid keys at "auth:{prefix}" for up to 60 s. The dashboard
+// has no Redis connection, so that entry is not explicitly cleared here. Revocation is immediate
+// in Postgres (the gateway's source of truth). For instant cache invalidation run:
+//   redis-cli DEL auth:{prefix}
+// On the gateway side, Store.Revoke() handles this automatically (CLAUDE.md invariant #7).
 export async function revokeApiKey(
   keyId: string,
   customerId: string,
@@ -120,13 +123,17 @@ export async function revokeApiKey(
   );
 
   if (r.rows.length > 0) {
-    await emitAuditEvent(pool, {
+    // Best-effort: same invariant as insertApiKey — revocation is already durable in Postgres;
+    // an audit failure must not surface as a 500 to the customer.
+    emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
       action: "api_key.revoked",
       targetType: "api_key",
       targetId: keyId,
       details: { prefix: r.rows[0].prefix },
+    }).catch((err) => {
+      console.error("audit emit failed for api_key.revoked", { keyId, customerId, error: err });
     });
     return "revoked";
   }
