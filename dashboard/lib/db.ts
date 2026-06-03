@@ -268,6 +268,13 @@ function validateUsageQueryParams(
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_MS) {
     throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
   }
+  // Defense-in-depth: to must not exceed tomorrow midnight UTC. The route validates this too,
+  // but enforcing it here prevents future direct callers from inadvertently querying unbounded futures.
+  const now = new Date();
+  const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  if (to.getTime() > tomorrowMidnight.getTime()) {
+    throw new Error("to date cannot be after tomorrow");
+  }
   const effectiveOp = operation?.trim() || undefined;
   if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
     throw new Error(`operation too long (max ${MAX_OPERATION_LENGTH} characters)`);
@@ -385,11 +392,14 @@ export async function listUsageEvents(
 }
 
 export async function sumUsage(customerId: string, days: number): Promise<number> {
+  if (!UUID_RE.test(customerId)) return 0;
+  // Clamp days: reject NaN/Infinity/negative; default to 30 if invalid.
+  const safeDays = Number.isFinite(days) && days > 0 ? Math.round(days) : 30;
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
      FROM usage_events
-     WHERE customer_id = $1 AND created_at >= NOW() - $2 * INTERVAL '1 day'`,
-    [customerId, days],
+     WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
+    [customerId, safeDays],
   );
-  return Number(r.rows[0].units);
+  return saturateBigIntString(r.rows[0].units);
 }
