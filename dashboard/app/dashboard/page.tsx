@@ -28,11 +28,9 @@ export default async function DashboardPage() {
   }
   const customer = await ensureCustomer(session.user.email);
   const now = new Date();
-  const MS_PER_DAY = 24 * 60 * 60 * 1000;
   const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  // Derive from relative to tomorrowMidnight so the window is exactly USAGE_WINDOW_DAYS.
-  // [tomorrowMidnight - 30 days, tomorrowMidnight) = 30 calendar days including today.
-  const thirtyDaysAgo = new Date(tomorrowMidnight.getTime() - USAGE_WINDOW_DAYS * MS_PER_DAY);
+  // Use Date.UTC calendar arithmetic so the 30-day window is exact regardless of DST or leap seconds.
+  const thirtyDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - USAGE_WINDOW_DAYS));
   const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
     usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),

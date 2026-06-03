@@ -33,13 +33,14 @@ export async function GET(request: Request): Promise<Response> {
         headers: { "content-type": "application/json" },
       });
     }
-    const operationTrimmed = operationRaw?.trim();
-    if (operationTrimmed === "") {
+    // Only reject explicitly empty string; whitespace-only trims to no-filter (consistent with gateway).
+    if (operationRaw === "") {
       return new Response(JSON.stringify({ error: "operation parameter must not be empty" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
+    const operationTrimmed = operationRaw?.trim();
     if (operationTrimmed !== undefined && [...operationTrimmed].length > MAX_OPERATION_LENGTH) {
       return new Response(JSON.stringify({ error: "operation parameter too long" }), {
         status: 400,
@@ -49,13 +50,11 @@ export async function GET(request: Request): Promise<Response> {
     const operationParam = operationTrimmed || undefined;
 
     const now = new Date();
-    // tomorrowMidnight = exclusive upper bound; used for the default `to` and the
-    // future-date guard so both always anchor to the same instant.
-    // Deriving `from` relative to tomorrowMidnight gives exactly DEFAULT_DAYS of
-    // coverage: [tomorrowMidnight - DEFAULT_DAYS, tomorrowMidnight) = 30 calendar days.
+    // Use Date.UTC calendar arithmetic so from/to are always exact UTC midnight
+    // boundaries regardless of DST or leap seconds in the server's local timezone.
     const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
-    let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
+    let from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 - DEFAULT_DAYS));
     let to = tomorrowMidnight;
 
     if (fromParam) {
