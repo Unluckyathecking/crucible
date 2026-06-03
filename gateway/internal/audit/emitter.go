@@ -88,6 +88,9 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.ActorType == ActorSystem && e.ActorID != "" {
 		return fmt.Errorf("audit: actor_id must be empty for actor_type %q", e.ActorType)
 	}
+	if db == nil {
+		return fmt.Errorf("audit: db pool is nil")
+	}
 	var detailsJSON []byte
 	if e.Details != nil {
 		b, err := json.Marshal(sanitizeDetails(e.Details))

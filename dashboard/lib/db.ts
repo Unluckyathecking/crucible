@@ -194,8 +194,8 @@ export async function revokeApiKey(
 //
 // Parenthesized subqueries give the planner two separate index scans
 // (idx_audit_actor_id for the actor branch, idx_audit_target_id for the target branch).
-// No row can appear in both branches: actor_id = $1 excludes rows where
-// actor_id IS DISTINCT FROM $1. UNION ALL avoids the dedup overhead of UNION.
+// No row can appear in both branches: actor_id = $1 in the first branch excludes
+// all those rows from the second. UNION ALL avoids the dedup overhead of UNION.
 export async function listAuditEvents(
   customerId: string,
   limit = 20,
@@ -228,7 +228,7 @@ export async function listAuditEvents(
        (SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
         FROM audit_log
         WHERE target_id = $1
-          AND actor_id IS DISTINCT FROM $1
+          AND (actor_id IS NULL OR actor_id != $1)
           AND created_at >= $3
         ORDER BY created_at DESC
         LIMIT $2)
