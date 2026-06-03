@@ -177,48 +177,52 @@ export async function revokeApiKey(
   }
   const result = rawResult; // narrowed to RevokeResult by the type guard above
 
-  if (result === "revoked" && prefix) {
-    // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
-    // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
-    // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
-    const redis = getRedis();
-    if (redis) {
-      void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
-        console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
+  if (result === "revoked") {
+    if (prefix) {
+      // Best-effort Redis cache invalidation: the gateway caches auth:{prefix} for 60 s.
+      // Clearing it here makes revocation effective immediately (CLAUDE.md invariant #7).
+      // Fire-and-forget — a Redis failure must not fail the revocation that's already in Postgres.
+      const redis = getRedis();
+      if (redis) {
+        void redis.del(`${AUTH_CACHE_PREFIX}${prefix}`).catch((err) => {
+          console.error("redis cache invalidation failed for revoked key", { prefix, error: err instanceof Error ? err.message : String(err) });
+        });
+      }
+      // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+      void emitAuditEvent(pool, {
+        actorType: "customer",
+        actorId: customerId,
+        action: "api_key.revoked",
+        targetType: "api_key",
+        targetId: keyId,
+        details: { prefix },
       });
     }
-
-    // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-    void emitAuditEvent(pool, {
-      actorType: "customer",
-      actorId: customerId,
-      action: "api_key.revoked",
-      targetType: "api_key",
-      targetId: keyId,
-      details: { prefix },
-    });
     return "revoked";
   }
 
-  if (result === "already_revoked" && found_prefix) {
-    // The first revocation may have succeeded in Postgres but transiently failed Redis.
-    // Attempt DEL again so a stale cache entry cannot extend the key's validity.
-    const alreadyRedis = getRedis();
-    if (alreadyRedis) {
-      void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${found_prefix}`).catch((err) => {
-        console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
+  if (result === "already_revoked") {
+    if (found_prefix) {
+      // The first revocation may have succeeded in Postgres but transiently failed Redis.
+      // Attempt DEL again so a stale cache entry cannot extend the key's validity.
+      const alreadyRedis = getRedis();
+      if (alreadyRedis) {
+        void alreadyRedis.del(`${AUTH_CACHE_PREFIX}${found_prefix}`).catch((err) => {
+          console.error("redis cache invalidation failed for already_revoked key", { prefix: found_prefix, error: err instanceof Error ? err.message : String(err) });
+        });
+      }
+      // Use a distinct action so retry attempts don't create duplicate "api_key.revoked" rows
+      // that would make the audit trail appear as if the key was revoked multiple times.
+      void emitAuditEvent(pool, {
+        actorType: "customer",
+        actorId: customerId,
+        action: "api_key.revoke_redundant",
+        targetType: "api_key",
+        targetId: keyId,
+        details: { prefix: found_prefix },
       });
     }
-    // Use a distinct action so retry attempts don't create duplicate "api_key.revoked" rows
-    // that would make the audit trail appear as if the key was revoked multiple times.
-    void emitAuditEvent(pool, {
-      actorType: "customer",
-      actorId: customerId,
-      action: "api_key.revoke_redundant",
-      targetType: "api_key",
-      targetId: keyId,
-      details: { prefix: found_prefix },
-    });
+    return "already_revoked";
   }
 
   return result;
