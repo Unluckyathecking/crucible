@@ -94,6 +94,8 @@ export async function insertApiKey(
   );
   const keyId = r.rows[0].id;
   // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
+  // .catch(() => {}) guards against a synchronous throw escaping as an unhandled rejection
+  // before emitAuditEvent's internal try/catch can handle it.
   void emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
@@ -101,7 +103,7 @@ export async function insertApiKey(
     targetType: "api_key",
     targetId: keyId,
     details: { name, prefix },
-  });
+  }).catch(() => {});
   return keyId;
 }
 
@@ -150,6 +152,7 @@ export async function revokeApiKey(
     // never roll back a completed Postgres revocation. Including the audit INSERT in the
     // same transaction would make audit errors silently undo the revocation — the opposite
     // of what we want. Best-effort: errors caught and logged inside emitAuditEvent.
+    // .catch(() => {}) guards against a synchronous throw before the internal try/catch.
     void emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
@@ -157,7 +160,7 @@ export async function revokeApiKey(
       targetType: "api_key",
       targetId: keyId,
       details: { prefix },
-    });
+    }).catch(() => {});
     return "revoked";
   }
 

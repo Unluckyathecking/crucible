@@ -59,7 +59,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	if e.Details != nil {
 		b, err := json.Marshal(e.Details)
 		if err != nil {
-			return fmt.Errorf("audit: details not serializable")
+			return fmt.Errorf("audit: details not serializable: %w", err)
 		}
 		detailsJSON = b
 	}
@@ -85,7 +85,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 		string(e.ActorType), actorIDParam, e.Action,
 		e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
-		return fmt.Errorf("audit: insert failed")
+		return fmt.Errorf("audit: insert failed: %w", err)
 	}
 	return nil
 }

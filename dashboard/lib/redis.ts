@@ -55,7 +55,9 @@ export function getRedis(): Redis | null {
     // quit() sends QUIT to Redis and waits for acknowledgement before closing;
     // disconnect() forces the socket closed immediately. Both are fire-and-forget
     // here (we already dereferenced the client above). Suppress shutdown errors.
-    oldRedis.quit().catch(() => { /* ignore shutdown errors during URL change */ });
+    oldRedis.quit().catch((err) => {
+      console.debug("redis quit during URL change:", err instanceof Error ? err.message : String(err));
+    });
   }
 
   if (!global._crucible_redis) {
