@@ -275,11 +275,9 @@ function validateUsageQueryParams(
   return { effectiveOp };
 }
 
-function saturateBigIntString(value: string | bigint): number {
+function saturateBigIntString(value: string): number {
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  // pg returns SQL bigint as a JS string by default; accept bigint too in case
-  // a custom type parser overrides the default OID-20 behaviour.
-  const n = typeof value === "bigint" ? value : BigInt(value);
+  const n = BigInt(value);
   return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
 }
 
@@ -389,5 +387,5 @@ export async function sumUsage(customerId: string, days: number): Promise<number
      WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
-  return saturateBigIntString(r.rows[0]?.units ?? "0");
+  return saturateBigIntString(r.rows[0].units);
 }
