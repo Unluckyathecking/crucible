@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,7 +31,7 @@ func QueryByOperation(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUI
 		return nil, fmt.Errorf("from must not be after to")
 	}
 	operationTrimmed := strings.TrimSpace(operation)
-	if operationTrimmed != "" && len(operationTrimmed) > 128 {
+	if operationTrimmed != "" && utf8.RuneCountInString(operationTrimmed) > 128 {
 		return nil, fmt.Errorf("operation too long (max 128 characters)")
 	}
 	// Build the query dynamically so the placeholder index stays correct if parameters
