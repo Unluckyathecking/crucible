@@ -65,55 +65,50 @@ func (s *Store) Claim(ctx context.Context, customerID uuid.UUID, key string, fin
 }
 
 // Load returns the stored Entry for the given key, or nil when absent or TTL-expired.
+// TTL comparison is done in SQL using the DB clock to avoid Go/Postgres clock skew.
 // An expired row is deleted so the caller can re-Claim.
 func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*Entry, error) {
 	var fingerprint []byte
 	var statusCode *int
 	var body []byte
 	var headersJSON []byte
-	var createdAt time.Time
 
+	// Filter expired rows in SQL so TTL uses a single clock domain (the DB).
 	err := s.db.QueryRow(ctx, `
-		SELECT fingerprint, status_code, response_body, response_headers, created_at
+		SELECT fingerprint, status_code, response_body, response_headers
 		FROM idempotency_keys
 		WHERE customer_id = $1 AND idempotency_key = $2
-	`, customerID, key).Scan(&fingerprint, &statusCode, &body, &headersJSON, &createdAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+		  AND created_at >= NOW() - ($3 * INTERVAL '1 second')
+	`, customerID, key, s.ttl.Seconds()).Scan(&fingerprint, &statusCode, &body, &headersJSON)
+	if err == nil {
+		var hdrs http.Header
+		if len(headersJSON) > 0 {
+			if err := json.Unmarshal(headersJSON, &hdrs); err != nil {
+				log.Warn().Err(err).Str("key", key).Msg("idempotency: corrupt response_headers, failing open")
+				return nil, err
+			}
 		}
+		return &Entry{
+			Fingerprint:     fingerprint,
+			StatusCode:      statusCode,
+			Body:            body,
+			ResponseHeaders: hdrs,
+		}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 
-	if time.Since(createdAt) > s.ttl {
-		// Expired — delete the specific row we loaded so the next Claim can succeed.
-		// Use created_at so a concurrent re-claim that already inserted a fresh row
-		// for the same key is not accidentally removed.
-		// Return the error so the middleware fails open rather than returning a
-		// false "no entry" that could let two callers both believe they own the key.
-		if _, delErr := s.db.Exec(ctx, `
-			DELETE FROM idempotency_keys
-			WHERE customer_id = $1 AND idempotency_key = $2 AND created_at = $3
-		`, customerID, key, createdAt); delErr != nil {
-			return nil, delErr
-		}
-		return nil, nil
+	// Row absent or expired. Delete any expired row so a subsequent Claim can succeed.
+	// Uses the same DB clock as the SELECT above, so both checks are consistent.
+	if _, delErr := s.db.Exec(ctx, `
+		DELETE FROM idempotency_keys
+		WHERE customer_id = $1 AND idempotency_key = $2
+		  AND created_at < NOW() - ($3 * INTERVAL '1 second')
+	`, customerID, key, s.ttl.Seconds()); delErr != nil {
+		return nil, delErr
 	}
-
-	var hdrs http.Header
-	if len(headersJSON) > 0 {
-		if err := json.Unmarshal(headersJSON, &hdrs); err != nil {
-			log.Warn().Err(err).Str("key", key).Msg("idempotency: corrupt response_headers, failing open")
-			return nil, err
-		}
-	}
-
-	return &Entry{
-		Fingerprint:     fingerprint,
-		StatusCode:      statusCode,
-		Body:            body,
-		ResponseHeaders: hdrs,
-	}, nil
+	return nil, nil
 }
 
 // Finalize stores the 2xx response for a key owned by this request.
@@ -123,12 +118,18 @@ func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, 
 	if merr != nil {
 		hdrsJSON = []byte("{}")
 	}
-	_, err := s.db.Exec(ctx, `
+	result, err := s.db.Exec(ctx, `
 		UPDATE idempotency_keys
 		SET status_code = $1, response_body = $2, response_headers = $3
 		WHERE customer_id = $4 AND idempotency_key = $5 AND fingerprint = $6 AND status_code IS NULL
 	`, statusCode, body, hdrsJSON, customerID, key, fingerprint)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("idempotency: finalize affected 0 rows; key may have expired or been re-claimed")
+	}
+	return nil
 }
 
 // Release removes a pending entry so genuine retries can proceed.

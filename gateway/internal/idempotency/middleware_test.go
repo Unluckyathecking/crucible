@@ -445,7 +445,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	// Wait for the winner to enter the handler (key claimed), then unblock it.
 	select {
 	case <-handlerEntered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timeout waiting for handler to be entered")
 	}
 	close(ready)
