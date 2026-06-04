@@ -156,7 +156,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 						switch k {
 						case "Connection", "Content-Length", "Keep-Alive",
 							"Proxy-Authenticate", "Proxy-Authorization",
-							"Te", "Trailers", "Transfer-Encoding", "Upgrade":
+							"Te", "Trailer", "Transfer-Encoding", "Upgrade":
 							continue
 						}
 						dst[k] = vv
