@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -39,10 +40,8 @@ func newCaptureWriter() *captureWriter {
 func (c *captureWriter) Header() http.Header { return c.header }
 
 func (c *captureWriter) WriteHeader(code int) {
-	if !c.wrote {
-		c.status = code
-		c.wrote = true
-	}
+	c.status = code
+	c.wrote = true
 }
 
 func (c *captureWriter) Write(p []byte) (int, error) {
@@ -89,7 +88,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				return
 			}
 			if len(key) > maxKeyLen {
-				writeIDError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key too long (max 255 characters)", false)
+				writeIDError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", fmt.Sprintf("Idempotency-Key too long (max %d characters)", maxKeyLen), false)
 				return
 			}
 
@@ -144,6 +143,11 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					}
 					// Fall through: we now own the key.
 				} else if !bytes.Equal(fp, entry.Fingerprint) {
+					// Design invariant: do NOT delete the stored row on fingerprint mismatch.
+					// Deleting a completed row would allow a retry with the original body to
+					// re-execute the worker — exactly the double-billing this module prevents.
+					// 422 permanently prevents the mismatched body from executing; the
+					// original fingerprint's replay remains available and is always safe.
 					writeIDError(w, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSE", "key reused with different request body", false)
 					return
 				} else if entry.StatusCode == nil {
@@ -152,13 +156,14 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				} else {
 					// Completed entry: replay stored response without invoking the worker.
 					// Skip all RFC 7230 hop-by-hop headers plus Content-Length (we
-					// recompute it from the stored body) so the replayed response is a
-					// clean, length-framed message with no conflicting framing headers.
+					// recompute it from the stored body) and Date (regenerated below
+					// so the replayed response is a clean, length-framed message with
+					// no conflicting framing or stale timestamp headers.
 					dst := w.Header()
 					for k, vv := range entry.ResponseHeaders {
 						ck := http.CanonicalHeaderKey(k)
 						switch ck {
-						case "Connection", "Content-Length", "Keep-Alive",
+						case "Connection", "Content-Length", "Date", "Keep-Alive",
 							"Proxy-Authenticate", "Proxy-Authorization",
 							"Te", "Trailer", "Transfer-Encoding", "Upgrade":
 							continue
@@ -167,6 +172,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					}
 					w.Header().Set("X-Idempotent-Replayed", "true")
 					w.Header().Set("Content-Length", strconv.Itoa(len(entry.Body)))
+					w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
 					w.WriteHeader(*entry.StatusCode)
 					_, _ = w.Write(entry.Body)
 					return
@@ -194,11 +200,10 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			status := cw.status
 			body := cw.body.Bytes()
 
-			bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
-			defer cancel()
-
 			if status >= minSuccessStatus && status <= maxSuccessStatus {
 				// Persist only on 2xx so retryable failures remain retryable.
+				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
+				defer cancel()
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header, fp); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
 					// bg may be exhausted if Finalize consumed the full timeout; allocate
@@ -211,6 +216,8 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				}
 			} else {
 				// Release the pending row so the client can genuinely retry.
+				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
+				defer cancel()
 				if err := store.Release(bg, customerID, key); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed; key will expire after TTL")
 				}

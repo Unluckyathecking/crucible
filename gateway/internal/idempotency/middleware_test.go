@@ -449,6 +449,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	start := make(chan struct{})
 
 	results := make([]int, n)
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -460,7 +461,9 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 			req.Header.Set("Idempotency-Key", ikey)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, req)
+			mu.Lock()
 			results[idx] = w.Code
+			mu.Unlock()
 		}(i)
 	}
 
