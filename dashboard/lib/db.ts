@@ -17,6 +17,13 @@ if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 const AUTH_CACHE_PREFIX = "auth:";
 const MAX_AUDIT_LIMIT = 100;
 const AUDIT_LOOKBACK_DAYS = 90;
+const MAX_USAGE_EVENTS_LIMIT = 1000;
+// Separate cap for per-operation aggregate rows (distinct operations per customer window).
+const MAX_USAGE_OPERATIONS_LIMIT = 1000;
+export const MAX_OPERATION_LENGTH = 128;
+export const MAX_USAGE_RANGE_DAYS = 90;
+export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * MS_PER_DAY;
 
 export interface Customer {
   id: string;
@@ -95,14 +102,14 @@ export async function insertApiKey(
   );
   const keyId = r.rows[0].id;
   // Best-effort: errors are caught and logged inside emitAuditEvent; never propagate here.
-  void emitAuditEvent(pool, {
+  emitAuditEvent(pool, {
     actorType: "customer",
     actorId: customerId,
     action: "api_key.created",
     targetType: "api_key",
     targetId: keyId,
     details: { name, prefix },
-  });
+  }).catch(() => {});
   return keyId;
 }
 
@@ -151,14 +158,14 @@ export async function revokeApiKey(
     // never roll back a completed Postgres revocation. Including the audit INSERT in the
     // same transaction would make audit errors silently undo the revocation — the opposite
     // of what we want. Best-effort: errors caught and logged inside emitAuditEvent.
-    void emitAuditEvent(pool, {
+    emitAuditEvent(pool, {
       actorType: "customer",
       actorId: customerId,
       action: "api_key.revoked",
       targetType: "api_key",
       targetId: keyId,
       details: { prefix },
-    });
+    }).catch(() => {});
     return "revoked";
   }
 
@@ -212,7 +219,7 @@ export async function listAuditEvents(
   const clampedLimit = Math.max(1, Math.min(safeLimit, MAX_AUDIT_LIMIT));
   // Parameterizing the cutoff (vs. inline INTERVAL) lets the planner use idx_audit_actor_id
   // and idx_audit_target_id with a stable bound rather than re-evaluating NOW() per-plan.
-  const cutoff = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const cutoff = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * MS_PER_DAY);
   // Per-branch ORDER BY + LIMIT allows each branch to use its index with an index scan + limit,
   // then the outer sort merges at most 2*clampedLimit rows instead of the full table.
   const r = await pool.query<AuditEventRow>(
@@ -241,6 +248,138 @@ export async function listAuditEvents(
   return r.rows;
 }
 
+function validateUsageQueryParams(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): { effectiveOp: string | undefined } {
+  if (!UUID_RE.test(customerId)) {
+    throw new Error("invalid customerId");
+  }
+  if (!(from instanceof Date) || isNaN(from.getTime()) || !(to instanceof Date) || isNaN(to.getTime())) {
+    throw new Error("invalid date range");
+  }
+  // Strict greater-than: from === to is a valid empty half-open interval [t, t) returning zero rows.
+  if (from.getTime() > to.getTime()) {
+    throw new Error("from must not be after to");
+  }
+  // Strict greater-than: exactly MAX_USAGE_RANGE_DAYS is allowed (the limit is inclusive).
+  if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_MS) {
+    throw new Error(`date range exceeds maximum of ${MAX_USAGE_RANGE_DAYS} days`);
+  }
+  const effectiveOp = operation?.trim() || undefined;
+  if (effectiveOp !== undefined && [...effectiveOp].length > MAX_OPERATION_LENGTH) {
+    throw new Error(`operation too long (max ${MAX_OPERATION_LENGTH} characters)`);
+  }
+  return { effectiveOp };
+}
+
+function saturateBigIntString(value: string): number {
+  const cap = BigInt(Number.MAX_SAFE_INTEGER);
+  const n = BigInt(value);
+  return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
+}
+
+export interface UsageOperationRow {
+  operation: string;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true sum exceeds it. */
+  total_billable_units: number;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true count exceeds it. */
+  event_count: number;
+}
+
+// usageByOperation returns per-operation aggregates from usage_events for a customer
+// over the half-open interval [from, to) — from is inclusive, to is exclusive.
+// Pass a non-empty operation to filter to one operation only.
+// Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
+export async function usageByOperation(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): Promise<UsageOperationRow[]> {
+  const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
+  type Row = { operation: string; total_billable_units: string; event_count: string };
+  const mapRow = (row: Row): UsageOperationRow => ({
+    operation: row.operation,
+    total_billable_units: saturateBigIntString(row.total_billable_units),
+    event_count: saturateBigIntString(row.event_count),
+  });
+  if (effectiveOp) {
+    // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
+    const r = await pool.query<Row>(
+      `SELECT operation,
+              COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
+              COUNT(*)::text AS event_count
+       FROM usage_events
+       WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
+       GROUP BY operation ORDER BY operation LIMIT $5`,
+      [customerId, from, to, effectiveOp, MAX_USAGE_OPERATIONS_LIMIT],
+    );
+    return r.rows.map(mapRow);
+  }
+  // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
+  const r = await pool.query<Row>(
+    `SELECT operation,
+            COALESCE(SUM(billable_units), 0)::text AS total_billable_units,
+            COUNT(*)::text AS event_count
+     FROM usage_events
+     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
+     GROUP BY operation ORDER BY operation LIMIT $4`,
+    [customerId, from, to, MAX_USAGE_OPERATIONS_LIMIT],
+  );
+  return r.rows.map(mapRow);
+}
+
+export interface UsageEventRow {
+  operation: string;
+  /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
+  billable_units: number;
+  created_at: Date;
+}
+
+// listUsageEvents returns raw usage_events rows for a customer over the half-open
+// interval [from, to) — from is inclusive, to is exclusive. Newest first,
+// capped at MAX_USAGE_EVENTS_LIMIT rows. Pass a non-empty operation to filter.
+// Uses parameterized $-placeholders; no string interpolation of caller-supplied values.
+export async function listUsageEvents(
+  customerId: string,
+  from: Date,
+  to: Date,
+  operation?: string,
+): Promise<UsageEventRow[]> {
+  const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
+  // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
+  // the server's DateStyle setting; no ::text cast or to_char conversion needed.
+  type Row = { operation: string; billable_units: string; created_at: Date };
+  const mapRow = (row: Row): UsageEventRow => ({
+    operation: row.operation,
+    billable_units: saturateBigIntString(row.billable_units),
+    created_at: row.created_at,
+  });
+  if (effectiveOp) {
+    // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
+    const r = await pool.query<Row>(
+      `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+       FROM usage_events
+       WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
+       ORDER BY created_at DESC LIMIT $5`,
+      [customerId, from, to, effectiveOp, MAX_USAGE_EVENTS_LIMIT],
+    );
+    return r.rows.map(mapRow);
+  }
+  // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
+  const r = await pool.query<Row>(
+    `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+     FROM usage_events
+     WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
+     ORDER BY created_at DESC LIMIT $4`,
+    [customerId, from, to, MAX_USAGE_EVENTS_LIMIT],
+  );
+  return r.rows.map(mapRow);
+}
+
 export async function sumUsage(customerId: string, days: number): Promise<number> {
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
@@ -248,5 +387,7 @@ export async function sumUsage(customerId: string, days: number): Promise<number
      WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
     [customerId, days],
   );
-  return Number(r.rows[0].units);
+  const units = r.rows[0]?.units;
+  if (units === undefined || units === null) return 0;
+  return saturateBigIntString(units);
 }

@@ -153,6 +153,25 @@ describe("DELETE /api/keys/[id] — idempotency", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Drift-detection: insertApiKey fire-and-forget audit emission.
+// ---------------------------------------------------------------------------
+describe("insertApiKey in db.ts — audit fire-and-forget drift-detection", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../../../lib/db.ts"), "utf8");
+  const insertStart = src.indexOf("export async function insertApiKey");
+  const nextExport = src.indexOf("\nexport ", insertStart + 1);
+  const insertSection =
+    insertStart >= 0 ? src.slice(insertStart, nextExport > 0 ? nextExport : undefined) : "";
+
+  it("insertApiKey emitAuditEvent uses fire-and-forget .catch() pattern", () => {
+    expect(insertStart).toBeGreaterThanOrEqual(0);
+    const emitIdx = insertSection.indexOf("emitAuditEvent");
+    expect(emitIdx).toBeGreaterThanOrEqual(0);
+    const catchIdx = insertSection.indexOf(".catch(", emitIdx);
+    expect(catchIdx).toBeGreaterThan(emitIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Drift-detection smoke tests — NOT behavioral guarantees.
 // These read the actual db.ts source and assert that specific SQL patterns are
 // present so that the re-implementation above cannot silently diverge from the
@@ -195,10 +214,15 @@ describe("revokeApiKey in db.ts — drift-detection smoke tests", () => {
     expect(revokeSection).toContain('"forbidden"');
   });
 
-  it("audit emission in revokeApiKey is fire-and-forget (void, errors handled inside emitAuditEvent)", () => {
-    // emitAuditEvent internally catches errors; callers mark intent with void.
-    // Audits failures must not surface as 500 to the customer.
-    expect(revokeSection).toMatch(/void\s+emitAuditEvent\s*\(/);
+  it("audit emission in revokeApiKey is fire-and-forget (.catch, errors handled inside emitAuditEvent)", () => {
+    // emitAuditEvent internally catches errors; callers chain .catch(() => {}) to
+    // explicitly handle the promise without propagating failures.
+    // Audit failures must not surface as 500 to the customer.
+    // Use indexOf rather than a cross-line regex so reformatting never breaks the test.
+    const emitIdx = revokeSection.indexOf("emitAuditEvent");
+    expect(emitIdx).toBeGreaterThanOrEqual(0);
+    const catchIdx = revokeSection.indexOf(".catch(", emitIdx);
+    expect(catchIdx).toBeGreaterThan(emitIdx);
   });
 
   it("second query in revokeApiKey does not filter by customer_id so ownership vs non-existence is distinguishable", () => {

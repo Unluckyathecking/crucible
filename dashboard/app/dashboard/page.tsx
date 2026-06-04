@@ -1,10 +1,12 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, sumUsage, listAuditEvents, AuditEventRow } from "@/lib/db";
+import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, MS_PER_DAY } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
+
+const USAGE_WINDOW_DAYS = 30;
 
 function getAuditEventLabel(e: AuditEventRow): string {
   const details =
@@ -25,11 +27,20 @@ export default async function DashboardPage() {
     redirect("/login");
   }
   const customer = await ensureCustomer(session.user.email);
-  const [keys, usage, auditEvents] = await Promise.all([
+  const now = new Date();
+  const tomorrowMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  // Subtract in milliseconds from tomorrowMidnight for an unambiguous USAGE_WINDOW_DAYS × 24 h window.
+  const thirtyDaysAgo = new Date(tomorrowMidnight.getTime() - USAGE_WINDOW_DAYS * MS_PER_DAY);
+  const [keys, opBreakdown, auditEvents] = await Promise.all([
     listKeys(customer.id),
-    sumUsage(customer.id, 30),
+    usageByOperation(customer.id, thirtyDaysAgo, tomorrowMidnight),
     listAuditEvents(customer.id),
   ]);
+  const cap = BigInt(Number.MAX_SAFE_INTEGER);
+  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
+  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
+  const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
+  const totalCalls = rawCalls > cap ? Number.MAX_SAFE_INTEGER : Number(rawCalls);
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
@@ -79,9 +90,40 @@ export default async function DashboardPage() {
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
-          <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last 30 days)</h2>
-          <div className="text-3xl sm:text-4xl font-bold font-variant-numeric-tabular">{usage.toLocaleString()}</div>
-          <div className="text-sm text-zinc-500">billable units</div>
+          <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last {USAGE_WINDOW_DAYS} days)</h2>
+          {opBreakdown.length === 0 ? (
+            <p className="text-sm text-zinc-500">No usage in this period.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-zinc-500 border-b border-zinc-200">
+                    <th className="pb-2 pr-4 font-medium">Operation</th>
+                    <th className="pb-2 pr-4 font-medium text-right">Units</th>
+                    <th className="pb-2 font-medium text-right">Calls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {opBreakdown.map((row) => (
+                    <tr key={row.operation} className="border-b border-zinc-100">
+                      <td className="py-2 pr-4 font-mono">{row.operation}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">{row.total_billable_units.toLocaleString()}</td>
+                      <td className="py-2 text-right tabular-nums text-zinc-500">{row.event_count.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="text-zinc-600 font-medium">
+                    <td className="pt-2 pr-4">Total</td>
+                    <td className="pt-2 pr-4 text-right tabular-nums">{totalUnits.toLocaleString()}</td>
+                    <td className="pt-2 text-right tabular-nums text-zinc-500">
+                      {totalCalls.toLocaleString()}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5" aria-label="Recent activity">
