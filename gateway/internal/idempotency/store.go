@@ -133,11 +133,17 @@ func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, 
 	return nil
 }
 
-// Release removes a pending entry so genuine retries can proceed.
-// Called when the handler returned a non-2xx status.
+// Release removes a pending (in-flight) entry so genuine retries can proceed.
+// The AND status_code IS NULL guard is critical: if Finalize's UPDATE committed on
+// the Postgres side but the connection dropped before Go read the acknowledgement,
+// Finalize returns an error and the middleware calls Release as a fallback. Without
+// the guard, Release would delete the now-finalized row, allowing the next retry to
+// claim a fresh key and re-invoke the worker — exactly the double-billing this
+// module exists to prevent.
 func (s *Store) Release(ctx context.Context, customerID uuid.UUID, key string) error {
 	_, err := s.db.Exec(ctx, `
-		DELETE FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2
+		DELETE FROM idempotency_keys
+		WHERE customer_id = $1 AND idempotency_key = $2 AND status_code IS NULL
 	`, customerID, key)
 	return err
 }
