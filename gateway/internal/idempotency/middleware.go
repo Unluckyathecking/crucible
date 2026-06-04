@@ -47,27 +47,30 @@ func (c *captureWriter) Write(p []byte) (int, error) {
 	return c.body.Write(p)
 }
 
-// flush copies the captured headers + status + body to the real writer.
+// flush copies the captured headers, status, and body to the real writer.
+// Direct map assignment avoids duplicate header values from a prior Add call.
 func (c *captureWriter) flush(w http.ResponseWriter) {
+	dst := w.Header()
 	for k, vv := range c.header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
+		dst[k] = vv
 	}
 	w.WriteHeader(c.status)
 	_, _ = w.Write(c.body.Bytes())
 }
 
-// Middleware deduplicates POST requests within the idempotency TTL window.
+// Middleware deduplicates POST /v1/* retries within the idempotency TTL window.
 //
-// Absent Idempotency-Key header → pass-through (zero behaviour change).
+// Only POST requests that carry an Idempotency-Key header are deduplicated;
+// all other requests (non-POST or missing header) are pass-through.
 // store == nil → pass-through for all requests (feature disabled; main.go untouched).
 //
-// Must be mounted AFTER auth.Middleware — it reads the authenticated Key from context.
+// Mount AFTER auth.Middleware (reads authenticated Key from context) and
+// BEFORE quota.Middleware so that replays exit before the quota reserve/refund
+// path runs — replays must not reserve or refund quota.
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if store == nil {
+			if store == nil || r.Method != http.MethodPost {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -90,14 +93,16 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			}
 			customerID := authKey.Customer.ID
 
-			// Read and restore the body so the downstream handler still sees it.
-			bodyBytes, err := io.ReadAll(r.Body)
+			// Read the body; close the original once done and restore for downstream.
+			origBody := r.Body
+			defer origBody.Close()
+			bodyBytes, err := io.ReadAll(origBody)
 			if err != nil {
 				writeIDError(w, http.StatusBadRequest, "BAD_REQUEST", "could not read body", false)
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			fp := fingerprint(bodyBytes)
+			fp := fingerprint(bodyBytes, r.URL.Path)
 
 			// Try to claim the key (UNIQUE INSERT — first in wins).
 			claimed, err := store.Claim(r.Context(), customerID, key, fp)
@@ -131,7 +136,11 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					return
 				} else {
 					// Completed entry: replay stored response without invoking the worker.
-					w.Header().Set("Content-Type", "application/json")
+					// Restore all original response headers first, then mark as replayed.
+					dst := w.Header()
+					for k, vv := range entry.ResponseHeaders {
+						dst[k] = vv
+					}
 					w.Header().Set("X-Idempotent-Replayed", "true")
 					w.WriteHeader(*entry.StatusCode)
 					_, _ = w.Write(entry.Body)
@@ -139,9 +148,22 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				}
 			}
 
-			// We own the key. Run the handler and capture its response.
+			// We own the key. Release it on panic so clients can retry after a 500.
+			panicked := true
+			defer func() {
+				if panicked {
+					bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := store.Release(bg, customerID, key); err != nil {
+						log.Warn().Err(err).Str("key", key).Msg("idempotency: panic-path release failed")
+					}
+				}
+			}()
+
+			// Run the handler and capture its response.
 			cw := newCaptureWriter()
 			next.ServeHTTP(cw, r)
+			panicked = false
 
 			status := cw.status
 			body := cw.body.Bytes()
@@ -150,7 +172,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				// Persist only on 2xx so retryable failures remain retryable.
 				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if err := store.Finalize(bg, customerID, key, status, body); err != nil {
+				if err := store.Finalize(bg, customerID, key, status, body, cw.header); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed")
 				}
 			} else {
@@ -167,9 +189,12 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 	}
 }
 
-func fingerprint(body []byte) []byte {
-	sum := sha256.Sum256(body)
-	return sum[:]
+func fingerprint(body []byte, path string) []byte {
+	h := sha256.New()
+	h.Write([]byte(path))
+	h.Write([]byte{0})
+	h.Write(body)
+	return h.Sum(nil)
 }
 
 // writeIDError writes a JSON error envelope matching the gateway's stable shape.

@@ -9,7 +9,9 @@ package idempotency
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,9 +24,10 @@ const defaultTTL = 24 * time.Hour
 // Entry is a stored idempotency record.
 // StatusCode == nil means the owning request is still in-flight.
 type Entry struct {
-	Fingerprint []byte
-	StatusCode  *int
-	Body        []byte
+	Fingerprint     []byte
+	StatusCode      *int
+	Body            []byte
+	ResponseHeaders http.Header
 }
 
 // Store persists idempotency records in Postgres.
@@ -65,13 +68,14 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 	var fingerprint []byte
 	var statusCode *int
 	var body []byte
+	var headersJSON []byte
 	var createdAt time.Time
 
 	err := s.db.QueryRow(ctx, `
-		SELECT fingerprint, status_code, response_body, created_at
+		SELECT fingerprint, status_code, response_body, response_headers, created_at
 		FROM idempotency_keys
 		WHERE customer_id = $1 AND idempotency_key = $2
-	`, customerID, key).Scan(&fingerprint, &statusCode, &body, &createdAt)
+	`, customerID, key).Scan(&fingerprint, &statusCode, &body, &headersJSON, &createdAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -87,17 +91,31 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 		return nil, nil
 	}
 
-	return &Entry{Fingerprint: fingerprint, StatusCode: statusCode, Body: body}, nil
+	var hdrs http.Header
+	if len(headersJSON) > 0 {
+		_ = json.Unmarshal(headersJSON, &hdrs)
+	}
+
+	return &Entry{
+		Fingerprint:     fingerprint,
+		StatusCode:      statusCode,
+		Body:            body,
+		ResponseHeaders: hdrs,
+	}, nil
 }
 
 // Finalize stores the 2xx response for a key owned by this request.
 // Only called when the handler returned a success status.
-func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, statusCode int, body []byte) error {
+func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, statusCode int, body []byte, headers http.Header) error {
+	hdrsJSON, merr := json.Marshal(headers)
+	if merr != nil {
+		hdrsJSON = []byte("{}")
+	}
 	_, err := s.db.Exec(ctx, `
 		UPDATE idempotency_keys
-		SET status_code = $1, response_body = $2
-		WHERE customer_id = $3 AND idempotency_key = $4
-	`, statusCode, body, customerID, key)
+		SET status_code = $1, response_body = $2, response_headers = $3
+		WHERE customer_id = $4 AND idempotency_key = $5
+	`, statusCode, body, hdrsJSON, customerID, key)
 	return err
 }
 

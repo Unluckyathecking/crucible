@@ -12,12 +12,13 @@
 -- fingerprint is SHA-256(request_body), checked on every hit to prevent silent
 -- replay of a mismatched request (422 IDEMPOTENCY_KEY_REUSE on mismatch).
 CREATE TABLE IF NOT EXISTS idempotency_keys (
-  id              BIGSERIAL PRIMARY KEY,
-  customer_id     UUID         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-  idempotency_key TEXT         NOT NULL,
-  fingerprint     BYTEA        NOT NULL,
-  status_code     INTEGER,
-  response_body   BYTEA,
-  created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  id               BIGSERIAL PRIMARY KEY,
+  customer_id      UUID         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  idempotency_key  TEXT         NOT NULL,
+  fingerprint      BYTEA        NOT NULL,
+  status_code      INTEGER,
+  response_body    BYTEA,
+  response_headers JSONB,
+  created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   UNIQUE (customer_id, idempotency_key)
 );

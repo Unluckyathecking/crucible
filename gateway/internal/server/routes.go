@@ -108,8 +108,8 @@ func NewRouter(d *Deps) http.Handler {
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
-		r.Use(quota.Middleware(d.Quota, d.Plans))
 		r.Use(idempotency.Middleware(idempStore))
+		r.Use(quota.Middleware(d.Quota, d.Plans))
 		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
 	})
 
