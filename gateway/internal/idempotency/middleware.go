@@ -198,9 +198,11 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				// Persist only on 2xx so retryable failures remain retryable.
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header, fp); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
-					// Release the pending row so a retry sees a fresh key rather
-					// than a stuck pending claim that would 409 until TTL expires.
-					if rerr := store.Release(bg, customerID, key); rerr != nil {
+					// bg may be exhausted if Finalize consumed the full timeout; allocate
+					// a fresh context so Release doesn't fail with an expired deadline.
+					relCtx, relCancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
+					defer relCancel()
+					if rerr := store.Release(relCtx, customerID, key); rerr != nil {
 						log.Warn().Err(rerr).Str("key", key).Msg("idempotency: release after finalize-fail also failed")
 					}
 				}

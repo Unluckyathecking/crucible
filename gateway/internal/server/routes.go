@@ -72,6 +72,7 @@ func NewRouter(d *Deps) http.Handler {
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
+		ExposedHeaders:   []string{"X-Idempotent-Replayed"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))

@@ -9,8 +9,8 @@
 -- INSERT wins and owns the key; any concurrent INSERT returns 0 rows affected
 -- and the middleware returns 409 IDEMPOTENCY_CONFLICT.
 --
--- fingerprint is SHA-256(request_body), checked on every hit to prevent silent
--- replay of a mismatched request (422 IDEMPOTENCY_KEY_REUSE on mismatch).
+-- fingerprint is SHA-256(method + \0 + requestURI + \0 + body), checked on every hit to prevent
+-- silent replay of a mismatched request (422 IDEMPOTENCY_KEY_REUSE on mismatch).
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   id               BIGSERIAL PRIMARY KEY,
   customer_id      UUID         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
