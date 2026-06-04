@@ -210,6 +210,31 @@ func TestMiddleware_KeyTooLong_Returns400(t *testing.T) {
 	}
 }
 
+// TestMiddleware_NonPost_Passthrough verifies that non-POST requests are passed
+// through unchanged even when an Idempotency-Key header is present.
+func TestMiddleware_NonPost_Passthrough(t *testing.T) {
+	var invoked int
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		invoked++
+		w.WriteHeader(http.StatusOK)
+	})
+	h := idempotency.Middleware(nil)(inner)
+
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		invoked = 0
+		req := httptest.NewRequest(method, "/v1/echo", nil)
+		req.Header.Set("Idempotency-Key", "key-for-non-post")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", method, w.Code)
+		}
+		if invoked != 1 {
+			t.Errorf("%s: expected handler invoked once, got %d", method, invoked)
+		}
+	}
+}
+
 // === Integration tests (real Postgres + Redis) ===
 
 // TestMiddleware_FirstRequest_StoresResponse verifies the first-request path:
@@ -576,5 +601,50 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	}
 	if obj.Retryable {
 		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
+	}
+}
+
+// TestMiddleware_Replay_EmptyBody verifies that a 2xx response with an empty body
+// (e.g. 204 No Content) is stored and replayed correctly with Content-Length: 0.
+func TestMiddleware_Replay_EmptyBody(t *testing.T) {
+	infra := newTestInfra(t)
+	_, bearer := setupTestCustomer(t, infra)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent) // 204 — no body
+	})
+	store := idempotency.NewStore(infra.pool)
+	h := buildChain(infra, store, inner)
+
+	ikey := "empty-body-" + uuid.New().String()
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Idempotency-Key", ikey)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	w1 := send()
+	if w1.Code != http.StatusNoContent {
+		t.Fatalf("first: expected 204, got %d: %s", w1.Code, w1.Body.String())
+	}
+	if w1.Header().Get("X-Idempotent-Replayed") != "" {
+		t.Error("first request must not set X-Idempotent-Replayed")
+	}
+
+	w2 := send()
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("replay: expected 204, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if w2.Header().Get("X-Idempotent-Replayed") != "true" {
+		t.Error("replay: expected X-Idempotent-Replayed: true")
+	}
+	if cl := w2.Header().Get("Content-Length"); cl != "0" {
+		t.Errorf("replay: Content-Length should be 0, got %q", cl)
+	}
+	if w2.Body.Len() != 0 {
+		t.Errorf("replay: body should be empty, got %q", w2.Body.String())
 	}
 }

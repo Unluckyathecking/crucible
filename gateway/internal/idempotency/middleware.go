@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	maxKeyLen    = 255
-	bgOpTimeout  = 5 * time.Second
+	maxKeyLen        = 255
+	bgOpTimeout      = 5 * time.Second
+	minSuccessStatus = 200
+	maxSuccessStatus = 299
 )
 
 // captureWriter intercepts the handler's response without forwarding to the
@@ -100,15 +102,16 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			customerID := authKey.Customer.ID
 
 			// Read the body; close the original immediately (fully consumed) and
-			// restore a fresh reader for downstream handlers.
+			// restore a fresh reader for downstream handlers, even on error,
+			// so recovery middleware or loggers that inspect r.Body still work.
 			origBody := r.Body
 			bodyBytes, err := io.ReadAll(origBody)
 			origBody.Close()
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			if err != nil {
 				writeIDError(w, http.StatusBadRequest, "BAD_REQUEST", "could not read body", false)
 				return
 			}
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			fp := fingerprint(r.Method, bodyBytes, r.URL.RequestURI())
 
 			// Try to claim the key (UNIQUE INSERT — first in wins).
@@ -175,7 +178,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			// depend on a boolean flag that runtime.Goexit could leave stale.
 			defer func() {
 				if v := recover(); v != nil {
-					bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
+					bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 					defer cancel()
 					if err := store.Release(bg, customerID, key); err != nil {
 						log.Warn().Err(err).Str("key", key).Msg("idempotency: panic-path release failed")
@@ -191,16 +194,16 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			status := cw.status
 			body := cw.body.Bytes()
 
-			bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
+			bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 			defer cancel()
 
-			if status >= 200 && status < 300 {
+			if status >= minSuccessStatus && status <= maxSuccessStatus {
 				// Persist only on 2xx so retryable failures remain retryable.
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header, fp); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
 					// bg may be exhausted if Finalize consumed the full timeout; allocate
 					// a fresh context so Release doesn't fail with an expired deadline.
-					relCtx, relCancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
+					relCtx, relCancel := context.WithTimeout(context.Background(), bgOpTimeout)
 					defer relCancel()
 					if rerr := store.Release(relCtx, customerID, key); rerr != nil {
 						log.Warn().Err(rerr).Str("key", key).Msg("idempotency: release after finalize-fail also failed")

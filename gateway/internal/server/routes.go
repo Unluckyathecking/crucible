@@ -106,9 +106,9 @@ func NewRouter(d *Deps) http.Handler {
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
 	//
-	// Middleware order matters: chi executes the first-registered middleware outermost, so
-	// idempotency (registered before quota) is outer and short-circuits on replay before
-	// quota ever runs — replays must not reserve or refund quota.
+	// Middleware order matters: chi executes earlier-registered middleware outermost.
+	// idempotency is registered before quota, so replays exit before quota ever runs
+	// — replays must not reserve or refund quota.
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
