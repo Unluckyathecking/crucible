@@ -40,7 +40,7 @@ clone inherits.
     "No change to gateway/proto/tool.proto",
     "No change to the billable_units<1 rejection check in routes.go invoke()",
     "No change to quota reserve/refund signal machinery (quota/middleware.go, quota/context.go) — replay must not reserve or refund",
-    "No new server.Deps field that requires a Close()/shutdown hook (reuse existing Redis/PG handles) — keep gateway/cmd/gateway/main.go byte-untouched to stay disjoint from PR #48",
+    "No new server.Deps field that requires a Close()/shutdown hook (reuse the existing *pgxpool.Pool only; this module does NOT use Redis) — keep gateway/cmd/gateway/main.go byte-untouched to stay disjoint from PR #48",
     "No edit to .github/workflows/ci.yml (disjoint from PR #88)",
     "No signature change to NewRedis, proxy.New, or usage.NewRecorder",
     "Do not treat the gateway-generated X-Request-ID as the idempotency key — it is per-request, not client-controlled"
@@ -50,7 +50,7 @@ clone inherits.
 
 ## Subunits
 
-1. Migration `0007_idempotency_keys.sql` — idempotent; `UNIQUE(customer_id, idempotency_key)`.
+1. Migration `0007_idempotency_keys.sql` — idempotent; `UNIQUE(customer_id, idempotency_key)`. Verified as next sequence (existing: 0001–0006).
 2. Store (`idempotency/store.go`) — claim-or-fetch on `(customer_id, key, body_fingerprint)` via `INSERT ... ON CONFLICT`; persist captured response. Real-PG test.
 3. Response-capturing middleware (`idempotency/middleware.go`) — pass-through when header absent; buffer downstream response, persist on 2xx, replay on hit. Race test asserts invoke count == 0 on replay.
 4. Wiring line in `routes.go` — one `r.Use(...)` inside `/v1`. Echo route still passes existing tests.

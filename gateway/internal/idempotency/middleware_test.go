@@ -427,6 +427,9 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	// ready is closed to unblock the winning handler after all goroutines have started.
 	// handlerEntered is closed (via sync.Once) when the first goroutine enters the handler.
 	ready := make(chan struct{})
+	var onceReady sync.Once
+	closeReady := func() { onceReady.Do(func() { close(ready) }) }
+	defer closeReady() // always unblock handler goroutines on test exit so they don't leak
 	handlerEntered := make(chan struct{})
 	var handlerOnce sync.Once
 	var invoked int32
@@ -474,7 +477,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for handler to be entered")
 	}
-	close(ready)
+	closeReady()
 	wg.Wait()
 
 	successes, conflicts := 0, 0
@@ -494,8 +497,8 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	if conflicts != n-1 {
 		t.Errorf("expected %d conflicts, got %d (results=%v)", n-1, conflicts, results)
 	}
-	if invoked != 1 {
-		t.Errorf("worker must be invoked exactly once, got %d", invoked)
+	if atomic.LoadInt32(&invoked) != 1 {
+		t.Errorf("worker must be invoked exactly once, got %d", atomic.LoadInt32(&invoked))
 	}
 }
 
