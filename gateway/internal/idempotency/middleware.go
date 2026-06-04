@@ -100,9 +100,11 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			}
 			customerID := authKey.Customer.ID
 
-			// Read the body; close the original immediately (fully consumed) and
-			// restore a fresh reader for downstream handlers, even on error,
-			// so recovery middleware or loggers that inspect r.Body still work.
+			// Read the body; restore r.Body BEFORE the error check so that
+			// recovery middleware and access-log handlers that run after a 4xx
+			// still see readable bytes rather than the closed original reader.
+			// We return immediately after writing the 400, so no downstream
+			// handler ever reads the partial body on the error path.
 			origBody := r.Body
 			bodyBytes, err := io.ReadAll(origBody)
 			origBody.Close()
@@ -182,6 +184,12 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			// We own the key. Release it on panic so clients can retry after a 500.
 			// recover() is used directly so the defer is self-contained and does not
 			// depend on a boolean flag that runtime.Goexit could leave stale.
+			//
+			// NOTE: cw.flush(w) is deliberately NOT called on this panic path.
+			// captureWriter buffers all handler output; the real ResponseWriter w
+			// is still clean when we re-panic. Flushing a partial/incomplete
+			// handler response here would commit headers to the client and prevent
+			// the outer mw.Recovery middleware from writing a proper 500 response.
 			defer func() {
 				if v := recover(); v != nil {
 					bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)

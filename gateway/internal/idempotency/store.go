@@ -75,12 +75,13 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 	var headersJSON []byte
 
 	// Filter expired rows in SQL so TTL uses a single clock domain (the DB).
+	// Milliseconds (int64) avoids float64 precision issues at the TTL boundary.
 	err := s.db.QueryRow(ctx, `
 		SELECT fingerprint, status_code, response_body, response_headers
 		FROM idempotency_keys
 		WHERE customer_id = $1 AND idempotency_key = $2
-		  AND created_at >= NOW() - ($3 * INTERVAL '1 second')
-	`, customerID, key, s.ttl.Seconds()).Scan(&fingerprint, &statusCode, &body, &headersJSON)
+		  AND created_at >= NOW() - ($3 * INTERVAL '1 millisecond')
+	`, customerID, key, s.ttl.Milliseconds()).Scan(&fingerprint, &statusCode, &body, &headersJSON)
 	if err == nil {
 		var hdrs http.Header
 		if len(headersJSON) > 0 {
@@ -105,8 +106,8 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 	if _, delErr := s.db.Exec(ctx, `
 		DELETE FROM idempotency_keys
 		WHERE customer_id = $1 AND idempotency_key = $2
-		  AND created_at < NOW() - ($3 * INTERVAL '1 second')
-	`, customerID, key, s.ttl.Seconds()); delErr != nil {
+		  AND created_at < NOW() - ($3 * INTERVAL '1 millisecond')
+	`, customerID, key, s.ttl.Milliseconds()); delErr != nil {
 		return nil, delErr
 	}
 	return nil, nil

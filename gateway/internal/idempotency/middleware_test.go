@@ -503,7 +503,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 // a panicking handler must release the claimed key so retries can succeed.
 func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 	infra := newTestInfra(t)
-	_, bearer := setupTestCustomer(t, infra)
+	customerID, bearer := setupTestCustomer(t, infra)
 
 	var attempt int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -543,6 +543,15 @@ func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 	send()
 	if n := atomic.LoadInt32(&attempt); n != 1 {
 		t.Fatalf("first attempt: expected invoked 1 time, got %d", n)
+	}
+
+	// Directly verify the panic defer called Release: the row must be gone.
+	entry, loadErr := store.Load(context.Background(), customerID, ikey)
+	if loadErr != nil {
+		t.Fatalf("load after panic: %v", loadErr)
+	}
+	if entry != nil {
+		t.Fatal("panic defer must release the key: store.Load returned a non-nil entry")
 	}
 
 	// Second request with same key: must succeed (key was released, not stuck pending).
