@@ -428,18 +428,18 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	infra := newTestInfra(t)
 	_, bearer := setupTestCustomer(t, infra)
 
-	// ready is closed to unblock the winning handler. handlerEntered signals
-	// when the handler has been invoked so we know the key is claimed.
+	// ready is closed to unblock the winning handler after all goroutines have started.
+	// handlerEntered is signalled when the winner enters the inner handler.
 	ready := make(chan struct{})
 	handlerEntered := make(chan struct{}, 1)
 	var invoked int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&invoked, 1)
 		select {
-		case handlerEntered <- struct{}{}: // first to enter signals
+		case handlerEntered <- struct{}{}: // first (and only) entry signals
 		default:
 		}
-		<-ready // block until test unblocks the owner
+		<-ready
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, `{"billable_units":1}`)
@@ -450,9 +450,9 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	ikey := "concurrent-" + uuid.New().String()
 	const n = 5
 
-	// Use a start barrier so all goroutines race to Claim simultaneously.
-	var startBarrier sync.WaitGroup
-	startBarrier.Add(n)
+	// start is closed to unblock all goroutines simultaneously — avoids the
+	// WaitGroup-as-barrier anti-pattern and gives true concurrent Claim racing.
+	start := make(chan struct{})
 
 	results := make([]int, n)
 	var wg sync.WaitGroup
@@ -460,8 +460,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			startBarrier.Done()
-			startBarrier.Wait() // all goroutines start at once
+			<-start // wait for simultaneous release
 			req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"x":1}`))
 			req.Header.Set("Authorization", "Bearer "+bearer)
 			req.Header.Set("Idempotency-Key", ikey)
@@ -471,8 +470,13 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for the winner to enter the handler (key is claimed), then unblock it.
-	<-handlerEntered
+	close(start) // unblock all goroutines simultaneously
+	// Wait for the winner to enter the handler (key claimed), then unblock it.
+	select {
+	case <-handlerEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for handler to be entered")
+	}
 	close(ready)
 	wg.Wait()
 
@@ -495,6 +499,56 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	}
 	if invoked != 1 {
 		t.Errorf("worker must be invoked exactly once, got %d", invoked)
+	}
+}
+
+// TestMiddleware_Panic_ReleasesKey verifies the panic-recovery defer:
+// a panicking handler must release the claimed key so retries can succeed.
+func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
+	infra := newTestInfra(t)
+	_, bearer := setupTestCustomer(t, infra)
+
+	var attempt int32
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempt, 1) == 1 {
+			panic("simulated handler panic")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"result":"ok","billable_units":1}`)
+	})
+	store := idempotency.NewStore(infra.pool)
+	h := buildChain(infra, store, inner)
+
+	ikey := "panic-" + uuid.New().String()
+	body := `{"x":1}`
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Idempotency-Key", ikey)
+		w := httptest.NewRecorder()
+		// ServeHTTP propagates panics; recover so we can assert post-panic state.
+		func() {
+			defer func() { recover() }() //nolint:errcheck
+			h.ServeHTTP(w, req)
+		}()
+		return w
+	}
+
+	// First request panics — key should be released by the panic defer.
+	send()
+	if n := atomic.LoadInt32(&attempt); n != 1 {
+		t.Fatalf("first attempt: expected invoked 1 time, got %d", n)
+	}
+
+	// Second request with same key: must succeed (key was released, not stuck pending).
+	w2 := send()
+	if w2.Code != http.StatusOK {
+		t.Fatalf("after panic release: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if n := atomic.LoadInt32(&attempt); n != 2 {
+		t.Errorf("expected 2 invocations total, got %d", n)
 	}
 }
 
@@ -544,5 +598,8 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	}
 	if obj.Message == "" {
 		t.Error("error.message must not be empty")
+	}
+	if obj.Retryable {
+		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
 	}
 }

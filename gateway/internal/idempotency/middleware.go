@@ -68,10 +68,11 @@ func (c *captureWriter) flush(w http.ResponseWriter) {
 // all other requests (non-POST or missing header) are pass-through.
 // store == nil → pass-through for all requests (feature disabled; main.go untouched).
 //
-// Ordering invariant: registered AFTER auth.Middleware (needs auth context) and
-// BEFORE quota.Middleware. Because chi middleware executes outermost-first, registering
-// idempotency before quota means idempotency is outer and can return early on replay
-// without ever invoking quota — replays must not reserve or refund quota.
+// Ordering invariant: must be registered AFTER auth.Middleware (needs auth context)
+// and as the OUTER middleware relative to quota.Middleware. In chi, middleware
+// registered earlier with r.Use() is outermost and executes first. Being outer
+// lets us return early on replay without ever invoking quota — replays must not
+// reserve or refund quota.
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,16 +99,17 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			}
 			customerID := authKey.Customer.ID
 
-			// Read the body; close the original once done and restore for downstream.
+			// Read the body; close the original immediately (fully consumed) and
+			// restore a fresh reader for downstream handlers.
 			origBody := r.Body
-			defer origBody.Close()
 			bodyBytes, err := io.ReadAll(origBody)
+			origBody.Close()
 			if err != nil {
 				writeIDError(w, http.StatusBadRequest, "BAD_REQUEST", "could not read body", false)
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			fp := fingerprint(r.Method, bodyBytes, r.URL.Path)
+			fp := fingerprint(r.Method, bodyBytes, r.URL.RequestURI())
 
 			// Try to claim the key (UNIQUE INSERT — first in wins).
 			claimed, err := store.Claim(r.Context(), customerID, key, fp)
@@ -146,9 +148,14 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					return
 				} else {
 					// Completed entry: replay stored response without invoking the worker.
-					// Restore all original response headers first, then mark as replayed.
+					// Skip hop-by-hop headers (Transfer-Encoding, Content-Length) since
+					// we re-set Content-Length from the stored body length and
+					// Transfer-Encoding conflicts with an explicit Content-Length.
 					dst := w.Header()
 					for k, vv := range entry.ResponseHeaders {
+						if k == "Content-Length" || k == "Transfer-Encoding" {
+							continue
+						}
 						dst[k] = vv
 					}
 					w.Header().Set("X-Idempotent-Replayed", "true")
@@ -207,11 +214,14 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 	}
 }
 
-func fingerprint(method string, body []byte, path string) []byte {
+// fingerprint returns SHA-256(method + \x00 + requestURI + \x00 + body).
+// requestURI includes the path and any query string so identical keys with
+// different paths or query parameters are not treated as the same request.
+func fingerprint(method string, body []byte, requestURI string) []byte {
 	h := sha256.New()
 	h.Write([]byte(method))
 	h.Write([]byte{0})
-	h.Write([]byte(path))
+	h.Write([]byte(requestURI))
 	h.Write([]byte{0})
 	h.Write(body)
 	return h.Sum(nil)

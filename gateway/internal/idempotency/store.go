@@ -87,12 +87,16 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 
 	if time.Since(createdAt) > s.ttl {
 		// Expired — delete the specific row we loaded so the next Claim can succeed.
-		// Use created_at as a predicate guard so a concurrent re-claim that already
-		// inserted a fresh row for the same key is not accidentally removed.
-		_, _ = s.db.Exec(ctx, `
+		// Use created_at so a concurrent re-claim that already inserted a fresh row
+		// for the same key is not accidentally removed.
+		// Return the error so the middleware fails open rather than returning a
+		// false "no entry" that could let two callers both believe they own the key.
+		if _, delErr := s.db.Exec(ctx, `
 			DELETE FROM idempotency_keys
 			WHERE customer_id = $1 AND idempotency_key = $2 AND created_at = $3
-		`, customerID, key, createdAt)
+		`, customerID, key, createdAt); delErr != nil {
+			return nil, delErr
+		}
 		return nil, nil
 	}
 
@@ -122,7 +126,7 @@ func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, 
 	_, err := s.db.Exec(ctx, `
 		UPDATE idempotency_keys
 		SET status_code = $1, response_body = $2, response_headers = $3
-		WHERE customer_id = $4 AND idempotency_key = $5
+		WHERE customer_id = $4 AND idempotency_key = $5 AND status_code IS NULL
 	`, statusCode, body, hdrsJSON, customerID, key)
 	return err
 }
