@@ -153,13 +153,14 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					// clean, length-framed message with no conflicting framing headers.
 					dst := w.Header()
 					for k, vv := range entry.ResponseHeaders {
-						switch k {
+						ck := http.CanonicalHeaderKey(k)
+						switch ck {
 						case "Connection", "Content-Length", "Keep-Alive",
 							"Proxy-Authenticate", "Proxy-Authorization",
 							"Te", "Trailer", "Transfer-Encoding", "Upgrade":
 							continue
 						}
-						dst[k] = vv
+						dst[ck] = vv
 					}
 					w.Header().Set("X-Idempotent-Replayed", "true")
 					w.Header().Set("Content-Length", strconv.Itoa(len(entry.Body)))
@@ -170,14 +171,16 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			}
 
 			// We own the key. Release it on panic so clients can retry after a 500.
-			panicked := true
+			// recover() is used directly so the defer is self-contained and does not
+			// depend on a boolean flag that runtime.Goexit could leave stale.
 			defer func() {
-				if panicked {
+				if v := recover(); v != nil {
 					bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 					defer cancel()
 					if err := store.Release(bg, customerID, key); err != nil {
 						log.Warn().Err(err).Str("key", key).Msg("idempotency: panic-path release failed")
 					}
+					panic(v) // re-panic so outer recovery middleware (mw.Recovery) still fires
 				}
 			}()
 
@@ -187,7 +190,6 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 
 			status := cw.status
 			body := cw.body.Bytes()
-			panicked = false // handler returned normally; explicit Finalize/Release below owns the key
 
 			bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 			defer cancel()

@@ -28,7 +28,7 @@ clone inherits.
   "output": "First request executes+stores response; identical-key retries replay the stored response without re-invoking the worker or re-billing",
   "acceptance": [
     "New migration 0007 creates idempotency_keys with UNIQUE(customer_id, idempotency_key) and created_at; uses CREATE TABLE IF NOT EXISTS (idempotent, lexical-order safe)",
-    "Middleware mounted in the /v1 chain AFTER auth+ratelimit+quota; absent Idempotency-Key header is a pass-through (zero behaviour change vs today)",
+    "Middleware mounted in the /v1 chain AFTER auth+ratelimit and OUTER relative to quota (registered before quota in the chi Use() chain so replay returns early before quota executes — this satisfies the forbidden constraint 'replay must not reserve or refund quota'); absent Idempotency-Key header is a pass-through (zero behaviour change vs today)",
     "On key hit within TTL the stored status+body is replayed and proxy.Invoke is NOT called and no usage_events row is written (assert worker-invoke count stays 0 on replay)",
     "On first use of a key the response is captured and persisted only for successful (2xx) outcomes; retryable 5xx are NOT cached so a genuine retry can still succeed",
     "Concurrent identical keys never double-invoke (enforced by the UNIQUE constraint + ON CONFLICT); second in-flight returns 409 IDEMPOTENCY_CONFLICT",

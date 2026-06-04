@@ -400,16 +400,14 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	_, bearer := setupTestCustomer(t, infra)
 
 	// ready is closed to unblock the winning handler after all goroutines have started.
-	// handlerEntered is signalled when the winner enters the inner handler.
+	// handlerEntered is closed (via sync.Once) when the first goroutine enters the handler.
 	ready := make(chan struct{})
-	handlerEntered := make(chan struct{}, 1)
+	handlerEntered := make(chan struct{})
+	var handlerOnce sync.Once
 	var invoked int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&invoked, 1)
-		select {
-		case handlerEntered <- struct{}{}: // first (and only) entry signals
-		default:
-		}
+		handlerOnce.Do(func() { close(handlerEntered) })
 		<-ready
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -446,7 +444,6 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	select {
 	case <-handlerEntered:
 	case <-time.After(5 * time.Second):
-		close(ready) // unblock goroutines to prevent leak
 		t.Fatal("timeout waiting for handler to be entered")
 	}
 	close(ready)
