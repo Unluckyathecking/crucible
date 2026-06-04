@@ -87,7 +87,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				return
 			}
 			if len(key) > maxKeyLen {
-				writeIDError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", "idempotency-key too long", false)
+				writeIDError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key too long (max 255 characters)", false)
 				return
 			}
 
@@ -148,12 +148,15 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					return
 				} else {
 					// Completed entry: replay stored response without invoking the worker.
-					// Skip hop-by-hop headers (Transfer-Encoding, Content-Length) since
-					// we re-set Content-Length from the stored body length and
-					// Transfer-Encoding conflicts with an explicit Content-Length.
+					// Skip all RFC 7230 hop-by-hop headers plus Content-Length (we
+					// recompute it from the stored body) so the replayed response is a
+					// clean, length-framed message with no conflicting framing headers.
 					dst := w.Header()
 					for k, vv := range entry.ResponseHeaders {
-						if k == "Content-Length" || k == "Transfer-Encoding" {
+						switch k {
+						case "Connection", "Content-Length", "Keep-Alive",
+							"Proxy-Authenticate", "Proxy-Authorization",
+							"Te", "Trailers", "Transfer-Encoding", "Upgrade":
 							continue
 						}
 						dst[k] = vv
@@ -170,7 +173,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			panicked := true
 			defer func() {
 				if panicked {
-					bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
+					bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 					defer cancel()
 					if err := store.Release(bg, customerID, key); err != nil {
 						log.Warn().Err(err).Str("key", key).Msg("idempotency: panic-path release failed")
@@ -188,13 +191,13 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 
 			if status >= 200 && status < 300 {
 				// Persist only on 2xx so retryable failures remain retryable.
-				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
+				bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 				defer cancel()
-				if err := store.Finalize(bg, customerID, key, status, body, cw.header); err != nil {
+				if err := store.Finalize(bg, customerID, key, status, body, cw.header, fp); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
 					// Release the pending row so a retry sees a fresh key rather
 					// than a stuck pending claim that would 409 until TTL expires.
-					rbg, rcancel := context.WithTimeout(context.Background(), bgOpTimeout)
+					rbg, rcancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 					defer rcancel()
 					if rerr := store.Release(rbg, customerID, key); rerr != nil {
 						log.Warn().Err(rerr).Str("key", key).Msg("idempotency: release after finalize-fail also failed")
@@ -202,7 +205,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				}
 			} else {
 				// Release the pending row so the client can genuinely retry.
-				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
+				bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
 				defer cancel()
 				if err := store.Release(bg, customerID, key); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed; key will expire after TTL")

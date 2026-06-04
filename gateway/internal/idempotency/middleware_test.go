@@ -188,21 +188,9 @@ func TestMiddleware_KeyTooLong_Returns400(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("inner handler must not be called for oversized key")
 	})
-	// Use a non-nil but fake store (nil pool means NewStore returns nil, so use
-	// a real store but skip if DB unavailable by creating a dummy handler chain
-	// that tests only the key-length gate, which runs before DB access).
-	// Trick: since key-length gate fires before auth or store access, we can
-	// use nil store — but nil store short-circuits before key-length check.
-	// We need a non-nil store that handles the key-length path.
-	// Solution: provide a store with a nil-pool store. Actually the key-length
-	// check runs before auth context check, and we need a non-nil store.
-	// Create a dummy pool-less store by using the exported constructor with a
-	// real pool (skip test if unavailable) OR mock in a simpler way.
-	//
-	// Actually: the key-length check fires AFTER the nil-store guard and AFTER
-	// the key-present check but BEFORE auth context access. We need a non-nil
-	// store. Use a real pool (skip if unavailable) or embed a skip-safe helper.
-	pool := newPoolOrSkip(t)
+	// Key-length check fires after the nil-store guard, so we need a non-nil
+	// store. Use a real pool (skip if unavailable); the check never reaches DB.
+	pool := newTestPool(t)
 	store := idempotency.NewStore(pool)
 
 	h := idempotency.Middleware(store)(inner)
@@ -220,23 +208,6 @@ func TestMiddleware_KeyTooLong_Returns400(t *testing.T) {
 	if code != "IDEMPOTENCY_KEY_INVALID" {
 		t.Errorf("expected code IDEMPOTENCY_KEY_INVALID, got %q", code)
 	}
-}
-
-// newPoolOrSkip opens a test Postgres pool and skips if unavailable.
-func newPoolOrSkip(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
-	if err != nil {
-		t.Skipf("postgres unavailable: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Skipf("postgres ping failed: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
 }
 
 // === Integration tests (real Postgres + Redis) ===
@@ -528,9 +499,15 @@ func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 		req.Header.Set("Idempotency-Key", ikey)
 		w := httptest.NewRecorder()
-		// ServeHTTP propagates panics; recover so we can assert post-panic state.
+		// ServeHTTP propagates panics; recover only the expected simulated panic
+		// so we can assert post-panic state; re-panic on anything unexpected.
 		func() {
-			defer func() { recover() }() //nolint:errcheck
+			defer func() {
+				v := recover()
+				if v != nil && v != "simulated handler panic" {
+					panic(v)
+				}
+			}()
 			h.ServeHTTP(w, req)
 		}()
 		return w
@@ -555,7 +532,7 @@ func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 // TestMiddleware_ErrorEnvelope verifies acceptance criterion 8:
 // error envelopes have the stable shape (code + message + retryable).
 func TestMiddleware_ErrorEnvelope(t *testing.T) {
-	pool := newPoolOrSkip(t)
+	pool := newTestPool(t)
 	if err := db.Apply(context.Background(), pool); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}

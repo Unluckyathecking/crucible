@@ -121,7 +121,7 @@ func TestStore_Finalize(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 
-	if err := s.Finalize(ctx, customerID, key, 200, body, http.Header{"Content-Type": []string{"application/json"}}); err != nil {
+	if err := s.Finalize(ctx, customerID, key, 200, body, http.Header{"Content-Type": []string{"application/json"}}, fp); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 

@@ -1,7 +1,7 @@
 // Package idempotency deduplicates POST /v1/* retries within a TTL window.
 //
 // First request: executes, stores 2xx response.
-// Identical retry (same customer + key + body fingerprint): replays stored response.
+// Identical retry (same customer + key + fingerprint SHA-256(method+requestURI+body)): replays stored response.
 // Different body fingerprint: 422 IDEMPOTENCY_KEY_REUSE.
 // In-flight concurrent request: 409 IDEMPOTENCY_CONFLICT.
 // Non-2xx responses are never stored; the row is deleted so genuine retries succeed.
@@ -118,7 +118,7 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 
 // Finalize stores the 2xx response for a key owned by this request.
 // Only called when the handler returned a success status.
-func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, statusCode int, body []byte, headers http.Header) error {
+func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, statusCode int, body []byte, headers http.Header, fingerprint []byte) error {
 	hdrsJSON, merr := json.Marshal(headers)
 	if merr != nil {
 		hdrsJSON = []byte("{}")
@@ -126,8 +126,8 @@ func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, 
 	_, err := s.db.Exec(ctx, `
 		UPDATE idempotency_keys
 		SET status_code = $1, response_body = $2, response_headers = $3
-		WHERE customer_id = $4 AND idempotency_key = $5 AND status_code IS NULL
-	`, statusCode, body, hdrsJSON, customerID, key)
+		WHERE customer_id = $4 AND idempotency_key = $5 AND fingerprint = $6 AND status_code IS NULL
+	`, statusCode, body, hdrsJSON, customerID, key, fingerprint)
 	return err
 }
 
