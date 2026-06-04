@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -14,9 +15,13 @@ import (
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	dsn := "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+	if v := os.Getenv("TEST_DATABASE_URL"); v != "" {
+		dsn = v
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}

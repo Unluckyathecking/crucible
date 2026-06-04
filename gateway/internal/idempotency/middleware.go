@@ -189,10 +189,11 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			body := cw.body.Bytes()
 			panicked = false // handler returned normally; explicit Finalize/Release below owns the key
 
+			bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
+			defer cancel()
+
 			if status >= 200 && status < 300 {
 				// Persist only on 2xx so retryable failures remain retryable.
-				bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
-				defer cancel()
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header, fp); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
 					// Release the pending row so a retry sees a fresh key rather
@@ -203,8 +204,6 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				}
 			} else {
 				// Release the pending row so the client can genuinely retry.
-				bg, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), bgOpTimeout)
-				defer cancel()
 				if err := store.Release(bg, customerID, key); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed; key will expire after TTL")
 				}

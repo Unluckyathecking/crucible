@@ -1,7 +1,7 @@
 // Package idempotency deduplicates POST /v1/* retries within a TTL window.
 //
 // First request: executes, stores 2xx response.
-// Identical retry (same customer + key + fingerprint SHA-256(method+requestURI+body)): replays stored response.
+// Identical retry (same customer + key + fingerprint SHA-256(method + \x00 + requestURI + \x00 + body)): replays stored response.
 // Different body fingerprint: 422 IDEMPOTENCY_KEY_REUSE.
 // In-flight concurrent request: 409 IDEMPOTENCY_CONFLICT.
 // Non-2xx responses are never stored; the row is deleted so genuine retries succeed.
@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -116,7 +117,7 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 func (s *Store) Finalize(ctx context.Context, customerID uuid.UUID, key string, statusCode int, body []byte, headers http.Header, fingerprint []byte) error {
 	hdrsJSON, merr := json.Marshal(headers)
 	if merr != nil {
-		hdrsJSON = []byte("{}")
+		return fmt.Errorf("idempotency: marshal response headers: %w", merr)
 	}
 	result, err := s.db.Exec(ctx, `
 		UPDATE idempotency_keys
