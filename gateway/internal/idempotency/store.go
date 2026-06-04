@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,7 +95,10 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 
 	var hdrs http.Header
 	if len(headersJSON) > 0 {
-		_ = json.Unmarshal(headersJSON, &hdrs)
+		if err := json.Unmarshal(headersJSON, &hdrs); err != nil {
+			log.Warn().Err(err).Str("key", key).Msg("idempotency: corrupt response_headers, failing open")
+			return nil, err
+		}
 	}
 
 	return &Entry{

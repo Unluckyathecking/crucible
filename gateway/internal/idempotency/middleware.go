@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -14,7 +15,10 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 )
 
-const maxKeyLen = 255
+const (
+	maxKeyLen    = 255
+	bgOpTimeout  = 5 * time.Second
+)
 
 // captureWriter intercepts the handler's response without forwarding to the
 // real ResponseWriter until flush() is called. Allows idempotency middleware
@@ -64,9 +68,10 @@ func (c *captureWriter) flush(w http.ResponseWriter) {
 // all other requests (non-POST or missing header) are pass-through.
 // store == nil → pass-through for all requests (feature disabled; main.go untouched).
 //
-// Mount AFTER auth.Middleware (reads authenticated Key from context) and
-// BEFORE quota.Middleware so that replays exit before the quota reserve/refund
-// path runs — replays must not reserve or refund quota.
+// Ordering invariant: registered AFTER auth.Middleware (needs auth context) and
+// BEFORE quota.Middleware. Because chi middleware executes outermost-first, registering
+// idempotency before quota means idempotency is outer and can return early on replay
+// without ever invoking quota — replays must not reserve or refund quota.
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +107,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			fp := fingerprint(bodyBytes, r.URL.Path)
+			fp := fingerprint(r.Method, bodyBytes, r.URL.Path)
 
 			// Try to claim the key (UNIQUE INSERT — first in wins).
 			claimed, err := store.Claim(r.Context(), customerID, key, fp)
@@ -123,7 +128,12 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				if entry == nil {
 					// Row expired between Claim and Load. Try one more Claim.
 					claimed, err = store.Claim(r.Context(), customerID, key, fp)
-					if err != nil || !claimed {
+					if err != nil {
+						log.Warn().Err(err).Str("key", key).Msg("idempotency: re-claim error, failing open")
+						next.ServeHTTP(w, r)
+						return
+					}
+					if !claimed {
 						writeIDError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "concurrent request with same key", false)
 						return
 					}
@@ -142,6 +152,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 						dst[k] = vv
 					}
 					w.Header().Set("X-Idempotent-Replayed", "true")
+					w.Header().Set("Content-Length", strconv.Itoa(len(entry.Body)))
 					w.WriteHeader(*entry.StatusCode)
 					_, _ = w.Write(entry.Body)
 					return
@@ -152,7 +163,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			panicked := true
 			defer func() {
 				if panicked {
-					bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 					defer cancel()
 					if err := store.Release(bg, customerID, key); err != nil {
 						log.Warn().Err(err).Str("key", key).Msg("idempotency: panic-path release failed")
@@ -163,21 +174,21 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			// Run the handler and capture its response.
 			cw := newCaptureWriter()
 			next.ServeHTTP(cw, r)
-			panicked = false
 
 			status := cw.status
 			body := cw.body.Bytes()
+			panicked = false // handler returned normally; explicit Finalize/Release below owns the key
 
 			if status >= 200 && status < 300 {
 				// Persist only on 2xx so retryable failures remain retryable.
-				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 				defer cancel()
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed")
 				}
 			} else {
 				// Release the pending row so the client can genuinely retry.
-				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 				defer cancel()
 				if err := store.Release(bg, customerID, key); err != nil {
 					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed")
@@ -189,8 +200,10 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 	}
 }
 
-func fingerprint(body []byte, path string) []byte {
+func fingerprint(method string, body []byte, path string) []byte {
 	h := sha256.New()
+	h.Write([]byte(method))
+	h.Write([]byte{0})
 	h.Write([]byte(path))
 	h.Write([]byte{0})
 	h.Write(body)

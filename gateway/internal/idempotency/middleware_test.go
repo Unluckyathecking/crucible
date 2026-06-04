@@ -428,12 +428,18 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	infra := newTestInfra(t)
 	_, bearer := setupTestCustomer(t, infra)
 
-	// Slow inner handler to widen the in-flight window.
+	// ready is closed to unblock the winning handler. handlerEntered signals
+	// when the handler has been invoked so we know the key is claimed.
 	ready := make(chan struct{})
+	handlerEntered := make(chan struct{}, 1)
 	var invoked int32
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&invoked, 1)
-		<-ready // block until all requests are in-flight
+		select {
+		case handlerEntered <- struct{}{}: // first to enter signals
+		default:
+		}
+		<-ready // block until test unblocks the owner
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, `{"billable_units":1}`)
@@ -444,12 +450,18 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	ikey := "concurrent-" + uuid.New().String()
 	const n = 5
 
+	// Use a start barrier so all goroutines race to Claim simultaneously.
+	var startBarrier sync.WaitGroup
+	startBarrier.Add(n)
+
 	results := make([]int, n)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			startBarrier.Done()
+			startBarrier.Wait() // all goroutines start at once
 			req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{"x":1}`))
 			req.Header.Set("Authorization", "Bearer "+bearer)
 			req.Header.Set("Idempotency-Key", ikey)
@@ -459,8 +471,8 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 		}(i)
 	}
 
-	// Wait a bit for goroutines to reach the Claim, then unblock the owner.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the winner to enter the handler (key is claimed), then unblock it.
+	<-handlerEntered
 	close(ready)
 	wg.Wait()
 
