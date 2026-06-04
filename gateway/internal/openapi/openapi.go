@@ -67,12 +67,22 @@ type PathItem struct {
 	Post *Operation `json:"post,omitempty"`
 }
 
+// Parameter describes a single operation parameter (header, query, path, or cookie).
+type Parameter struct {
+	Name        string  `json:"name"`
+	In          string  `json:"in"`
+	Description string  `json:"description,omitempty"`
+	Required    bool    `json:"required,omitempty"`
+	Schema      *Schema `json:"schema,omitempty"`
+}
+
 // Operation describes a single HTTP operation.
 type Operation struct {
 	OperationID string                `json:"operationId,omitempty"`
 	Summary     string                `json:"summary,omitempty"`
 	Tags        []string              `json:"tags,omitempty"`
 	Security    []SecurityRequirement `json:"security,omitempty"`
+	Parameters  []Parameter           `json:"parameters,omitempty"`
 	RequestBody *RequestBody          `json:"requestBody,omitempty"`
 	Responses   map[string]Response   `json:"responses"`
 }
@@ -240,6 +250,14 @@ func Build() Document {
 					Summary:     "Invoke echo worker operation (authenticated)",
 					Tags:        []string{"invoke"},
 					Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+					Parameters: []Parameter{
+						{
+							Name:        "Idempotency-Key",
+							In:          "header",
+							Description: "Optional deduplication key (max 255 chars). Identical-key retries within 24 h replay the stored response without re-invoking the worker or re-billing.",
+							Schema:      &Schema{Type: "string"},
+						},
+					},
 					RequestBody: &RequestBody{
 						Required: true,
 						Content: map[string]MediaType{
@@ -255,6 +273,8 @@ func Build() Document {
 						},
 						"400": errResp("Bad request — invalid JSON body"),
 						"401": errResp("Unauthorized — missing or invalid API key"),
+						"409": errResp("Idempotency conflict — concurrent request with same key"),
+						"422": errResp("Idempotency key reused with a different request body"),
 						"429": errResp("Rate limited"),
 						"500": errResp("Internal server error"),
 						"502": errResp("Worker unavailable"),

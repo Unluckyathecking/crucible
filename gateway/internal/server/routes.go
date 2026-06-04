@@ -14,11 +14,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/httprate"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -51,6 +53,9 @@ type Deps struct {
 	Quota    *quota.Tracker
 	Redis    HealthChecker
 	PG       HealthChecker
+	// DB is optional. When set, the idempotency middleware is active on /v1 routes.
+	// When nil (default when main.go is unmodified), the middleware is a pass-through.
+	DB *pgxpool.Pool
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -66,7 +71,8 @@ func NewRouter(d *Deps) http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
+		ExposedHeaders:   []string{"X-Idempotent-Replayed"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
@@ -99,10 +105,16 @@ func NewRouter(d *Deps) http.Handler {
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
+	//
+	// Middleware order matters: chi executes earlier-registered middleware outermost.
+	// idempotency is registered before quota, so replays exit before quota ever runs
+	// — replays must not reserve or refund quota.
+	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
-		r.Use(quota.Middleware(d.Quota, d.Plans))
+		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
+		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
 		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
 	})
 
