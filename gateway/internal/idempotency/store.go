@@ -86,10 +86,13 @@ func (s *Store) Load(ctx context.Context, customerID uuid.UUID, key string) (*En
 	}
 
 	if time.Since(createdAt) > s.ttl {
-		// Expired — delete so the next Claim can succeed. Best-effort; ignore error.
+		// Expired — delete the specific row we loaded so the next Claim can succeed.
+		// Use created_at as a predicate guard so a concurrent re-claim that already
+		// inserted a fresh row for the same key is not accidentally removed.
 		_, _ = s.db.Exec(ctx, `
-			DELETE FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2
-		`, customerID, key)
+			DELETE FROM idempotency_keys
+			WHERE customer_id = $1 AND idempotency_key = $2 AND created_at = $3
+		`, customerID, key, createdAt)
 		return nil, nil
 	}
 

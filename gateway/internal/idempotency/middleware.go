@@ -184,14 +184,21 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 				defer cancel()
 				if err := store.Finalize(bg, customerID, key, status, body, cw.header); err != nil {
-					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed")
+					log.Warn().Err(err).Str("key", key).Msg("idempotency: finalize failed, releasing so client can retry")
+					// Release the pending row so a retry sees a fresh key rather
+					// than a stuck pending claim that would 409 until TTL expires.
+					rbg, rcancel := context.WithTimeout(context.Background(), bgOpTimeout)
+					defer rcancel()
+					if rerr := store.Release(rbg, customerID, key); rerr != nil {
+						log.Warn().Err(rerr).Str("key", key).Msg("idempotency: release after finalize-fail also failed")
+					}
 				}
 			} else {
 				// Release the pending row so the client can genuinely retry.
 				bg, cancel := context.WithTimeout(context.Background(), bgOpTimeout)
 				defer cancel()
 				if err := store.Release(bg, customerID, key); err != nil {
-					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed")
+					log.Warn().Err(err).Str("key", key).Msg("idempotency: release failed; key will expire after TTL")
 				}
 			}
 
