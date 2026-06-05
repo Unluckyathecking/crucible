@@ -136,13 +136,19 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		workerCallDuration: observability.WorkerCallDuration,
 	})
 	if pol.Breaker.Threshold > 0 {
-		// s is the state at transition time. The breaker lock is already released
-		// when onState fires, so a concurrent transition may advance the state past
-		// s before this callback runs — transient gauge staleness is acceptable and
-		// self-corrects on the next transition. Using s avoids accessing c through
-		// the closure after New() returns, which would require separate synchronization.
-		// The metrics load is atomic; the nil guard is belt-and-suspenders for any
-		// zero-value Client construction that bypassed New().
+		if pol.Breaker.Cooldown <= 0 {
+			// Prevent the panic inside resilience.NewBreaker for callers that
+			// bypass config.Load (e.g. tests constructing ResiliencePolicy directly).
+			// Fail loudly here so the stack points at the real misconfiguration.
+			panic("proxy.New: BreakerConfig.Cooldown must be > 0 when Threshold > 0")
+		}
+		// The onState callback uses c.metrics.Load() (atomic.Value — non-blocking,
+		// no mutex) and Prometheus .Set() (lock-free for gauge). The callback runs
+		// AFTER b.mu is released (see breaker.go Allow/RecordFailure/RecordSuccess),
+		// so no deadlock is possible between the breaker lock and this callback.
+		// s is the state at transition time; by the time the callback runs a
+		// concurrent transition may have advanced b.state — transient gauge staleness
+		// is acceptable and self-corrects on the next transition.
 		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
 			if mv := c.metrics.Load(); mv != nil {
 				mv.(*clientMetrics).breakerState.Set(float64(s))
@@ -338,17 +344,26 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 			resp.Body.Close()
 		}
 		if resp != nil {
+			// resp != nil with a non-nil err means a redirect/policy error
+			// (e.g. "too many redirects", CheckRedirect policy rejection).
+			// The worker URL is misconfigured — not transiently unhealthy.
+			// statusNone (not 0) is intentional:
+			//   IsRetryable → false:  config errors must never be retried
+			//   RecordAbort (not Failure): worker was never contacted; no
+			//     health verdict should be recorded against the breaker
 			return nil, statusNone, fmt.Errorf("worker call: %w", err)
 		}
 		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
 	// net/http guarantees resp != nil and resp.Body != nil when err == nil.
-	// Defer is registered here — after the err check — so it covers exactly
-	// the success path. It fires once when doOnce returns.
-	defer resp.Body.Close()
+	// The nil guard is placed BEFORE the defer so that if the contract were
+	// ever violated the guard (not a defer panic) would fire first.
 	if resp == nil {
 		return nil, 0, errors.New("worker call: nil response without error")
 	}
+	// Defer registered after the nil guard covers exactly the success path.
+	// It fires once when doOnce returns.
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		// Surface up to 512 bytes of the body in the error — invaluable when triaging

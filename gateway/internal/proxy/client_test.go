@@ -33,6 +33,21 @@ func TestNew_MultiplePoliciesPanics(t *testing.T) {
 	New("http://unused", 5*time.Second, 0, pol, pol)
 }
 
+// TestNew_BreakerZeroCooldownPanics verifies that proxy.New panics early when
+// Threshold > 0 but Cooldown is zero, before reaching resilience.NewBreaker.
+// This guards callers that bypass config.Load (e.g. direct test construction).
+func TestNew_BreakerZeroCooldownPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for Threshold>0 with zero Cooldown, got nil")
+		}
+	}()
+	pol := ResiliencePolicy{
+		Breaker: resilience.BreakerConfig{Threshold: 3, Cooldown: 0},
+	}
+	New("http://unused", 5*time.Second, 0, pol)
+}
+
 func TestInvoke_Success(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/invoke" {
