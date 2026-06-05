@@ -150,3 +150,30 @@ func TestLoadCustomPort(t *testing.T) {
 		t.Errorf("Port = %d, want 3000", c.Port)
 	}
 }
+
+func TestWorkerTimeoutMSZeroReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_TIMEOUT_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_TIMEOUT_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_TIMEOUT_MS") {
+		t.Errorf("error %q does not mention WORKER_TIMEOUT_MS", err.Error())
+	}
+}
+
+func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "100")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for cooldown < 500ms with threshold > 0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
