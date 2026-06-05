@@ -68,14 +68,17 @@ func TestInboundTraceparentContinuesTrace(t *testing.T) {
 	parentSpan.End()
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header = inboundHeaders
+	for k, v := range inboundHeaders {
+		req.Header[k] = v
+	}
 	rec := httptest.NewRecorder()
 
 	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
 
-	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.request")
+	// Without a chi router the span is renamed to gateway.unmatched (http.route always set).
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
 	if !ok {
-		t.Fatal("no gateway.request span recorded")
+		t.Fatal("no gateway.unmatched span recorded")
 	}
 	if got := gwSpan.SpanContext().TraceID(); got != parentSC.TraceID() {
 		t.Errorf("trace ID = %s, want %s (should continue parent trace)", got, parentSC.TraceID())
@@ -95,9 +98,10 @@ func TestAbsentTraceparentStartsRootSpan(t *testing.T) {
 
 	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
 
-	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.request")
+	// Without a chi router the span is renamed to gateway.unmatched (http.route always set).
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
 	if !ok {
-		t.Fatal("no gateway.request span recorded")
+		t.Fatal("no gateway.unmatched span recorded")
 	}
 	if !gwSpan.SpanContext().IsValid() {
 		t.Error("gateway span must have a valid span context")
@@ -257,9 +261,10 @@ func TestSpanStatusErrorOn5xx(t *testing.T) {
 
 	tracing.Middleware(tp)(errHandler).ServeHTTP(rec, req)
 
-	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.request")
+	// Without a chi router the span is renamed to gateway.unmatched (http.route always set).
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
 	if !ok {
-		t.Fatal("no gateway.request span recorded")
+		t.Fatal("no gateway.unmatched span recorded")
 	}
 	if got := gwSpan.Status().Code; got != codes.Error {
 		t.Errorf("span status code = %v, want codes.Error for HTTP 500", got)

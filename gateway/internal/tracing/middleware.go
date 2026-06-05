@@ -43,8 +43,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger from the original request context before deriving
 			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. zerolog.Ctx may return nil or a disabled sentinel when no
-			// logger is stored; fall back to the global logger in either case.
+			// is preserved. zerolog.Ctx returns a disabled sentinel (not nil) when no
+			// logger is stored; the nil guard is purely defensive against future API changes.
 			base := zerolog.Ctx(r.Context())
 			if base == nil || base.GetLevel() == zerolog.Disabled {
 				base = &log.Logger
@@ -79,12 +79,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// A single deferred closure records all span attributes, updates status,
 			// resolves the span name from the chi route pattern, and ends the span.
 			// All mutations and span.End() are in the same closure so their ordering
-			// is unambiguous. The nil guard is defensive — OTel SDK never returns nil
-			// from tracer.Start, but makes the safety contract explicit.
+			// is unambiguous.
 			defer func() {
-				if span == nil {
-					return
-				}
 				span.SetAttributes(
 					attribute.String("http.method", r.Method),
 					attribute.String("http.path", r.URL.Path),
@@ -100,16 +96,19 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				// Rename span and record http.route after routing has resolved.
 				// "gateway.request" is only the initial placeholder — chi populates
 				// RoutePattern during ServeHTTP, so it's available here but not at span start.
-				// When chi is active but no route matched (404), use "gateway.unmatched"
-				// so every span carries http.route and dashboards can group uniformly.
+				// When chi is active but no route matched (404), or when the middleware is
+				// used outside chi, use "gateway.unmatched" so every span carries http.route
+				// and dashboards can group uniformly.
+				routePattern := ""
 				if rctx := chi.RouteContext(r.Context()); rctx != nil {
-					if rctx.RoutePattern() != "" {
-						span.SetAttributes(attribute.String("http.route", rctx.RoutePattern()))
-						span.SetName(rctx.RoutePattern())
-					} else {
-						span.SetAttributes(attribute.String("http.route", "gateway.unmatched"))
-						span.SetName("gateway.unmatched")
-					}
+					routePattern = rctx.RoutePattern()
+				}
+				if routePattern != "" {
+					span.SetAttributes(attribute.String("http.route", routePattern))
+					span.SetName(routePattern)
+				} else {
+					span.SetAttributes(attribute.String("http.route", "gateway.unmatched"))
+					span.SetName("gateway.unmatched")
 				}
 
 				span.End()

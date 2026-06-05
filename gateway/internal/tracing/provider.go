@@ -20,7 +20,8 @@ import (
 // NewProvider constructs a TracerProvider that exports spans via OTLP/HTTP to endpoint.
 // insecure disables TLS — use true only for localhost/sidecar collectors.
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
-// The returned shutdown function flushes pending spans; call it at process exit.
+// The returned shutdown function flushes pending spans; call it at process exit with
+// a context whose deadline exceeds the export timeout (10 s) so in-flight exports complete.
 //
 // TLS limitation: custom CA certificates and mutual TLS (mTLS) are not
 // supported — the exporter uses the system certificate pool when insecure=false.
@@ -52,7 +53,7 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp,
 			sdktrace.WithBatchTimeout(5*time.Second),
-			sdktrace.WithExportTimeout(30*time.Second),
+			sdktrace.WithExportTimeout(10*time.Second),
 		),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
