@@ -155,7 +155,11 @@ func TestBreaker_SuccessResetsFailureCount(t *testing.T) {
 func TestBreaker_RecordSuccessFromOpenDoesNotClose(t *testing.T) {
 	// A success from an in-flight request that was admitted while the breaker was closed
 	// must not close the breaker once it has since opened (e.g. due to concurrent failures).
-	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Minute}, nil)
+	// Crucially, the stale success must release the probeInFlight slot so a future probe
+	// can proceed after cooldown — otherwise the breaker is permanently stuck open.
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
 	b.RecordFailure() // → StateOpen
 	if b.CurrentState() != StateOpen {
 		t.Fatal("want StateOpen after threshold failure")
@@ -163,6 +167,11 @@ func TestBreaker_RecordSuccessFromOpenDoesNotClose(t *testing.T) {
 	b.RecordSuccess() // stale in-flight success; must NOT close
 	if b.CurrentState() != StateOpen {
 		t.Fatalf("RecordSuccess from Open closed breaker; want StateOpen")
+	}
+	// After cooldown the probe slot must be free for a fresh probe.
+	now = now.Add(2 * time.Second)
+	if err := b.Allow(); err != nil {
+		t.Fatalf("Allow() after stale success + cooldown = %v, want nil (fresh probe)", err)
 	}
 }
 

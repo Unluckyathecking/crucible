@@ -106,8 +106,9 @@ func (b *Breaker) RecordSuccess() {
 	}
 	b.mu.Lock()
 	if b.state == StateOpen {
+		b.probeInFlight = false // release stale probe slot so future probes can proceed
 		b.mu.Unlock()
-		return // stale success; preserve failure streak and probe slot
+		return // stale success; preserve failure streak
 	}
 	b.failures = 0
 	b.probeInFlight = false

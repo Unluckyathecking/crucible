@@ -56,24 +56,24 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	}
 
 	// Exponential cap: base * 2^n, capped at maxB.
-	// Check cap > maxB/2 before doubling to guard against int64 overflow on
+	// Check backoffCap > maxB/2 before doubling to guard against int64 overflow on
 	// large n or large base values (Policy is public; callers control n).
-	cap := base
+	backoffCap := base
 	for i := 0; i < n; i++ {
-		if cap > maxB/2 {
-			cap = maxB
+		if backoffCap > maxB/2 {
+			backoffCap = maxB
 			break
 		}
-		cap *= 2
-		if cap >= maxB {
-			cap = maxB
+		backoffCap *= 2
+		if backoffCap >= maxB {
+			backoffCap = maxB
 			break
 		}
 	}
 
-	// Equal jitter: uniform in [cap/2, cap] using cryptographically secure randomness
-	// to prevent synchronized retry storms across multiple gateway instances.
-	half := cap / 2
+	// Equal jitter: uniform in [backoffCap/2, backoffCap] using cryptographically secure
+	// randomness to prevent synchronized retry storms across multiple gateway instances.
+	half := backoffCap / 2
 	var d time.Duration
 	if half > 0 {
 		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
@@ -83,7 +83,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 			d = half + time.Duration(jitter.Int64())
 		}
 	} else {
-		d = cap
+		d = backoffCap
 	}
 
 	t := time.NewTimer(d)

@@ -154,13 +154,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.retry.Sleep(ctx, attempt-1); err != nil {
 				return nil, fmt.Errorf("worker call: %w", err)
 			}
-			// Confirm context is still live before proceeding.
-			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("worker call: %w", err)
-			}
 		}
 
-		// Belt-and-suspenders ctx guard: IsRetryable already rejects
+		// belt-and-suspenders ctx guard: IsRetryable already rejects
 		// context.DeadlineExceeded and context.Canceled, so in-flight context
 		// errors stop retries via the IsRetryable check. This catches the narrow
 		// window where a successful Sleep returns but ctx.Err() is already set.
