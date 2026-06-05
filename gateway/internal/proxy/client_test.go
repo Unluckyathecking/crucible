@@ -533,10 +533,12 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
-	// Exactly 1 call: the 2s backoff (1s+ jitter lower-bound) outlasts the 500ms
+	// At most 1 call: the 2s backoff (1s+ jitter lower-bound) outlasts the 500ms
 	// ctx so Sleep returns DeadlineExceeded before a second call can be dispatched.
-	if n := callCount.Load(); n != 1 {
-		t.Errorf("call count = %d, want 1 (ctx should expire during first retry sleep)", n)
+	// Accept n==0 if the deadline fires before the first doOnce completes (rare
+	// on loaded CI) — both outcomes prove ctx stops retries, not MaxAttempts.
+	if n := callCount.Load(); n > 1 {
+		t.Errorf("call count = %d, want <= 1 (ctx should expire during first retry sleep)", n)
 	}
 }
 

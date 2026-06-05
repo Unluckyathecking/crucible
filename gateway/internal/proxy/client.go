@@ -168,6 +168,8 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 // from an isolated test registry. The swap is atomic: a concurrent Invoke either
 // observes the old metrics set or the new one, never a partial mix. Safe to call
 // at any time, including while Invoke goroutines are running.
+// Panics if m is non-nil but any of the three worker instruments are nil —
+// partial Metrics structs are a programmer error that should be caught early.
 func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 	if m != nil {
 		if m.WorkerRetriesTotal == nil || m.WorkerBreakerState == nil || m.WorkerCallDuration == nil {
@@ -328,27 +330,22 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	m.workerCallDuration.Observe(time.Since(start).Seconds())
-	// Register body close before any error check: resp can be non-nil even when
-	// err != nil (e.g., redirect-policy failure). A single deferred close here
-	// covers both the success path and error paths with non-nil resp, so the body
-	// is always closed exactly once regardless of which path returns.
-	// Note: defer here is scoped to doOnce (a separate function call), not to
-	// Invoke's retry loop — it fires when doOnce returns, not when Invoke returns,
-	// so no body accumulation occurs across retry iterations.
-	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
-		// resp != nil signals a redirect-policy or protocol error, not a transient
-		// transport failure. Return statusNone so the retry/breaker logic treats it
-		// as a persistent non-retryable error, not a worker health failure.
+		// resp can be non-nil on redirect/policy errors — close any body before
+		// returning. Return statusNone so retry/breaker logic treats this as a
+		// persistent non-retryable error, not a transient worker health failure.
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		if resp != nil {
 			return nil, statusNone, fmt.Errorf("worker call: %w", err)
 		}
 		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
-	// net/http guarantees resp != nil when err == nil, but defend explicitly so
-	// any future change here does not introduce a silent nil-deref.
+	// net/http guarantees resp != nil and resp.Body != nil when err == nil.
+	// Defer is registered here — after the err check — so it covers exactly
+	// the success path. It fires once when doOnce returns.
+	defer resp.Body.Close()
 	if resp == nil {
 		return nil, 0, errors.New("worker call: nil response without error")
 	}

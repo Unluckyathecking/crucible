@@ -96,8 +96,10 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	ceiling := ceilingFor(base, maxB, n)
 
 	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand.
-	// Cryptographic unpredictability is required to prevent synchronized retry storms
-	// when multiple gateway instances retry together; crypto/rand provides this property.
+	// crypto/rand is chosen so retry timing is unpredictable across gateway instances,
+	// preventing synchronized retry storms even when instances share a workload profile.
+	// math/rand seeded from crypto/rand would also desynchronize, but adds a shared seed
+	// state. The one crypto/rand syscall per retry (rare, not per-request) is acceptable.
 	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {

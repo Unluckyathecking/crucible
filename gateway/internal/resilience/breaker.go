@@ -137,10 +137,13 @@ func (b *Breaker) Allow() (uint64, error) {
 		// Non-probe call; no probe slot needed. Token stays 0.
 	}
 	b.mu.Unlock()
-	// newState is a local value captured inside the lock above — it is NOT read from
-	// b.state after Unlock(). Calling onState after releasing the lock is safe: the
-	// callback receives an immutable copy of the state at transition time and may
-	// safely call back into the breaker or acquire other locks without deadlocking.
+	// onState is invoked AFTER releasing b.mu to prevent deadlock when the callback
+	// re-enters the breaker or acquires unrelated locks. It receives a local copy of
+	// the state at transition time — not b.state — so it is safe from concurrent
+	// state changes. As a consequence, if two transitions race the callbacks may fire
+	// in a different order than the transitions; for Prometheus gauges this causes
+	// brief metric staleness that self-corrects on the next transition. This is an
+	// intentional design trade-off: metric staleness is acceptable; deadlock is not.
 	if onState != nil {
 		onState(newState)
 	}
