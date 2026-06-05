@@ -40,11 +40,15 @@ const (
 // The returned shutdown function flushes pending spans; call it at process exit with
 // a context whose deadline exceeds batchExportTimeout so in-flight exports complete.
 //
+// Note: exporter creation uses context.Background internally (not a caller-supplied
+// context) so a short-lived caller context cannot abort startup. The exporterCreationTimeout
+// constant is the startup bound.
+//
 // TLS limitation: custom CA certificates and mutual TLS (mTLS) are not
 // supported — the exporter uses the system certificate pool when insecure=false.
 // To use a private CA or mTLS, replace this constructor with one that calls
 // otlptracehttp.WithTLSClientConfig(tlsCfg) directly.
-func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	res, err := resource.Merge(
 		resource.Default(),
