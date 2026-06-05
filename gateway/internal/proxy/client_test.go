@@ -805,3 +805,37 @@ func TestInvoke_MetricsInjection(t *testing.T) {
 		t.Errorf("retriesTotal = %v, want 2 (two retry attempts before success)", got)
 	}
 }
+
+// TestInvoke_BreakerOpensOnDeadlineExceeded verifies that caller-context deadline
+// expiry (status=0, ctx.Err()==DeadlineExceeded) counts as a breaker failure.
+// A consistently slow worker should open the circuit breaker so subsequent
+// requests fast-fail instead of accumulating per-request timeouts.
+func TestInvoke_BreakerOpensOnDeadlineExceeded(t *testing.T) {
+	// Worker blocks until the request context cancels — simulates a slow worker.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: time.Hour},
+	}
+	// Long client timeout so http.Client.Timeout doesn't fire before the caller deadline.
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	// Two caller-deadline failures must open the breaker (Threshold=2).
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		_, err := c.Invoke(ctx, &InvokeRequest{Operation: "slow"})
+		cancel()
+		if err == nil {
+			t.Fatalf("attempt %d: expected deadline error, got nil", i+1)
+		}
+	}
+	if c.breaker.CurrentState() != resilience.StateOpen {
+		t.Errorf("breaker state = %v, want StateOpen: context.DeadlineExceeded must be recorded as a failure", c.breaker.CurrentState())
+	}
+}

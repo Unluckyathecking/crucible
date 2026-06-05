@@ -241,10 +241,11 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			case status == 0 && ctx.Err() == nil:
 				// Transport/network error with no HTTP response and no ctx cancellation.
 				c.breaker.RecordFailure(breakerToken)
-			case status == 0 && errors.Is(ctx.Err(), context.DeadlineExceeded):
+			case status == 0 && ctx.Err() == context.DeadlineExceeded:
 				// Per-request timeout (http.Client.Timeout or context deadline): the worker
 				// took too long. Count as failure — a consistently slow worker should open
 				// the breaker so subsequent requests fast-fail instead of accumulating timeouts.
+				// ctx.Err() returns the exact sentinel value, so == is correct and idiomatic.
 				c.breaker.RecordFailure(breakerToken)
 			default:
 				// Covers: caller cancelled (context.Canceled) with no HTTP response, 4xx,
