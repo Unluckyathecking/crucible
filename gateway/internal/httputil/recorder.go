@@ -7,6 +7,11 @@ import "net/http"
 // so middleware can log/measure it after the inner handler returns. Both the
 // access-log middleware and the Prometheus metrics middleware need this — keep
 // it here so one copy can't drift from the other.
+//
+// StatusRecorder is not goroutine-safe — matching the http.ResponseWriter contract.
+// It is designed for use by the single goroutine serving an HTTP request. Deferred
+// middleware reads Status after ServeHTTP returns; all Write/WriteHeader calls
+// complete before that read, so access is sequentially consistent.
 type StatusRecorder struct {
 	http.ResponseWriter
 	Status      int

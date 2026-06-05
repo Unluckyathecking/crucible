@@ -406,8 +406,8 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if resp == nil {
 		return nil, 0, errors.New("worker call: nil response without error")
 	}
-	// Defer registered after the nil guard covers exactly the success path.
-	// It fires once when doOnce returns.
+	// Defer covers all return paths after this point — both the non-200 error
+	// return and the successful decode path. Registered after the nil guard above.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
