@@ -196,6 +196,9 @@ func TestLogLinesCarryTraceID(t *testing.T) {
 	if !strings.Contains(output, `"trace_id"`) {
 		t.Errorf("expected trace_id field in log output, got:\n%s", output)
 	}
+	if !strings.Contains(output, `"span_id"`) {
+		t.Errorf("expected span_id field in log output, got:\n%s", output)
+	}
 	if !strings.Contains(output, "handler-log") {
 		t.Errorf("expected handler-log message in log output, got:\n%s", output)
 	}

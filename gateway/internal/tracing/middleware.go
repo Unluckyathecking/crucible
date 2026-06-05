@@ -6,9 +6,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
 
 const tracerName = "crucible.gateway"
@@ -23,6 +26,7 @@ var propagator = propagation.TraceContext{}
 //     handler that calls zerolog.Ctx(ctx) carries them on every log event.
 //  3. Renames the span to the matched chi route pattern after the handler returns
 //     (the pattern is not resolved until the router has dispatched the request).
+//  4. Records span status as Error for HTTP 5xx responses.
 //
 // When tp is nil or a noop.TracerProvider (default-off state), spans have invalid
 // span contexts, no exporter is dialed, and the middleware is a transparent pass-through.
@@ -64,7 +68,14 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				ctx = base.WithContext(ctx)
 			}
 
-			next.ServeHTTP(w, r.WithContext(ctx))
+			// Wrap the response writer to capture the HTTP status code for span annotation.
+			ww := httputil.NewStatusRecorder(w)
+			next.ServeHTTP(ww, r.WithContext(ctx))
+
+			// Annotate span with HTTP status code and mark as error on 5xx.
+			if ww.Status >= 500 {
+				span.SetStatus(codes.Error, http.StatusText(ww.Status))
+			}
 
 			// Rename span from the chi route pattern after routing has resolved.
 			// "gateway.request" is only the initial placeholder — chi populates

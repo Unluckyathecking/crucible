@@ -18,8 +18,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	oteltrace "go.opentelemetry.io/otel/trace"
-
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
@@ -30,7 +28,6 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/server"
-	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
@@ -109,31 +106,19 @@ func main() {
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
 
-	// Tracing — disabled by default; enabled when OTEL_TRACING_ENABLED=true.
-	var tracerProvider oteltrace.TracerProvider
-	if cfg.OtelTracingEnabled {
-		tp, shutdown, err := tracing.NewProvider(rootCtx, cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
-		if err != nil {
-			log.Fatal().Err(err).Msg("tracing provider init failed")
-		}
-		defer func() { _ = shutdown(context.Background()) }()
-		tracerProvider = tp
-	}
-
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: server.NewRouter(&server.Deps{
-			Cfg:            cfg,
-			Proxy:          workerClient,
-			Auth:           authStore,
-			Bucket:         bucket,
-			Plans:          plans,
-			Recorder:       recorder,
-			Webhook:        webhook,
-			Quota:          quotaTracker,
-			Redis:          &redisPinger{redisClient},
-			PG:             &pgPinger{pool},
-			TracerProvider: tracerProvider,
+			Cfg:      cfg,
+			Proxy:    workerClient,
+			Auth:     authStore,
+			Bucket:   bucket,
+			Plans:    plans,
+			Recorder: recorder,
+			Webhook:  webhook,
+			Quota:    quotaTracker,
+			Redis:    &redisPinger{redisClient},
+			PG:       &pgPinger{pool},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

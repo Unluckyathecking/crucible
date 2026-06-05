@@ -443,6 +443,33 @@ func TestOtelSampleRatioAboveOneReturnsError(t *testing.T) {
 	}
 }
 
+// TestOtelExporterInsecureTrue verifies that OTEL_EXPORTER_INSECURE=true is read correctly.
+func TestOtelExporterInsecureTrue(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_EXPORTER_INSECURE", "true")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.OtelExporterInsecure {
+		t.Error("OtelExporterInsecure = false, want true")
+	}
+}
+
+// TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
+func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.OtelExporterInsecure {
+		t.Error("OtelExporterInsecure = true, want false (default must be TLS-on)")
+	}
+}
+
 // TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
 // return the configured millisecond values as time.Duration (with the correct
 // * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
