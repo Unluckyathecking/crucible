@@ -449,7 +449,13 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 			statusCodes[idx] = rec.Code
 		}(i)
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent requests to complete")
+	}
 
 	// All assertions run after wg.Wait() so t.Errorf is called from the test goroutine only.
 	for i, code := range statusCodes {
@@ -482,5 +488,15 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 		if !recordedIDs[id] {
 			t.Errorf("goroutine %d: trace ID %s not found in recorded spans (context/recorder mismatch)", i, id)
 		}
+	}
+
+	// Verify span IDs are also unique — duplicate span IDs indicate a race in span creation.
+	seenSpanIDs := make(map[string]bool, n)
+	for _, s := range sr.Ended() {
+		sid := s.SpanContext().SpanID().String()
+		if seenSpanIDs[sid] {
+			t.Errorf("duplicate span ID %s across concurrent requests", sid)
+		}
+		seenSpanIDs[sid] = true
 	}
 }

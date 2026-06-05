@@ -334,7 +334,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, _ int, retErr error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, status int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
 	// SpanFromContext returns a noop span (never nil) when no span is in context, and
 	// noop.TracerProvider() returns the noop provider (never nil) per OTel API contract.
@@ -348,6 +348,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 		if retErr != nil {
 			span.RecordError(retErr)
 			span.SetStatus(codes.Error, retErr.Error())
+		} else if status >= 500 {
+			// Worker returned HTTP 5xx without a Go error — the transport succeeded
+			// but the worker reported failure. Mark the span as Error so retry
+			// causality is visible in traces even when the caller gets a clean return.
+			span.SetStatus(codes.Error, fmt.Sprintf("worker returned HTTP %d", status))
 		}
 		span.End()
 	}()
