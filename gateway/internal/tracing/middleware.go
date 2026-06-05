@@ -3,6 +3,7 @@
 package tracing
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -58,7 +59,7 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// in a fresh root span for bad input.
 			const maxTraceparentLen = 128
 			ctx := r.Context()
-			if tv := r.Header.Get("traceparent"); len(tv) <= maxTraceparentLen {
+			if tv := r.Header.Get("traceparent"); len(tv) >= 55 && len(tv) <= maxTraceparentLen {
 				ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 			}
 
@@ -99,7 +100,7 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				// Only server errors (5xx) indicate a gateway failure; 4xx are
 				// client errors the server handled correctly per OTel conventions.
 				if ww.Status >= 500 {
-					span.SetStatus(codes.Error, http.StatusText(ww.Status))
+					span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", ww.Status))
 				}
 
 				// Rename span and record http.route after routing has resolved.

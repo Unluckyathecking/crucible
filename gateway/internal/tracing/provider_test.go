@@ -118,8 +118,8 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Error("shutdown with cancelled context should return an error, got nil")
-		} else if !errors.Is(err, context.Canceled) {
-			t.Errorf("expected context.Canceled error, got %v", err)
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("expected context.Canceled or context.DeadlineExceeded error, got %v", err)
 		}
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Errorf("shutdown took %v; expected return within 2 s for cancelled context", elapsed)

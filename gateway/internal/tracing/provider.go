@@ -69,8 +69,8 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 	// Bound exporter creation so a slow/unreachable collector doesn't block startup.
 	// Use Background (not ctx) so a short-lived caller context cannot shorten the bound.
 	expCtx, expCancel := context.WithTimeout(context.Background(), exporterCreationTimeout)
-	defer expCancel()
 	exp, err := otlptracehttp.New(expCtx, opts...)
+	expCancel() // Release timer resources immediately; otlptracehttp.New does not retain expCtx after returning.
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: create OTLP exporter: %w", err)
 	}
