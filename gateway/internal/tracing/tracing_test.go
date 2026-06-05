@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -26,7 +29,11 @@ func newTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRec
 	t.Helper()
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
-	t.Cleanup(func() { tp.Shutdown(context.Background()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		tp.Shutdown(ctx)
+	})
 	return tp, sr
 }
 
@@ -201,5 +208,51 @@ func TestLogLinesCarryTraceID(t *testing.T) {
 	}
 	if !strings.Contains(output, "handler-log") {
 		t.Errorf("expected handler-log message in log output, got:\n%s", output)
+	}
+}
+
+// TestSpanStatusErrorOn5xx verifies that a handler returning HTTP 500 causes the
+// gateway span to be marked with codes.Error.
+func TestSpanStatusErrorOn5xx(t *testing.T) {
+	tp, sr := newTestProvider(t)
+
+	errHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+
+	tracing.Middleware(tp)(errHandler).ServeHTTP(rec, req)
+
+	gwSpan, ok := findSpan(sr.Ended(), "gateway.request")
+	if !ok {
+		t.Fatal("no gateway.request span recorded")
+	}
+	if got := gwSpan.Status().Code; got != codes.Error {
+		t.Errorf("span status code = %v, want codes.Error for HTTP 500", got)
+	}
+}
+
+// TestSpanNamedByChiRoutePattern verifies that after a chi router dispatches the
+// request, the gateway span is renamed to the matched route pattern.
+func TestSpanNamedByChiRoutePattern(t *testing.T) {
+	tp, sr := newTestProvider(t)
+
+	r := chi.NewRouter()
+	r.Use(tracing.Middleware(tp))
+	r.Get("/items/{id}", okHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/items/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	_, plain := findSpan(sr.Ended(), "gateway.request")
+	_, named := findSpan(sr.Ended(), "/items/{id}")
+	if plain {
+		t.Error("span was not renamed from gateway.request to the chi route pattern")
+	}
+	if !named {
+		t.Error("expected span named /items/{id} after chi routing, not found")
 	}
 }

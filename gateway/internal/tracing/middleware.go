@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -68,19 +69,29 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				ctx = base.WithContext(ctx)
 			}
 
+			// Reassign r so chi.RouteContext picks up the same context that has the span.
+			r = r.WithContext(ctx)
+
 			// Wrap the response writer to capture the HTTP status code for span annotation.
 			ww := httputil.NewStatusRecorder(w)
-			next.ServeHTTP(ww, r.WithContext(ctx))
+			next.ServeHTTP(ww, r)
 
-			// Annotate span with HTTP status code and mark as error on 5xx.
-			if ww.Status >= 500 {
+			// Record HTTP semantic attributes after the handler returns.
+			span.SetAttributes(
+				attribute.String("http.method", r.Method),
+				attribute.String("http.path", r.URL.Path),
+				attribute.Int("http.status_code", ww.Status),
+			)
+
+			// Mark 4xx and 5xx as span errors per OTel HTTP semantic conventions.
+			if ww.Status >= 400 {
 				span.SetStatus(codes.Error, http.StatusText(ww.Status))
 			}
 
 			// Rename span from the chi route pattern after routing has resolved.
 			// "gateway.request" is only the initial placeholder — chi populates
 			// RoutePattern during ServeHTTP, so it's available here but not at span start.
-			if rctx := chi.RouteContext(ctx); rctx != nil && rctx.RoutePattern() != "" {
+			if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
 				span.SetName(rctx.RoutePattern())
 			}
 			span.End()

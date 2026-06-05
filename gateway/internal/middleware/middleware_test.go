@@ -168,7 +168,7 @@ func TestAccessLogWithPanic(t *testing.T) {
 	req = req.WithContext(testLogger.WithContext(req.Context()))
 	rec := httptest.NewRecorder()
 
-	// Since we swapped the order, AccessLog should wrap Recovery
+	// AccessLog wraps Recovery so the access log is emitted even when the handler panics.
 	handler := AccessLog(Recovery(panicHandler))
 	handler.ServeHTTP(rec, req)
 

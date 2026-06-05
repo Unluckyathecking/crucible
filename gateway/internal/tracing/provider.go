@@ -37,8 +37,7 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 		resource.NewSchemaless(attribute.String("service.name", "crucible-gateway")),
 	)
 	if err != nil {
-		// Non-fatal — fall back to the default resource rather than failing startup.
-		res = resource.Default()
+		return nil, nil, fmt.Errorf("tracing: merge resource: %w", err)
 	}
 
 	tp := sdktrace.NewTracerProvider(

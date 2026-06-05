@@ -45,3 +45,6 @@ AGENTS.md
 .opencode/
 .claude/
 skills-lock.json
+
+# Go workspace sum file — auto-regenerated, not a project artefact
+go.work.sum

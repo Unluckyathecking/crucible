@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -326,11 +327,17 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics) (*InvokeResponse, int, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics) (_ *InvokeResponse, _ int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
 	// TracerProvider is inherited from the active span — no-op when tracing is disabled.
 	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer("crucible.proxy").Start(ctx, "proxy.invoke")
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workerURL+"/invoke", bytes.NewReader(body))
 	if err != nil {
