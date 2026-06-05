@@ -181,12 +181,16 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		// Count only actual retry attempts dispatched past the breaker gate and ctx check.
-		if attempt > 0 {
+		resp, status, err := c.doOnce(ctx, body, in.RequestID)
+
+		// Count after doOnce so the metric reflects actual HTTP calls dispatched.
+		// status == statusNone means http.NewRequestWithContext failed before any
+		// network call; those are not retryable and will exit the loop below, so
+		// this branch is unreachable in practice for attempt > 0. The guard makes
+		// the intent explicit regardless.
+		if attempt > 0 && status != statusNone {
 			observability.WorkerRetriesTotal.Inc()
 		}
-
-		resp, status, err := c.doOnce(ctx, body, in.RequestID)
 
 		// Update breaker state based on the outcome.
 		// err==nil is checked first: a successful HTTP 200 closes the breaker regardless

@@ -105,6 +105,13 @@ func (b *Breaker) Allow() error {
 //   - StateOpen: stale success from a call admitted before the breaker tripped;
 //     failure streak is preserved so the cooldown + probe path decides recovery.
 //
+// probeInFlight invariants:
+//   - StateClosed: Allow() in Closed never sets probeInFlight; it is always false.
+//   - StateOpen: RecordFailure unconditionally clears probeInFlight before any Open
+//     transition, so it is always false on entry here.
+//   - StateHalfOpen: probeInFlight was set by the Allow() that admitted the probe;
+//     this is the only state where probeInFlight can be true on entry.
+//
 // Known limitation: a stale success from a StateClosed request that completes
 // after Allow() has already transitioned the breaker to StateHalfOpen will close
 // the breaker without the intended probe. This race is self-correcting: the
@@ -118,18 +125,23 @@ func (b *Breaker) RecordSuccess() {
 	b.mu.Lock()
 	var onState func(State)
 	switch b.state {
-	case StateOpen:
-		// Stale in-flight — do NOT reset failures; preserve the streak that opened the
-		// breaker so recovery requires a full successful probe, not a race-won old reply.
-		b.probeInFlight = false
 	case StateHalfOpen:
+		// Probe succeeded → close the breaker and reset the failure streak.
 		b.failures = 0
 		b.probeInFlight = false
 		b.state = StateClosed
 		onState = b.onState
-	default: // StateClosed
-		b.failures = 0
+	case StateOpen:
+		// Stale success from a request admitted before the breaker tripped. The failure
+		// streak is preserved — recovery still requires a successful probe, not a stale
+		// in-flight reply. probeInFlight is always false here (see invariants above);
+		// the assignment is a defensive no-op that makes the guarantee explicit.
 		b.probeInFlight = false
+	case StateClosed:
+		// Normal healthy call: reset the failure streak so transient failures are
+		// forgotten once a success arrives. probeInFlight is always false here
+		// (see invariants above); no modification needed.
+		b.failures = 0
 	}
 	b.mu.Unlock()
 	if onState != nil {
