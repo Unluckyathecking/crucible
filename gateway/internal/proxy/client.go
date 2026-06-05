@@ -143,8 +143,11 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.retry.Sleep(ctx, attempt); err != nil {
 				return nil, err
 			}
-			// Count here so the metric reflects actual retry executions (Sleep
-			// succeeded, doOnce is about to run), not just retry decisions.
+			// Confirm context is still live before counting the retry — guards
+			// against the narrow window between Sleep returning and ctx expiry.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			observability.WorkerRetriesTotal.Inc()
 		}
 
@@ -166,23 +169,20 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		resp, status, err := c.doOnce(ctx, body, in.RequestID)
 
 		// Update breaker state based on the outcome.
-		//   ctx.Err() != nil (any status)     → RecordAbort: release probe slot
-		//       without a health signal; the transport error is the caller's, not
-		//       the worker's. Covers both status==0 transport failures and cases
-		//       where ctx was cancelled during response-body read (status!=0).
-		//   Any transport error (status 0)    → RecordFailure: worker unreachable.
-		//   HTTP 5xx                          → RecordFailure
-		//   Any real HTTP response             → RecordSuccess: worker is reachable.
-		//   Pre-flight build error (statusNone) → leave breaker unchanged.
 		if c.breaker != nil {
 			switch {
 			case ctx.Err() != nil:
+				// Caller cancelled: release probe slot without recording a health signal.
 				c.breaker.RecordAbort()
+			case status == statusNone:
+				// Pre-flight build error: never reached the worker; no health signal.
+			case err != nil && status >= 500:
+				c.breaker.RecordFailure() // HTTP 5xx
 			case err != nil && status == 0:
-				c.breaker.RecordFailure()
-			case resilience.IsRetryable(err, status):
-				c.breaker.RecordFailure()
-			case status != statusNone:
+				c.breaker.RecordFailure() // transport/network error, no HTTP response
+			default:
+				// Any real HTTP response (200, 4xx, decode error on 200) proves
+				// the worker is reachable.
 				c.breaker.RecordSuccess()
 			}
 		}

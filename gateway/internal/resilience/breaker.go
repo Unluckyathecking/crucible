@@ -1,3 +1,6 @@
+// Package resilience provides retry and circuit-breaker policies for gateway→worker calls.
+// Zero-value Policy and BreakerConfig disable the respective mechanism, preserving
+// single-shot behaviour by default.
 package resilience
 
 import (
@@ -98,9 +101,9 @@ func (b *Breaker) RecordSuccess() {
 	if b.state == StateOpen {
 		return // stale success; preserve failure streak and probe slot
 	}
-	b.probeInFlight = false
 	b.failures = 0
 	if b.state == StateHalfOpen {
+		b.probeInFlight = false
 		b.setState(StateClosed)
 	}
 }

@@ -38,11 +38,8 @@ func IsRetryable(err error, status int) bool {
 	if status < 0 {
 		return false
 	}
-	// Transport or network error (connection refused, reset, etc.) with no HTTP response.
-	if err != nil && status == 0 {
-		return true
-	}
-	return status >= 500
+	// Transport/network error (no HTTP response) or HTTP 5xx server error.
+	return (err != nil && status == 0) || status >= 500
 }
 
 // Sleep waits for the jittered exponential backoff before attempt n (1 = before 2nd try).
