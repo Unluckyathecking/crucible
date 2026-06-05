@@ -58,9 +58,14 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger pointer from the original request context before
 			// deriving new contexts, so any logger stored by upstream middleware
-			// (e.g. RequestID) is preserved. middleware.init() sets
-			// zerolog.DefaultContextLogger so Ctx never returns nil here.
+			// (e.g. RequestID) is preserved.
 			base := zerolog.Ctx(r.Context())
+			if base == nil {
+				// Defensive guard: init() sets DefaultContextLogger to &log.Logger to
+				// prevent this, but guard explicitly against any import-order edge case.
+				fallback := log.Logger
+				base = &fallback
+			}
 
 			// Extract parent span from inbound W3C traceparent header.
 			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be

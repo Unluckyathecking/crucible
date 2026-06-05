@@ -146,5 +146,9 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("shutdown with cancelled context blocked for > 5 s; expected prompt return")
+		// Drain the buffered channel so the spawned goroutine can exit cleanly.
+		// cancelledCtx is already cancelled so shutdown will return once the BSP
+		// honours it; the drain below prevents the goroutine from outliving the test.
+		<-errc
 	}
 }
