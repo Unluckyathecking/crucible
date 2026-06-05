@@ -124,9 +124,18 @@ func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {
 	}
 }
 
+// nonFlusherWriter is a minimal http.ResponseWriter that deliberately does NOT
+// implement http.Flusher, so TestStatusRecorderFlushNoopWhenNotFlusher can
+// exercise the no-op delegation path in StatusRecorder.Flush.
+type nonFlusherWriter struct{ h http.Header }
+
+func (n *nonFlusherWriter) Header() http.Header         { return n.h }
+func (n *nonFlusherWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (n *nonFlusherWriter) WriteHeader(_ int)           {}
+
 func TestStatusRecorderFlushNoopWhenNotFlusher(t *testing.T) {
-	// httptest.NewRecorder does not implement http.Flusher; Flush must be safe to call.
-	sr := NewStatusRecorder(httptest.NewRecorder())
+	// nonFlusherWriter does not implement http.Flusher; Flush must be a safe no-op.
+	sr := NewStatusRecorder(&nonFlusherWriter{h: make(http.Header)})
 	sr.Flush() // must not panic
 }
 

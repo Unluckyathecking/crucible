@@ -19,6 +19,14 @@ type ctxKey string
 
 const RequestIDKey ctxKey = "request_id"
 
+func init() {
+	// zerolog.DefaultContextLogger ensures Ctx(ctx) always returns a usable logger
+	// even when no specific logger has been stored in context. Without this, Ctx
+	// returns the Nop sentinel (nil writer) and AccessLog output would be silently
+	// discarded when tracing middleware is absent or uses a noop provider.
+	zerolog.DefaultContextLogger = &log.Logger
+}
+
 // RequestID stamps an X-Request-ID on every request, honouring an inbound one if reasonable.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,14 +69,10 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		// Use the context logger (enriched by tracing middleware with trace_id/span_id
-		// when tracing is active). Fall back to the global logger so log lines are never
-		// silently dropped when AccessLog is used standalone or before tracing middleware.
-		// Work with a zerolog.Logger value (not pointer) to avoid zerolog pointer aliasing.
-		logger := log.Logger
-		if l := zerolog.Ctx(r.Context()); l.GetLevel() != zerolog.Disabled {
-			logger = *l
-		}
+		// Use the context logger enriched by tracing middleware with trace_id/span_id.
+		// zerolog.DefaultContextLogger (set in init) guarantees Ctx always returns at
+		// least log.Logger, so no separate nil/disabled check is needed.
+		logger := *zerolog.Ctx(r.Context())
 		logger.Info().
 			Str("request_id", rid).
 			Str("method", r.Method).

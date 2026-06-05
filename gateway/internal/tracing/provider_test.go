@@ -57,8 +57,10 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 		t.Fatalf("NewProvider(ratio=0) returned unexpected error: %v", err)
 	}
 
-	// t.Cleanup ensures shutdown runs with a fresh context that is not derived from
-	// any outer context, eliminating any defer ordering ambiguity.
+	// Guard against nil shutdown in case NewProvider returned early with a nil func.
+	if shutdown == nil {
+		t.Fatal("NewProvider(ratio=0) returned nil shutdown function")
+	}
 	t.Cleanup(func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -82,6 +84,9 @@ func TestNewProviderSampleRatioOne(t *testing.T) {
 	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=1) returned unexpected error: %v", err)
+	}
+	if shutdown == nil {
+		t.Fatal("NewProvider(ratio=1) returned nil shutdown function")
 	}
 	t.Cleanup(func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

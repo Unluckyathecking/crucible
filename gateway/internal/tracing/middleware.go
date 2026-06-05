@@ -28,6 +28,13 @@ const w3cTraceparentMinLen = 55
 // propagator is the W3C TraceContext propagator used for header extraction/injection.
 var propagator = propagation.TraceContext{}
 
+func init() {
+	// zerolog.DefaultContextLogger is returned by zerolog.Ctx when no logger has
+	// been stored in context. Without this, Ctx returns a Nop logger (level=Disabled,
+	// nil writer) that silently discards output on the default-off tracing path.
+	zerolog.DefaultContextLogger = &log.Logger
+}
+
 // Middleware returns HTTP middleware that:
 //  1. Extracts an inbound W3C traceparent header to continue a remote parent trace,
 //     or starts a fresh root span when the header is absent.
@@ -49,13 +56,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger from the original request context before deriving
 			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. zerolog.Ctx returns a disabled sentinel (never nil) when no
-			// logger is stored; fall back to the global logger.
-			// Work with a zerolog.Logger value (not pointer) to avoid zerolog pointer aliasing.
-			base := log.Logger
-			if l := zerolog.Ctx(r.Context()); l.GetLevel() != zerolog.Disabled {
-				base = *l
-			}
+			// is preserved. zerolog.DefaultContextLogger (set in init) ensures Ctx never
+			// returns the Nop sentinel — it returns at least log.Logger when none is stored.
+			// Work with a value (not pointer) to avoid zerolog pointer aliasing.
+			base := *zerolog.Ctx(r.Context())
 
 			// Extract parent span from inbound W3C traceparent header.
 			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be
