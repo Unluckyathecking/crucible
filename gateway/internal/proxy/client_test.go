@@ -517,12 +517,12 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	// The error must wrap DeadlineExceeded: the 100ms context expires during the
-	// 500ms retry sleep, so Sleep returns DeadlineExceeded, not Canceled.
+	// 2s retry sleep, so Sleep returns DeadlineExceeded, not Canceled.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
-	// Exactly 1 call: the 500ms backoff outlasts the 100ms ctx so Sleep returns
-	// DeadlineExceeded before a second call can be dispatched.
+	// Exactly 1 call: the 2s backoff (1s+ jitter lower-bound) outlasts the 100ms
+	// ctx so Sleep returns DeadlineExceeded before a second call can be dispatched.
 	if n := callCount.Load(); n != 1 {
 		t.Errorf("call count = %d, want 1 (ctx should expire during first retry sleep)", n)
 	}

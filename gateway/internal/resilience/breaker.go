@@ -41,7 +41,8 @@ type Breaker struct {
 	// probeGen is incremented on every HalfOpen transition. Record* methods
 	// compare their token argument against probeGen; a mismatch means the call
 	// was admitted from a different (stale) breaker state and its outcome must
-	// not influence the active probe.
+	// not influence the active probe. uint64 wraps at 2^64 — at one million
+	// state transitions per second, overflow takes ~584,542 years; not a concern.
 	probeGen uint64
 	onState  func(State)
 	now      func() time.Time
@@ -163,9 +164,10 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		// forgotten once a success arrives.
 		b.failures = 0
 	case StateOpen:
-		// Stale success from a call admitted before the breaker tripped.
-		// Do NOT reset failures or probe state — recovery requires a successful probe,
-		// not a stale in-flight response. Explicit case prevents accidental no-op removal.
+		// Stale success from a call admitted before the breaker opened. Resetting
+		// failures here would let in-flight requests silently close the breaker,
+		// bypassing the cooldown+probe recovery path entirely. Explicit case so the
+		// intentional no-op is not accidentally removed during refactoring.
 	}
 	b.mu.Unlock()
 	// StateClosed is a compile-time constant, not a read of b.state — no race.
