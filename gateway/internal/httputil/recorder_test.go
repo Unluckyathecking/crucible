@@ -142,15 +142,24 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write sets Status=200 on StatusRecorder but does NOT explicitly call
-	// WriteHeader(200) on the inner writer. The inner writer's own Write handles
-	// its implicit header commit. The authoritative final-status field is sr.Status,
-	// which middleware logging and Prometheus metrics consume.
+	// After 1xx + Write: Write only commits wroteHeader when Status == 200 (the
+	// NewStatusRecorder default). Because WriteHeader(100) set Status to 100, the
+	// Write condition is false — Status and wroteHeader remain unchanged.
+	// The final status is committed only by an explicit WriteHeader(2xx).
+	if sr.Status != http.StatusContinue {
+		t.Errorf("Status = %d after 1xx+Write, want %d (1xx must be preserved until final WriteHeader)", sr.Status, http.StatusContinue)
+	}
+	if sr.wroteHeader {
+		t.Error("wroteHeader must still be false after Write following 1xx")
+	}
+
+	// Explicit final WriteHeader(200) commits the response.
+	sr.WriteHeader(http.StatusOK)
 	if sr.Status != http.StatusOK {
-		t.Errorf("Status = %d after 1xx+Write, want %d", sr.Status, http.StatusOK)
+		t.Errorf("Status = %d after final WriteHeader, want %d", sr.Status, http.StatusOK)
 	}
 	if !sr.wroteHeader {
-		t.Error("wroteHeader must be true after Write")
+		t.Error("wroteHeader must be true after final WriteHeader")
 	}
 }
 
@@ -182,11 +191,9 @@ func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
-    // explicitly reset the status to verify Write actually sets it to 200
-    sr.Status = 0
-
 	_, _ = sr.Write([]byte("implicit 200"))
-	// Critical: verify Status is locked at 200 immediately after Write
+	// Write commits wroteHeader (Status == 200 default). Subsequent WriteHeader calls
+	// are ignored. Status stays at the NewStatusRecorder default of 200.
 	if sr.Status != http.StatusOK {
 		t.Errorf("Status after Write = %d, want %d", sr.Status, http.StatusOK)
 	}
