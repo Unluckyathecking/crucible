@@ -20,6 +20,38 @@ func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
 	}
 }
 
+// TestNewProviderInvalidEndpointReturnsError verifies that a non-host:port endpoint
+// string (e.g. a bare hostname without a port) is rejected by NewProvider.
+func TestNewProviderInvalidEndpointReturnsError(t *testing.T) {
+	t.Parallel()
+	_, _, err := tracing.NewProvider("localhost", false, 1.0)
+	if err == nil {
+		t.Fatal("NewProvider with bare hostname (no port) should return an error, got nil")
+	}
+}
+
+// TestNewProviderInsecureFalseConstructsOK verifies that insecure=false (TLS mode)
+// accepts a valid host:port and constructs a provider without error. otlptracehttp
+// connects lazily, so construction succeeds even without a live TLS collector.
+func TestNewProviderInsecureFalseConstructsOK(t *testing.T) {
+	t.Parallel()
+	tp, shutdown, err := tracing.NewProvider("localhost:4318", false, 1.0)
+	if err != nil {
+		t.Fatalf("NewProvider(insecure=false) returned unexpected error: %v", err)
+	}
+	if tp == nil {
+		t.Fatal("NewProvider(insecure=false) returned nil TracerProvider")
+	}
+	if shutdown == nil {
+		t.Fatal("NewProvider(insecure=false) returned nil shutdown function")
+	}
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = shutdown(shutCtx)
+	})
+}
+
 // TestNewProviderReturnsWorkingProvider verifies the happy path: NewProvider with a
 // syntactically valid (though unreachable) endpoint returns a non-nil TracerProvider
 // and shutdown function with no error, and the shutdown function completes cleanly.

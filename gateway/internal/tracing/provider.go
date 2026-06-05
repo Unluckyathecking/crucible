@@ -62,7 +62,12 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	// Re-use the default resource's schema URL so the merge result has a consistent schema
 	// and downstream collectors can resolve attribute semantics correctly.
+	// resource.Default() returns a non-nil resource in all known SDK versions, but guard
+	// defensively so a future SDK change or stripped build tag can't produce a nil dereference.
 	defaultRes := resource.Default()
+	if defaultRes == nil {
+		defaultRes = resource.Empty()
+	}
 	res, mergeErr := resource.Merge(
 		defaultRes,
 		resource.NewWithAttributes(defaultRes.SchemaURL(), attribute.String("service.name", "crucible-gateway")),
