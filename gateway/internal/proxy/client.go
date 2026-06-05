@@ -67,8 +67,9 @@ type ResiliencePolicy struct {
 }
 
 // clientMetrics groups Prometheus instruments that WithMetrics can hot-swap atomically.
-// Storing them as a unit in atomic.Value ensures the swap is indivisible — a concurrent
+// Storing a pointer in atomic.Value ensures the swap is indivisible — a concurrent
 // Invoke either observes the full old set or the full new set, never a partial mix.
+// Using a pointer avoids copying the struct's three interface fields on every Load.
 type clientMetrics struct {
 	retriesTotal       prometheus.Counter
 	breakerState       prometheus.Gauge
@@ -81,7 +82,7 @@ type Client struct {
 	http      *http.Client
 	retry     resilience.Policy
 	breaker   *resilience.Breaker
-	metrics   atomic.Value // always stores clientMetrics; swapped atomically by WithMetrics
+	metrics   atomic.Value // always stores *clientMetrics; swapped atomically by WithMetrics
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
@@ -124,7 +125,7 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 			},
 		},
 	}
-	c.metrics.Store(clientMetrics{
+	c.metrics.Store(&clientMetrics{
 		retriesTotal:       observability.WorkerRetriesTotal,
 		breakerState:       observability.WorkerBreakerState,
 		workerCallDuration: observability.WorkerCallDuration,
@@ -135,7 +136,7 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		// the Invoke() nil guard fires first for any zero-value Client construction.
 		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
 			if mv := c.metrics.Load(); mv != nil {
-				mv.(clientMetrics).breakerState.Set(float64(s))
+				mv.(*clientMetrics).breakerState.Set(float64(s))
 			}
 		})
 	}
@@ -160,7 +161,7 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 // at any time, including while Invoke goroutines are running.
 func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 	if m != nil {
-		c.metrics.Store(clientMetrics{
+		c.metrics.Store(&clientMetrics{
 			retriesTotal:       m.WorkerRetriesTotal,
 			breakerState:       m.WorkerBreakerState,
 			workerCallDuration: m.WorkerCallDuration,
@@ -192,7 +193,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// directly instead of constructed via New() — that is unsupported.
 		panic("proxy.Client: must be constructed with proxy.New()")
 	}
-	m := mv.(clientMetrics)
+	m := mv.(*clientMetrics)
 	maxAttempts := c.retry.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 1
@@ -296,7 +297,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m clientMetrics) (*InvokeResponse, int, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics) (*InvokeResponse, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workerURL+"/invoke", bytes.NewReader(body))
 	if err != nil {
 		return nil, statusNone, fmt.Errorf("build request: %w", err)
