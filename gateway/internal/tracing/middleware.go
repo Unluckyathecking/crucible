@@ -20,6 +20,11 @@ import (
 
 const tracerName = "crucible.gateway"
 
+// w3cTraceparentMinLen is the minimum valid byte length of a W3C Trace Context
+// traceparent header. Version 00 encodes as "00-<32hex>-<16hex>-<2hex>" = 55 bytes.
+// Future spec versions may be longer; maxTraceparentLen inside Middleware handles that.
+const w3cTraceparentMinLen = 55
+
 // propagator is the W3C TraceContext propagator used for header extraction/injection.
 var propagator = propagation.TraceContext{}
 
@@ -53,13 +58,14 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			}
 
 			// Extract parent span from inbound W3C traceparent header.
-			// W3C traceparent v0 is exactly 55 chars; 128 allows for future versions and
-			// vendor extensions while still capping memory exposure from header stuffing.
-			// propagator.Extract is a no-op when the header is absent; both paths result
-			// in a fresh root span for bad input.
+			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be
+			// valid and passing them to the propagator wastes parse work. The upper bound
+			// (128) allows for future version extensions while capping header-stuffing exposure.
+			// propagator.Extract is a no-op when the header is absent; both paths produce
+			// a fresh root span for absent or malformed input.
 			const maxTraceparentLen = 128
 			ctx := r.Context()
-			if tv := r.Header.Get("traceparent"); len(tv) >= 55 && len(tv) <= maxTraceparentLen {
+			if tv := r.Header.Get("traceparent"); len(tv) >= w3cTraceparentMinLen && len(tv) <= maxTraceparentLen {
 				ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 			}
 
@@ -86,10 +92,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// Wrap the response writer to capture the HTTP status code for span annotation.
 			ww := httputil.NewStatusRecorder(w)
 
-			// A single deferred closure records all span attributes, updates status,
-			// resolves the span name from the chi route pattern, and ends the span.
-			// All mutations and span.End() are in the same closure so their ordering
-			// is unambiguous.
+			// span, r, and ww are all declared within this http.HandlerFunc invocation —
+			// each concurrent request gets its own independent copies allocated on each
+			// call. The defer below closes over only this invocation's span; there is no
+			// shared span state across requests. All mutations and span.End() live in this
+			// single closure so their ordering is unambiguous.
 			defer func() {
 				span.SetAttributes(
 					attribute.String("http.method", r.Method),

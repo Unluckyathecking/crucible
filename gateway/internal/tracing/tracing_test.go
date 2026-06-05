@@ -58,6 +58,7 @@ func findSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) (sdktrac
 // inbound request causes the gateway span to join the same remote trace (matching
 // trace ID, with a valid parent reference).
 func TestInboundTraceparentContinuesTrace(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	// Create a parent span and encode it as a W3C traceparent header.
@@ -96,6 +97,7 @@ func TestInboundTraceparentContinuesTrace(t *testing.T) {
 // TestAbsentTraceparentStartsRootSpan verifies that a request without a traceparent
 // header starts a fresh root span with a valid trace ID and no parent.
 func TestAbsentTraceparentStartsRootSpan(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -119,6 +121,7 @@ func TestAbsentTraceparentStartsRootSpan(t *testing.T) {
 // TestPropagatorWritesOutboundTraceparent verifies that a well-formed W3C traceparent
 // header is written when the propagator injects into an outbound request header.
 func TestPropagatorWritesOutboundTraceparent(t *testing.T) {
+	t.Parallel()
 	tp, _ := newTestProvider(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -166,6 +169,7 @@ func TestPropagatorWritesOutboundTraceparent(t *testing.T) {
 // TestNoOpWhenDisabled verifies that a noop.TracerProvider (zero-config / default-off)
 // produces no Traceparent header and the span context in the request context is invalid.
 func TestNoOpWhenDisabled(t *testing.T) {
+	t.Parallel()
 	tp := noop.NewTracerProvider()
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -197,6 +201,7 @@ func TestNoOpWhenDisabled(t *testing.T) {
 // events that include the trace_id field when a real TracerProvider is active.
 // The test logger is injected via the request context so no global state is mutated.
 func TestLogLinesCarryTraceID(t *testing.T) {
+	t.Parallel()
 	tp, _ := newTestProvider(t)
 
 	var buf bytes.Buffer
@@ -251,6 +256,7 @@ func TestLogLinesCarryTraceID(t *testing.T) {
 // TestSpanStatusErrorOn5xx verifies that a handler returning HTTP 500 causes the
 // gateway span to be marked with codes.Error.
 func TestSpanStatusErrorOn5xx(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	errHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -275,6 +281,7 @@ func TestSpanStatusErrorOn5xx(t *testing.T) {
 // TestSpanNamedByChiRoutePattern verifies that after a chi router dispatches the
 // request, the gateway span is renamed to the matched route pattern.
 func TestSpanNamedByChiRoutePattern(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	r := chi.NewRouter()
@@ -311,6 +318,7 @@ func TestSpanNamedByChiRoutePattern(t *testing.T) {
 // active but no route matches the request (404), the gateway span is renamed to
 // "gateway.unmatched" rather than keeping the "gateway.request" placeholder.
 func TestSpanNamedGatewayUnmatchedForUnknownRoute(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	r := chi.NewRouter()
@@ -349,6 +357,7 @@ func TestSpanNamedGatewayUnmatchedForUnknownRoute(t *testing.T) {
 // TestNoOpWhenDisabledWithNilProvider verifies the Middleware(nil) code path —
 // the production default when TracerProvider is not wired — produces no Traceparent.
 func TestNoOpWhenDisabledWithNilProvider(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 
@@ -372,6 +381,7 @@ func TestNoOpWhenDisabledWithNilProvider(t *testing.T) {
 // trace_id/span_id (injected by tracing middleware). This covers the integration
 // between tracing's context-logger enrichment and AccessLog's consumption of it.
 func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
+	t.Parallel()
 	tp, _ := newTestProvider(t)
 
 	var buf strings.Builder
@@ -403,6 +413,7 @@ func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
 // span instead of continuing the remote trace. This prevents header-stuffing attacks
 // from injecting arbitrarily large values into the OTel propagation layer.
 func TestOversizedTraceparentIsRejected(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -428,6 +439,7 @@ func TestOversizedTraceparentIsRejected(t *testing.T) {
 // TestConcurrentRequestsGetDistinctTraceIDs verifies that concurrent requests through
 // the same middleware instance each receive a unique trace ID and do not share context.
 func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
+	t.Parallel()
 	tp, sr := newTestProvider(t)
 
 	const n = 20

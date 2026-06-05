@@ -13,6 +13,7 @@ import (
 // endpoint immediately rather than constructing an exporter that silently fails at
 // export time. This protects callers that bypass config.Load validation.
 func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
+	t.Parallel()
 	_, _, err := tracing.NewProvider("", true, 1.0)
 	if err == nil {
 		t.Fatal("NewProvider with empty endpoint should return an error, got nil")
@@ -23,6 +24,7 @@ func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
 // syntactically valid (though unreachable) endpoint returns a non-nil TracerProvider
 // and shutdown function with no error, and the shutdown function completes cleanly.
 func TestNewProviderReturnsWorkingProvider(t *testing.T) {
+	t.Parallel()
 	// otlptracehttp connects lazily — construction succeeds without a live collector.
 	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
 	if err != nil {
@@ -49,6 +51,7 @@ func TestNewProviderReturnsWorkingProvider(t *testing.T) {
 // TestNewProviderSampleRatioZero verifies that a sample ratio of 0 is accepted and
 // that root spans created by the resulting provider are not sampled.
 func TestNewProviderSampleRatioZero(t *testing.T) {
+	t.Parallel()
 	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 0.0)
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=0) returned unexpected error: %v", err)
@@ -75,6 +78,7 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 // TestNewProviderSampleRatioOne verifies that a sample ratio of 1.0 is accepted and
 // that every root span created by the resulting provider is sampled.
 func TestNewProviderSampleRatioOne(t *testing.T) {
+	t.Parallel()
 	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=1) returned unexpected error: %v", err)
@@ -100,6 +104,7 @@ func TestNewProviderSampleRatioOne(t *testing.T) {
 // 2 s — rather than blocking until batchExportTimeout. This guards against a
 // process-exit hang when the caller accidentally passes an already-done context.
 func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
+	t.Parallel()
 	_, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider returned unexpected error: %v", err)
