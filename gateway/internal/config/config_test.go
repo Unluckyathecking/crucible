@@ -566,6 +566,21 @@ func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	}
 }
 
+// TestOtelExporterInsecureExplicitFalse verifies that an explicit OTEL_EXPORTER_INSECURE=false
+// is accepted and parsed correctly (TLS remains on).
+func TestOtelExporterInsecureExplicitFalse(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_EXPORTER_INSECURE", "false")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.OtelExporterInsecure {
+		t.Error("OtelExporterInsecure = true, want false for explicit false")
+	}
+}
+
 // TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled verifies that endpoint
 // scheme validation applies even when OTEL_TRACING_ENABLED=false, so a latent
 // misconfiguration is caught at startup rather than silently stored in config.

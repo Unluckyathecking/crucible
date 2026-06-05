@@ -409,7 +409,7 @@ func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
 }
 
 // TestOversizedTraceparentIsRejected verifies that an inbound Traceparent header longer
-// than the 128-byte guard is not extracted, causing the middleware to start a fresh root
+// than the 512-byte guard is not extracted, causing the middleware to start a fresh root
 // span instead of continuing the remote trace. This prevents header-stuffing attacks
 // from injecting arbitrarily large values into the OTel propagation layer.
 func TestOversizedTraceparentIsRejected(t *testing.T) {
@@ -418,8 +418,8 @@ func TestOversizedTraceparentIsRejected(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	// Craft a well-structured but oversized traceparent: valid prefix followed by enough
-	// padding to exceed the 128-byte limit enforced by maxTraceparentLen in middleware.go.
-	oversized := "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01" + strings.Repeat("x", 100)
+	// padding to exceed the 512-byte limit enforced by maxTraceparentLen in middleware.go.
+	oversized := "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01" + strings.Repeat("x", 500)
 	req.Header.Set("traceparent", oversized)
 	rec := httptest.NewRecorder()
 
