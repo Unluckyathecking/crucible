@@ -195,6 +195,23 @@ func TestRetryMaxWithZeroBackoffReturnsError(t *testing.T) {
 	}
 }
 
+// TestRetryMaxOneZeroBackoffIsValid documents that WORKER_RETRY_MAX=1 (single-shot
+// with no retries) is accepted even when WORKER_RETRY_BACKOFF_MS=0, because backoff
+// is never used when only one attempt is made.
+func TestRetryMaxOneZeroBackoffIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "1")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "0")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error for WORKER_RETRY_MAX=1 with WORKER_RETRY_BACKOFF_MS=0: %v", err)
+	}
+	if c.WorkerRetryMax != 1 {
+		t.Errorf("WorkerRetryMax = %d, want 1", c.WorkerRetryMax)
+	}
+}
+
 func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "101")
