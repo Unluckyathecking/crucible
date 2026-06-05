@@ -622,24 +622,17 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 		t.Fatal("expected StateOpen after threshold failures")
 	}
 
-	// Advance just past cooldown — proves injected clock controls the transition.
+	// Advance just past cooldown — proves injected clock controls the transition,
+	// not real wall-clock time. The breaker remains in StateOpen until Allow() is
+	// called (the Open→HalfOpen transition is lazy), so CurrentState() here still
+	// returns StateOpen.
 	mu.Lock()
 	fakeNow = fakeNow.Add(time.Hour + time.Millisecond)
 	mu.Unlock()
 
-	// Verify the clock advance took effect: Allow() transitions Open→HalfOpen when
-	// the cooldown has elapsed. Trigger it explicitly, assert the state, then release
-	// the probe slot with RecordAbort so the subsequent Invoke can acquire it.
-	tok, aerr := c.breaker.Allow()
-	if aerr != nil {
-		t.Fatalf("Allow() after cooldown: expected nil, got %v", aerr)
-	}
-	if c.breaker.CurrentState() != resilience.StateHalfOpen {
-		t.Fatalf("expected StateHalfOpen after cooldown advance, got %v", c.breaker.CurrentState())
-	}
-	c.breaker.RecordAbort(tok) // release so Invoke can acquire the slot
-
-	// Probe: Allow() re-acquires the HalfOpen slot; doOnce succeeds → StateClosed.
+	// Probe: Invoke internally calls Allow(), which sees the cooldown has elapsed and
+	// transitions Open→HalfOpen, then dispatches the request. doOnce succeeds →
+	// RecordSuccess transitions HalfOpen→Closed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err != nil {
 		t.Fatalf("probe Invoke: %v", err)
