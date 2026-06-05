@@ -511,7 +511,6 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	// Context with timeout so goroutines propagate cancellation if the test
 	// deadline fires before all requests complete.
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer reqCancel()
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -534,8 +533,9 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		reqCancel()
 	case <-time.After(10 * time.Second):
-		reqCancel() // cancel remaining goroutines before declaring failure
+		reqCancel()
 		t.Fatal("timed out waiting for concurrent requests to complete")
 	}
 

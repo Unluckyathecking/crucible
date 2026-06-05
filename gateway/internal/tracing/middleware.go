@@ -12,7 +12,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
@@ -36,11 +35,12 @@ var propagator = propagation.TraceContext{}
 //     (the pattern is not resolved until the router has dispatched the request).
 //  4. Records span status as Error for HTTP 5xx responses.
 //
-// When tp is nil or a noop.TracerProvider (default-off state), spans have invalid
-// span contexts, no exporter is dialed, and the middleware is a transparent pass-through.
+// When tp is nil the middleware is a zero-overhead transparent pass-through (no
+// allocations, no span context derived). Pass a noop.TracerProvider explicitly for
+// the low-overhead noop-span path.
 func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 	if tp == nil {
-		tp = noop.NewTracerProvider()
+		return func(next http.Handler) http.Handler { return next }
 	}
 	tracer := tp.Tracer(tracerName)
 
@@ -78,10 +78,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 					Logger()
 				ctx = l.WithContext(ctx)
 			}
-			// Noop path: skip log enrichment entirely. The logger remains accessible
-			// via the context chain (tracer.Start returns a derived context), and
-			// zerolog.DefaultContextLogger (set in middleware.init) is the fallback
-			// for any zerolog.Ctx(ctx) call that doesn't find an explicit logger.
+			// Log enrichment is conditional on sc.IsValid(). When tp is a noop
+			// provider, spans have invalid span contexts and the block above is
+			// skipped; zerolog.DefaultContextLogger (set in middleware/middleware.go
+			// init()) is the fallback for any zerolog.Ctx(ctx) call.
 
 			// Reassign r so chi.RouteContext picks up the same context that has the span.
 			r = r.WithContext(ctx)

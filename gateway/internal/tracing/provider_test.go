@@ -128,24 +128,11 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	done := make(chan error, 1)
-	go func() {
-		// Inner goroutine with a hard 6-second deadline so the outer goroutine
-		// cannot block indefinitely if shutdown ignores the cancelled context.
-		shutdownCh := make(chan error, 1)
-		go func() { shutdownCh <- shutdown(cancelledCtx) }()
-		timer := time.NewTimer(6 * time.Second)
-		defer timer.Stop()
-		select {
-		case err := <-shutdownCh:
-			done <- err
-		case <-timer.C:
-			done <- errors.New("shutdown did not return within 6 s internal timeout")
-		}
-	}()
+	errc := make(chan error, 1)
+	go func() { errc <- shutdown(cancelledCtx) }()
 
 	select {
-	case err := <-done:
+	case err := <-errc:
 		if err == nil {
 			t.Error("shutdown with cancelled context should return an error, got nil")
 		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

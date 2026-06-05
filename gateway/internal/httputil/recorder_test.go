@@ -115,6 +115,32 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() { f.flushed = true }
 
+// TestStatusRecorder1xxThenWrite verifies that a 1xx informational status does not
+// commit wroteHeader, so a subsequent Write still records Status=200 correctly.
+func TestStatusRecorder1xxThenWrite(t *testing.T) {
+	inner := httptest.NewRecorder()
+	sr := NewStatusRecorder(inner)
+
+	sr.WriteHeader(http.StatusContinue) // 100 — informational, must not commit wroteHeader
+	if sr.wroteHeader {
+		t.Fatal("wroteHeader must be false after 1xx WriteHeader")
+	}
+
+	n, err := sr.Write([]byte("body"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("Write returned %d bytes, want 4", n)
+	}
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d after 1xx+Write, want %d", sr.Status, http.StatusOK)
+	}
+	if !sr.wroteHeader {
+		t.Error("wroteHeader must be true after Write")
+	}
+}
+
 func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {
 	inner := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 	sr := NewStatusRecorder(inner)

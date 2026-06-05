@@ -38,15 +38,10 @@ func (s *StatusRecorder) WriteHeader(code int) {
 }
 
 // Write triggers an implicit 200 if no status has been committed yet.
-// Fields are set directly rather than delegating to WriteHeader so that the
-// underlying writer is NOT sent a second WriteHeader call. This matters for
-// the 1xx-then-body sequence: WriteHeader(100) forwards to the underlying
-// writer but leaves s.wroteHeader=false intentionally. If Write then called
-// s.WriteHeader(200), the underlying writer would receive two WriteHeader
-// calls (100 then 200), which is incorrect on real net/http ResponseWriters.
-// The underlying writer's own implicit-200 path handles the non-1xx case.
-// A prior WriteHeader(5xx) sets s.wroteHeader=true, so the if-block is
-// skipped and Status stays at the 5xx value — no 200 leak is possible.
+// Direct field assignment is intentional: delegating to s.WriteHeader(200)
+// would send a second WriteHeader call to the underlying writer in the
+// 1xx-then-body sequence (100 already forwarded, wroteHeader still false),
+// which violates net/http semantics.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.Status = http.StatusOK
