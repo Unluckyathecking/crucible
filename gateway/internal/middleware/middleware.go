@@ -61,10 +61,14 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		// The tracing middleware (mounted before AccessLog) always stores a logger
-		// in context; when tracing is active it is enriched with trace_id/span_id.
-		// Tests that check log output must inject a logger via context.
-		zerolog.Ctx(r.Context()).Info().
+		// Use the context logger (enriched by tracing middleware with trace_id/span_id
+		// when tracing is active). Fall back to the global logger so log lines are never
+		// silently dropped when AccessLog is used standalone or before tracing middleware.
+		logger := zerolog.Ctx(r.Context())
+		if logger.GetLevel() == zerolog.Disabled {
+			logger = &log.Logger
+		}
+		logger.Info().
 			Str("request_id", rid).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).

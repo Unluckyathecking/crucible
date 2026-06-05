@@ -566,6 +566,27 @@ func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled verifies that endpoint
+// scheme validation applies even when OTEL_TRACING_ENABLED=false, so a latent
+// misconfiguration is caught at startup rather than silently stored in config.
+func TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled(t *testing.T) {
+	for _, endpoint := range []string{"http://collector:4318", "https://collector:4318"} {
+		t.Run(endpoint, func(t *testing.T) {
+			setRequiredEnv(t)
+			// OTEL_TRACING_ENABLED left at default (false).
+			setenv(t, "OTEL_EXPORTER_ENDPOINT", endpoint)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for scheme endpoint %q when tracing is disabled, got nil", endpoint)
+			}
+			if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+				t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+			}
+		})
+	}
+}
+
 // TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
 // return the configured millisecond values as time.Duration (with the correct
 // * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch

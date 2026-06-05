@@ -141,14 +141,14 @@ func Load() (*Config, error) {
 	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 {
 		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
 	}
-	if c.OtelTracingEnabled {
-		if c.OtelExporterEndpoint == "" {
-			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
-		}
-		lower := strings.ToLower(c.OtelExporterEndpoint)
-		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
-		}
+	// Scheme validation is unconditional: an endpoint with a scheme is always wrong
+	// regardless of whether tracing is enabled, preventing latent misconfigurations.
+	if lower := strings.ToLower(c.OtelExporterEndpoint); lower != "" &&
+		(strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")) {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+	}
+	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
 	}
 	return &c, nil
 }

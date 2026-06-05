@@ -1,5 +1,5 @@
-// Package tracing provides OpenTelemetry HTTP middleware and tracer provider
-// construction for the Crucible gateway.
+// Package tracing provides OpenTelemetry HTTP middleware for the Crucible gateway.
+// See provider.go for tracer provider construction.
 package tracing
 
 import (
@@ -51,10 +51,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			}
 
 			// Extract parent span from inbound W3C traceparent header (no-op if absent).
-			// Reject oversized traceparent headers without mutating the original request:
-			// the W3C spec fixes the format at 55 chars; 256 is generous for future versions.
+			// Reject oversized traceparent headers without mutating the original request.
+			// W3C traceparent v0 is exactly 55 chars; 128 guards against header-stuffing attacks.
 			extractHeaders := r.Header
-			if traceparentVal := r.Header.Get("Traceparent"); len(traceparentVal) > 256 {
+			if traceparentVal := r.Header.Get("Traceparent"); len(traceparentVal) > 128 {
 				extractHeaders = r.Header.Clone()
 				extractHeaders.Del("Traceparent")
 			}
