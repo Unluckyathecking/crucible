@@ -554,6 +554,8 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	pol := ResiliencePolicy{
 		// Long cooldown so real time never accidentally expires; we advance via WithNow.
 		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: time.Hour},
+		// No retry — this test exercises breaker lifecycle, not retry behaviour.
+		Retry: resilience.Policy{MaxAttempts: 1},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 

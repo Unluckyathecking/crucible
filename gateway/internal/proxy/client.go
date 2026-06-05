@@ -143,6 +143,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.retry.Sleep(ctx, attempt); err != nil {
 				return nil, err
 			}
+			// Count here so the metric reflects actual retry executions (Sleep
+			// succeeded, doOnce is about to run), not just retry decisions.
+			observability.WorkerRetriesTotal.Inc()
 		}
 
 		// Belt-and-suspenders ctx guard: IsRetryable already rejects
@@ -191,12 +194,6 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		if !resilience.IsRetryable(err, status) || attempt+1 >= maxAttempts {
 			return nil, err
 		}
-
-		// Count only when we will actually retry: after the retry-decision gate,
-		// excluding pre-flight failures (statusNone never reaches here) and
-		// non-retryable outcomes. Placed here so HTTP 200 successes on retry
-		// attempts are not counted as retry events.
-		observability.WorkerRetriesTotal.Inc()
 	}
 }
 
