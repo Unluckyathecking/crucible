@@ -106,6 +106,30 @@ func TestStatusRecorder1xxThenFinal(t *testing.T) {
 	// reflects the final response code, which is what middleware logging relies on.
 }
 
+// flushRecorder wraps httptest.ResponseRecorder and implements http.Flusher so
+// tests can verify that StatusRecorder.Flush() delegates to the underlying writer.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (f *flushRecorder) Flush() { f.flushed = true }
+
+func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {
+	inner := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sr := NewStatusRecorder(inner)
+	sr.Flush()
+	if !inner.flushed {
+		t.Error("Flush must delegate to the underlying http.Flusher")
+	}
+}
+
+func TestStatusRecorderFlushNoopWhenNotFlusher(t *testing.T) {
+	// httptest.NewRecorder does not implement http.Flusher; Flush must be safe to call.
+	sr := NewStatusRecorder(httptest.NewRecorder())
+	sr.Flush() // must not panic
+}
+
 func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)

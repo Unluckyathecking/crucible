@@ -501,9 +501,12 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	tp, sr := newTestProvider(t)
 
 	const n = 20
-	var wg sync.WaitGroup
-	traceIDs := make([]atomic.Value, n)
-	statusCodes := make([]atomic.Int32, n)
+	var (
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		traceIDs   = make([]string, n)
+		statusCodes = make([]atomic.Int32, n)
+	)
 
 	// Context with timeout so goroutines propagate cancellation if the test
 	// deadline fires before all requests complete.
@@ -517,7 +520,10 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil).WithContext(reqCtx)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				traceIDs[idx].Store(oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String())
+				id := oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
+				mu.Lock()
+				traceIDs[idx] = id
+				mu.Unlock()
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
@@ -533,7 +539,8 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 		t.Fatal("timed out waiting for concurrent requests to complete")
 	}
 
-	// All assertions run after wg.Wait() so t.Errorf is called from the test goroutine only.
+	// All assertions run after the done channel closes (wg.Wait() complete) so
+	// t.Errorf is called from the test goroutine only.
 	for i := range statusCodes {
 		if code := int(statusCodes[i].Load()); code != http.StatusOK {
 			t.Errorf("goroutine %d: unexpected status %d", i, code)
@@ -551,12 +558,7 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	}
 
 	seen := make(map[string]bool)
-	for i := range traceIDs {
-		id, ok := traceIDs[i].Load().(string)
-		if !ok {
-			t.Errorf("goroutine %d: trace ID has unexpected type %T", i, traceIDs[i].Load())
-			continue
-		}
+	for i, id := range traceIDs {
 		if id == "" || id == strings.Repeat("0", 32) {
 			t.Errorf("goroutine %d: got empty or zero trace ID", i)
 			continue
