@@ -3,7 +3,7 @@ package resilience
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand" // aliased to distinguish from math/rand at every call site
 	"errors"
 	"math/big"
 	"time"
@@ -89,7 +89,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {
-		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
+		jitter, err := crand.Int(crand.Reader, big.NewInt(int64(half)+1))
 		if err != nil {
 			d = half // fallback on OS RNG failure; preserves partial desynchronization
 		} else {

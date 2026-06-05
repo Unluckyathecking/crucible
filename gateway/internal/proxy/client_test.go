@@ -627,7 +627,19 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	fakeNow = fakeNow.Add(time.Hour + time.Millisecond)
 	mu.Unlock()
 
-	// Probe: Allow() detects cooldown elapsed → StateHalfOpen; doOnce succeeds → StateClosed.
+	// Verify the clock advance took effect: Allow() transitions Open→HalfOpen when
+	// the cooldown has elapsed. Trigger it explicitly, assert the state, then release
+	// the probe slot with RecordAbort so the subsequent Invoke can acquire it.
+	tok, aerr := c.breaker.Allow()
+	if aerr != nil {
+		t.Fatalf("Allow() after cooldown: expected nil, got %v", aerr)
+	}
+	if c.breaker.CurrentState() != resilience.StateHalfOpen {
+		t.Fatalf("expected StateHalfOpen after cooldown advance, got %v", c.breaker.CurrentState())
+	}
+	c.breaker.RecordAbort(tok) // release so Invoke can acquire the slot
+
+	// Probe: Allow() re-acquires the HalfOpen slot; doOnce succeeds → StateClosed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err != nil {
 		t.Fatalf("probe Invoke: %v", err)
