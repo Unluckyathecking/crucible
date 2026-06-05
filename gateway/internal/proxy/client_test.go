@@ -222,12 +222,18 @@ func TestInvoke_StalledConnection(t *testing.T) {
 	defer l.Close()
 
 	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
 		for {
 			conn, err := l.Accept()
 			if err != nil {
 				return
 			}
-			_ = conn // hold open; released when goroutine exits after l.Close()
+			held = append(held, conn)
 		}
 	}()
 
