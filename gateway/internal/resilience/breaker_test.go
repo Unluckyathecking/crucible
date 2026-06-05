@@ -335,6 +335,41 @@ func TestBreaker_StaleFailureIgnoredInHalfOpen(t *testing.T) {
 	}
 }
 
+// TestBreaker_ExactCooldownBoundary verifies that Allow() uses strict Before for
+// the openUntil check: at exactly the cooldown deadline (now == openUntil) the
+// condition now.Before(openUntil) is false, so the probe IS admitted. One
+// nanosecond before the deadline the probe must still be blocked.
+func TestBreaker_ExactCooldownBoundary(t *testing.T) {
+	base := time.Now()
+	cooldown := time.Second
+	openUntil := base.Add(cooldown)
+	var now time.Time
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: cooldown}, nil).
+		WithNow(func() time.Time { return now })
+
+	now = base
+	b.RecordFailure(0) // → StateOpen; openUntil = base + 1s
+
+	// One nanosecond before the deadline: still blocked.
+	now = openUntil.Add(-time.Nanosecond)
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatal("expected ErrBreakerOpen 1ns before cooldown expires")
+	}
+
+	// Exactly at the deadline: probe admitted (not Before → else branch).
+	now = openUntil
+	tok, err := b.Allow()
+	if err != nil {
+		t.Fatalf("Allow() at exact cooldown boundary = %v, want nil (probe admitted)", err)
+	}
+	if tok == 0 {
+		t.Fatal("probe token == 0, want non-zero generation token")
+	}
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatalf("state = %v, want StateHalfOpen at exact boundary", b.CurrentState())
+	}
+}
+
 func TestBreaker_RaceConcurrent(t *testing.T) {
 	// Each goroutine records one failure. With 100 goroutines and Threshold=5,
 	// the breaker must open; verify it did so correctly after the storm.

@@ -164,6 +164,19 @@ func TestWorkerTimeoutMSZeroReturnsError(t *testing.T) {
 	}
 }
 
+func TestWorkerMaxConnsZeroDefaultsTo64(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "0")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error for GATEWAY_WORKER_MAX_CONNS=0: %v", err)
+	}
+	if c.WorkerMaxConns != 64 {
+		t.Errorf("WorkerMaxConns = %d, want 64 (silent default for zero/negative)", c.WorkerMaxConns)
+	}
+}
+
 func TestRetryMaxWithZeroBackoffReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_RETRY_MAX", "3")

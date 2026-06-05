@@ -131,12 +131,16 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		workerCallDuration: observability.WorkerCallDuration,
 	})
 	if pol.Breaker.Threshold > 0 {
-		// The closure loads metrics atomically at callback time so a WithMetrics swap
-		// is picked up automatically. The nil guard is a belt-and-suspenders check —
-		// the Invoke() nil guard fires first for any zero-value Client construction.
-		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
+		// Read CurrentState() at callback time rather than using the captured s:
+		// the breaker lock is released before onState fires, so a concurrent probe
+		// can advance the state past s before this callback runs. CurrentState()
+		// holds its own lock and always reflects the authoritative state, preventing
+		// the gauge from showing a stale intermediate state after rapid transitions.
+		// The metrics load is atomic; the nil guard is belt-and-suspenders for any
+		// zero-value Client construction that bypassed New().
+		c.breaker = resilience.NewBreaker(pol.Breaker, func(_ resilience.State) {
 			if mv := c.metrics.Load(); mv != nil {
-				mv.(*clientMetrics).breakerState.Set(float64(s))
+				mv.(*clientMetrics).breakerState.Set(float64(c.breaker.CurrentState()))
 			}
 		})
 	}
