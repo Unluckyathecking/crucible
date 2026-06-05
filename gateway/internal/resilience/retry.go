@@ -56,9 +56,14 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	}
 
 	// Exponential cap: base * 2^n, capped at maxB.
+	// Clamp base itself to maxB first so a BaseBackoff > MaxBackoff doesn't let the
+	// first retry exceed the stated ceiling (equal jitter is [cap/2, cap]).
 	// Check backoffCap > maxB/2 before doubling to guard against int64 overflow on
 	// large n or large base values (Policy is public; callers control n).
 	backoffCap := base
+	if backoffCap > maxB {
+		backoffCap = maxB
+	}
 	for i := 0; i < n; i++ {
 		if backoffCap > maxB/2 {
 			backoffCap = maxB

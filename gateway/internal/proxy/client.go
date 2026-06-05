@@ -247,6 +247,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*In
 		}
 		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
+	// net/http guarantees resp != nil when err == nil, but defend explicitly so
+	// any future change here does not introduce a silent nil-deref.
+	if resp == nil {
+		return nil, 0, errors.New("worker call: nil response without error")
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
