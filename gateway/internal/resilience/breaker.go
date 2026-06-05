@@ -175,10 +175,10 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		b.failures = 0
 		b.probeInFlight = false
 	case StateOpen:
-		// Stale success from a call admitted before the breaker opened. Resetting
-		// failures here would let in-flight requests silently close the breaker,
-		// bypassing the cooldown+probe recovery path entirely. Explicit case so the
-		// intentional no-op is not accidentally removed during refactoring.
+		// No-op: the breaker is open with no active probe slot. Any RecordSuccess
+		// here — whether from a stale in-flight request or any other caller — must
+		// not close the breaker, because closing requires a successful half-open
+		// probe that has actually exercised the recovery path.
 	}
 	b.mu.Unlock()
 	// StateClosed is a compile-time constant, not a read of b.state — no race.

@@ -65,7 +65,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
 	if c.WorkerMaxConns < 1 {
-		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 1 (got %d)", c.WorkerMaxConns)
+		// Zero or negative: preserve proxy.New's defaulting behaviour rather than
+		// failing startup. Operators who relied on the old silent-default path
+		// (GATEWAY_WORKER_MAX_CONNS unset/0) would otherwise see a new error.
+		c.WorkerMaxConns = 64
 	}
 	if c.WorkerMaxConns > 10000 {
 		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be <= 10000 (got %d)", c.WorkerMaxConns)

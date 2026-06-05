@@ -830,12 +830,17 @@ func TestInvoke_BreakerOpensOnDeadlineExceeded(t *testing.T) {
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
 	// Two caller-deadline failures must open the breaker (Threshold=2).
+	// 200ms is generous enough to survive loaded CI runners — the worker
+	// blocks until cancelled, so this is purely scheduler-scheduling time.
 	for i := 0; i < 2; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		_, err := c.Invoke(ctx, &InvokeRequest{Operation: "slow"})
 		cancel()
 		if err == nil {
 			t.Fatalf("attempt %d: expected deadline error, got nil", i+1)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d: expected DeadlineExceeded, got %v", i+1, err)
 		}
 	}
 	if c.breaker.CurrentState() != resilience.StateOpen {

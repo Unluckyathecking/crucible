@@ -244,8 +244,8 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		// Count the retry before the call so the metric captures every retry attempt
-		// dispatched, regardless of the outcome (including pre-flight build errors).
+		// Count the retry after all pre-flight gates so the metric reflects
+		// actual calls dispatched to doOnce, not ones aborted by ctx or breaker.
 		if attempt > 0 {
 			m.retriesTotal.Inc()
 		}
