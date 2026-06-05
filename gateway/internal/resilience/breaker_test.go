@@ -152,6 +152,42 @@ func TestBreaker_SuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
+func TestBreaker_RecordSuccessFromOpenDoesNotClose(t *testing.T) {
+	// A success from an in-flight request that was admitted while the breaker was closed
+	// must not close the breaker once it has since opened (e.g. due to concurrent failures).
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Minute}, nil)
+	b.RecordFailure() // → StateOpen
+	if b.CurrentState() != StateOpen {
+		t.Fatal("want StateOpen after threshold failure")
+	}
+	b.RecordSuccess() // stale in-flight success; must NOT close
+	if b.CurrentState() != StateOpen {
+		t.Fatalf("RecordSuccess from Open closed breaker; want StateOpen")
+	}
+}
+
+func TestBreaker_RecordAbortReleasesProbeWithoutClosing(t *testing.T) {
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
+
+	b.RecordFailure()        // → StateOpen
+	now = now.Add(2 * time.Second) // past cooldown
+	if err := b.Allow(); err != nil { // → StateHalfOpen, probeInFlight = true
+		t.Fatalf("Allow(): %v", err)
+	}
+	b.RecordAbort() // caller cancelled probe; release slot without health signal
+
+	// Breaker must stay HalfOpen — no recovery was confirmed.
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatalf("want StateHalfOpen after abort, got %v", b.CurrentState())
+	}
+	// Probe slot must be free so the next request can attempt a fresh probe.
+	if err := b.Allow(); err != nil {
+		t.Fatalf("Allow() after abort = %v, want nil (fresh probe available)", err)
+	}
+}
+
 func TestBreaker_RaceConcurrent(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 5, Cooldown: 50 * time.Millisecond}, nil)
 	var wg sync.WaitGroup

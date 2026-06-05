@@ -85,7 +85,9 @@ func (b *Breaker) Allow() error {
 	}
 }
 
-// RecordSuccess records a successful call. Closes the breaker if it was half-open.
+// RecordSuccess records a successful call. Closes the breaker only from StateHalfOpen;
+// a success during closed or open state resets the failure counter but does not force
+// a premature close (pre-open in-flight requests should not short-circuit the cooldown).
 func (b *Breaker) RecordSuccess() {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return
@@ -94,9 +96,22 @@ func (b *Breaker) RecordSuccess() {
 	defer b.mu.Unlock()
 	b.probeInFlight = false
 	b.failures = 0
-	if b.state != StateClosed {
+	if b.state == StateHalfOpen {
 		b.setState(StateClosed)
 	}
+}
+
+// RecordAbort releases a half-open probe slot without recording a health signal.
+// Use when the probe call was cancelled by the caller (context.Canceled) before
+// any HTTP response arrived; unlike RecordSuccess it does not close the breaker,
+// and unlike RecordFailure it does not re-open it or reset the cooldown timer.
+func (b *Breaker) RecordAbort() {
+	if b == nil || b.cfg.Threshold <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probeInFlight = false
 }
 
 // RecordFailure records a failed call and may open the breaker.
