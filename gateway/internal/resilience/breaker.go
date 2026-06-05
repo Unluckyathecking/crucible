@@ -149,17 +149,14 @@ func (b *Breaker) RecordSuccess(token uint64) {
 	var onState func(State)
 	switch b.state {
 	case StateHalfOpen:
-		if token != b.probeGen {
-			// Stale success from a call admitted before the current probe generation.
-			// Silently ignore — do not close the breaker or release the probe slot.
-			b.mu.Unlock()
-			return
+		if token == b.probeGen {
+			// Probe succeeded → close the breaker and reset the failure streak.
+			b.failures = 0
+			b.probeInFlight = false
+			b.state = StateClosed
+			onState = b.onState
 		}
-		// Probe succeeded → close the breaker and reset the failure streak.
-		b.failures = 0
-		b.probeInFlight = false
-		b.state = StateClosed
-		onState = b.onState
+		// Stale token: silently ignore — do not close the breaker or release the probe slot.
 	case StateClosed:
 		// Normal healthy call: reset the failure streak so transient failures are
 		// forgotten once a success arrives.
@@ -213,18 +210,15 @@ func (b *Breaker) RecordFailure(token uint64) {
 			onState = b.onState
 		}
 	case StateHalfOpen:
-		if token != b.probeGen {
-			// Stale failure from a call admitted before the current probe generation.
-			// Do not re-open or reset the cooldown — this result is not meaningful for
-			// the active probe.
-			b.mu.Unlock()
-			return
+		if token == b.probeGen {
+			// Probe failed — reset cooldown and re-open.
+			b.probeInFlight = false
+			b.openUntil = now.Add(b.cfg.Cooldown)
+			b.state = StateOpen
+			onState = b.onState
 		}
-		// Probe failed — reset cooldown and re-open.
-		b.probeInFlight = false
-		b.openUntil = now.Add(b.cfg.Cooldown)
-		b.state = StateOpen
-		onState = b.onState
+		// Stale token: do not re-open or reset the cooldown — this result is not
+		// meaningful for the active probe.
 	// StateOpen: already open; don't reset the cooldown timer on new failures.
 	}
 	b.mu.Unlock()

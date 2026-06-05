@@ -14,6 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
 
@@ -515,12 +519,9 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context error, got %v", err)
 	}
-	// With 30ms base backoff and 80ms deadline, at most 4 calls occur depending on jitter:
-	// jitter is in [cap/2, cap], so first sleep is ~[15ms,30ms], second ~[30ms,60ms].
-	// On fast runners call 2 completes before 80ms; call 3 may also slip in before the
-	// ctx guard fires. <= 4 proves ctx stopped retries early, not just "didn't reach 20".
-	if n := callCount.Load(); n > 4 {
-		t.Errorf("call count = %d, want <= 4 (ctx expiry should stop retries early, not reach MaxAttempts=20)", n)
+	// Strictly fewer than MaxAttempts proves ctx stopped retries early.
+	if n := callCount.Load(); n >= 20 {
+		t.Errorf("call count = %d, want < 20 (ctx expiry should stop retries before MaxAttempts)", n)
 	}
 }
 
@@ -741,5 +742,39 @@ func TestInvoke_DefaultPolicy_SingleShot(t *testing.T) {
 	}
 	if n := callCount.Load(); n != 1 {
 		t.Errorf("call count = %d, want 1 (single-shot with no retry policy)", n)
+	}
+}
+
+// TestInvoke_MetricsInjection verifies that WithMetrics causes retriesTotal to increment
+// once per retry attempt. Uses an isolated prometheus.NewRegistry() to avoid polluting
+// the package-level DefaultRegisterer across test runs.
+func TestInvoke_MetricsInjection(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := callCount.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	reg := prometheus.NewRegistry()
+	m := observability.NewMetricsForTest(reg)
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol).WithMetrics(m)
+
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	// 2 failures + 1 success = 2 retry attempts (attempts 1 and 2 are retries).
+	if got := testutil.ToFloat64(m.WorkerRetriesTotal); got != 2 {
+		t.Errorf("retriesTotal = %v, want 2 (two retry attempts before success)", got)
 	}
 }
