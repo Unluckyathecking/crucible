@@ -142,24 +142,15 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// After 1xx + Write: Write only commits wroteHeader when Status == 200 (the
-	// NewStatusRecorder default). Because WriteHeader(100) set Status to 100, the
-	// Write condition is false — Status and wroteHeader remain unchanged.
-	// The final status is committed only by an explicit WriteHeader(2xx).
-	if sr.Status != http.StatusContinue {
-		t.Errorf("Status = %d after 1xx+Write, want %d (1xx must be preserved until final WriteHeader)", sr.Status, http.StatusContinue)
-	}
-	if sr.wroteHeader {
-		t.Error("wroteHeader must still be false after Write following 1xx")
-	}
-
-	// Explicit final WriteHeader(200) commits the response.
-	sr.WriteHeader(http.StatusOK)
+	// Write sets Status=200 on StatusRecorder, reflecting the implicit 200 that
+	// http.ResponseWriter.Write always commits on the underlying writer when called
+	// without a prior final WriteHeader — even after a 1xx informational WriteHeader.
+	// Keeping sr.Status in sync with what the client receives is the contract.
 	if sr.Status != http.StatusOK {
-		t.Errorf("Status = %d after final WriteHeader, want %d", sr.Status, http.StatusOK)
+		t.Errorf("Status = %d after 1xx+Write, want %d (Write must track implicit 200)", sr.Status, http.StatusOK)
 	}
 	if !sr.wroteHeader {
-		t.Error("wroteHeader must be true after final WriteHeader")
+		t.Error("wroteHeader must be true after Write")
 	}
 }
 

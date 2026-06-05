@@ -27,9 +27,9 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 
 // WriteHeader forwards code to the underlying writer and records Status on the
 // first call. For 1xx informational codes, Status is recorded but wroteHeader
-// is not committed — a subsequent 2xx-5xx WriteHeader or implicit Write can still
-// finalize the response. Non-informational codes commit on the first call;
-// subsequent WriteHeader calls are silently ignored per HTTP semantics.
+// is not committed — a subsequent 2xx-5xx WriteHeader or Write (which always
+// finalizes to 200) can still finalize the response. Non-informational codes
+// commit on the first call; subsequent WriteHeader calls are silently ignored.
 func (s *StatusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
@@ -41,15 +41,16 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Write commits wroteHeader only when no WriteHeader of any kind has been called yet,
-// detected by Status still holding the NewStatusRecorder default of 200. When a 1xx
-// WriteHeader was issued first, Status differs from 200, so this block is skipped —
-// wroteHeader and Status remain unchanged, preserving the 1xx status until the handler
-// issues an explicit final 2xx–5xx WriteHeader. The authoritative final-status field is
-// s.Status, which middleware logging and Prometheus metrics consume.
+// Write records an implicit 200 on StatusRecorder if no non-1xx WriteHeader has been
+// committed yet. Go's http.ResponseWriter contract guarantees that Write always commits
+// an implicit 200 on the underlying writer when called without a prior final WriteHeader
+// — even after a 1xx informational WriteHeader — so recording 200 here keeps s.Status
+// in sync with what the client actually receives. The authoritative final-status field
+// is s.Status, which middleware logging and Prometheus metrics consume.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
-	if !s.wroteHeader && s.Status == http.StatusOK {
+	if !s.wroteHeader {
 		s.wroteHeader = true
+		s.Status = http.StatusOK
 	}
 	return s.ResponseWriter.Write(b)
 }

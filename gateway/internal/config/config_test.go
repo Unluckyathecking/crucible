@@ -446,6 +446,20 @@ func TestOtelSampleRatioAboveOneReturnsError(t *testing.T) {
 	}
 }
 
+// TestOtelSampleRatioNaNReturnsError verifies that a NaN sample ratio is rejected.
+func TestOtelSampleRatioNaNReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_SAMPLE_RATIO", "NaN")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_SAMPLE_RATIO=NaN, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_SAMPLE_RATIO") {
+		t.Errorf("error %q does not mention OTEL_SAMPLE_RATIO", err.Error())
+	}
+}
+
 // TestOtelExporterInsecureTrue verifies that OTEL_EXPORTER_INSECURE=true is read correctly.
 func TestOtelExporterInsecureTrue(t *testing.T) {
 	setRequiredEnv(t)

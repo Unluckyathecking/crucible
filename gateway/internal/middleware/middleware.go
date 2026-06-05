@@ -24,6 +24,8 @@ func init() {
 	// even when no specific logger has been stored in context. Without this, Ctx
 	// returns the Nop sentinel (nil writer) and AccessLog output would be silently
 	// discarded when tracing middleware is absent or uses a noop provider.
+	// init() runs before any goroutine is started (Go spec §12.4), so this write
+	// is sequentially consistent with all later reads of DefaultContextLogger.
 	if zerolog.DefaultContextLogger == nil {
 		zerolog.DefaultContextLogger = &log.Logger
 	}
