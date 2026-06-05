@@ -34,7 +34,7 @@ func TestNewProviderReturnsWorkingProvider(t *testing.T) {
 }
 
 // TestNewProviderSampleRatioZero verifies that a sample ratio of 0 is accepted and
-// produces a TracerProvider that samples no spans.
+// that root spans created by the resulting provider are not sampled.
 func TestNewProviderSampleRatioZero(t *testing.T) {
 	ctx := context.Background()
 	tp, shutdown, err := tracing.NewProvider(ctx, "localhost:4318", true, 0.0)
@@ -43,8 +43,12 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 	}
 	shutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := shutdown(shutCtx); err != nil {
-		t.Errorf("shutdown returned unexpected error: %v", err)
+	defer shutdown(shutCtx)
+
+	// ParentBased(TraceIDRatioBased(0)) drops all root spans.
+	_, span := tp.Tracer("test").Start(ctx, "test.span")
+	if span.SpanContext().IsSampled() {
+		t.Error("ratio=0 provider must not sample root spans")
 	}
-	_ = tp
+	span.End()
 }

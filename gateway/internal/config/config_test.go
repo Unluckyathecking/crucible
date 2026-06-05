@@ -509,6 +509,29 @@ func TestOtelExporterEndpointWithHttpsSchemeReturnsError(t *testing.T) {
 	}
 }
 
+// TestOtelTracingEnabledWithInsecureEndpoint verifies that OTEL_EXPORTER_INSECURE=true is
+// accepted alongside a valid enabled tracing configuration (no validation error).
+func TestOtelTracingEnabledWithInsecureEndpoint(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", "localhost:4318")
+	setenv(t, "OTEL_EXPORTER_INSECURE", "true")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.OtelTracingEnabled {
+		t.Error("OtelTracingEnabled = false, want true")
+	}
+	if c.OtelExporterEndpoint != "localhost:4318" {
+		t.Errorf("OtelExporterEndpoint = %q, want localhost:4318", c.OtelExporterEndpoint)
+	}
+	if !c.OtelExporterInsecure {
+		t.Error("OtelExporterInsecure = false, want true")
+	}
+}
+
 // TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
 func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	setRequiredEnv(t)

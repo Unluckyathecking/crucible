@@ -27,6 +27,7 @@ import (
 )
 
 // tracePropagator injects/extracts W3C TraceContext headers on outbound worker calls.
+// oteltrace (aliased import) provides SpanFromContext for inheriting the active TracerProvider.
 var tracePropagator = propagation.TraceContext{}
 
 const (
