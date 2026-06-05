@@ -157,28 +157,26 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			}
 		}
 
-		// Count each retry only after context and breaker checks pass, so aborted
-		// retries (context expired or breaker opened between sleep and call) are not
-		// included in the total.
+		resp, status, err := c.doOnce(ctx, body, in.RequestID)
+
+		// Count after doOnce so pre-flight build errors (statusNone) are excluded
+		// from the retry metric — no HTTP call was made in that case.
 		if attempt > 0 {
 			observability.WorkerRetriesTotal.Inc()
 		}
 
-		resp, status, err := c.doOnce(ctx, body, in.RequestID)
-
 		// Update breaker state based on the outcome.
-		//   Caller context expired (status 0, ctx.Err != nil) → RecordAbort: release
-		//       probe slot without a health signal; the transport error is the caller's,
-		//       not the worker's.
-		//   Any transport error (status 0, err != nil)        → RecordFailure: worker
-		//       was unreachable regardless of whether the error is retryable.
-		//   HTTP 5xx                                          → RecordFailure
-		//   Any real HTTP response (status != statusNone)     → RecordSuccess:
-		//       worker is reachable; reset failure streak and release probe slot.
-		//   Pre-flight build error (statusNone)               → leave breaker unchanged.
+		//   ctx.Err() != nil (any status)     → RecordAbort: release probe slot
+		//       without a health signal; the transport error is the caller's, not
+		//       the worker's. Covers both status==0 transport failures and cases
+		//       where ctx was cancelled during response-body read (status!=0).
+		//   Any transport error (status 0)    → RecordFailure: worker unreachable.
+		//   HTTP 5xx                          → RecordFailure
+		//   Any real HTTP response             → RecordSuccess: worker is reachable.
+		//   Pre-flight build error (statusNone) → leave breaker unchanged.
 		if c.breaker != nil {
 			switch {
-			case status == 0 && ctx.Err() != nil:
+			case ctx.Err() != nil:
 				c.breaker.RecordAbort()
 			case err != nil && status == 0:
 				c.breaker.RecordFailure()

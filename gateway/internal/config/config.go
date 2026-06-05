@@ -88,6 +88,9 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerThreshold < 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be >= 0 (got %d)", c.WorkerBreakerThreshold)
 	}
+	if c.WorkerBreakerThreshold > 1000 {
+		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be <= 1000 (got %d)", c.WorkerBreakerThreshold)
+	}
 	if c.WorkerBreakerCooldownMS < 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 0 (got %d)", c.WorkerBreakerCooldownMS)
 	}

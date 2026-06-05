@@ -67,9 +67,6 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 			break
 		}
 	}
-	if cap > maxB {
-		cap = maxB
-	}
 
 	// Equal jitter: uniform in [cap/2, cap] using cryptographically secure randomness
 	// to prevent synchronized retry storms across multiple gateway instances.

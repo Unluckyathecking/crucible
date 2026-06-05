@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -219,9 +220,11 @@ func TestInvoke_StalledConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen failed: %v", err)
 	}
-	defer l.Close()
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		var held []net.Conn
 		defer func() {
 			for _, c := range held {
@@ -236,6 +239,11 @@ func TestInvoke_StalledConnection(t *testing.T) {
 			held = append(held, conn)
 		}
 	}()
+	// Close the listener first (unblocks Accept → goroutine exits), then wait.
+	t.Cleanup(func() {
+		l.Close()
+		wg.Wait()
+	})
 
 	workerURL := "http://" + l.Addr().String()
 	// Set a very short timeout so the test runs fast.
