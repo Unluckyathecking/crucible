@@ -43,10 +43,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger from the original request context before deriving
 			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. zerolog.Ctx returns a disabled sentinel (not nil) when no
-			// logger is stored; the nil guard is purely defensive against future API changes.
+			// is preserved. zerolog.Ctx returns a disabled sentinel (never nil) when no
+			// logger is stored; fall back to the global logger in that case.
 			base := zerolog.Ctx(r.Context())
-			if base == nil || base.GetLevel() == zerolog.Disabled {
+			if base.GetLevel() == zerolog.Disabled {
 				base = &log.Logger
 			}
 
