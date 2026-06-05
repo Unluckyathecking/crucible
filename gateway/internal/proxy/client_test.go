@@ -227,8 +227,7 @@ func TestInvoke_StalledConnection(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// Just hold the connection open.
-			defer conn.Close()
+			_ = conn // hold open; released when goroutine exits after l.Close()
 		}
 	}()
 
