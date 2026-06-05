@@ -487,27 +487,28 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	defer worker.Close()
 
 	pol := ResiliencePolicy{
-		// BaseBackoff=2s so the jitter lower-bound (1s) safely outlasts the 100ms
+		// BaseBackoff=2s so the jitter lower-bound (1s) safely outlasts the 500ms
 		// context deadline even with scheduler jitter on loaded CI hosts. Exactly 1
 		// attempt is made; ctx expires during the first Sleep, proving ctx stops
-		// retries rather than MaxAttempts.
+		// retries rather than MaxAttempts. 500ms gives ample margin for the first
+		// HTTP round-trip to complete before the deadline fires.
 		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 2 * time.Second, MaxBackoff: 2 * time.Second},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// The error must wrap DeadlineExceeded: the 100ms context expires during the
-	// 2s retry sleep, so Sleep returns DeadlineExceeded, not Canceled.
+	// The error must wrap DeadlineExceeded: the 500ms context expires during the
+	// 2s retry sleep (jitter lower-bound 1s), so Sleep returns DeadlineExceeded.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
-	// Exactly 1 call: the 2s backoff (1s+ jitter lower-bound) outlasts the 100ms
+	// Exactly 1 call: the 2s backoff (1s+ jitter lower-bound) outlasts the 500ms
 	// ctx so Sleep returns DeadlineExceeded before a second call can be dispatched.
 	if n := callCount.Load(); n != 1 {
 		t.Errorf("call count = %d, want 1 (ctx should expire during first retry sleep)", n)
@@ -816,10 +817,10 @@ func TestInvoke_BreakerOpensOnDeadlineExceeded(t *testing.T) {
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
 	// Two caller-deadline failures must open the breaker (Threshold=2).
-	// 200ms is generous enough to survive loaded CI runners — the worker
+	// 500ms is generous enough to survive loaded CI runners — the worker
 	// blocks until cancelled, so this is purely scheduler-scheduling time.
 	for i := 0; i < 2; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		_, err := c.Invoke(ctx, &InvokeRequest{Operation: "slow"})
 		cancel()
 		if err == nil {

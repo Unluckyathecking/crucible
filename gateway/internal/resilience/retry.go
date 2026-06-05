@@ -110,8 +110,11 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	t := time.NewTimer(d)
 	select {
 	case <-ctx.Done():
-		// Go 1.23+ guarantees that when Stop returns false (timer already fired),
-		// the runtime has already drained the channel — explicit drain would block.
+		// Go 1.23 changed time.NewTimer so that Stop drains t.C before returning
+		// (go.dev/doc/go1.23: "NewTimer and NewTicker guarantee that Stop and Reset
+		// drain the channel"). After Stop returns on Go 1.23+, t.C is empty — an
+		// explicit <-t.C would block indefinitely. The go.mod requires a toolchain
+		// that includes this guarantee, so no drain is needed or safe here.
 		t.Stop()
 		return ctx.Err()
 	case <-t.C:

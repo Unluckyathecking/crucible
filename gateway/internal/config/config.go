@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -64,10 +65,11 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
-	if c.WorkerMaxConns < 1 {
-		// Zero or negative: preserve proxy.New's defaulting behaviour rather than
-		// failing startup. Operators who relied on the old silent-default path
-		// (GATEWAY_WORKER_MAX_CONNS unset/0) would otherwise see a new error.
+	if c.WorkerMaxConns < 0 {
+		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
+	}
+	if c.WorkerMaxConns == 0 {
+		// Zero means "unset" — apply the same default as proxy.New.
 		c.WorkerMaxConns = 64
 	}
 	if c.WorkerMaxConns > 10000 {
@@ -116,4 +118,17 @@ func Load() (*Config, error) {
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
 	return &c, nil
+}
+
+// RetryBaseBackoff converts WorkerRetryBackoffMS to time.Duration.
+// Use this when constructing a resilience.Policy to avoid the nanosecond/
+// millisecond unit mismatch that occurs with a bare time.Duration(int) cast.
+func (c *Config) RetryBaseBackoff() time.Duration {
+	return time.Duration(c.WorkerRetryBackoffMS) * time.Millisecond
+}
+
+// BreakerCooldown converts WorkerBreakerCooldownMS to time.Duration.
+// Use this when constructing a resilience.BreakerConfig to avoid unit mismatch.
+func (c *Config) BreakerCooldown() time.Duration {
+	return time.Duration(c.WorkerBreakerCooldownMS) * time.Millisecond
 }

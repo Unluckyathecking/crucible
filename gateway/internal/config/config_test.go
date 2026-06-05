@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setenv(t *testing.T, key, value string) {
@@ -276,5 +277,40 @@ func TestRetryMaxNegativeReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "WORKER_RETRY_MAX") {
 		t.Errorf("error %q does not mention WORKER_RETRY_MAX", err.Error())
+	}
+}
+
+func TestWorkerMaxConnsNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for GATEWAY_WORKER_MAX_CONNS=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_WORKER_MAX_CONNS") {
+		t.Errorf("error %q does not mention GATEWAY_WORKER_MAX_CONNS", err.Error())
+	}
+}
+
+// TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
+// return the configured millisecond values as time.Duration (with the correct
+// * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
+// when constructing resilience.Policy and resilience.BreakerConfig.
+func TestConfigDurationHelpers(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "250")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "2000")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := c.RetryBaseBackoff(), 250*time.Millisecond; got != want {
+		t.Errorf("RetryBaseBackoff = %v, want %v", got, want)
+	}
+	if got, want := c.BreakerCooldown(), 2*time.Second; got != want {
+		t.Errorf("BreakerCooldown = %v, want %v", got, want)
 	}
 }
