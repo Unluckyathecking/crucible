@@ -151,7 +151,9 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		// is acceptable and self-corrects on the next transition.
 		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
 			if mv := c.metrics.Load(); mv != nil {
-				mv.(*clientMetrics).breakerState.Set(float64(s))
+				if cm, ok := mv.(*clientMetrics); ok {
+					cm.breakerState.Set(float64(s))
+				}
 			}
 		})
 	}
@@ -265,13 +267,12 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		// Count the retry after all pre-flight gates so the metric reflects
-		// actual calls dispatched to doOnce, not ones aborted by ctx or breaker.
+		resp, status, err := c.doOnce(ctx, body, in.RequestID, m)
+		// Count retries only after doOnce returned: the metric reflects real HTTP
+		// dispatches, not intents that were cancelled by ctx/breaker before dispatch.
 		if attempt > 0 {
 			m.retriesTotal.Inc()
 		}
-
-		resp, status, err := c.doOnce(ctx, body, in.RequestID, m)
 
 		// Update breaker state BEFORE the retry-exhaustion check so every attempt,
 		// including the final one, is recorded. Skipping this on retry exhaustion
