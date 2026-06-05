@@ -62,8 +62,8 @@ func AccessLog(next http.Handler) http.Handler {
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
 		// The tracing middleware (mounted before AccessLog) always stores a logger
-		// in context enriched with trace_id/span_id. Tests that verify log output
-		// must inject a logger via context.
+		// in context; when tracing is active it is enriched with trace_id/span_id.
+		// Tests that check log output must inject a logger via context.
 		zerolog.Ctx(r.Context()).Info().
 			Str("request_id", rid).
 			Str("method", r.Method).

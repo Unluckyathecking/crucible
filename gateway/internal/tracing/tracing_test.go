@@ -32,7 +32,7 @@ func newTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRec
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := tp.Shutdown(ctx); err != nil {
 			t.Errorf("tracer provider shutdown failed: %v", err)
@@ -59,12 +59,13 @@ func TestInboundTraceparentContinuesTrace(t *testing.T) {
 	tp, sr := newTestProvider(t)
 
 	// Create a parent span and encode it as a W3C traceparent header.
+	// Keep the span active during injection so the span context is valid.
 	parentCtx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
-	parentSpan.End()
 	parentSC := parentSpan.SpanContext()
 
 	inboundHeaders := make(http.Header)
 	propagation.TraceContext{}.Inject(parentCtx, propagation.HeaderCarrier(inboundHeaders))
+	parentSpan.End()
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header = inboundHeaders
@@ -411,6 +412,9 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("goroutine %d: unexpected status %d", idx, rec.Code)
+			}
 		}(i)
 	}
 	wg.Wait()

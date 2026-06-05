@@ -40,6 +40,8 @@ const (
 	// before an HTTP response was received for reasons other than a transport error
 	// (e.g. request-build failure). It is not retryable.
 	statusNone = -1
+
+	proxyTracerName = "crucible.proxy"
 )
 
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
@@ -334,7 +336,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, _ int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
 	// TracerProvider is inherited from the active span — no-op when tracing is disabled.
-	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer("crucible.proxy").Start(ctx, "proxy.invoke")
+	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),
 		attribute.String("http.method", http.MethodPost),

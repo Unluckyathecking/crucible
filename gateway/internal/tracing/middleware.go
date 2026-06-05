@@ -1,3 +1,5 @@
+// Package tracing provides OpenTelemetry HTTP middleware and tracer provider
+// construction for the Crucible gateway.
 package tracing
 
 import (
@@ -41,9 +43,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger from the original request context before deriving
 			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. zerolog.Ctx never returns nil but may return a disabled logger.
+			// is preserved. zerolog.Ctx returns a disabled sentinel when no logger is
+			// stored and DefaultContextLogger is nil; fall back to the global logger only
+			// in that case so an intentionally-disabled context logger is respected.
 			base := zerolog.Ctx(r.Context())
-			if base.GetLevel() == zerolog.Disabled {
+			if zerolog.DefaultContextLogger == nil && base.GetLevel() == zerolog.Disabled {
 				base = &log.Logger
 			}
 

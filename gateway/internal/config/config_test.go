@@ -346,7 +346,7 @@ func TestWorkerMaxConnsNegativeReturnsError(t *testing.T) {
 
 // --- OTel tracing field tests ---
 
-// TestOtelTracingDisabledByDefault verifies OTEL_TRACING_ENABLED defaults to false.
+// TestOtelTracingDisabledByDefault verifies the default values for all four OTel fields.
 func TestOtelTracingDisabledByDefault(t *testing.T) {
 	setRequiredEnv(t)
 
@@ -362,6 +362,9 @@ func TestOtelTracingDisabledByDefault(t *testing.T) {
 	}
 	if c.OtelSampleRatio != 1.0 {
 		t.Errorf("OtelSampleRatio should default to 1.0, got %g", c.OtelSampleRatio)
+	}
+	if c.OtelExporterInsecure {
+		t.Error("OtelExporterInsecure should default to false (TLS on)")
 	}
 }
 
