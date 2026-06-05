@@ -474,11 +474,16 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	traceIDs := make([]atomic.Value, n)
 	statusCodes := make([]atomic.Int32, n)
 
+	// Context with timeout so goroutines propagate cancellation if the test
+	// deadline fires before all requests complete.
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer reqCancel()
+
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req := httptest.NewRequest(http.MethodGet, "/test", nil).WithContext(reqCtx)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				traceIDs[idx].Store(oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String())
@@ -515,7 +520,11 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for i := range traceIDs {
-		id, _ := traceIDs[i].Load().(string)
+		id, ok := traceIDs[i].Load().(string)
+		if !ok {
+			t.Errorf("goroutine %d: trace ID has unexpected type %T", i, traceIDs[i].Load())
+			continue
+		}
 		if id == "" || id == strings.Repeat("0", 32) {
 			t.Errorf("goroutine %d: got empty or zero trace ID", i)
 			continue

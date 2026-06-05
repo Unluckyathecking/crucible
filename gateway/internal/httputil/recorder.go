@@ -13,6 +13,9 @@ type StatusRecorder struct {
 	wroteHeader bool
 }
 
+// Compile-time assertion: *StatusRecorder must implement http.Flusher.
+var _ http.Flusher = (*StatusRecorder)(nil)
+
 func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 	return &StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 }

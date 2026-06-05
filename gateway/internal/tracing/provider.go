@@ -83,20 +83,10 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)
-	// Shutdown flushes the BatchSpanProcessor (tp.Shutdown) and then explicitly
-	// shuts down the exporter (exp.Shutdown). The BSP calls exp.Shutdown internally
-	// during a clean flush, but may skip it when the context is cancelled during
-	// the drain phase — calling exp.Shutdown directly ensures background goroutines
-	// in the OTLP client are always stopped. First error wins.
+	// Shutdown flushes the BatchSpanProcessor and shuts down the exporter via
+	// tp.Shutdown, which transitively calls exp.Shutdown through the BSP.
 	shutdown := func(ctx context.Context) error {
-		var firstErr error
-		if err := tp.Shutdown(ctx); err != nil {
-			firstErr = err
-		}
-		if err := exp.Shutdown(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		return firstErr
+		return tp.Shutdown(ctx)
 	}
 	return tp, shutdown, nil
 }
