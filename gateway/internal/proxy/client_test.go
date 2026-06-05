@@ -125,8 +125,15 @@ func TestInvoke_MalformedShape(t *testing.T) {
 }
 
 func TestInvoke_Timeout(t *testing.T) {
-	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(5 * time.Second)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Block until the request context cancels (client disconnects) or a long
+		// fallback elapses. This keeps the handler goroutine alive long enough for
+		// the 50ms client timeout to fire, but exits promptly on disconnect so
+		// httptest.Server.Close() is not delayed by the full fallback sleep.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 	}))
 	defer worker.Close()
 
