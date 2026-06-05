@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -517,18 +516,16 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 
 	const n = 20
 	var (
-		wg         sync.WaitGroup
-		mu         sync.Mutex
-		traceIDs   = make([]string, n)
-		statusCodes = make([]atomic.Int32, n)
+		wg          sync.WaitGroup
+		mu          sync.Mutex
+		traceIDs    = make([]string, n)
+		statusCodes = make([]int, n)
 	)
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			// Each goroutine gets an independent context so a timeout in one
-			// goroutine cannot cancel the others.
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -539,21 +536,17 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
-			statusCodes[idx].Store(int32(rec.Code))
+			statusCodes[idx] = rec.Code
 		}(i)
 	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for concurrent requests to complete")
-	}
+	// wg.Wait() guarantees all goroutines finish before cleanup runs tp.Shutdown.
+	// Using a done-channel + t.Fatal timeout would leave goroutines running when
+	// t.Cleanup fires, racing with the provider shutdown.
+	wg.Wait()
 
-	// All assertions run after the done channel closes (wg.Wait() complete) so
-	// t.Errorf is called from the test goroutine only.
-	for i := range statusCodes {
-		if code := int(statusCodes[i].Load()); code != http.StatusOK {
+	// All assertions run after wg.Wait() so t.Errorf is single-threaded.
+	for i, code := range statusCodes {
+		if code != http.StatusOK {
 			t.Errorf("goroutine %d: unexpected status %d", i, code)
 		}
 	}
