@@ -169,11 +169,9 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		// Stale token: silently ignore — do not close the breaker or release the probe slot.
 	case StateClosed:
 		// Normal healthy call: reset the failure streak so transient failures are
-		// forgotten once a success arrives. probeInFlight is always false here
-		// (only set in StateHalfOpen), but reset it defensively so any unexpected
-		// state transition cannot permanently block future probe admission.
+		// forgotten once a success arrives. probeInFlight is only ever true in
+		// StateHalfOpen, so no probe slot needs releasing here.
 		b.failures = 0
-		b.probeInFlight = false
 	case StateOpen:
 		// No-op: the breaker is open with no active probe slot. Any RecordSuccess
 		// here — whether from a stale in-flight request or any other caller — must
