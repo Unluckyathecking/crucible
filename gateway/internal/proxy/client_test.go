@@ -907,7 +907,7 @@ func TestInvoke_TraceparentHeaderPropagated(t *testing.T) {
 
 	var capturedTraceparent, capturedRequestID string
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedTraceparent = r.Header.Get("Traceparent")
+		capturedTraceparent = r.Header.Get("traceparent")
 		capturedRequestID = r.Header.Get("X-Request-ID")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))

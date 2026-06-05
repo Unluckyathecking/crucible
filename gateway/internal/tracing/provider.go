@@ -80,17 +80,11 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)
-	// Composite shutdown: tp.Shutdown flushes the BatchSpanProcessor and calls
-	// exp.Shutdown internally. The second exp.Shutdown call is idempotent; its error
-	// is propagated when tp.Shutdown succeeds so callers can detect HTTP drain failures
-	// that the BSP swallowed.
+	// tp.Shutdown flushes the BatchSpanProcessor, which drains pending spans to the
+	// exporter and then calls exp.Shutdown internally. No separate exp.Shutdown call
+	// is needed — the BSP owns the exporter lifecycle once registered.
 	shutdown := func(ctx context.Context) error {
-		tpErr := tp.Shutdown(ctx)
-		expErr := exp.Shutdown(ctx) // idempotent: BSP already called this via tp.Shutdown
-		if tpErr != nil {
-			return tpErr
-		}
-		return expErr
+		return tp.Shutdown(ctx)
 	}
 	return tp, shutdown, nil
 }

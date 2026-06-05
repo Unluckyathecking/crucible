@@ -21,7 +21,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
@@ -30,10 +29,6 @@ import (
 // tracePropagator is the W3C TraceContext propagator used for header injection on
 // outbound worker calls. It is stateless and safe for concurrent use.
 var tracePropagator = propagation.TraceContext{}
-
-// noopTP is a shared no-op TracerProvider used as a fallback when tracing is
-// disabled. It is stateless and allocated once to avoid per-request allocation.
-var noopTP = noop.NewTracerProvider()
 
 const (
 	defaultTimeout = 30 * time.Second
@@ -341,18 +336,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error == nil: HTTP 200, response decoded successfully
 func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, _ int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
-	// Inherit the TracerProvider from the active gateway span; when tracing is disabled
-	// (no real span in ctx) SpanFromContext returns a noop span. The nil guard covers
-	// custom TracerProvider implementations that may return nil from TracerProvider().
-	tp := oteltrace.SpanFromContext(ctx).TracerProvider()
-	if tp == nil {
-		tp = noopTP
-	}
-	tracer := tp.Tracer(proxyTracerName)
-	if tracer == nil {
-		tracer = noopTP.Tracer(proxyTracerName)
-	}
-	ctx, span := tracer.Start(ctx, "proxy.invoke")
+	// SpanFromContext returns a noop span (never nil) when no span is in context, and
+	// noop.TracerProvider() returns the noop provider (never nil) per OTel API contract.
+	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),
 		attribute.String("http.method", http.MethodPost),

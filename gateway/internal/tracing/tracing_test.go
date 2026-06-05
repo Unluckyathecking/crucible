@@ -409,7 +409,7 @@ func TestOversizedTraceparentIsRejected(t *testing.T) {
 	// Craft a well-structured but oversized traceparent: valid prefix followed by enough
 	// padding to exceed the 128-byte limit enforced by maxTraceparentLen in middleware.go.
 	oversized := "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01" + strings.Repeat("x", 100)
-	req.Header.Set("Traceparent", oversized)
+	req.Header.Set("traceparent", oversized)
 	rec := httptest.NewRecorder()
 
 	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)

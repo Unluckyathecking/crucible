@@ -2,6 +2,7 @@ package tracing_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -85,9 +86,9 @@ func TestNewProviderSampleRatioOne(t *testing.T) {
 }
 
 // TestNewProviderShutdownWithCancelledContext verifies that calling the shutdown
-// function with an already-cancelled context returns an error promptly rather than
-// blocking until batchExportTimeout. This guards against a process-exit hang where
-// the caller accidentally passes a context that is already done.
+// function with an already-cancelled context returns a context error promptly — within
+// 2 s — rather than blocking until batchExportTimeout. This guards against a
+// process-exit hang when the caller accidentally passes an already-done context.
 func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	_, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
 	if err != nil {
@@ -99,6 +100,7 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	start := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- shutdown(cancelledCtx) }()
 
@@ -106,6 +108,11 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Error("shutdown with cancelled context should return an error, got nil")
+		} else if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled error, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("shutdown took %v; expected return within 2 s for cancelled context", elapsed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("shutdown with cancelled context blocked for > 5 s; expected prompt return")
