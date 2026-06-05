@@ -86,8 +86,9 @@ func (b *Breaker) Allow() error {
 }
 
 // RecordSuccess records a successful call. Closes the breaker only from StateHalfOpen;
-// a success during closed or open state resets the failure counter but does not force
-// a premature close (pre-open in-flight requests should not short-circuit the cooldown).
+// resets the failure counter only from StateClosed or StateHalfOpen. In StateOpen,
+// the call is a stale in-flight from before the breaker opened — failure streak is
+// preserved so the cooldown + probe path decides recovery.
 func (b *Breaker) RecordSuccess() {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return
@@ -95,6 +96,9 @@ func (b *Breaker) RecordSuccess() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.probeInFlight = false
+	if b.state == StateOpen {
+		return // stale success; preserve failure streak, let cooldown+probe decide
+	}
 	b.failures = 0
 	if b.state == StateHalfOpen {
 		b.setState(StateClosed)

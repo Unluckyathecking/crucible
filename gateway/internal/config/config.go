@@ -64,6 +64,12 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
+	if c.WorkerTimeoutMS < 0 {
+		return nil, fmt.Errorf("WORKER_TIMEOUT_MS must be >= 0 (got %d)", c.WorkerTimeoutMS)
+	}
+	if c.WorkerMaxConns < 0 {
+		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
+	}
 	if c.WorkerRetryMax < 0 {
 		return nil, fmt.Errorf("WORKER_RETRY_MAX must be >= 0 (got %d)", c.WorkerRetryMax)
 	}
