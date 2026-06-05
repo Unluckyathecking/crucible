@@ -164,6 +164,20 @@ func TestWorkerTimeoutMSZeroReturnsError(t *testing.T) {
 	}
 }
 
+func TestRetryMaxWithZeroBackoffReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_MAX>1 with WORKER_RETRY_BACKOFF_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_BACKOFF_MS") {
+		t.Errorf("error %q does not mention WORKER_RETRY_BACKOFF_MS", err.Error())
+	}
+}
+
 func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "101")

@@ -83,10 +83,9 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		}
 	}
 
-	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand — required to
-	// prevent synchronized retry storms when multiple gateway instances retry together.
-	// math/rand must NOT be used here even though it is seeded automatically in Go 1.20+:
-	// its PRNG output is predictable with enough observations, breaking desynchronization.
+	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand.
+	// Cryptographic unpredictability is required to prevent synchronized retry storms
+	// when multiple gateway instances retry together; crypto/rand provides this property.
 	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {

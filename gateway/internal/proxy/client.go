@@ -234,6 +234,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Check context after Allow and before the network call: if the caller
 		// cancelled between Allow and doOnce, release any half-open probe slot
 		// and skip the wasted HTTP call.
+		// RecordAbort here (pre-call cancellation) differs from the post-call
+		// DeadlineExceeded path below: the worker was never contacted, so no
+		// health signal exists — releasing the slot is the right verdict.
 		if err := ctx.Err(); err != nil {
 			if c.breaker != nil {
 				c.breaker.RecordAbort(breakerToken)
