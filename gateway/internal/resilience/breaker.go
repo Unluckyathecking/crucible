@@ -73,13 +73,13 @@ func (b *Breaker) Allow() error {
 	// The entire decision — read state, check probeInFlight, set probeInFlight — runs
 	// inside a single lock acquisition so the check and the set are always atomic.
 	b.mu.Lock()
-	now := b.now
+	now := b.now()
 	var onState func(State)
 	var result error
 	var newState State
 	switch b.state {
 	case StateOpen:
-		if now().Before(b.openUntil) {
+		if now.Before(b.openUntil) {
 			result = ErrBreakerOpen
 		} else {
 			// Cooldown elapsed — allow exactly one probe.
@@ -169,20 +169,20 @@ func (b *Breaker) RecordFailure() {
 		return
 	}
 	b.mu.Lock()
-	now := b.now
+	now := b.now()
 	b.probeInFlight = false
 	b.failures++
 	var onState func(State)
 	switch b.state {
 	case StateClosed:
 		if b.failures >= b.cfg.Threshold {
-			b.openUntil = now().Add(b.cfg.Cooldown)
+			b.openUntil = now.Add(b.cfg.Cooldown)
 			b.state = StateOpen
 			onState = b.onState
 		}
 	case StateHalfOpen:
 		// Probe failed — reset cooldown and re-open.
-		b.openUntil = now().Add(b.cfg.Cooldown)
+		b.openUntil = now.Add(b.cfg.Cooldown)
 		b.state = StateOpen
 		onState = b.onState
 	// StateOpen: already open; don't reset the cooldown timer on new failures.

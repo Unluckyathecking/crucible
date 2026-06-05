@@ -200,6 +200,51 @@ func TestBreaker_RecordAbortReleasesProbeWithoutClosing(t *testing.T) {
 	}
 }
 
+// TestBreaker_StaleStateClosed_ClosesHalfOpenPrematurely documents the known limitation
+// described in RecordSuccess: a stale success from a StateClosed-admitted request that
+// arrives while the breaker is already HalfOpen will close the breaker prematurely.
+// This is self-correcting — the probe still runs, and RecordFailure re-opens the breaker
+// if the worker remains unhealthy. A per-probe generation token would prevent it but is
+// out of scope for this implementation.
+func TestBreaker_StaleStateClosed_ClosesHalfOpenPrematurely(t *testing.T) {
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
+
+	// A stale request admitted from StateClosed (will complete after the probe window).
+	if err := b.Allow(); err != nil {
+		t.Fatal("Allow() stale:", err)
+	}
+
+	// One failure opens the breaker (Threshold=1).
+	b.RecordFailure()
+	if b.CurrentState() != StateOpen {
+		t.Fatal("want StateOpen after threshold failure")
+	}
+
+	// Advance past cooldown so Allow() transitions to HalfOpen for a probe.
+	now = now.Add(2 * time.Second)
+	if err := b.Allow(); err != nil {
+		t.Fatal("probe Allow():", err)
+	}
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatal("want StateHalfOpen before stale success")
+	}
+
+	// Stale RecordSuccess from the earlier StateClosed call closes the breaker prematurely.
+	b.RecordSuccess()
+	if b.CurrentState() != StateClosed {
+		t.Fatal("want StateClosed — known limitation: stale success closes HalfOpen prematurely")
+	}
+
+	// Self-correcting: the actual probe's failure re-opens the breaker (failures reset → 0,
+	// Threshold=1, so one failure suffices).
+	b.RecordFailure()
+	if b.CurrentState() != StateOpen {
+		t.Fatal("want StateOpen after probe failure re-opens breaker")
+	}
+}
+
 func TestBreaker_RaceConcurrent(t *testing.T) {
 	// Each goroutine records one failure. With 100 goroutines and Threshold=5,
 	// the breaker must open; verify it did so correctly after the storm.

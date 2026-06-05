@@ -181,16 +181,13 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		resp, status, err := c.doOnce(ctx, body, in.RequestID)
-
-		// Count after doOnce so the metric reflects actual HTTP calls dispatched.
-		// status == statusNone means http.NewRequestWithContext failed before any
-		// network call; those are not retryable and will exit the loop below, so
-		// this branch is unreachable in practice for attempt > 0. The guard makes
-		// the intent explicit regardless.
-		if attempt > 0 && status != statusNone {
+		// Count the retry before the call so the metric captures every retry attempt
+		// dispatched, regardless of the outcome (including pre-flight build errors).
+		if attempt > 0 {
 			observability.WorkerRetriesTotal.Inc()
 		}
+
+		resp, status, err := c.doOnce(ctx, body, in.RequestID)
 
 		// Update breaker state BEFORE the retry-exhaustion check so every attempt,
 		// including the final one, is recorded. Skipping this on retry exhaustion
