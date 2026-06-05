@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -470,8 +471,8 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 
 	const n = 20
 	var wg sync.WaitGroup
-	traceIDs := make([]string, n)
-	statusCodes := make([]int, n)
+	traceIDs := make([]atomic.Value, n)
+	statusCodes := make([]atomic.Int32, n)
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -480,11 +481,11 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				traceIDs[idx] = oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
+				traceIDs[idx].Store(oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String())
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
-			statusCodes[idx] = rec.Code
+			statusCodes[idx].Store(int32(rec.Code))
 		}(i)
 	}
 	done := make(chan struct{})
@@ -496,8 +497,8 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	}
 
 	// All assertions run after wg.Wait() so t.Errorf is called from the test goroutine only.
-	for i, code := range statusCodes {
-		if code != http.StatusOK {
+	for i := range statusCodes {
+		if code := int(statusCodes[i].Load()); code != http.StatusOK {
 			t.Errorf("goroutine %d: unexpected status %d", i, code)
 		}
 	}
@@ -513,7 +514,8 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	}
 
 	seen := make(map[string]bool)
-	for i, id := range traceIDs {
+	for i := range traceIDs {
+		id, _ := traceIDs[i].Load().(string)
 		if id == "" || id == strings.Repeat("0", 32) {
 			t.Errorf("goroutine %d: got empty or zero trace ID", i)
 			continue

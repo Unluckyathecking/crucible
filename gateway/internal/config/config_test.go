@@ -581,6 +581,23 @@ func TestOtelExporterInsecureExplicitFalse(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointTrimSpace verifies that leading/trailing whitespace in
+// OTEL_EXPORTER_ENDPOINT is stripped before validation, so common copy-paste mistakes
+// like " localhost:4318 " are accepted and stored as "localhost:4318".
+func TestOtelExporterEndpointTrimSpace(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", " localhost:4318 ")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.OtelExporterEndpoint != "localhost:4318" {
+		t.Errorf("OtelExporterEndpoint = %q, want %q after trim", c.OtelExporterEndpoint, "localhost:4318")
+	}
+}
+
 // TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled verifies that endpoint
 // scheme validation applies even when OTEL_TRACING_ENABLED=false, so a latent
 // misconfiguration is caught at startup rather than silently stored in config.

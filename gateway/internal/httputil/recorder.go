@@ -18,16 +18,16 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 }
 
 // WriteHeader records the response status and forwards the code to the underlying
-// writer. Informational (1xx) codes are recorded in Status and forwarded but do not
-// commit wroteHeader — the final 2xx-5xx status on the subsequent call overwrites
-// Status and commits. All non-informational codes commit on the first call,
+// writer. Informational (1xx) codes are forwarded without updating Status or
+// committing wroteHeader — the final 2xx-5xx status on the subsequent call is
+// recorded and commits. All non-informational codes commit on the first call,
 // preventing further WriteHeader forwarding to the underlying writer.
 func (s *StatusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
 	}
-	s.Status = code
 	if code >= 200 {
+		s.Status = code
 		s.wroteHeader = true
 	}
 	s.ResponseWriter.WriteHeader(code)
@@ -36,11 +36,7 @@ func (s *StatusRecorder) WriteHeader(code int) {
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.wroteHeader = true
-		if s.Status < 200 {
-			// A 1xx was forwarded but no final WriteHeader preceded the body write;
-			// record the implicit 200 that the underlying writer will use.
-			s.Status = http.StatusOK
-		}
+		s.Status = http.StatusOK
 	}
 	return s.ResponseWriter.Write(b)
 }
