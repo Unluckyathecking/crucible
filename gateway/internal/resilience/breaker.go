@@ -114,6 +114,11 @@ func (b *Breaker) Allow() (uint64, error) {
 			result = ErrBreakerOpen
 		} else {
 			// Cooldown elapsed — allow exactly one probe; bump generation.
+			// probeGen is 0 at construction and incremented here before being
+			// assigned to token, so the first probe ever issued carries token=1
+			// (not 0 and not 2). probeGen is incremented on every HalfOpen entry
+			// (here and in the HalfOpen case below), so stale Record* calls from
+			// a previous probe generation are silently ignored via token mismatch.
 			b.probeGen++
 			b.state = StateHalfOpen
 			b.probeInFlight = true

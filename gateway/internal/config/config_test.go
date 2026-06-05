@@ -274,6 +274,23 @@ func TestBreakerCooldownTooLowZeroThresholdReturnsError(t *testing.T) {
 	}
 }
 
+// TestBreakerCooldownTooHighReturnsError verifies that a cooldown above 300000ms
+// (5 minutes) is rejected, preventing a misconfigured value from permanently
+// locking the breaker open.
+func TestBreakerCooldownTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "300001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_COOLDOWN_MS=300001, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
 func TestWorkerMaxConnsTooHighReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "10001")
