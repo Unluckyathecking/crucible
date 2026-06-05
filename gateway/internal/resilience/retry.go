@@ -10,11 +10,20 @@ import (
 )
 
 // IsRetryable reports whether a call outcome warrants a retry.
-// A cancelled or timed-out context is never retryable: checking ctx first
-// prevents a stale transport error (e.g. connection reset concurrent with
-// cancellation) from incorrectly triggering a retry when the caller has
-// already given up. Callers must still check ctx.Err() after Sleep; this
-// function only governs whether to attempt a sleep at all.
+// Two independent guards ensure a cancelled or expired context is never retried:
+//
+//   - ctx.Err() != nil: the caller's context is already dead at evaluation time.
+//     This catches the case where a non-context transport error (e.g. connection
+//     reset) fired concurrently with a context cancellation — the error does not
+//     wrap context.Canceled, but retrying would immediately fail again.
+//   - errors.Is(err, Canceled|DeadlineExceeded): catches the narrow race window
+//     where the context was live when the call started but was cancelled during
+//     the round-trip. ctx.Err() may still be nil at this point, so the direct
+//     errors.Is check on err is the authoritative guard for that case.
+//
+// Both checks are intentional and handle non-overlapping race windows.
+// Callers must still check ctx.Err() after Sleep; this function only governs
+// whether to attempt a sleep at all.
 //
 // status == 0 with a non-nil error means a transport/network error occurred
 // before an HTTP response arrived — retryable when the context is live.

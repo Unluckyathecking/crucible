@@ -217,9 +217,18 @@ func TestNew_DefaultMaxConns(t *testing.T) {
 }
 
 func TestInvoke_StalledConnection(t *testing.T) {
-	// Worker that accepts connections but never writes a response.
-	// The done channel lets cleanup unblock any in-flight handler goroutines
-	// before srv.Close() waits for them, preventing a deadlock.
+	// Worker accepts the TCP connection and receives the HTTP request, but
+	// never calls w.WriteHeader() or w.Write() — stalling before any response
+	// bytes are sent. This exercises the http.Client.Timeout ceiling (50ms):
+	// the client must return a timeout error and not hang indefinitely.
+	//
+	// This is a handler-level stall (HTTP layer), not a raw-TCP stall. Both
+	// stall the same Client.Timeout path because no separate ResponseHeaderTimeout
+	// is set (intentionally — see New() comments); the per-request ceiling bounds
+	// the full round-trip regardless of which phase is stuck.
+	//
+	// The done channel lets t.Cleanup unblock the handler goroutine before
+	// srv.Close() waits for active connections, preventing a deadlock.
 	done := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-done

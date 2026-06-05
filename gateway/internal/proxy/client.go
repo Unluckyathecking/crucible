@@ -98,6 +98,11 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 	if maxConns <= 0 {
 		maxConns = defaultMaxConns
 	}
+	if len(policies) > 1 {
+		// The variadic is for optional-parameter ergonomics, not multi-policy composition.
+		// Silently ignoring extras is a footgun; fail loudly instead.
+		panic("proxy.New: at most one ResiliencePolicy may be provided")
+	}
 	var pol ResiliencePolicy
 	if len(policies) > 0 {
 		pol = policies[0]
@@ -322,12 +327,14 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	m.workerCallDuration.Observe(time.Since(start).Seconds())
+	// Register body close before any error check: resp can be non-nil even when
+	// err != nil (e.g., redirect-policy failure). A single deferred close here
+	// covers both the success path and error paths with non-nil resp, so the body
+	// is always closed exactly once regardless of which path returns.
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
-		// resp is nil for most transport errors, but can be non-nil when a redirect
-		// policy fires (e.g., too many redirects) — close the body in that case.
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
 		// resp != nil signals a redirect-policy or protocol error, not a transient
 		// transport failure. Return statusNone so the retry/breaker logic treats it
 		// as a persistent non-retryable error, not a worker health failure.
@@ -341,7 +348,6 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if resp == nil {
 		return nil, 0, errors.New("worker call: nil response without error")
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		// Surface up to 512 bytes of the body in the error — invaluable when triaging
