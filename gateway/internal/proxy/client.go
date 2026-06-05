@@ -21,13 +21,14 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
 
-// tracePropagator injects/extracts W3C TraceContext headers on outbound worker calls.
-// oteltrace (aliased import) provides SpanFromContext for inheriting the active TracerProvider.
+// tracePropagator is the W3C TraceContext propagator used for header injection on
+// outbound worker calls. It is stateless and safe for concurrent use.
 var tracePropagator = propagation.TraceContext{}
 
 const (
@@ -336,8 +337,14 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error == nil: HTTP 200, response decoded successfully
 func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, _ int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
-	// TracerProvider is inherited from the active span — no-op when tracing is disabled.
-	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
+	// Inherit the TracerProvider from the active gateway span; when tracing is disabled
+	// (no real span in ctx) SpanFromContext returns a noop span. The nil guard covers
+	// custom TracerProvider implementations that may return nil from TracerProvider().
+	tp := oteltrace.SpanFromContext(ctx).TracerProvider()
+	if tp == nil {
+		tp = noop.NewTracerProvider()
+	}
+	ctx, span := tp.Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),
 		attribute.String("http.method", http.MethodPost),

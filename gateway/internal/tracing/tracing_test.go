@@ -1,7 +1,9 @@
 package tracing_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,7 +196,7 @@ func TestNoOpWhenDisabled(t *testing.T) {
 func TestLogLinesCarryTraceID(t *testing.T) {
 	tp, _ := newTestProvider(t)
 
-	var buf strings.Builder
+	var buf bytes.Buffer
 	testLogger := zerolog.New(&buf)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -220,29 +222,25 @@ func TestLogLinesCarryTraceID(t *testing.T) {
 		t.Errorf("expected handler-log message in log output, got:\n%s", output)
 	}
 
-	// Verify trace_id is 32 hex chars and span_id is 16 hex chars (valid non-zero IDs).
-	if idx := strings.Index(output, `"trace_id":"`); idx >= 0 {
-		rest := output[idx+len(`"trace_id":"`):]
-		if end := strings.IndexByte(rest, '"'); end >= 0 {
-			tid := rest[:end]
-			if len(tid) != 32 {
-				t.Errorf("trace_id = %q (%d chars), want 32 hex chars", tid, len(tid))
-			}
-			if tid == strings.Repeat("0", 32) {
-				t.Error("trace_id is all zeros — span context is not valid")
-			}
+	// Parse the JSON log line for structured field validation.
+	var logLine map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &logLine); err != nil {
+		t.Fatalf("log output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	if tid, ok := logLine["trace_id"].(string); ok {
+		if len(tid) != 32 {
+			t.Errorf("trace_id = %q (%d chars), want 32 hex chars", tid, len(tid))
+		}
+		if tid == strings.Repeat("0", 32) {
+			t.Error("trace_id is all zeros — span context is not valid")
 		}
 	}
-	if idx := strings.Index(output, `"span_id":"`); idx >= 0 {
-		rest := output[idx+len(`"span_id":"`):]
-		if end := strings.IndexByte(rest, '"'); end >= 0 {
-			sid := rest[:end]
-			if len(sid) != 16 {
-				t.Errorf("span_id = %q (%d chars), want 16 hex chars", sid, len(sid))
-			}
-			if sid == strings.Repeat("0", 16) {
-				t.Error("span_id is all zeros — span context is not valid")
-			}
+	if sid, ok := logLine["span_id"].(string); ok {
+		if len(sid) != 16 {
+			t.Errorf("span_id = %q (%d chars), want 16 hex chars", sid, len(sid))
+		}
+		if sid == strings.Repeat("0", 16) {
+			t.Error("span_id is all zeros — span context is not valid")
 		}
 	}
 }

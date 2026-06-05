@@ -50,6 +50,13 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				base = &log.Logger
 			}
 
+			// Reject oversized traceparent headers before parsing — the W3C spec defines
+			// the fixed format as at most 55 chars; 256 gives generous room for future
+			// versions while preventing memory pressure from malformed inputs.
+			if tp := r.Header.Get("Traceparent"); len(tp) > 256 {
+				r.Header.Del("Traceparent")
+			}
+
 			// Extract parent span from inbound W3C traceparent header (no-op if absent).
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
