@@ -142,17 +142,17 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write directly sets Status=200 and calls inner.WriteHeader(200) because
-	// wroteHeader is still false after 1xx.
+	// Write sets Status=200 on StatusRecorder but does NOT forward a second WriteHeader
+	// to the inner writer, avoiding a double-header violation after the 1xx was already
+	// forwarded. The inner writer's Write handles body delivery without re-writing headers.
+	// The authoritative final-status field is sr.Status, which middleware logging and
+	// Prometheus metrics consume.
 	if sr.Status != http.StatusOK {
 		t.Errorf("Status = %d after 1xx+Write, want %d", sr.Status, http.StatusOK)
 	}
 	if !sr.wroteHeader {
 		t.Error("wroteHeader must be true after Write")
 	}
-	// httptest.ResponseRecorder committed Code=100 on WriteHeader(100); the explicit
-	// inner.WriteHeader(200) from Write is silently ignored. The authoritative status
-	// is sr.Status, which middleware logging and Prometheus metrics consume.
 }
 
 func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {

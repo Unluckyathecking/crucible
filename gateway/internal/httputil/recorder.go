@@ -36,15 +36,15 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Write triggers an implicit 200 if no status has been committed yet.
-// Fields are set directly (not via s.WriteHeader) so that a preceding 1xx
-// WriteHeader — already forwarded to the inner writer — does not cause a
-// second WriteHeader call that the inner writer would silently discard.
+// Write records an implicit 200 on StatusRecorder if no non-1xx status has been
+// committed yet, then delegates to the inner writer. The inner writer's own Write
+// triggers the implicit 200 on itself — we do NOT call s.ResponseWriter.WriteHeader
+// here — so that a preceding 1xx WriteHeader (already forwarded) does not cause a
+// double WriteHeader call on the inner writer.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.Status = http.StatusOK
 		s.wroteHeader = true
-		s.ResponseWriter.WriteHeader(http.StatusOK)
 	}
 	return s.ResponseWriter.Write(b)
 }
