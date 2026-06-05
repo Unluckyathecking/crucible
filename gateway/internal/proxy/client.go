@@ -140,6 +140,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.retry.Sleep(ctx, attempt); err != nil {
 				return nil, err
 			}
+			// Count every retry attempt that actually executes (sleep succeeded),
+			// including the final one that may exhaust maxAttempts.
+			observability.WorkerRetriesTotal.Inc()
 		}
 
 		// Stop if the caller's context expired between attempts. This is the primary
@@ -185,9 +188,6 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		if !resilience.IsRetryable(err, status) || attempt+1 >= maxAttempts {
 			return nil, err
 		}
-
-		// Will retry — record attempt and continue.
-		observability.WorkerRetriesTotal.Inc()
 	}
 }
 
