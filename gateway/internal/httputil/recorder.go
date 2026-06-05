@@ -9,9 +9,8 @@ import "net/http"
 // it here so one copy can't drift from the other.
 type StatusRecorder struct {
 	http.ResponseWriter
-	Status          int
-	wroteHeader     bool // true once a non-1xx status has been committed on StatusRecorder
-	innerHeaderSent bool // true once WriteHeader has been forwarded to the inner writer
+	Status      int
+	wroteHeader bool // true once a non-1xx status has been committed on StatusRecorder
 }
 
 // Compile-time assertion: *StatusRecorder must implement http.Flusher.
@@ -34,25 +33,22 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	if code >= 200 {
 		s.wroteHeader = true
 	}
-	s.innerHeaderSent = true
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Write records an implicit 200 on StatusRecorder if no non-1xx status has been
-// committed yet, then delegates to the inner writer. When no WriteHeader has been
-// forwarded to the inner writer yet (innerHeaderSent == false), we explicitly send
-// WriteHeader(200) so the inner writer records the correct status code. After a
-// 1xx WriteHeader (innerHeaderSent == true), we skip the explicit call to avoid a
-// double WriteHeader on the inner writer — the inner writer's Write handles body
-// delivery in that case.
+// Write records an implicit 200 on StatusRecorder if no non-1xx WriteHeader has been
+// committed yet, then explicitly sends WriteHeader(200) to the inner writer before
+// writing the body. This is required for real net/http.response where a prior 1xx
+// WriteHeader leaves the inner writer's final-status slot still open (wroteHeader=false
+// on the real writer). For httptest.ResponseRecorder the call is a no-op (its own
+// wroteHeader is already true from the 1xx WriteHeader), so there is no double-header.
+// The authoritative final-status field is sr.Status, which middleware logging and
+// Prometheus metrics consume.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.Status = http.StatusOK
 		s.wroteHeader = true
-		if !s.innerHeaderSent {
-			s.innerHeaderSent = true
-			s.ResponseWriter.WriteHeader(http.StatusOK)
-		}
+		s.ResponseWriter.WriteHeader(http.StatusOK)
 	}
 	return s.ResponseWriter.Write(b)
 }

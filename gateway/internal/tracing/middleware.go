@@ -36,8 +36,9 @@ var propagator = propagation.TraceContext{}
 //  4. Records span status as Error for HTTP 5xx responses.
 //
 // When tp is nil the middleware is a zero-overhead transparent pass-through (no
-// allocations, no span context derived). Pass a noop.TracerProvider explicitly for
-// the low-overhead noop-span path.
+// allocations, no span context derived). Prefer nil for the absolute zero-cost path;
+// pass a noop.TracerProvider only when API uniformity requires a non-nil provider
+// and the minor per-request overhead of noop span creation is acceptable.
 func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 	if tp == nil {
 		return func(next http.Handler) http.Handler { return next }

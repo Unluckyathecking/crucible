@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -139,8 +140,10 @@ func Load() (*Config, error) {
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
 	// --- OTel tracing validation ---
-	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 {
-		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
+	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
+	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
+	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 || math.IsNaN(c.OtelSampleRatio) {
+		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be a finite number in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
 	}
 	// Trim whitespace so " localhost:4318" or "localhost:4318 " (a common copy-paste
 	// mistake) is treated equivalently to "localhost:4318". Do this before the empty

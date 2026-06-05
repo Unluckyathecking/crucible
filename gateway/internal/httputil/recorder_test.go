@@ -142,9 +142,10 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write sets Status=200 on StatusRecorder but does NOT forward a second WriteHeader
-	// to the inner writer, avoiding a double-header violation after the 1xx was already
-	// forwarded. The inner writer's Write handles body delivery without re-writing headers.
+	// Write sets Status=200 on StatusRecorder and forwards WriteHeader(200) to the inner
+	// writer. For real net/http.response a 1xx WriteHeader leaves the final-status slot
+	// open, so the explicit WriteHeader(200) here closes it correctly. For httptest the
+	// call is a no-op (wroteHeader already true from the 1xx WriteHeader).
 	// The authoritative final-status field is sr.Status, which middleware logging and
 	// Prometheus metrics consume.
 	if sr.Status != http.StatusOK {
