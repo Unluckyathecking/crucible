@@ -53,6 +53,9 @@ type Config struct {
 	// Tracing (OTel) — disabled by default; zero-config dials no exporter.
 	OtelTracingEnabled   bool    `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
 	OtelExporterEndpoint string  `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
+	// OtelExporterInsecure disables TLS for the OTLP exporter. Default false (TLS on).
+	// Set to true for localhost/sidecar collectors that do not serve TLS.
+	OtelExporterInsecure bool    `envconfig:"OTEL_EXPORTER_INSECURE" default:"false"`
 	OtelSampleRatio      float64 `envconfig:"OTEL_SAMPLE_RATIO"      default:"1.0"`
 }
 

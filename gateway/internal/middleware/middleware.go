@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
@@ -51,6 +52,9 @@ func Recovery(next http.Handler) http.Handler {
 }
 
 // AccessLog emits one structured log line per request.
+// It uses the context logger (set by the tracing middleware) so trace_id and span_id
+// are automatically included in the access log when tracing is enabled. Falls back to
+// log.Logger when no context logger is present (e.g. in unit tests that skip tracing).
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -58,7 +62,14 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		log.Info().
+		// Prefer the context logger (injected by tracing middleware with trace_id/span_id).
+		// zerolog.Ctx returns a disabled logger when no logger is stored; fall back to
+		// log.Logger in that case so access log lines are always emitted.
+		l := zerolog.Ctx(r.Context())
+		if l.GetLevel() == zerolog.Disabled {
+			l = &log.Logger
+		}
+		l.Info().
 			Str("request_id", rid).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).

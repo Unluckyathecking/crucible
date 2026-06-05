@@ -10,25 +10,41 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // NewProvider constructs a TracerProvider that exports spans via OTLP/HTTP to endpoint.
+// insecure disables TLS — use true only for localhost/sidecar collectors.
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
 // The returned shutdown function flushes pending spans; call it at process exit.
-func NewProvider(ctx context.Context, endpoint string, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
-	exp, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithInsecure(),
-	)
+func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	if insecure {
+		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+
+	exp, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: create OTLP exporter: %w", err)
+	}
+
+	// Merge service.name into the default resource so every exported span carries it.
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewSchemaless(attribute.String("service.name", "crucible-gateway")),
+	)
+	if err != nil {
+		// Non-fatal — fall back to the default resource rather than failing startup.
+		res = resource.Default()
 	}
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
+		sdktrace.WithResource(res),
 	)
 	return tp, tp.Shutdown, nil
 }

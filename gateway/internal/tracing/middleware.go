@@ -3,6 +3,8 @@ package tracing
 import (
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -19,6 +21,8 @@ var propagator = propagation.TraceContext{}
 //     or starts a fresh root span when the header is absent.
 //  2. Injects the active trace_id and span_id into the zerolog context so any
 //     handler that calls zerolog.Ctx(ctx) carries them on every log event.
+//  3. Renames the span to the matched chi route pattern after the handler returns
+//     (the pattern is not resolved until the router has dispatched the request).
 //
 // When tp is nil or a noop.TracerProvider (default-off state), spans have invalid
 // span contexts, no exporter is dialed, and the middleware is a transparent pass-through.
@@ -35,20 +39,40 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 			// Start gateway.request span — child of remote parent or new root span.
 			ctx, span := tracer.Start(ctx, "gateway.request")
-			defer span.End()
 
-			// Attach trace/span IDs to zerolog context. Using log.Logger as the base
-			// ensures test overrides (log.Logger = log.Output(&buf)) are honoured here.
+			// Determine the base logger. zerolog.Ctx returns the disabled fallback
+			// when no prior middleware has stored a logger in the context. In that case
+			// use the global logger so downstream callers (AccessLog, handlers) are not
+			// silenced. A level == Disabled on the context logger is used as the signal
+			// since zerolog has no public "is default fallback" API.
+			base := zerolog.Ctx(ctx)
+			if base.GetLevel() == zerolog.Disabled {
+				base = &log.Logger
+			}
+
 			sc := span.SpanContext()
 			if sc.IsValid() {
-				logger := log.Logger.With().
+				// Extend the base logger with trace/span IDs.
+				l := base.With().
 					Str("trace_id", sc.TraceID().String()).
 					Str("span_id", sc.SpanID().String()).
 					Logger()
-				ctx = logger.WithContext(ctx)
+				ctx = l.WithContext(ctx)
+			} else {
+				// Noop provider — no span IDs to add, but still inject the logger so
+				// AccessLog and handlers can call zerolog.Ctx(ctx) safely.
+				ctx = base.WithContext(ctx)
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))
+
+			// Rename span from the chi route pattern after routing has resolved.
+			// "gateway.request" is only the initial placeholder — chi populates
+			// RoutePattern during ServeHTTP, so it's available here but not at span start.
+			if rctx := chi.RouteContext(ctx); rctx != nil && rctx.RoutePattern() != "" {
+				span.SetName(rctx.RoutePattern())
+			}
+			span.End()
 		})
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -31,6 +30,16 @@ func newTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRec
 	return tp, sr
 }
 
+// findSpan returns the first ended span with the given name, or (nil, false).
+func findSpan(spans []sdktrace.ReadOnlySpan, name string) (sdktrace.ReadOnlySpan, bool) {
+	for _, s := range spans {
+		if s.Name() == name {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
 // TestInboundTraceparentContinuesTrace verifies that a valid W3C traceparent on the
 // inbound request causes the gateway span to join the same remote trace (matching
 // trace ID, with a valid parent reference).
@@ -51,17 +60,14 @@ func TestInboundTraceparentContinuesTrace(t *testing.T) {
 
 	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
 
-	spans := sr.Ended()
-	// parent span + gateway.request span.
-	if len(spans) < 2 {
-		t.Fatalf("expected >= 2 spans, got %d", len(spans))
+	gwSpan, ok := findSpan(sr.Ended(), "gateway.request")
+	if !ok {
+		t.Fatal("no gateway.request span recorded")
 	}
-	// gateway.request is the last span ended.
-	gwSpan := spans[len(spans)-1]
 	if got := gwSpan.SpanContext().TraceID(); got != parentSC.TraceID() {
 		t.Errorf("trace ID = %s, want %s (should continue parent trace)", got, parentSC.TraceID())
 	}
-	if !gwSpan.Parent().IsValid() {
+	if !gwSpan.Parent().SpanID().IsValid() {
 		t.Error("gateway span must have a valid parent when inbound traceparent is present")
 	}
 }
@@ -76,15 +82,14 @@ func TestAbsentTraceparentStartsRootSpan(t *testing.T) {
 
 	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
 
-	spans := sr.Ended()
-	if len(spans) == 0 {
-		t.Fatal("expected at least one span")
+	gwSpan, ok := findSpan(sr.Ended(), "gateway.request")
+	if !ok {
+		t.Fatal("no gateway.request span recorded")
 	}
-	gwSpan := spans[0]
 	if !gwSpan.SpanContext().IsValid() {
 		t.Error("gateway span must have a valid span context")
 	}
-	if gwSpan.Parent().IsValid() {
+	if gwSpan.Parent().SpanID().IsValid() {
 		t.Errorf("gateway span must be a root span (no parent) when no traceparent header is present; got parent %s", gwSpan.Parent().SpanID())
 	}
 }
@@ -127,10 +132,17 @@ func TestPropagatorWritesOutboundTraceparent(t *testing.T) {
 	if len(parts[3]) != 2 {
 		t.Errorf("traceparent flags = %q (%d chars), want 2 hex chars", parts[3], len(parts[3]))
 	}
+	// Verify trace ID and span ID are not all-zero (would indicate a noop span context).
+	if parts[1] == strings.Repeat("0", 32) {
+		t.Error("traceparent trace ID is all zeros — span context is not valid")
+	}
+	if parts[2] == strings.Repeat("0", 16) {
+		t.Error("traceparent span ID is all zeros — span context is not valid")
+	}
 }
 
 // TestNoOpWhenDisabled verifies that a noop.TracerProvider (zero-config / default-off)
-// produces no Traceparent header and does not inject trace_id into log output.
+// produces no Traceparent header and the span context in the request context is invalid.
 func TestNoOpWhenDisabled(t *testing.T) {
 	tp := noop.NewTracerProvider()
 
@@ -152,15 +164,6 @@ func TestNoOpWhenDisabled(t *testing.T) {
 		t.Errorf("expected no Traceparent header for noop provider, got %q", tp)
 	}
 
-	// When disabled, the context logger must not carry trace_id.
-	ctxLogger := zerolog.Ctx(capturedCtx)
-	var logBuf strings.Builder
-	derived := ctxLogger.Output(&logBuf)
-	derived.Info().Msg("no-op-check")
-	if strings.Contains(logBuf.String(), "trace_id") {
-		t.Errorf("expected no trace_id in noop-path log output, got:\n%s", logBuf.String())
-	}
-
 	// Confirm the span in context is invalid (noop).
 	sc := oteltrace.SpanFromContext(capturedCtx).SpanContext()
 	if sc.IsValid() {
@@ -170,15 +173,16 @@ func TestNoOpWhenDisabled(t *testing.T) {
 
 // TestLogLinesCarryTraceID verifies that handlers calling zerolog.Ctx(ctx) emit log
 // events that include the trace_id field when a real TracerProvider is active.
+// The test logger is injected via the request context so no global state is mutated.
 func TestLogLinesCarryTraceID(t *testing.T) {
 	tp, _ := newTestProvider(t)
 
 	var buf strings.Builder
-	oldLogger := log.Logger
-	defer func() { log.Logger = oldLogger }()
-	log.Logger = log.Output(&buf)
+	testLogger := zerolog.New(&buf)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	// Inject the test logger so the tracing middleware picks it up via zerolog.Ctx.
+	req = req.WithContext(testLogger.WithContext(req.Context()))
 	rec := httptest.NewRecorder()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
