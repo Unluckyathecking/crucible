@@ -202,7 +202,10 @@ func TestBreaker_RecordAbortReleasesProbeWithoutClosing(t *testing.T) {
 func TestBreaker_RaceConcurrent(t *testing.T) {
 	// Each goroutine records one failure. With 100 goroutines and Threshold=5,
 	// the breaker must open; verify it did so correctly after the storm.
-	b := NewBreaker(BreakerConfig{Threshold: 5, Cooldown: 50 * time.Millisecond}, nil)
+	// Cooldown is 5 minutes so it cannot expire while the 100 goroutines are
+	// still running (which would allow a probe and potentially close the breaker,
+	// making the final StateOpen assertion non-deterministic).
+	b := NewBreaker(BreakerConfig{Threshold: 5, Cooldown: 5 * time.Minute}, nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)

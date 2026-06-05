@@ -242,6 +242,8 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*In
 	resp, err := c.http.Do(req)
 	observability.WorkerCallDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		// resp is nil for most transport errors, but can be non-nil when a redirect
+		// policy fires (e.g., too many redirects) — close the body in that case.
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
 		}

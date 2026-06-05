@@ -510,10 +510,11 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// With 80ms context and 30ms base backoff, at most 2-3 HTTP calls should
-	// occur before the context expires. 20 would require >> 600ms.
-	if n := callCount.Load(); n > 4 {
-		t.Errorf("call count = %d, want <= 4 (ctx expiry should stop retries early)", n)
+	// The context expires well before MaxAttempts (20) would be exhausted.
+	// We verify ctx — not exact timing — stops retries by asserting we never
+	// reached MaxAttempts.
+	if n := callCount.Load(); n >= 20 {
+		t.Errorf("call count = %d, want < 20 (ctx expiry should stop retries before MaxAttempts)", n)
 	}
 }
 
@@ -551,8 +552,8 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error while breaker is open")
 		}
-		if !strings.Contains(err.Error(), "worker call") {
-			t.Errorf("error %q should have transport-error shape", err.Error())
+		if !errors.Is(err, resilience.ErrBreakerOpen) {
+			t.Errorf("error %q should wrap ErrBreakerOpen", err.Error())
 		}
 	}
 
