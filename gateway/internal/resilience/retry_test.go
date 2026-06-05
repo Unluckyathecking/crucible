@@ -20,9 +20,14 @@ func TestIsRetryable(t *testing.T) {
 		{"503", nil, 503, true},
 		{"4xx not retried", nil, 400, false},
 		{"200 not retried", nil, 200, false},
+		// context.Canceled (explicit cancellation) is never retryable.
 		{"context canceled", context.Canceled, 0, false},
-		{"deadline exceeded", context.DeadlineExceeded, 0, false},
 		{"wraps canceled", fmt.Errorf("worker call: %w", context.Canceled), 0, false},
+		// context.DeadlineExceeded at status==0 IS retryable: it could be the HTTP
+		// client's own timeout (caller still alive). The retry loop checks ctx.Err()
+		// separately to stop retrying when the *caller's* deadline has expired.
+		{"deadline exceeded status 0 retryable", context.DeadlineExceeded, 0, true},
+		{"wraps deadline status 0 retryable", fmt.Errorf("worker call: %w", context.DeadlineExceeded), 0, true},
 		{"nil err zero status", nil, 0, false},
 		{"pre-flight statusNone (-1)", errors.New("build request: bad url"), -1, false},
 	}

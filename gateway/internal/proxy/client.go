@@ -143,6 +143,14 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			}
 		}
 
+		// Stop if the caller's context expired between attempts. This is the primary
+		// guard against retrying after a caller cancel/deadline: IsRetryable does not
+		// inspect ctx so that HTTP client timeouts (which also wrap DeadlineExceeded)
+		// are still classified as retryable when the caller is still waiting.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		// Circuit-breaker admission: fast-fail without a network call when open.
 		if c.breaker != nil {
 			if err := c.breaker.Allow(); err != nil {
@@ -172,7 +180,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return resp, nil
 		}
 
-		if !resilience.IsRetryable(err, status) {
+		if !resilience.IsRetryable(err, status) || attempt == maxAttempts-1 {
 			return nil, err
 		}
 
