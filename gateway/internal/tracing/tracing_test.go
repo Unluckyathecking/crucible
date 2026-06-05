@@ -400,14 +400,27 @@ func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
 	stack.ServeHTTP(rec, req)
 
 	output := buf.String()
-	if !strings.Contains(output, `"request_id"`) {
-		t.Errorf("expected request_id field in access log, got:\n%s", output)
+	// Parse JSON log lines and require at least one line that carries all three
+	// fields together, confirming they are co-located in the same log event.
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			continue
+		}
+		_, hasRequestID := obj["request_id"]
+		_, hasTraceID := obj["trace_id"]
+		_, hasSpanID := obj["span_id"]
+		if hasRequestID && hasTraceID && hasSpanID {
+			found = true
+			break
+		}
 	}
-	if !strings.Contains(output, `"trace_id"`) {
-		t.Errorf("expected trace_id field in access log, got:\n%s", output)
-	}
-	if !strings.Contains(output, `"span_id"`) {
-		t.Errorf("expected span_id field in access log, got:\n%s", output)
+	if !found {
+		t.Errorf("expected a log line with request_id, trace_id, and span_id together; got:\n%s", output)
 	}
 }
 

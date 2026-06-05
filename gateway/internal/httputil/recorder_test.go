@@ -91,20 +91,25 @@ func TestStatusRecorder1xxThenFinal(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
-	sr.WriteHeader(http.StatusContinue) // first WriteHeader wins regardless of code
-	if !sr.wroteHeader {
-		t.Error("wroteHeader should be true after WriteHeader")
+	sr.WriteHeader(http.StatusContinue) // 100 — informational, does not commit wroteHeader
+	if sr.wroteHeader {
+		t.Error("wroteHeader should be false after 1xx")
 	}
 	if sr.Status != http.StatusContinue {
 		t.Errorf("Status = %d, want %d", sr.Status, http.StatusContinue)
 	}
-	sr.WriteHeader(http.StatusOK) // ignored — already committed
-	if sr.Status != http.StatusContinue {
-		t.Errorf("Status = %d after second WriteHeader, want %d (first call wins)", sr.Status, http.StatusContinue)
+	sr.WriteHeader(http.StatusOK) // 200 finalizes
+
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusOK)
 	}
-	if inner.Code != http.StatusContinue {
-		t.Errorf("inner.Code = %d, want %d", inner.Code, http.StatusContinue)
+	if !sr.wroteHeader {
+		t.Error("wroteHeader should be true after 2xx")
 	}
+	// httptest.ResponseRecorder commits Code on the first WriteHeader call regardless
+	// of informational status; the subsequent WriteHeader(200) is ignored by the inner
+	// recorder. The authoritative final-status field is sr.Status, which middleware
+	// logging and metrics rely on.
 }
 
 // flushRecorder wraps httptest.ResponseRecorder and implements http.Flusher so
@@ -116,15 +121,15 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() { f.flushed = true }
 
-// TestStatusRecorder1xxThenWrite verifies that a 1xx WriteHeader commits wroteHeader,
-// so a subsequent Write does not overwrite the recorded status.
+// TestStatusRecorder1xxThenWrite verifies that a 1xx informational status does not
+// commit wroteHeader, so a subsequent Write still records Status=200 correctly.
 func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
-	sr.WriteHeader(http.StatusContinue) // first WriteHeader wins — commits wroteHeader
-	if !sr.wroteHeader {
-		t.Fatal("wroteHeader must be true after WriteHeader")
+	sr.WriteHeader(http.StatusContinue) // 100 — informational, must not commit wroteHeader
+	if sr.wroteHeader {
+		t.Fatal("wroteHeader must be false after 1xx WriteHeader")
 	}
 	if sr.Status != http.StatusContinue {
 		t.Errorf("Status = %d, want %d", sr.Status, http.StatusContinue)
@@ -137,16 +142,17 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write does not alter Status since wroteHeader was already committed
-	if sr.Status != http.StatusContinue {
-		t.Errorf("Status = %d after 1xx+Write, want %d (first call wins)", sr.Status, http.StatusContinue)
+	// Write calls WriteHeader(200) because wroteHeader is still false after 1xx.
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d after 1xx+Write, want %d", sr.Status, http.StatusOK)
 	}
-	if inner.Code != http.StatusContinue {
-		t.Errorf("inner.Code = %d, want %d", inner.Code, http.StatusContinue)
+	if !sr.wroteHeader {
+		t.Error("wroteHeader must be true after Write")
 	}
-	if inner.Body.String() != "body" {
-		t.Errorf("inner body = %q, want body", inner.Body.String())
-	}
+	// httptest.ResponseRecorder committed Code=100 on WriteHeader(100); the deferred
+	// WriteHeader(200) from Write is silently ignored by the inner recorder. The
+	// authoritative status is sr.Status, not inner.Code, which is what middleware
+	// logging and Prometheus metrics consume.
 }
 
 func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {

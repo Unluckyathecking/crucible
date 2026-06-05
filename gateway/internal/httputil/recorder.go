@@ -21,13 +21,18 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 }
 
 // WriteHeader forwards code to the underlying writer and records Status on the
-// first call. Subsequent calls are silently ignored per HTTP semantics.
+// first call. For 1xx informational codes, Status is recorded but wroteHeader
+// is not committed — a subsequent 2xx-5xx WriteHeader or implicit Write can still
+// finalize the response. Non-informational codes commit on the first call;
+// subsequent WriteHeader calls are silently ignored per HTTP semantics.
 func (s *StatusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
 	}
 	s.Status = code
-	s.wroteHeader = true
+	if code >= 200 {
+		s.wroteHeader = true
+	}
 	s.ResponseWriter.WriteHeader(code)
 }
 
