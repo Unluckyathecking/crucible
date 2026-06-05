@@ -175,15 +175,18 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 				// Caller cancelled: release probe slot without recording a health signal.
 				c.breaker.RecordAbort()
 			case status == statusNone:
-				// Pre-flight build error: never reached the worker; no health signal.
+				// Pre-flight build error: never reached the worker; release any probe slot.
+				c.breaker.RecordAbort()
 			case err != nil && status >= 500:
 				c.breaker.RecordFailure() // HTTP 5xx
 			case err != nil && status == 0:
 				c.breaker.RecordFailure() // transport/network error, no HTTP response
+			case err == nil:
+				c.breaker.RecordSuccess() // clean HTTP 200 — worker is healthy
 			default:
-				// Any real HTTP response (200, 4xx, decode error on 200) proves
-				// the worker is reachable.
-				c.breaker.RecordSuccess()
+				// 4xx or 200 decode error: worker responded but outcome is ambiguous.
+				// Release any half-open probe slot without recording a health verdict.
+				c.breaker.RecordAbort()
 			}
 		}
 
@@ -217,6 +220,9 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*In
 	resp, err := c.http.Do(req)
 	observability.WorkerCallDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
 	defer resp.Body.Close()
