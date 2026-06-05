@@ -127,9 +127,10 @@ func (b *Breaker) Allow() (uint64, error) {
 		// Non-probe call; no probe slot needed. Token stays 0.
 	}
 	b.mu.Unlock()
-	// newState is a value captured inside the lock before Unlock(); it is not a live
-	// reference to b.state. Calling onState after Unlock() is safe: the callback
-	// receives an immutable copy and may safely call back into the breaker.
+	// newState is a local value captured inside the lock above — it is NOT read from
+	// b.state after Unlock(). Calling onState after releasing the lock is safe: the
+	// callback receives an immutable copy of the state at transition time and may
+	// safely call back into the breaker or acquire other locks without deadlocking.
 	if onState != nil {
 		onState(newState)
 	}
@@ -167,6 +168,7 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		// requires a successful probe, not a stale in-flight request's completion.
 	}
 	b.mu.Unlock()
+	// StateClosed is a compile-time constant, not a read of b.state — no race.
 	if onState != nil {
 		onState(StateClosed)
 	}
@@ -222,6 +224,7 @@ func (b *Breaker) RecordFailure(token uint64) {
 	// StateOpen: already open; don't reset the cooldown timer on new failures.
 	}
 	b.mu.Unlock()
+	// StateOpen is a compile-time constant, not a read of b.state — no race.
 	if onState != nil {
 		onState(StateOpen)
 	}

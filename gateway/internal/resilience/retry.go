@@ -100,10 +100,14 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	}
 
 	t := time.NewTimer(d)
+	// Explicit drain is required: 'defer t.Stop()' alone does not drain t.C when
+	// Stop() returns false (timer already fired), which would prevent the timer from
+	// being garbage collected. The select below ensures exactly one of the two cases
+	// fires — there is no goroutine leak regardless of which path executes first.
 	select {
 	case <-ctx.Done():
 		if !t.Stop() {
-			<-t.C
+			<-t.C // timer already fired; drain so the runtime can GC it
 		}
 		return ctx.Err()
 	case <-t.C:
