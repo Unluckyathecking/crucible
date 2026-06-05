@@ -1,6 +1,6 @@
 // Package middleware provides the HTTP middleware stack every Crucible gateway route shares.
 //
-// Mount order (outer → inner): RequestID → AccessLog → Recovery → SecurityHeaders → BodyLimit.
+// Mount order (outer → inner): RequestID → tracing.Middleware → AccessLog → Recovery → SecurityHeaders → BodyLimit.
 package middleware
 
 import (
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
@@ -17,6 +18,18 @@ import (
 type ctxKey string
 
 const RequestIDKey ctxKey = "request_id"
+
+func init() {
+	// zerolog.DefaultContextLogger ensures Ctx(ctx) always returns a usable logger
+	// even when no specific logger has been stored in context. Without this, Ctx
+	// returns the Nop sentinel (nil writer) and AccessLog output would be silently
+	// discarded when tracing middleware is absent or uses a noop provider.
+	// init() runs before any goroutine is started (Go spec §12.4), so this write
+	// is sequentially consistent with all later reads of DefaultContextLogger.
+	if zerolog.DefaultContextLogger == nil {
+		zerolog.DefaultContextLogger = &log.Logger
+	}
+}
 
 // RequestID stamps an X-Request-ID on every request, honouring an inbound one if reasonable.
 func RequestID(next http.Handler) http.Handler {
@@ -51,6 +64,8 @@ func Recovery(next http.Handler) http.Handler {
 }
 
 // AccessLog emits one structured log line per request.
+// It uses the context logger (set by the tracing middleware) so trace_id and span_id
+// are automatically included in the access log when tracing is enabled.
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -58,7 +73,9 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		log.Info().
+		// zerolog.DefaultContextLogger (set in init) guarantees Ctx always returns at
+		// least log.Logger, so no separate nil/disabled check is needed.
+		zerolog.Ctx(r.Context()).Info().
 			Str("request_id", rid).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).

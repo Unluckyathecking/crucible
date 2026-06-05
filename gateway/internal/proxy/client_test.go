@@ -15,6 +15,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
@@ -874,5 +876,179 @@ func TestInvoke_BreakerOpensOnDeadlineExceeded(t *testing.T) {
 	}
 	if c.breaker.CurrentState() != resilience.StateOpen {
 		t.Errorf("breaker state = %v, want StateOpen: context.DeadlineExceeded must be recorded as a failure", c.breaker.CurrentState())
+	}
+}
+
+// --- OTel tracing tests ---
+
+func newProxyTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(ctx); err != nil {
+			t.Errorf("tracer provider shutdown: %v", err)
+		}
+	})
+	return tp, sr
+}
+
+// TestInvoke_TraceparentHeaderPropagated verifies that a valid W3C traceparent
+// header is injected on the outbound worker HTTP request when a real span is
+// active in the calling context. This is the gateway→worker trace seam.
+// Also verifies that X-Request-ID is preserved alongside the traceparent.
+func TestInvoke_TraceparentHeaderPropagated(t *testing.T) {
+	tp, _ := newProxyTestProvider(t)
+
+	ctx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
+	defer parentSpan.End()
+
+	var capturedTraceparent, capturedRequestID string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedTraceparent = r.Header.Get("traceparent")
+		capturedRequestID = r.Header.Get("X-Request-ID")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0)
+	if _, err := c.Invoke(ctx, &InvokeRequest{Operation: "op", RequestID: "test-rid"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	if capturedTraceparent == "" {
+		t.Fatal("expected Traceparent header on outbound worker request, got none")
+	}
+	parts := strings.Split(capturedTraceparent, "-")
+	if len(parts) != 4 {
+		t.Fatalf("malformed traceparent %q: want 4 dash-separated parts", capturedTraceparent)
+	}
+	if parts[0] != "00" {
+		t.Errorf("traceparent version = %q, want 00", parts[0])
+	}
+	if len(parts[1]) != 32 {
+		t.Errorf("trace ID = %q (%d chars), want 32 hex chars", parts[1], len(parts[1]))
+	}
+	if parts[1] == strings.Repeat("0", 32) {
+		t.Error("trace ID is all zeros — span context is not valid")
+	}
+	if len(parts[2]) != 16 {
+		t.Errorf("span ID = %q (%d chars), want 16 hex chars", parts[2], len(parts[2]))
+	}
+	if parts[2] == strings.Repeat("0", 16) {
+		t.Error("span ID is all zeros — span context is not valid")
+	}
+	// Verify X-Request-ID is preserved when traceparent is injected.
+	if capturedRequestID == "" {
+		t.Error("X-Request-ID header missing — traceparent injection must not remove it")
+	}
+}
+
+// TestInvoke_ProxyInvokeSpanCreated verifies that a proxy.invoke child span is
+// created for each Invoke call, carrying expected HTTP semantic attributes.
+func TestInvoke_ProxyInvokeSpanCreated(t *testing.T) {
+	tp, sr := newProxyTestProvider(t)
+
+	ctx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0)
+	if _, err := c.Invoke(ctx, &InvokeRequest{Operation: "op"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	parentSpan.End()
+
+	var proxySpan sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == "proxy.invoke" {
+			proxySpan = s
+			break
+		}
+	}
+	if proxySpan == nil {
+		t.Fatal("no proxy.invoke span recorded")
+	}
+
+	var httpMethod, httpURL string
+	var retryAttempt int64 = -1
+	for _, a := range proxySpan.Attributes() {
+		switch string(a.Key) {
+		case "http.method":
+			httpMethod = a.Value.AsString()
+		case "http.url":
+			httpURL = a.Value.AsString()
+		case "retry.attempt":
+			retryAttempt = a.Value.AsInt64()
+		}
+	}
+	if httpMethod != "POST" {
+		t.Errorf("http.method = %q, want POST", httpMethod)
+	}
+	if !strings.Contains(httpURL, "/invoke") {
+		t.Errorf("http.url = %q, want URL containing /invoke", httpURL)
+	}
+	if retryAttempt != 0 {
+		t.Errorf("retry.attempt = %d, want 0 for first attempt", retryAttempt)
+	}
+}
+
+// TestInvoke_RetryCreatesDistinctProxySpans verifies that each retry attempt
+// produces a separate proxy.invoke span with an incrementing retry.attempt
+// attribute, making retry causality visible in distributed traces.
+func TestInvoke_RetryCreatesDistinctProxySpans(t *testing.T) {
+	tp, sr := newProxyTestProvider(t)
+
+	ctx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
+
+	var callCount int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+		if n < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{Retry: resilience.Policy{MaxAttempts: 3, BaseBackoff: time.Millisecond}}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+	if _, err := c.Invoke(ctx, &InvokeRequest{Operation: "op"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	parentSpan.End()
+
+	var proxySpans []sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == "proxy.invoke" {
+			proxySpans = append(proxySpans, s)
+		}
+	}
+	if got := len(proxySpans); got != 3 {
+		t.Fatalf("proxy.invoke span count = %d, want 3 (one per attempt)", got)
+	}
+
+	// Verify retry.attempt values 0, 1, 2 are all present across the three spans.
+	attempts := make(map[int64]bool)
+	for _, s := range proxySpans {
+		for _, a := range s.Attributes() {
+			if string(a.Key) == "retry.attempt" {
+				attempts[a.Value.AsInt64()] = true
+			}
+		}
+	}
+	for _, want := range []int64{0, 1, 2} {
+		if !attempts[want] {
+			t.Errorf("missing proxy.invoke span with retry.attempt=%d; found: %v", want, attempts)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -159,17 +160,15 @@ func TestAccessLogPassThrough(t *testing.T) {
 
 func TestAccessLogWithPanic(t *testing.T) {
 	var buf strings.Builder
-	// We want to capture the zerolog output to verify the access log exists
-	oldLogger := log.Logger
-	defer func() { log.Logger = oldLogger }()
-
-	// Overwrite the global logger temporarily
-	log.Logger = log.Output(&buf)
+	// Inject a test logger via context so AccessLog picks it up through zerolog.Ctx.
+	// This avoids mutating the global log.Logger which is racy under -race.
+	testLogger := zerolog.New(&buf)
 
 	req := httptest.NewRequest(http.MethodGet, "/test-panic", nil)
+	req = req.WithContext(testLogger.WithContext(req.Context()))
 	rec := httptest.NewRecorder()
 
-	// Since we swapped the order, AccessLog should wrap Recovery
+	// AccessLog wraps Recovery so the access log is emitted even when the handler panics.
 	handler := AccessLog(Recovery(panicHandler))
 	handler.ServeHTTP(rec, req)
 

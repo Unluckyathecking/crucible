@@ -17,10 +17,20 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
+
+// tracePropagator is the W3C TraceContext propagator used for header injection on
+// outbound worker calls. propagation.TraceContext is a zero-size stateless struct;
+// its Extract/Inject methods read only from their arguments and never mutate the
+// receiver, so concurrent use across goroutines is unconditionally safe.
+var tracePropagator = propagation.TraceContext{}
 
 const (
 	defaultTimeout = 30 * time.Second
@@ -33,6 +43,8 @@ const (
 	// before an HTTP response was received for reasons other than a transport error
 	// (e.g. request-build failure). It is not retryable.
 	statusNone = -1
+
+	proxyTracerName = "crucible.proxy"
 )
 
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
@@ -267,7 +279,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		resp, status, err := c.doOnce(ctx, body, in.RequestID, m)
+		resp, status, err := c.doOnce(ctx, body, in.RequestID, m, attempt)
 		// Count retries only after doOnce returned: the metric reflects real HTTP
 		// dispatches, not intents that were cancelled by ctx/breaker before dispatch.
 		if attempt > 0 {
@@ -324,7 +336,33 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics) (*InvokeResponse, int, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, status int, retErr error) {
+	// Wrap each attempt in a child span so retry causality is visible in traces.
+	// Derive the tracer from the span already in ctx (placed there by tracing.Middleware).
+	// When tracing is enabled the span carries the gateway provider, so the proxy span
+	// is automatically registered with the same exporter. When no span is in ctx,
+	// SpanFromContext returns a non-nil noop span; its TracerProvider() returns the noop
+	// provider, so Start() is a lightweight allocation-free no-op.
+	parentSpan := oteltrace.SpanFromContext(ctx)
+	ctx, span := parentSpan.TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
+	span.SetAttributes(
+		attribute.String("http.url", c.workerURL+"/invoke"),
+		attribute.String("http.method", http.MethodPost),
+		attribute.Int("retry.attempt", attempt),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		} else if status >= 500 {
+			// Worker returned HTTP 5xx without a Go error — the transport succeeded
+			// but the worker reported failure. Mark the span as Error so retry
+			// causality is visible in traces even when the caller gets a clean return.
+			span.SetStatus(codes.Error, fmt.Sprintf("worker returned HTTP %d", status))
+		}
+		span.End()
+	}()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workerURL+"/invoke", bytes.NewReader(body))
 	if err != nil {
 		return nil, statusNone, fmt.Errorf("build request: %w", err)
@@ -333,6 +371,9 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if requestID != "" {
 		req.Header.Set("X-Request-ID", requestID)
 	}
+	// Propagate W3C traceparent when a span is active in ctx; no-op when absent.
+	// X-Request-ID set above is not removed or modified.
+	tracePropagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	start := time.Now()
 	resp, err := c.http.Do(req)
@@ -365,8 +406,8 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if resp == nil {
 		return nil, 0, errors.New("worker call: nil response without error")
 	}
-	// Defer registered after the nil guard covers exactly the success path.
-	// It fires once when doOnce returns.
+	// Defer covers all return paths after this point — both the non-200 error
+	// return and the successful decode path. Registered after the nil guard above.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

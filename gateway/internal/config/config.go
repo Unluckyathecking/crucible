@@ -4,6 +4,9 @@ package config
 
 import (
 	"fmt"
+	"math"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -49,6 +52,14 @@ type Config struct {
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
+
+	// Tracing (OTel) — disabled by default; zero-config dials no exporter.
+	OtelTracingEnabled   bool    `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
+	OtelExporterEndpoint string  `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
+	// OtelExporterInsecure disables TLS for the OTLP exporter. Default false (TLS on).
+	// Set to true for localhost/sidecar collectors that do not serve TLS.
+	OtelExporterInsecure bool    `envconfig:"OTEL_EXPORTER_INSECURE" default:"false"`
+	OtelSampleRatio      float64 `envconfig:"OTEL_SAMPLE_RATIO"      default:"1.0"`
 }
 
 // Load reads config from the environment and validates it.
@@ -128,6 +139,40 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
+	// --- OTel tracing validation ---
+	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
+	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
+	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 || math.IsNaN(c.OtelSampleRatio) || math.IsInf(c.OtelSampleRatio, 0) {
+		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be a finite number in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
+	}
+	// Trim whitespace so " localhost:4318" or "localhost:4318 " (a common copy-paste
+	// mistake) is treated equivalently to "localhost:4318". Do this before the empty
+	// check so a whitespace-only value is caught by the enabled+empty guard below.
+	c.OtelExporterEndpoint = strings.TrimSpace(c.OtelExporterEndpoint)
+	// Reject unreasonably long endpoint strings after trim to prevent memory pressure
+	// from environment variables that are accidentally set to large values.
+	const maxEndpointLen = 4096
+	if len(c.OtelExporterEndpoint) > maxEndpointLen {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT exceeds maximum length %d (got %d)", maxEndpointLen, len(c.OtelExporterEndpoint))
+	}
+	// Scheme validation is unconditional: an endpoint with a scheme is always wrong
+	// regardless of whether tracing is enabled, preventing latent misconfigurations.
+	if c.OtelExporterEndpoint != "" {
+		lower := strings.ToLower(c.OtelExporterEndpoint)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+		}
+		host, _, err := net.SplitHostPort(c.OtelExporterEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be valid host:port (got %q): %w", c.OtelExporterEndpoint, err)
+		}
+		if host == "" {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must have a non-empty host (got %q)", c.OtelExporterEndpoint)
+		}
+	}
+	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
+	}
 	return &c, nil
 }
 
