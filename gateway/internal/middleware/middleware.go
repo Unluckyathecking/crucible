@@ -69,11 +69,9 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		// Use the context logger enriched by tracing middleware with trace_id/span_id.
 		// zerolog.DefaultContextLogger (set in init) guarantees Ctx always returns at
 		// least log.Logger, so no separate nil/disabled check is needed.
-		logger := *zerolog.Ctx(r.Context())
-		logger.Info().
+		zerolog.Ctx(r.Context()).Info().
 			Str("request_id", rid).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).

@@ -159,8 +159,12 @@ func Load() (*Config, error) {
 		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
 		}
-		if _, _, err := net.SplitHostPort(c.OtelExporterEndpoint); err != nil {
+		host, _, err := net.SplitHostPort(c.OtelExporterEndpoint)
+		if err != nil {
 			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be valid host:port (got %q): %w", c.OtelExporterEndpoint, err)
+		}
+		if host == "" {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must have a non-empty host (got %q)", c.OtelExporterEndpoint)
 		}
 	}
 	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
