@@ -55,7 +55,7 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewSchemaless(attribute.String("service.name", "crucible-gateway")),
+		resource.NewWithAttributes("", attribute.String("service.name", "crucible-gateway")),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: merge resource: %w", err)
