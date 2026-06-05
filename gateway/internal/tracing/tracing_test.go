@@ -403,6 +403,7 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	const n = 20
 	var wg sync.WaitGroup
 	traceIDs := make([]string, n)
+	statusCodes := make([]int, n)
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -415,12 +416,17 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Errorf("goroutine %d: unexpected status %d", idx, rec.Code)
-			}
+			statusCodes[idx] = rec.Code
 		}(i)
 	}
 	wg.Wait()
+
+	// All assertions run after wg.Wait() so t.Errorf is called from the test goroutine only.
+	for i, code := range statusCodes {
+		if code != http.StatusOK {
+			t.Errorf("goroutine %d: unexpected status %d", i, code)
+		}
+	}
 
 	if got := len(sr.Ended()); got != n {
 		t.Errorf("ended span count = %d, want %d (each goroutine must produce exactly one span)", got, n)
