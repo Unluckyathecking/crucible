@@ -73,11 +73,17 @@ func Load() (*Config, error) {
 	if c.WorkerRetryBackoffMS < 0 {
 		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be >= 0 (got %d)", c.WorkerRetryBackoffMS)
 	}
+	if c.WorkerRetryBackoffMS > 60000 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be <= 60000 (1 minute) (got %d)", c.WorkerRetryBackoffMS)
+	}
 	if c.WorkerBreakerThreshold < 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be >= 0 (got %d)", c.WorkerBreakerThreshold)
 	}
 	if c.WorkerBreakerCooldownMS < 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 0 (got %d)", c.WorkerBreakerCooldownMS)
+	}
+	if c.WorkerBreakerCooldownMS > 300000 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
 	}
 	return &c, nil
 }

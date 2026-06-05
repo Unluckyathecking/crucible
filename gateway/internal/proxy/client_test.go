@@ -494,7 +494,10 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 
 	// Drive the breaker open with exactly Threshold failures.
 	for i := 0; i < 2; i++ {
-		c.Invoke(context.Background(), &InvokeRequest{Operation: "x"}) //nolint:errcheck
+		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+		if err == nil {
+			t.Fatalf("expected error on attempt %d to open breaker, got nil", i+1)
+		}
 	}
 	if c.breaker.CurrentState() != resilience.StateOpen {
 		t.Fatalf("breaker not open after %d failures", 2)
@@ -520,6 +523,7 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 
 // TestInvoke_BreakerClosesOnSuccessfulProbe verifies the full breaker lifecycle:
 // open → half-open (after cooldown) → closed (after successful probe).
+// Uses WithNow to advance the clock deterministically instead of time.Sleep.
 func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	var callCount atomic.Int32
 	// Server returns 5xx until the 3rd call, then succeeds.
@@ -534,24 +538,28 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	}))
 	defer worker.Close()
 
-	const cooldown = 20 * time.Millisecond
 	pol := ResiliencePolicy{
-		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: cooldown},
+		// Long cooldown so real time never accidentally expires; we advance via WithNow.
+		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: time.Hour},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
-	// Open the breaker.
+	// Open the breaker with exactly Threshold failures.
 	for i := 0; i < 2; i++ {
-		c.Invoke(context.Background(), &InvokeRequest{Operation: "x"}) //nolint:errcheck
+		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+		if err == nil {
+			t.Fatalf("expected error on attempt %d to open breaker, got nil", i+1)
+		}
 	}
 	if c.breaker.CurrentState() != resilience.StateOpen {
 		t.Fatal("expected StateOpen after threshold failures")
 	}
 
-	// Wait for cooldown so breaker transitions to half-open on next Allow().
-	time.Sleep(cooldown * 2)
+	// Advance the fake clock 2 hours past real now so Allow() sees the cooldown as elapsed.
+	fakeNow := time.Now().Add(2 * time.Hour)
+	c.breaker.WithNow(func() time.Time { return fakeNow })
 
-	// Probe call should succeed and close the breaker.
+	// Probe: Allow() detects cooldown elapsed → StateHalfOpen; doOnce succeeds → StateClosed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err != nil {
 		t.Fatalf("probe Invoke: %v", err)

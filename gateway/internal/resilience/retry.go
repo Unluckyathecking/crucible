@@ -3,8 +3,9 @@ package resilience
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
-	"math/rand"
+	"math/big"
 	"time"
 )
 
@@ -20,10 +21,15 @@ type Policy struct {
 }
 
 // IsRetryable reports whether a call outcome warrants a retry.
-// status == 0 means the error occurred before any HTTP response arrived (transport failure).
+// status == 0 means transport/network error before HTTP response (retryable).
+// status < 0 means pre-flight build error before any network call (not retryable).
 // Context cancellation / deadline errors are never retried — the caller is already gone.
 func IsRetryable(err error, status int) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	// Pre-flight errors (e.g. request-build failure) never reach the worker.
+	if status < 0 {
 		return false
 	}
 	// Transport or network error before HTTP response.
@@ -45,7 +51,8 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		maxB = 5 * time.Second
 	}
 
-	// Exponential cap: base * 2^(n-1), capped at maxB.
+	// Exponential cap: base * 2^(n-1), capped at maxB. n is small (max 10),
+	// so the loop is at most 9 iterations; no overflow risk within that range.
 	cap := base
 	for i := 1; i < n; i++ {
 		cap *= 2
@@ -58,11 +65,17 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		cap = maxB
 	}
 
-	// Equal jitter: uniform in [cap/2, cap].
+	// Equal jitter: uniform in [cap/2, cap] using cryptographically secure randomness
+	// to prevent synchronized retry storms across multiple gateway instances.
 	half := cap / 2
 	var d time.Duration
 	if half > 0 {
-		d = half + time.Duration(rand.Int63n(int64(half)+1))
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
+		if err != nil {
+			d = half // theoretical fallback; crypto/rand.Int only errors on OS RNG failure
+		} else {
+			d = half + time.Duration(n.Int64())
+		}
 	} else {
 		d = cap
 	}

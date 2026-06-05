@@ -152,11 +152,18 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 
 		resp, status, err := c.doOnce(ctx, body, in.RequestID)
 
-		// Update breaker: only retryable outcomes (transport + 5xx) count as failures.
+		// Update breaker. Retryable outcomes (transport + 5xx) count as failures.
+		// Any real HTTP response — even a non-retryable 4xx or a 200 with a decode
+		// error — proves the worker is reachable: record success to reset the failure
+		// streak and, critically, release the half-open probe slot. Omitting this for
+		// non-retryable errors leaves probeInFlight=true and permanently blocks all
+		// subsequent Allow() calls while in StateHalfOpen.
+		// Pre-flight build errors (statusNone) never contact the worker, so we leave
+		// the breaker state unchanged in that case.
 		if c.breaker != nil {
 			if resilience.IsRetryable(err, status) {
 				c.breaker.RecordFailure()
-			} else if err == nil {
+			} else if status != statusNone {
 				c.breaker.RecordSuccess()
 			}
 		}

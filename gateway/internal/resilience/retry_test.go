@@ -24,6 +24,7 @@ func TestIsRetryable(t *testing.T) {
 		{"deadline exceeded", context.DeadlineExceeded, 0, false},
 		{"wraps canceled", fmt.Errorf("worker call: %w", context.Canceled), 0, false},
 		{"nil err zero status", nil, 0, false},
+		{"pre-flight statusNone (-1)", errors.New("build request: bad url"), -1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
