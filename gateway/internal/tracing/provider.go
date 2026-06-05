@@ -32,7 +32,10 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 
-	exp, err := otlptracehttp.New(ctx, opts...)
+	// Bound exporter creation so a slow/unreachable collector doesn't block startup.
+	expCtx, expCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer expCancel()
+	exp, err := otlptracehttp.New(expCtx, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: create OTLP exporter: %w", err)
 	}

@@ -473,10 +473,9 @@ func TestOtelExporterEndpointWithSchemeReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterInsecureInvalidValueReturnsError verifies that a non-boolean
-// OTEL_EXPORTER_INSECURE value is rejected at load time rather than silently
-// defaulting to false, preventing a misconfigured deployment from exposing TLS
-// traffic on what the operator intended to be an insecure link.
+// TestOtelExporterInsecureInvalidValueReturnsError verifies that envconfig rejects
+// a non-boolean OTEL_EXPORTER_INSECURE value during struct parsing, causing Load
+// to return an error rather than silently defaulting to false.
 func TestOtelExporterInsecureInvalidValueReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_INSECURE", "not-a-bool")

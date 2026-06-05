@@ -299,6 +299,33 @@ func TestSpanNamedByChiRoutePattern(t *testing.T) {
 	}
 }
 
+// TestSpanNamedGatewayUnmatchedForUnknownRoute verifies that when a chi router is
+// active but no route matches the request (404), the gateway span is renamed to
+// "gateway.unmatched" rather than keeping the "gateway.request" placeholder.
+func TestSpanNamedGatewayUnmatchedForUnknownRoute(t *testing.T) {
+	tp, sr := newTestProvider(t)
+
+	r := chi.NewRouter()
+	r.Use(tracing.Middleware(tp))
+	r.Get("/items/{id}", okHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/no-such-route", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 from chi, got %d", rec.Code)
+	}
+	_, plain := findSpan(t, sr.Ended(), "gateway.request")
+	if plain {
+		t.Error("span was not renamed from gateway.request for unmatched chi route")
+	}
+	_, unmatched := findSpan(t, sr.Ended(), "gateway.unmatched")
+	if !unmatched {
+		t.Error("expected span named gateway.unmatched for unmatched chi route, not found")
+	}
+}
+
 // TestNoOpWhenDisabledWithNilProvider verifies the Middleware(nil) code path —
 // the production default when TracerProvider is not wired — produces no Traceparent.
 func TestNoOpWhenDisabledWithNilProvider(t *testing.T) {

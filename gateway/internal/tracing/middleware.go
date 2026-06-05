@@ -44,20 +44,13 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 			// Start gateway.request span — child of remote parent or new root span.
 			ctx, span := tracer.Start(ctx, "gateway.request")
-			// Deferred so the span is ended even if a panic escapes a middleware layer.
-			// Annotations (attributes, status, name) execute inline before the return,
-			// so they are always recorded before End fires.
-			defer span.End()
 
-			// Determine the base logger. zerolog.Ctx returns a disabled logger pointer
-			// when no prior middleware has stored a logger in the context. Guard against
-			// nil (paranoid: zerolog never returns nil, but the nil check costs nothing)
-			// and against the disabled fallback — both indicate "no logger yet in context."
-			// Use r.Context() for the logger lookup so that any logger already
-			// stored by upstream middleware (e.g. RequestID) is preserved across
-			// the propagator.Extract / tracer.Start context derivations.
+			// Use r.Context() for the logger lookup so any logger stored by upstream
+			// middleware (e.g. RequestID) is preserved across the propagator.Extract /
+			// tracer.Start context derivations. zerolog.Ctx never returns nil, but may
+			// return a disabled logger when no logger has been stored in the context yet.
 			base := zerolog.Ctx(r.Context())
-			if base == nil || base.GetLevel() == zerolog.Disabled {
+			if base.GetLevel() == zerolog.Disabled {
 				l := log.Logger
 				base = &l
 			}
@@ -81,28 +74,42 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 			// Wrap the response writer to capture the HTTP status code for span annotation.
 			ww := httputil.NewStatusRecorder(w)
+
+			// A single deferred closure records all span attributes, updates status,
+			// resolves the span name from the chi route pattern, and ends the span.
+			// All mutations and span.End() are in the same closure so their ordering
+			// is unambiguous regardless of how the handler exits.
+			defer func() {
+				span.SetAttributes(
+					attribute.String("http.method", r.Method),
+					attribute.String("http.path", r.URL.Path),
+					attribute.Int("http.status_code", ww.Status),
+				)
+
+				// Only server errors (5xx) indicate a gateway failure; 4xx are
+				// client errors the server handled correctly per OTel conventions.
+				if ww.Status >= 500 {
+					span.SetStatus(codes.Error, http.StatusText(ww.Status))
+				}
+
+				// Rename span and record http.route after routing has resolved.
+				// "gateway.request" is only the initial placeholder — chi populates
+				// RoutePattern during ServeHTTP, so it's available here but not at span start.
+				// When chi is active but no route matched (404), use "gateway.unmatched"
+				// so the span name is still meaningful and distinct from a matched route.
+				if rctx := chi.RouteContext(r.Context()); rctx != nil {
+					if rctx.RoutePattern() != "" {
+						span.SetAttributes(attribute.String("http.route", rctx.RoutePattern()))
+						span.SetName(rctx.RoutePattern())
+					} else {
+						span.SetName("gateway.unmatched")
+					}
+				}
+
+				span.End()
+			}()
+
 			next.ServeHTTP(ww, r)
-
-			// Record HTTP semantic attributes after the handler returns.
-			span.SetAttributes(
-				attribute.String("http.method", r.Method),
-				attribute.String("http.path", r.URL.Path),
-				attribute.Int("http.status_code", ww.Status),
-			)
-
-			// Only server errors (5xx) indicate a gateway failure; 4xx are
-			// client errors the server handled correctly per OTel conventions.
-			if ww.Status >= 500 {
-				span.SetStatus(codes.Error, http.StatusText(ww.Status))
-			}
-
-			// Rename span and record http.route after routing has resolved.
-			// "gateway.request" is only the initial placeholder — chi populates
-			// RoutePattern during ServeHTTP, so it's available here but not at span start.
-			if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
-				span.SetAttributes(attribute.String("http.route", rctx.RoutePattern()))
-				span.SetName(rctx.RoutePattern())
-			}
 		})
 	}
 }

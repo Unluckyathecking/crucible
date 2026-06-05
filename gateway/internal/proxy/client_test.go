@@ -1024,4 +1024,19 @@ func TestInvoke_RetryCreatesDistinctProxySpans(t *testing.T) {
 	if got := len(proxySpans); got != 3 {
 		t.Fatalf("proxy.invoke span count = %d, want 3 (one per attempt)", got)
 	}
+
+	// Verify retry.attempt values 0, 1, 2 are all present across the three spans.
+	attempts := make(map[int64]bool)
+	for _, s := range proxySpans {
+		for _, a := range s.Attributes() {
+			if string(a.Key) == "retry.attempt" {
+				attempts[a.Value.AsInt64()] = true
+			}
+		}
+	}
+	for _, want := range []int64{0, 1, 2} {
+		if !attempts[want] {
+			t.Errorf("missing proxy.invoke span with retry.attempt=%d; found: %v", want, attempts)
+		}
+	}
 }
