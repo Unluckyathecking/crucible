@@ -100,8 +100,11 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
 	}
-	// Cross-field: backoff/cooldown values are accepted even when the feature is disabled
-	// (WORKER_RETRY_MAX <= 1, WORKER_BREAKER_THRESHOLD == 0) so operators can pre-configure
-	// without enabling — the unused value is ignored by the retry/breaker code at runtime.
+	// With retries enabled a zero backoff hammers the worker without any delay.
+	// retry.go defaults BaseBackoff to 100ms when <= 0, but reject it explicitly
+	// here so the config is self-consistent: retry + no backoff is a misconfiguration.
+	if c.WorkerRetryMax > 1 && c.WorkerRetryBackoffMS == 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be > 0 when WORKER_RETRY_MAX > 1 (got %d)", c.WorkerRetryBackoffMS)
+	}
 	return &c, nil
 }

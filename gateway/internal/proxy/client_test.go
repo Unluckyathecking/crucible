@@ -510,6 +510,11 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+	// The error must be context-related (deadline or cancel), not a 503 that
+	// happened to arrive before the deadline.
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context error, got %v", err)
+	}
 	// With 30ms base backoff and 80ms deadline, at most 3 calls occur:
 	// call 0 (0ms) + sleep ~15ms + call 1 (~15ms) + sleep ~30-60ms > 80ms budget.
 	// <= 3 proves ctx actually stopped retries early, not just "didn't reach 20".
@@ -546,14 +551,20 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 
 	callsBefore := callCount.Load()
 
-	// These calls must fast-fail — no HTTP calls should reach the server.
+	// These calls must fast-fail — no HTTP calls should reach the server,
+	// and each should return in well under 100ms (no network round-trip).
 	for i := 0; i < 5; i++ {
+		start := time.Now()
 		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+		elapsed := time.Since(start)
 		if err == nil {
 			t.Fatal("expected error while breaker is open")
 		}
 		if !errors.Is(err, resilience.ErrBreakerOpen) {
 			t.Errorf("error %q should wrap ErrBreakerOpen", err.Error())
+		}
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("fast-fail took %v; expected < 100ms (should not make a network call)", elapsed)
 		}
 	}
 

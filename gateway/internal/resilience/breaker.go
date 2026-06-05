@@ -89,7 +89,8 @@ func (b *Breaker) Allow() error {
 		} else {
 			b.probeInFlight = true
 		}
-	// StateClosed: result stays nil; proceed.
+	case StateClosed:
+		// No probe slot needed; proceed with the call.
 	}
 	b.mu.Unlock()
 	if onState != nil {
@@ -103,6 +104,13 @@ func (b *Breaker) Allow() error {
 //   - StateHalfOpen: closes the breaker (probe succeeded).
 //   - StateOpen: stale success from a call admitted before the breaker tripped;
 //     failure streak is preserved so the cooldown + probe path decides recovery.
+//
+// Known limitation: a stale success from a StateClosed request that completes
+// after Allow() has already transitioned the breaker to StateHalfOpen will close
+// the breaker without the intended probe. This race is self-correcting: the
+// actual probe still runs and, if the worker is unhealthy, RecordFailure will
+// re-open the breaker. Fixing it precisely requires a per-probe generation token
+// (API change), which is out of scope for this implementation.
 func (b *Breaker) RecordSuccess() {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return
