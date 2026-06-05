@@ -108,9 +108,10 @@ func (b *Breaker) Allow() (uint64, error) {
 		if b.probeInFlight {
 			result = ErrBreakerOpen
 		} else {
-			// A prior probe completed (via Record*) but the breaker hasn't closed yet.
-			// Allow a fresh probe and bump the generation so the previous probe's stale
-			// Record* calls are ignored.
+			// A prior probe completed (via Record*) but the breaker hasn't closed yet
+			// (e.g. RecordAbort released the slot). Allow a fresh probe and bump the
+			// generation so any stale Record* calls from the previous probe are ignored.
+			// No state transition occurs here — the breaker stays HalfOpen.
 			b.probeGen++
 			b.probeInFlight = true
 			token = b.probeGen
@@ -119,6 +120,9 @@ func (b *Breaker) Allow() (uint64, error) {
 		// Non-probe call; no probe slot needed. Token stays 0.
 	}
 	b.mu.Unlock()
+	// newState is a value captured inside the lock before Unlock(); it is not a live
+	// reference to b.state. Calling onState after Unlock() is safe: the callback
+	// receives an immutable copy and may safely call back into the breaker.
 	if onState != nil {
 		onState(newState)
 	}
@@ -155,7 +159,8 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		b.failures = 0
 	case StateOpen:
 		// Stale success from a call admitted before the breaker tripped.
-		// Failure streak is preserved — recovery requires a successful probe.
+		// Do NOT reset failures — the open was caused by a real streak and recovery
+		// requires a successful probe, not a stale in-flight request's completion.
 	}
 	b.mu.Unlock()
 	if onState != nil {
@@ -194,7 +199,6 @@ func (b *Breaker) RecordFailure(token uint64) {
 	var onState func(State)
 	switch b.state {
 	case StateClosed:
-		b.probeInFlight = false
 		b.failures++
 		if b.failures >= b.cfg.Threshold {
 			b.openUntil = now.Add(b.cfg.Cooldown)

@@ -56,26 +56,28 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		maxB = 5 * time.Second
 	}
 
-	// Exponential cap: base * 2^n, capped at maxB.
-	// Clamp base to maxB first so a BaseBackoff > MaxBackoff doesn't exceed ceiling
+	// Exponential ceiling: base * 2^n, capped at maxB.
+	// Clamp base to maxB first so a BaseBackoff > MaxBackoff doesn't exceed the ceiling
 	// on the first retry. Then double once per retry up to maxB.
-	backoffCap := base
-	if backoffCap > maxB {
-		backoffCap = maxB
+	ceiling := base
+	if ceiling > maxB {
+		ceiling = maxB
 	}
 	for i := 0; i < n; i++ {
-		if backoffCap >= maxB {
+		if ceiling >= maxB {
 			break
 		}
-		backoffCap *= 2
-		if backoffCap > maxB {
-			backoffCap = maxB
+		ceiling *= 2
+		if ceiling > maxB {
+			ceiling = maxB
 		}
 	}
 
-	// Equal jitter: uniform in [backoffCap/2, backoffCap] using cryptographically secure
-	// randomness to prevent synchronized retry storms across multiple gateway instances.
-	half := backoffCap / 2
+	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand — required to
+	// prevent synchronized retry storms when multiple gateway instances retry together.
+	// math/rand must NOT be used here even though it is seeded automatically in Go 1.20+:
+	// its PRNG output is predictable with enough observations, breaking desynchronization.
+	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {
 		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
@@ -85,7 +87,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 			d = half + time.Duration(jitter.Int64())
 		}
 	} else {
-		d = backoffCap
+		d = ceiling
 	}
 
 	t := time.NewTimer(d)

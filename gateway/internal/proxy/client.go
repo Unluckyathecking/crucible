@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
@@ -64,10 +66,12 @@ type ResiliencePolicy struct {
 
 // Client forwards InvokeRequests to a worker.
 type Client struct {
-	workerURL string
-	http      *http.Client
-	retry     resilience.Policy
-	breaker   *resilience.Breaker
+	workerURL    string
+	http         *http.Client
+	retry        resilience.Policy
+	breaker      *resilience.Breaker
+	retriesTotal prometheus.Counter
+	breakerState prometheus.Gauge
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
@@ -87,14 +91,11 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 	if len(policies) > 0 {
 		pol = policies[0]
 	}
-	var b *resilience.Breaker
-	if pol.Breaker.Threshold > 0 {
-		b = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
-			observability.WorkerBreakerState.Set(float64(s))
-		})
-	}
-	return &Client{
-		workerURL: workerURL,
+	c := &Client{
+		workerURL:    workerURL,
+		retry:        pol.Retry,
+		retriesTotal: observability.WorkerRetriesTotal,
+		breakerState: observability.WorkerBreakerState,
 		http: &http.Client{
 			Timeout: timeout, // per-request ceiling; enforces WORKER_TIMEOUT_MS
 			Transport: &http.Transport{
@@ -114,9 +115,16 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 				// are bounded by the Dialer connect timeout above.
 			},
 		},
-		retry:   pol.Retry,
-		breaker: b,
 	}
+	if pol.Breaker.Threshold > 0 {
+		// The closure captures c (a pointer), so breakerState is read at callback time —
+		// WithMetrics can update c.breakerState after construction and the callback will
+		// automatically use the new gauge.
+		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
+			c.breakerState.Set(float64(s))
+		})
+	}
+	return c
 }
 
 // WithBreakerClock injects a test clock into the circuit breaker. Intended for
@@ -124,6 +132,17 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 	if c.breaker != nil {
 		c.breaker.WithNow(now)
+	}
+	return c
+}
+
+// WithMetrics replaces the default package-level Prometheus vars with the metrics
+// from an isolated test registry. Intended for deterministic tests only; do not
+// call after Invoke goroutines are running.
+func (c *Client) WithMetrics(m *observability.Metrics) *Client {
+	if m != nil {
+		c.retriesTotal = m.WorkerRetriesTotal
+		c.breakerState = m.WorkerBreakerState
 	}
 	return c
 }
@@ -189,7 +208,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Count the retry before the call so the metric captures every retry attempt
 		// dispatched, regardless of the outcome (including pre-flight build errors).
 		if attempt > 0 {
-			observability.WorkerRetriesTotal.Inc()
+			c.retriesTotal.Inc()
 		}
 
 		resp, status, err := c.doOnce(ctx, body, in.RequestID)
