@@ -73,8 +73,9 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		if ceiling >= maxB {
 			break
 		}
-		// Guard before doubling: if ceiling > maxB/2, doubling would overflow maxB
-		// (or wrap on 32-bit builds). Cap directly instead.
+		// Overflow-safe doubling: if ceiling > maxB/2, doubling would exceed maxB
+		// (and could wrap on 32-bit builds where time.Duration is int32).
+		// Cap to maxB directly instead of doubling past it.
 		if ceiling > maxB/2 {
 			ceiling = maxB
 		} else {

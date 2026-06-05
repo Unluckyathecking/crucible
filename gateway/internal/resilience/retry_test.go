@@ -96,6 +96,8 @@ func TestPolicy_Sleep_BackoffDoublingAndCap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing test skipped in short mode")
 	}
+	// n is 0-indexed: n=0 means "first retry" (sleep before the 2nd attempt),
+	// n=1 means "second retry", etc.
 	// base=10ms, max=40ms → caps: n=0→10ms, n=1→20ms, n=2→40ms, n=3→40ms (capped)
 	// Equal jitter band [cap/2, cap]: n=0 in [5,10], n=1 in [10,20], n=2+ in [20,40].
 	p := Policy{BaseBackoff: 10 * time.Millisecond, MaxBackoff: 40 * time.Millisecond}
@@ -103,10 +105,10 @@ func TestPolicy_Sleep_BackoffDoublingAndCap(t *testing.T) {
 		n              int
 		minFloor, maxCeil time.Duration
 	}{
-		{0, 4 * time.Millisecond, 20 * time.Millisecond},  // [5ms,10ms] + tight CI slack
-		{1, 8 * time.Millisecond, 35 * time.Millisecond},  // [10ms,20ms] + tight CI slack
-		{2, 15 * time.Millisecond, 60 * time.Millisecond}, // [20ms,40ms] + CI slack
-		{3, 15 * time.Millisecond, 60 * time.Millisecond}, // capped — same range as n=2
+		{0, 4 * time.Millisecond, 20 * time.Millisecond},  // first retry: [5ms,10ms] + CI slack
+		{1, 8 * time.Millisecond, 35 * time.Millisecond},  // second retry: [10ms,20ms] + CI slack
+		{2, 15 * time.Millisecond, 60 * time.Millisecond}, // third retry: [20ms,40ms] + CI slack
+		{3, 15 * time.Millisecond, 60 * time.Millisecond}, // fourth retry: capped at max
 	}
 	for _, tc := range cases {
 		start := time.Now()
