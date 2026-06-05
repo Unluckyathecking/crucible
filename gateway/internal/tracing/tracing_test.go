@@ -463,6 +463,37 @@ func TestMalformedTraceparentStartsRootSpan(t *testing.T) {
 	}
 }
 
+// TestValidPrefixPlusGarbageTraceparentStartsRootSpan verifies that a traceparent
+// header whose first 55 bytes are a syntactically valid W3C traceparent but which
+// has trailing garbage appended is rejected by the propagator. Per the W3C Trace
+// Context spec, parsers must treat unknown extra bytes as invalid and ignore the
+// header, causing the middleware to start a fresh root span.
+func TestValidPrefixPlusGarbageTraceparentStartsRootSpan(t *testing.T) {
+	t.Parallel()
+	tp, sr := newTestProvider(t)
+
+	// Construct a traceparent whose first 55 bytes are a syntactically valid v00
+	// value, then append garbage. The total is within the 512-byte length gate so
+	// the length check passes; the propagator must then reject the malformed value.
+	validPrefix := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	withGarbage := validPrefix + "XXXINVALID"
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("traceparent", withGarbage)
+	rec := httptest.NewRecorder()
+
+	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
+
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
+	if !ok {
+		t.Fatal("no gateway.unmatched span recorded")
+	}
+	// The trailing garbage makes the header invalid; the span must be a root span.
+	if gwSpan.Parent().SpanID().IsValid() {
+		t.Errorf("valid-prefix-plus-garbage traceparent must not be extracted; got parent span ID %s", gwSpan.Parent().SpanID())
+	}
+}
+
 // TestConcurrentRequestsGetDistinctTraceIDs verifies that concurrent requests through
 // the same middleware instance each receive a unique trace ID and do not share context.
 func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
@@ -498,6 +529,7 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
+		reqCancel() // cancel remaining goroutines before declaring failure
 		t.Fatal("timed out waiting for concurrent requests to complete")
 	}
 

@@ -340,7 +340,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	// When tracing is enabled the span carries the gateway provider, so the proxy span
 	// is automatically registered with the same exporter. When tracing is disabled or no
 	// span is present, SpanFromContext returns a noop span whose TracerProvider() returns
-	// the noop provider — Start is then a no-op with zero overhead.
+	// the noop provider — Start is a lightweight no-op with minimal interface-call overhead.
 	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),

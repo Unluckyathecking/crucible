@@ -53,9 +53,12 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 		return nil, nil, fmt.Errorf("tracing: endpoint cannot be empty")
 	}
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
+	// Re-use the default resource's schema URL so the merge result has a consistent schema
+	// and downstream collectors can resolve attribute semantics correctly.
+	defaultRes := resource.Default()
 	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes("", attribute.String("service.name", "crucible-gateway")),
+		defaultRes,
+		resource.NewWithAttributes(defaultRes.SchemaURL(), attribute.String("service.name", "crucible-gateway")),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: merge resource: %w", err)

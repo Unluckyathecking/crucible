@@ -146,6 +146,12 @@ func Load() (*Config, error) {
 	// mistake) is treated equivalently to "localhost:4318". Do this before the empty
 	// check so a whitespace-only value is caught by the enabled+empty guard below.
 	c.OtelExporterEndpoint = strings.TrimSpace(c.OtelExporterEndpoint)
+	// Reject unreasonably long endpoint strings after trim to prevent memory pressure
+	// from environment variables that are accidentally set to large values.
+	const maxEndpointLen = 4096
+	if len(c.OtelExporterEndpoint) > maxEndpointLen {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT exceeds maximum length %d (got %d)", maxEndpointLen, len(c.OtelExporterEndpoint))
+	}
 	// Scheme validation is unconditional: an endpoint with a scheme is always wrong
 	// regardless of whether tracing is enabled, preventing latent misconfigurations.
 	if c.OtelExporterEndpoint != "" {

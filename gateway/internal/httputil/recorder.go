@@ -20,17 +20,20 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 	return &StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 }
 
-// WriteHeader records the status code and forwards it to the underlying writer on
-// the first call. Subsequent calls are silently ignored — the HTTP spec only
-// allows one response status per request. The Go HTTP server handles 100-Continue
-// automatically before handlers run, so handlers never need to forward 1xx codes
-// through a recorder.
+// WriteHeader forwards code to the underlying writer and records Status on the
+// first non-informational (2xx+) call. Informational 1xx codes are forwarded so
+// that Early Hints and similar responses reach the client, but they do not commit
+// wroteHeader — this lets the recorder capture the final response status rather
+// than the interim informational code. Non-informational codes commit on the first
+// call; subsequent WriteHeader calls are silently ignored per HTTP semantics.
 func (s *StatusRecorder) WriteHeader(code int) {
 	if s.wroteHeader {
 		return
 	}
-	s.Status = code
-	s.wroteHeader = true
+	if code >= 200 {
+		s.Status = code
+		s.wroteHeader = true
+	}
 	s.ResponseWriter.WriteHeader(code)
 }
 

@@ -87,26 +87,23 @@ func TestStatusRecorderMultipleWriteHeader(t *testing.T) {
 	}
 }
 
-// TestStatusRecorder1xxCommitsOnFirstCall documents that a 1xx code commits
-// the recorder immediately. The Go HTTP server manages 100-Continue internally
-// before the handler runs, so a handler never needs to send 1xx through a
-// recorder. If one does, the recorder treats it as the final status.
-func TestStatusRecorder1xxCommitsOnFirstCall(t *testing.T) {
+func TestStatusRecorder1xxThenFinal(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
 
-	sr.WriteHeader(http.StatusContinue) // 100 — commits on first call
-	if !sr.wroteHeader {
-		t.Error("wroteHeader should be true after first WriteHeader call")
+	sr.WriteHeader(http.StatusContinue) // 100 — informational, must not commit wroteHeader
+	if sr.wroteHeader {
+		t.Error("wroteHeader should be false after 1xx")
 	}
-	if sr.Status != http.StatusContinue {
-		t.Errorf("Status = %d, want %d", sr.Status, http.StatusContinue)
-	}
+	sr.WriteHeader(http.StatusOK) // 200 — finalizes; StatusRecorder records this
 
-	sr.WriteHeader(http.StatusOK) // ignored — already committed
-	if sr.Status != http.StatusContinue {
-		t.Errorf("Status after second WriteHeader = %d, want %d (second call must be ignored)", sr.Status, http.StatusContinue)
+	if sr.Status != http.StatusOK {
+		t.Errorf("Status = %d, want %d", sr.Status, http.StatusOK)
 	}
+	// httptest.ResponseRecorder commits its internal Code on the first WriteHeader
+	// call regardless of whether the code is informational. We intentionally do not
+	// assert inner.Code here — the relevant invariant is that StatusRecorder.Status
+	// reflects the final response code, which is what middleware logging relies on.
 }
 
 func TestStatusRecorderWriteWithoutWriteHeader(t *testing.T) {
