@@ -130,10 +130,13 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		workerCallDuration: observability.WorkerCallDuration,
 	})
 	if pol.Breaker.Threshold > 0 {
-		// The closure loads metrics atomically at callback time, so a WithMetrics
-		// swap between construction and the first callback is picked up automatically.
+		// The closure loads metrics atomically at callback time so a WithMetrics swap
+		// is picked up automatically. The nil guard is a belt-and-suspenders check —
+		// the Invoke() nil guard fires first for any zero-value Client construction.
 		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
-			c.metrics.Load().(clientMetrics).breakerState.Set(float64(s))
+			if mv := c.metrics.Load(); mv != nil {
+				mv.(clientMetrics).breakerState.Set(float64(s))
+			}
 		})
 	}
 	return c
@@ -183,7 +186,13 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	m := c.metrics.Load().(clientMetrics)
+	mv := c.metrics.Load()
+	if mv == nil {
+		// metrics is always set by New(). A nil here means Client was zero-valued
+		// directly instead of constructed via New() — that is unsupported.
+		panic("proxy.Client: must be constructed with proxy.New()")
+	}
+	m := mv.(clientMetrics)
 	maxAttempts := c.retry.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 1

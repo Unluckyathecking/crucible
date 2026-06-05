@@ -93,6 +93,14 @@ func (b *Breaker) Allow() (uint64, error) {
 	}
 	// The entire decision — read state, check probeInFlight, set probeInFlight — runs
 	// inside a single lock acquisition so the check and the set are always atomic.
+	// There is no probe-admission race: probeInFlight acts as a one-slot semaphore
+	// that is set to true before the lock is released. Any concurrent Allow() call
+	// that acquires the lock after the Open→HalfOpen transition sees probeInFlight==true
+	// and returns ErrBreakerOpen. The HTTP call dispatched AFTER the lock release uses
+	// the generation token it received; its outcome is recorded via Record*, which
+	// clears probeInFlight under the same lock. The "lock released before probe
+	// dispatched" ordering is intentional — holding the lock across a network call
+	// would serialize all concurrent Invoke calls on the same mutex.
 	b.mu.Lock()
 	now := b.now()
 	var onState func(State)
