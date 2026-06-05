@@ -121,8 +121,10 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() { f.flushed = true }
 
-// TestStatusRecorder1xxThenWrite verifies that a 1xx informational status does not
-// commit wroteHeader, so a subsequent Write still records Status=200 correctly.
+// TestStatusRecorder1xxThenWrite verifies that Write does not overwrite a prior 1xx
+// informational status. Once any WriteHeader has been called (wrote1xx=true), Write
+// leaves Status and wroteHeader unchanged so the 1xx code remains observable by
+// middleware reading sr.Status after the handler returns.
 func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	inner := httptest.NewRecorder()
 	sr := NewStatusRecorder(inner)
@@ -130,6 +132,9 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	sr.WriteHeader(http.StatusContinue) // 100 — informational, must not commit wroteHeader
 	if sr.wroteHeader {
 		t.Fatal("wroteHeader must be false after 1xx WriteHeader")
+	}
+	if !sr.wrote1xx {
+		t.Fatal("wrote1xx must be true after 1xx WriteHeader")
 	}
 	if sr.Status != http.StatusContinue {
 		t.Errorf("Status = %d, want %d", sr.Status, http.StatusContinue)
@@ -142,15 +147,13 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write sets Status=200 on StatusRecorder, reflecting the implicit 200 that
-	// http.ResponseWriter.Write always commits on the underlying writer when called
-	// without a prior final WriteHeader — even after a 1xx informational WriteHeader.
-	// Keeping sr.Status in sync with what the client receives is the contract.
-	if sr.Status != http.StatusOK {
-		t.Errorf("Status = %d after 1xx+Write, want %d (Write must track implicit 200)", sr.Status, http.StatusOK)
+	// Write must not clobber the 1xx status — wrote1xx being true prevents the
+	// implicit-200 assignment in Write, so the explicitly set 100 is preserved.
+	if sr.Status != http.StatusContinue {
+		t.Errorf("Status = %d after 1xx+Write, want %d (Write must not overwrite 1xx)", sr.Status, http.StatusContinue)
 	}
-	if !sr.wroteHeader {
-		t.Error("wroteHeader must be true after Write")
+	if sr.wroteHeader {
+		t.Error("wroteHeader must remain false after Write when only a 1xx was set")
 	}
 }
 

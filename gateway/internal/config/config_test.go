@@ -460,6 +460,20 @@ func TestOtelSampleRatioNaNReturnsError(t *testing.T) {
 	}
 }
 
+// TestOtelSampleRatioInfReturnsError verifies that +Inf is rejected (not a finite number).
+func TestOtelSampleRatioInfReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_SAMPLE_RATIO", "+Inf")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_SAMPLE_RATIO=+Inf, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_SAMPLE_RATIO") {
+		t.Errorf("error %q does not mention OTEL_SAMPLE_RATIO", err.Error())
+	}
+}
+
 // TestOtelExporterInsecureTrue verifies that OTEL_EXPORTER_INSECURE=true is read correctly.
 func TestOtelExporterInsecureTrue(t *testing.T) {
 	setRequiredEnv(t)

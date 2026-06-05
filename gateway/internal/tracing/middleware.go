@@ -75,6 +75,7 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				l := base.With().
 					Str("trace_id", sc.TraceID().String()).
 					Str("span_id", sc.SpanID().String()).
+					Bool("trace_sampled", sc.IsSampled()).
 					Logger()
 				ctx = l.WithContext(ctx)
 			}

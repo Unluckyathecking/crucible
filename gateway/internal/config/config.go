@@ -142,7 +142,7 @@ func Load() (*Config, error) {
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
-	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 || math.IsNaN(c.OtelSampleRatio) {
+	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 || math.IsNaN(c.OtelSampleRatio) || math.IsInf(c.OtelSampleRatio, 0) {
 		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be a finite number in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
 	}
 	// Trim whitespace so " localhost:4318" or "localhost:4318 " (a common copy-paste

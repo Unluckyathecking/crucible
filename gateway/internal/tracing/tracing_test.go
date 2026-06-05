@@ -517,7 +517,6 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	const n = 20
 	var (
 		wg          sync.WaitGroup
-		mu          sync.Mutex
 		traceIDs    = make([]string, n)
 		statusCodes = make([]int, n)
 	)
@@ -529,10 +528,10 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				id := oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
-				mu.Lock()
-				traceIDs[idx] = id
-				mu.Unlock()
+				// Each goroutine writes to its own index — no mutex needed.
+				// wg.Wait() below provides the happens-before barrier so the
+				// main goroutine safely reads after all goroutines call wg.Done().
+				traceIDs[idx] = oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
 				w.WriteHeader(http.StatusOK)
 			})
 			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)

@@ -15,7 +15,8 @@ import "net/http"
 type StatusRecorder struct {
 	http.ResponseWriter
 	Status      int
-	wroteHeader bool // true once a non-1xx status has been committed on StatusRecorder
+	wroteHeader bool // true once a non-1xx (final) status has been committed
+	wrote1xx    bool // true once any WriteHeader has been called, including 1xx
 }
 
 // Compile-time assertion: *StatusRecorder must implement http.Flusher.
@@ -38,17 +39,17 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	if code >= 200 {
 		s.wroteHeader = true
 	}
+	s.wrote1xx = true
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Write records an implicit 200 on StatusRecorder if no non-1xx WriteHeader has been
-// committed yet. Go's http.ResponseWriter contract guarantees that Write always commits
-// an implicit 200 on the underlying writer when called without a prior final WriteHeader
-// — even after a 1xx informational WriteHeader — so recording 200 here keeps s.Status
-// in sync with what the client actually receives. The authoritative final-status field
-// is s.Status, which middleware logging and Prometheus metrics consume.
+// Write records an implicit 200 on StatusRecorder only when no WriteHeader of any kind
+// has been called yet — neither a final (2xx-5xx) nor an informational (1xx) code.
+// When WriteHeader(1xx) was called first, wrote1xx is true and Write leaves Status
+// unchanged, preserving the explicitly set informational code. Middleware observing
+// s.Status after the handler returns will see the last explicitly set status.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
-	if !s.wroteHeader {
+	if !s.wroteHeader && !s.wrote1xx {
 		s.wroteHeader = true
 		s.Status = http.StatusOK
 	}
