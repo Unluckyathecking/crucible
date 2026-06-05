@@ -164,6 +164,19 @@ func TestWorkerTimeoutMSZeroReturnsError(t *testing.T) {
 	}
 }
 
+func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "101")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_THRESHOLD=101, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_THRESHOLD") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_THRESHOLD", err.Error())
+	}
+}
+
 func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")

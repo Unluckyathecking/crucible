@@ -219,6 +219,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Circuit-breaker admission: fast-fail without a network call when open.
 		// Allow returns a generation token; pass it to every Record* call so stale
 		// results from earlier breaker generations are silently ignored.
+		// From StateClosed, Allow returns token=0; passing 0 to Record* is always a
+		// no-op for probe-guarded paths because probeGen is always >= 1 in StateHalfOpen
+		// (incremented before assignment), so 0 can never match an active probe slot.
 		var breakerToken uint64
 		if c.breaker != nil {
 			var berr error
@@ -264,14 +267,13 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 				// never contacted, so no health signal exists. Release the probe slot without
 				// recording a verdict — this is a local config error, not worker health.
 				c.breaker.RecordAbort(breakerToken)
-			case status == 0 && ctx.Err() == nil:
-				// Transport/network error with no HTTP response and no ctx cancellation.
-				c.breaker.RecordFailure(breakerToken)
-			case status == 0 && ctx.Err() == context.DeadlineExceeded:
-				// Per-request timeout (http.Client.Timeout or context deadline): the worker
-				// took too long. Count as failure — a consistently slow worker should open
-				// the breaker so subsequent requests fast-fail instead of accumulating timeouts.
-				// ctx.Err() returns the exact sentinel value, so == is correct and idiomatic.
+			case status == 0 && ctx.Err() != context.Canceled:
+				// Transport/network error or per-request timeout (DeadlineExceeded or nil
+				// ctx error): the worker was unreachable or too slow. Record as failure so
+				// a sustained pattern opens the breaker and subsequent calls fast-fail
+				// instead of accumulating wasted round-trips.
+				// context.Canceled falls through to the default (RecordAbort): the caller
+				// abandoned the request, not a worker health signal.
 				c.breaker.RecordFailure(breakerToken)
 			default:
 				// Covers: caller cancelled (context.Canceled) with no HTTP response, 4xx,
