@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -16,15 +15,6 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
-
-// init sets DefaultContextLogger when this package is imported without the
-// middleware package (e.g. isolated tracing tests), preventing zerolog.Ctx
-// from returning a zero-value Logger with a nil writer.
-func init() {
-	if zerolog.DefaultContextLogger == nil {
-		zerolog.DefaultContextLogger = &log.Logger
-	}
-}
 
 const tracerName = "crucible.gateway"
 
@@ -58,14 +48,9 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger pointer from the original request context before
 			// deriving new contexts, so any logger stored by upstream middleware
-			// (e.g. RequestID) is preserved.
+			// (e.g. RequestID) is preserved. zerolog.Ctx never returns nil in v1.33+
+			// (it returns &disabledLogger when no logger is in context).
 			base := zerolog.Ctx(r.Context())
-			if base == nil {
-				// Defensive guard: init() sets DefaultContextLogger to &log.Logger to
-				// prevent this, but guard explicitly against any import-order edge case.
-				fallback := log.Logger
-				base = &fallback
-			}
 
 			// Extract parent span from inbound W3C traceparent header.
 			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be
@@ -94,8 +79,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			}
 			// Log enrichment is conditional on sc.IsValid(). When tp is a noop
 			// provider, spans have invalid span contexts and the block above is
-			// skipped; zerolog.DefaultContextLogger (set in middleware/middleware.go
-			// init()) is the fallback for any zerolog.Ctx(ctx) call.
+			// skipped; the base logger (from upstream middleware context) is the
+			// fallback for any zerolog.Ctx(ctx) call downstream.
 
 			// Reassign r so chi.RouteContext picks up the same context that has the span.
 			r = r.WithContext(ctx)
