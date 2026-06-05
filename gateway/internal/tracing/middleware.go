@@ -44,6 +44,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 			// Start gateway.request span — child of remote parent or new root span.
 			ctx, span := tracer.Start(ctx, "gateway.request")
+			// Deferred so the span is ended even if a panic escapes a middleware layer.
+			// Annotations (attributes, status, name) execute inline before the return,
+			// so they are always recorded before End fires.
+			defer span.End()
 
 			// Determine the base logger. zerolog.Ctx returns the disabled fallback
 			// when no prior middleware has stored a logger in the context. In that case
@@ -94,7 +98,6 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
 				span.SetName(rctx.RoutePattern())
 			}
-			span.End()
 		})
 	}
 }

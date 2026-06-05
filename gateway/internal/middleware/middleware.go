@@ -1,6 +1,6 @@
 // Package middleware provides the HTTP middleware stack every Crucible gateway route shares.
 //
-// Mount order (outer → inner): RequestID → AccessLog → Recovery → SecurityHeaders → BodyLimit.
+// Mount order (outer → inner): RequestID → tracing.Middleware → AccessLog → Recovery → SecurityHeaders → BodyLimit.
 package middleware
 
 import (
@@ -61,9 +61,13 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		rid, _ := r.Context().Value(RequestIDKey).(string)
-		// Use the context logger injected by the tracing middleware (carries trace_id/span_id).
-		// The tracing middleware always stores a logger in context, so this is safe in production.
-		zerolog.Ctx(r.Context()).Info().
+		// Prefer the context logger (set by tracing middleware, carries trace_id/span_id).
+		// Fall back to the global logger so AccessLog still works when used standalone.
+		logger := zerolog.Ctx(r.Context())
+		if logger.GetLevel() == zerolog.Disabled {
+			logger = &log.Logger
+		}
+		logger.Info().
 			Str("request_id", rid).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).
