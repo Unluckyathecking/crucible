@@ -164,8 +164,8 @@ func (b *Breaker) RecordSuccess(token uint64) {
 		b.failures = 0
 	case StateOpen:
 		// Stale success from a call admitted before the breaker tripped.
-		// Do NOT reset failures — the open was caused by a real streak and recovery
-		// requires a successful probe, not a stale in-flight request's completion.
+		// Do NOT reset failures or probe state — recovery requires a successful probe,
+		// not a stale in-flight response. Explicit case prevents accidental no-op removal.
 	}
 	b.mu.Unlock()
 	// StateClosed is a compile-time constant, not a read of b.state — no race.

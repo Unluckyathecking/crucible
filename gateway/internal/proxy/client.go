@@ -241,10 +241,15 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			case status == 0 && ctx.Err() == nil:
 				// Transport/network error with no HTTP response and no ctx cancellation.
 				c.breaker.RecordFailure(breakerToken)
+			case status == 0 && errors.Is(ctx.Err(), context.DeadlineExceeded):
+				// Per-request timeout (http.Client.Timeout or context deadline): the worker
+				// took too long. Count as failure — a consistently slow worker should open
+				// the breaker so subsequent requests fast-fail instead of accumulating timeouts.
+				c.breaker.RecordFailure(breakerToken)
 			default:
-				// Covers: ctx cancelled with no HTTP response (status==0), 4xx, 200 decode
-				// error. Worker outcome is ambiguous or caller abandoned — release the probe
-				// slot without recording a health verdict.
+				// Covers: caller cancelled (context.Canceled) with no HTTP response, 4xx,
+				// HTTP 200 decode error. Worker outcome is ambiguous or caller abandoned —
+				// release the probe slot without recording a health verdict.
 				c.breaker.RecordAbort(breakerToken)
 			}
 		}
@@ -253,7 +258,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return resp, nil
 		}
 
-		if !resilience.IsRetryable(err, status) || attempt+1 >= maxAttempts {
+		if !resilience.IsRetryable(ctx, err, status) || attempt+1 >= maxAttempts {
 			return nil, err
 		}
 	}

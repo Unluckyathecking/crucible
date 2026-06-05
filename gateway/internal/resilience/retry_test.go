@@ -9,34 +9,39 @@ import (
 )
 
 func TestIsRetryable(t *testing.T) {
+	bg := context.Background()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel so cancelled.Err() == context.Canceled
+
 	cases := []struct {
 		name   string
+		ctx    context.Context
 		err    error
 		status int
 		want   bool
 	}{
-		{"transport error", errors.New("connect refused"), 0, true},
-		{"500", nil, 500, true},
-		{"503", nil, 503, true},
-		// 4xx is never retried regardless of whether err is nil or non-nil.
-		// status in [1,499] means a real HTTP response arrived; the worker is reachable.
-		{"4xx nil err", nil, 400, false},
-		{"4xx with err", fmt.Errorf("worker returned status 400: bad request"), 400, false},
-		{"200 not retried", nil, 200, false},
-		{"200 with err (decode error)", fmt.Errorf("decode worker response: unexpected EOF"), 200, false},
-		// context.Canceled and context.DeadlineExceeded are never retryable — both
-		// mean the caller no longer wants the result (or the per-call http.Client
-		// timeout fired, in which case retrying the same slow worker just wastes time).
-		{"context canceled", context.Canceled, 0, false},
-		{"wraps canceled", fmt.Errorf("worker call: %w", context.Canceled), 0, false},
-		{"deadline exceeded status 0", context.DeadlineExceeded, 0, false},
-		{"wraps deadline status 0", fmt.Errorf("worker call: %w", context.DeadlineExceeded), 0, false},
-		{"nil err zero status", nil, 0, false},
-		{"pre-flight statusNone (-1)", errors.New("build request: bad url"), -1, false},
+		{"transport error live ctx", bg, errors.New("connect refused"), 0, true},
+		{"500 live ctx", bg, nil, 500, true},
+		{"503 live ctx", bg, nil, 503, true},
+		// 4xx is never retried — a real HTTP response arrived; the worker is reachable.
+		{"4xx nil err", bg, nil, 400, false},
+		{"4xx with err", bg, fmt.Errorf("worker returned status 400: bad request"), 400, false},
+		{"200 not retried", bg, nil, 200, false},
+		{"200 decode error", bg, fmt.Errorf("decode worker response: unexpected EOF"), 200, false},
+		// context.Canceled / context.DeadlineExceeded are never retryable.
+		{"context canceled in err", bg, context.Canceled, 0, false},
+		{"wraps canceled in err", bg, fmt.Errorf("worker call: %w", context.Canceled), 0, false},
+		{"deadline exceeded in err", bg, context.DeadlineExceeded, 0, false},
+		{"wraps deadline in err", bg, fmt.Errorf("worker call: %w", context.DeadlineExceeded), 0, false},
+		// Cancelled context short-circuits even for otherwise-retryable transport errors.
+		{"cancelled ctx transport error", cancelled, errors.New("connect refused"), 0, false},
+		{"cancelled ctx 500", cancelled, nil, 500, false},
+		{"nil err zero status", bg, nil, 0, false},
+		{"pre-flight statusNone (-1)", bg, errors.New("build request: bad url"), -1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IsRetryable(tc.err, tc.status)
+			got := IsRetryable(tc.ctx, tc.err, tc.status)
 			if got != tc.want {
 				t.Errorf("IsRetryable(%v, %d) = %v, want %v", tc.err, tc.status, got, tc.want)
 			}
@@ -98,10 +103,10 @@ func TestPolicy_Sleep_BackoffDoublingAndCap(t *testing.T) {
 		n              int
 		minFloor, maxCeil time.Duration
 	}{
-		{0, 2 * time.Millisecond, 30 * time.Millisecond},  // [5ms,10ms] + CI slack
-		{1, 5 * time.Millisecond, 50 * time.Millisecond},  // [10ms,20ms] + CI slack
-		{2, 10 * time.Millisecond, 80 * time.Millisecond}, // [20ms,40ms] + CI slack
-		{3, 10 * time.Millisecond, 80 * time.Millisecond}, // capped — same range as n=2
+		{0, 4 * time.Millisecond, 20 * time.Millisecond},  // [5ms,10ms] + tight CI slack
+		{1, 8 * time.Millisecond, 35 * time.Millisecond},  // [10ms,20ms] + tight CI slack
+		{2, 15 * time.Millisecond, 60 * time.Millisecond}, // [20ms,40ms] + CI slack
+		{3, 15 * time.Millisecond, 60 * time.Millisecond}, // capped — same range as n=2
 	}
 	for _, tc := range cases {
 		start := time.Now()

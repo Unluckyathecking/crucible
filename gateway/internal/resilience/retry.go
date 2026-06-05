@@ -9,6 +9,35 @@ import (
 	"time"
 )
 
+// IsRetryable reports whether a call outcome warrants a retry.
+// A cancelled or timed-out context is never retryable: checking ctx first
+// prevents a stale transport error (e.g. connection reset concurrent with
+// cancellation) from incorrectly triggering a retry when the caller has
+// already given up. Callers must still check ctx.Err() after Sleep; this
+// function only governs whether to attempt a sleep at all.
+//
+// status == 0 with a non-nil error means a transport/network error occurred
+// before an HTTP response arrived — retryable when the context is live.
+// status < 0 means a pre-flight build error that never reached the worker.
+func IsRetryable(ctx context.Context, err error, status int) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if status < 0 {
+		return false
+	}
+	if status >= 500 {
+		return true
+	}
+	if err != nil && status == 0 {
+		return true
+	}
+	return false
+}
+
 // Policy controls retry behaviour for worker calls.
 // Zero value (MaxAttempts == 0) disables retries, preserving today's single-shot behaviour.
 type Policy struct {
@@ -18,38 +47,6 @@ type Policy struct {
 	BaseBackoff time.Duration
 	// MaxBackoff caps exponential growth. Defaults to 5s.
 	MaxBackoff time.Duration
-}
-
-// IsRetryable reports whether a call outcome warrants a retry based on the error
-// shape and HTTP status alone. It does NOT check caller context liveness — callers
-// must check ctx.Err() separately as a belt-and-suspenders guard.
-//
-// status == 0 with a non-nil error means a transport/network error occurred before
-// an HTTP response arrived (connection refused, reset, etc.) — this is retryable.
-// status == 0 with a nil error is not retryable (should not occur in practice).
-// status < 0 means a pre-flight build error that never reached the worker (not retryable).
-func IsRetryable(err error, status int) bool {
-	// Cancellation and deadline expiry are never retryable — both signal the caller
-	// no longer wants the result. DeadlineExceeded covers both caller-context expiry
-	// and per-call http.Client.Timeout; retrying after either just wastes resources.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	// Pre-flight errors (e.g. request-build failure) never reached the worker.
-	if status < 0 {
-		return false
-	}
-	// HTTP 5xx: server-side failure, safe to retry.
-	if status >= 500 {
-		return true
-	}
-	// Transport/network error: no HTTP response arrived (conn refused, reset, etc.).
-	// status == 0 signals this; status in [1, 499] means a real HTTP response arrived
-	// (even 4xx), which is not retryable.
-	if err != nil && status == 0 {
-		return true
-	}
-	return false
 }
 
 // Sleep waits for the jittered exponential backoff before retry n.
