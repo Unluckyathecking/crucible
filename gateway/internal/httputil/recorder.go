@@ -42,18 +42,15 @@ func (s *StatusRecorder) WriteHeader(code int) {
 }
 
 // Write records an implicit 200 on StatusRecorder if no non-1xx WriteHeader has been
-// committed yet, then explicitly sends WriteHeader(200) to the inner writer before
-// writing the body. This is required for real net/http.response where a prior 1xx
-// WriteHeader leaves the inner writer's final-status slot still open (wroteHeader=false
-// on the real writer). For httptest.ResponseRecorder the call is a no-op (its own
-// wroteHeader is already true from the 1xx WriteHeader), so there is no double-header.
-// The authoritative final-status field is sr.Status, which middleware logging and
+// committed yet, then delegates to the inner writer. We do NOT explicitly call
+// s.ResponseWriter.WriteHeader(200) here — the inner writer's own Write handles its
+// implicit header commit, avoiding a double-WriteHeader on the inner writer. The
+// authoritative final-status field is s.Status, which middleware logging and
 // Prometheus metrics consume.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.Status = http.StatusOK
 		s.wroteHeader = true
-		s.ResponseWriter.WriteHeader(http.StatusOK)
 	}
 	return s.ResponseWriter.Write(b)
 }
