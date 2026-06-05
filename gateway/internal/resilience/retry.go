@@ -90,10 +90,14 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	t := time.NewTimer(d)
 	select {
 	case <-ctx.Done():
-		// Go 1.23+: Stop() drains t.C before returning, so no manual drain needed.
-		// The old "if !t.Stop() { <-t.C }" pattern blocks forever in Go 1.23+ because
-		// Stop already empties the channel.
-		t.Stop()
+		// Non-blocking drain: safe for all Go versions. If the timer already fired,
+		// the value is removed; if the channel is empty, the default branch fires.
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
 		return ctx.Err()
 	case <-t.C:
 		return nil

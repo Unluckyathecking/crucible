@@ -686,6 +686,42 @@ func TestInvoke_RetryExhaustionOpenBreaker(t *testing.T) {
 	}
 }
 
+// TestInvoke_DisabledBreakerWithRetry verifies that Threshold=0 disables the
+// breaker (c.breaker == nil) while retries still function normally on 5xx.
+func TestInvoke_DisabledBreakerWithRetry(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := callCount.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry:   resilience.Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+		Breaker: resilience.BreakerConfig{Threshold: 0}, // explicitly disabled
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	if c.breaker != nil {
+		t.Fatal("breaker should be nil when Threshold=0")
+	}
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.BillableUnits != 1 {
+		t.Errorf("billable_units = %d, want 1", resp.BillableUnits)
+	}
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("call count = %d, want 3 (retries work without breaker)", n)
+	}
+}
+
 // TestInvoke_DefaultPolicy_SingleShot verifies that the zero ResiliencePolicy
 // reproduces today's exact single-shot behaviour (no retry on 5xx).
 func TestInvoke_DefaultPolicy_SingleShot(t *testing.T) {
