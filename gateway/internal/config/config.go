@@ -70,6 +70,9 @@ func Load() (*Config, error) {
 	if c.WorkerMaxConns < 0 {
 		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
 	}
+	if c.WorkerMaxConns > 10000 {
+		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be <= 10000 (got %d)", c.WorkerMaxConns)
+	}
 	if c.WorkerRetryMax < 0 {
 		return nil, fmt.Errorf("WORKER_RETRY_MAX must be >= 0 (got %d)", c.WorkerRetryMax)
 	}

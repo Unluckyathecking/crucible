@@ -562,7 +562,7 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 
 	// Advance the fake clock 2 hours past real now so Allow() sees the cooldown as elapsed.
 	fakeNow := time.Now().Add(2 * time.Hour)
-	c.breaker.WithNow(func() time.Time { return fakeNow })
+	c.breaker = c.breaker.WithNow(func() time.Time { return fakeNow })
 
 	// Probe: Allow() detects cooldown elapsed → StateHalfOpen; doOnce succeeds → StateClosed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})

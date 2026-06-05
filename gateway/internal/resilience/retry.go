@@ -22,23 +22,23 @@ type Policy struct {
 
 // IsRetryable reports whether a call outcome warrants a retry based on the error
 // shape and HTTP status alone. It does NOT check caller context liveness — callers
-// must check ctx.Err() separately to avoid retrying after the caller has cancelled.
+// must check ctx.Err() separately as a belt-and-suspenders guard.
 //
 // status == 0 means a transport/network error occurred before an HTTP response
-// arrived; this includes per-call http.Client.Timeout expiry, which is retryable
-// because the caller's context may still be valid. status < 0 means a pre-flight
-// build error that never reached the worker (not retryable).
+// arrived (connection refused, reset, etc.). status < 0 means a pre-flight build
+// error that never reached the worker (not retryable).
 func IsRetryable(err error, status int) bool {
-	// Explicit caller cancellation is never retryable.
-	if errors.Is(err, context.Canceled) {
+	// Cancellation and deadline expiry are never retryable — both signal the caller
+	// no longer wants the result. DeadlineExceeded covers both caller-context expiry
+	// and per-call http.Client.Timeout; retrying after either just wastes resources.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	// Pre-flight errors (e.g. request-build failure) never reached the worker.
 	if status < 0 {
 		return false
 	}
-	// Transport, network, or per-call HTTP client timeout — retryable unless the
-	// caller's own context has since expired (checked separately in the retry loop).
+	// Transport or network error (connection refused, reset, etc.) with no HTTP response.
 	if err != nil && status == 0 {
 		return true
 	}

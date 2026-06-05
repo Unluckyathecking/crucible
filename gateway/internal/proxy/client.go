@@ -142,10 +142,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			}
 		}
 
-		// Stop if the caller's context expired between attempts. This is the primary
-		// guard against retrying after a caller cancel/deadline: IsRetryable does not
-		// inspect ctx so that HTTP client timeouts (which also wrap DeadlineExceeded)
-		// are still classified as retryable when the caller is still waiting.
+		// Belt-and-suspenders ctx guard: IsRetryable already rejects
+		// context.DeadlineExceeded and context.Canceled, so in-flight context
+		// errors stop retries via the IsRetryable check. This catches the narrow
+		// window where a successful Sleep returns but ctx.Err() is already set.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -169,16 +169,19 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Update breaker state based on the outcome.
 		//   Caller context expired (status 0, ctx.Err != nil) → RecordAbort: release
 		//       probe slot without a health signal; the transport error is the caller's,
-		//       not the worker's. Checked before IsRetryable so DeadlineExceeded from
-		//       the caller doesn't mistakenly record a worker failure.
-		//   Retryable (transport + 5xx)       → RecordFailure
-		//   Any real HTTP response (status != statusNone) → RecordSuccess:
+		//       not the worker's.
+		//   Any transport error (status 0, err != nil)        → RecordFailure: worker
+		//       was unreachable regardless of whether the error is retryable.
+		//   HTTP 5xx                                          → RecordFailure
+		//   Any real HTTP response (status != statusNone)     → RecordSuccess:
 		//       worker is reachable; reset failure streak and release probe slot.
-		//   Pre-flight build error (statusNone) → leave breaker unchanged.
+		//   Pre-flight build error (statusNone)               → leave breaker unchanged.
 		if c.breaker != nil {
 			switch {
 			case status == 0 && ctx.Err() != nil:
 				c.breaker.RecordAbort()
+			case err != nil && status == 0:
+				c.breaker.RecordFailure()
 			case resilience.IsRetryable(err, status):
 				c.breaker.RecordFailure()
 			case status != statusNone:
