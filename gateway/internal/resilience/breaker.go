@@ -66,34 +66,34 @@ func (b *Breaker) Allow() error {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return nil
 	}
+	// The entire decision — read state, check probeInFlight, set probeInFlight — runs
+	// inside a single lock acquisition so the check and the set are always atomic.
 	b.mu.Lock()
+	var onState func(State)
+	var result error
 	switch b.state {
 	case StateOpen:
 		if b.now().Before(b.openUntil) {
-			b.mu.Unlock()
-			return ErrBreakerOpen
+			result = ErrBreakerOpen
+		} else {
+			// Cooldown elapsed — allow exactly one probe.
+			b.state = StateHalfOpen
+			b.probeInFlight = true
+			onState = b.onState
 		}
-		// Cooldown elapsed — allow one probe.
-		b.state = StateHalfOpen
-		b.probeInFlight = true
-		onState := b.onState
-		b.mu.Unlock()
-		if onState != nil {
-			onState(StateHalfOpen)
-		}
-		return nil
 	case StateHalfOpen:
 		if b.probeInFlight {
-			b.mu.Unlock()
-			return ErrBreakerOpen
+			result = ErrBreakerOpen
+		} else {
+			b.probeInFlight = true
 		}
-		b.probeInFlight = true
-		b.mu.Unlock()
-		return nil
-	default: // StateClosed
-		b.mu.Unlock()
-		return nil
+	// StateClosed: result stays nil; proceed.
 	}
+	b.mu.Unlock()
+	if onState != nil {
+		onState(StateHalfOpen)
+	}
+	return result
 }
 
 // RecordSuccess records a successful call. Closes the breaker only from StateHalfOpen;

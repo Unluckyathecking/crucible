@@ -181,7 +181,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		// Count only actual retry attempts dispatched past the breaker gate.
+		// Count only actual retry attempts dispatched past the breaker gate and ctx check.
 		if attempt > 0 {
 			observability.WorkerRetriesTotal.Inc()
 		}

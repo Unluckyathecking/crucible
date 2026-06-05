@@ -100,5 +100,8 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
 	}
+	// Cross-field: backoff/cooldown values are accepted even when the feature is disabled
+	// (WORKER_RETRY_MAX <= 1, WORKER_BREAKER_THRESHOLD == 0) so operators can pre-configure
+	// without enabling — the unused value is ignored by the retry/breaker code at runtime.
 	return &c, nil
 }
