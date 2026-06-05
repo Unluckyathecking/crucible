@@ -192,7 +192,9 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			observability.WorkerRetriesTotal.Inc()
 		}
 
-		// Update breaker state based on the outcome.
+		// Update breaker state BEFORE the retry-exhaustion check so every attempt,
+		// including the final one, is recorded. Skipping this on retry exhaustion
+		// would blind the breaker to sustained failures that drain the retry budget.
 		// err==nil is checked first: a successful HTTP 200 closes the breaker regardless
 		// of ctx state, since the worker already did the work and we must record that.
 		if c.breaker != nil {

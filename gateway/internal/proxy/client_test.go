@@ -629,6 +629,63 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	}
 }
 
+// TestInvoke_NoRetryOn4xx verifies that HTTP 4xx responses are not retried;
+// they indicate a client error, not a transient worker failure.
+func TestInvoke_NoRetryOn4xx(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request"))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 5, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected error for HTTP 400, got nil")
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("call count = %d, want 1 (4xx must not be retried)", n)
+	}
+}
+
+// TestInvoke_RetryExhaustionOpenBreaker verifies that all retry attempts —
+// including the final one — are recorded by the circuit breaker.
+// If the breaker update were skipped on retry exhaustion, the breaker would
+// stay Closed despite 3 consecutive 5xx calls, which is incorrect.
+func TestInvoke_RetryExhaustionOpenBreaker(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry:   resilience.Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+		Breaker: resilience.BreakerConfig{Threshold: 3, Cooldown: time.Hour},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected error for always-503 worker, got nil")
+	}
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("call count = %d, want 3 (MaxAttempts exhausted)", n)
+	}
+	// All 3 attempts were 5xx and threshold == 3: the breaker must be open.
+	// A missing RecordFailure on the final attempt would leave it Closed.
+	if c.breaker.CurrentState() != resilience.StateOpen {
+		t.Errorf("breaker state = %v, want StateOpen after 3-attempt retry exhaustion", c.breaker.CurrentState())
+	}
+}
+
 // TestInvoke_DefaultPolicy_SingleShot verifies that the zero ResiliencePolicy
 // reproduces today's exact single-shot behaviour (no retry on 5xx).
 func TestInvoke_DefaultPolicy_SingleShot(t *testing.T) {

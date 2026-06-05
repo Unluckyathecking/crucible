@@ -67,6 +67,9 @@ func Load() (*Config, error) {
 	if c.WorkerTimeoutMS <= 0 {
 		return nil, fmt.Errorf("WORKER_TIMEOUT_MS must be > 0 (got %d)", c.WorkerTimeoutMS)
 	}
+	if c.WorkerTimeoutMS > 300000 {
+		return nil, fmt.Errorf("WORKER_TIMEOUT_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerTimeoutMS)
+	}
 	if c.WorkerMaxConns < 0 {
 		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
 	}
