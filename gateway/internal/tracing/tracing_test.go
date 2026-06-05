@@ -182,6 +182,8 @@ func TestNoOpWhenDisabled(t *testing.T) {
 		capturedCtx = r.Context()
 		outboundHeaders = make(http.Header)
 		propagation.TraceContext{}.Inject(r.Context(), propagation.HeaderCarrier(outboundHeaders))
+		// Verify zerolog still works when tracing is disabled (DefaultContextLogger fallback).
+		zerolog.Ctx(r.Context()).Info().Msg("noop-path-log")
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -508,15 +510,13 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 		statusCodes = make([]atomic.Int32, n)
 	)
 
-	// Context with timeout so goroutines propagate cancellation if the test
-	// deadline fires before all requests complete.
-	reqCtx, reqCancel := context.WithTimeout(context.Background(), 15*time.Second)
-
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodGet, "/test", nil).WithContext(reqCtx)
+			// Each goroutine gets an independent context so a timeout in one
+			// goroutine cannot cancel the others.
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			rec := httptest.NewRecorder()
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				id := oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
@@ -533,9 +533,7 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-		reqCancel()
 	case <-time.After(10 * time.Second):
-		reqCancel()
 		t.Fatal("timed out waiting for concurrent requests to complete")
 	}
 

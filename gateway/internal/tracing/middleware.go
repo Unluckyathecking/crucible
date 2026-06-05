@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -15,6 +16,15 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
+
+// init sets DefaultContextLogger when this package is imported without the
+// middleware package (e.g. isolated tracing tests), preventing zerolog.Ctx
+// from returning a zero-value Logger with a nil writer.
+func init() {
+	if zerolog.DefaultContextLogger == nil {
+		zerolog.DefaultContextLogger = &log.Logger
+	}
+}
 
 const tracerName = "crucible.gateway"
 

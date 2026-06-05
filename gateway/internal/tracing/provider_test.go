@@ -117,6 +117,9 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	// Ensure the provider is properly shut down after the test even when the
 	// cancelled-context call does not fully flush the BatchSpanProcessor.
 	t.Cleanup(func() {
+		if shutdown == nil {
+			return
+		}
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
 		_ = shutdown(cleanCtx)
