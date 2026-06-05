@@ -1,0 +1,133 @@
+// Package resilience provides retry and circuit-breaker policies for worker calls.
+package resilience
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"math/big"
+	"time"
+)
+
+// IsRetryable reports whether a call outcome warrants a retry.
+// Two independent guards ensure a cancelled or expired context is never retried:
+//
+//   - ctx.Err() != nil: the caller's context is already dead at evaluation time.
+//     This catches the case where a non-context transport error (e.g. connection
+//     reset) fired concurrently with a context cancellation — the error does not
+//     wrap context.Canceled, but retrying would immediately fail again.
+//   - errors.Is(err, Canceled|DeadlineExceeded): catches the narrow race window
+//     where the context was live when the call started but was cancelled during
+//     the round-trip. ctx.Err() may still be nil at this point, so the direct
+//     errors.Is check on err is the authoritative guard for that case.
+//
+// Both checks are intentional and handle non-overlapping race windows.
+// Callers must still check ctx.Err() after Sleep; this function only governs
+// whether to attempt a sleep at all.
+//
+// status == 0 with a non-nil error means a transport/network error occurred
+// before an HTTP response arrived — retryable when the context is live.
+// status < 0 means a pre-flight build error that never reached the worker.
+func IsRetryable(ctx context.Context, err error, status int) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if status < 0 {
+		return false
+	}
+	if status >= 500 {
+		return true
+	}
+	if err != nil && status == 0 {
+		return true
+	}
+	return false
+}
+
+// Policy controls retry behaviour for worker calls.
+// Zero value (MaxAttempts == 0) disables retries, preserving today's single-shot behaviour.
+type Policy struct {
+	// MaxAttempts is total attempts including the first call; <= 1 means single-shot.
+	MaxAttempts int
+	// BaseBackoff is the starting backoff before the first retry. Defaults to 100ms.
+	BaseBackoff time.Duration
+	// MaxBackoff caps exponential growth. Defaults to 5s.
+	MaxBackoff time.Duration
+}
+
+// ceilingFor computes the exponential backoff ceiling for retry n.
+// base * 2^n, capped at maxB. base is clamped to maxB first so
+// BaseBackoff > MaxBackoff never exceeds the ceiling on the first retry.
+func ceilingFor(base, maxB time.Duration, n int) time.Duration {
+	ceiling := base
+	if ceiling > maxB {
+		ceiling = maxB
+	}
+	for i := 0; i < n; i++ {
+		if ceiling >= maxB {
+			break
+		}
+		// Overflow-safe doubling: cap directly when ceiling > maxB/2.
+		if ceiling > maxB/2 {
+			ceiling = maxB
+		} else {
+			ceiling *= 2
+		}
+	}
+	return ceiling
+}
+
+// Sleep waits for the jittered exponential backoff before retry n.
+// n is 0-indexed: 0 = first retry (base delay), 1 = second retry (base*2), etc.
+// Returns ctx.Err() if the context expires during the wait.
+func (p Policy) Sleep(ctx context.Context, n int) error {
+	base := p.BaseBackoff
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+	maxB := p.MaxBackoff
+	if maxB <= 0 {
+		maxB = 5 * time.Second
+	}
+
+	ceiling := ceilingFor(base, maxB, n)
+
+	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand.
+	// crypto/rand is chosen so retry timing is unpredictable across gateway instances,
+	// preventing synchronized retry storms even when instances share a workload profile.
+	// math/rand seeded from crypto/rand would also desynchronize, but adds a shared seed
+	// state. The one crypto/rand syscall per retry (rare, not per-request) is acceptable.
+	half := ceiling / 2
+	var d time.Duration
+	if half > 0 {
+		// Use SetUint64 so the conversion is sign-safe: half is always >= 0
+		// (ceilingFor returns a non-negative duration), and uint64 has sufficient
+		// range even when MaxBackoff approaches time.Duration max (~292 years).
+		limit := new(big.Int).SetUint64(uint64(half) + 1)
+		jitter, err := rand.Int(rand.Reader, limit)
+		if err != nil {
+			d = half // fallback on OS RNG failure; preserves partial desynchronization
+		} else {
+			d = half + time.Duration(jitter.Uint64())
+		}
+	} else {
+		d = ceiling
+	}
+
+	t := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		// Go 1.23 changed time.NewTimer so that Stop drains t.C before returning
+		// (go.dev/doc/go1.23: "NewTimer and NewTicker guarantee that Stop and Reset
+		// drain the channel"). After Stop returns on Go 1.23+, t.C is empty — an
+		// explicit <-t.C would block indefinitely. The go.mod requires a toolchain
+		// that includes this guarantee, so no drain is needed or safe here.
+		t.Stop()
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}

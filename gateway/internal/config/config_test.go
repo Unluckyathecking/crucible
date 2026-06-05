@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setenv(t *testing.T, key, value string) {
@@ -83,6 +84,10 @@ func TestLoadDefaults(t *testing.T) {
 		{"BodyLimitBytes", c.BodyLimitBytes, int64(1048576)},
 		{"WorkerURL", c.WorkerURL, "http://localhost:8081"},
 		{"WorkerTimeoutMS", c.WorkerTimeoutMS, 10000},
+		{"WorkerRetryMax", c.WorkerRetryMax, 0},
+		{"WorkerRetryBackoffMS", c.WorkerRetryBackoffMS, 100},
+		{"WorkerBreakerThreshold", c.WorkerBreakerThreshold, 0},
+		{"WorkerBreakerCooldownMS", c.WorkerBreakerCooldownMS, 5000},
 		{"PostgresMaxConns", c.PostgresMaxConns, 20},
 		{"StripeMeterName", c.StripeMeterName, "crucible_units"},
 		{"APIKeyPrefix", c.APIKeyPrefix, "cru_"},
@@ -148,5 +153,215 @@ func TestLoadCustomPort(t *testing.T) {
 	}
 	if c.Port != 3000 {
 		t.Errorf("Port = %d, want 3000", c.Port)
+	}
+}
+
+func TestWorkerTimeoutMSZeroReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_TIMEOUT_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_TIMEOUT_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_TIMEOUT_MS") {
+		t.Errorf("error %q does not mention WORKER_TIMEOUT_MS", err.Error())
+	}
+}
+
+func TestWorkerMaxConnsZeroDefaultsTo64(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "0")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error for GATEWAY_WORKER_MAX_CONNS=0: %v", err)
+	}
+	if c.WorkerMaxConns != 64 {
+		t.Errorf("WorkerMaxConns = %d, want 64 (zero is silently promoted to the operational default; negative values are rejected by earlier validation)", c.WorkerMaxConns)
+	}
+}
+
+func TestRetryMaxWithZeroBackoffReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_MAX>1 with WORKER_RETRY_BACKOFF_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_BACKOFF_MS") {
+		t.Errorf("error %q does not mention WORKER_RETRY_BACKOFF_MS", err.Error())
+	}
+}
+
+// TestRetryMaxOneZeroBackoffIsValid documents that WORKER_RETRY_MAX=1 (single-shot
+// with no retries) is accepted even when WORKER_RETRY_BACKOFF_MS=0, because backoff
+// is never used when only one attempt is made.
+func TestRetryMaxOneZeroBackoffIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "1")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "0")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error for WORKER_RETRY_MAX=1 with WORKER_RETRY_BACKOFF_MS=0: %v", err)
+	}
+	if c.WorkerRetryMax != 1 {
+		t.Errorf("WorkerRetryMax = %d, want 1", c.WorkerRetryMax)
+	}
+}
+
+func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "101")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_THRESHOLD=101, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_THRESHOLD") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_THRESHOLD", err.Error())
+	}
+}
+
+// TestBreakerCooldownZeroWithThresholdReturnsError verifies that zero cooldown
+// is rejected when the breaker is enabled, preventing a startup panic in
+// resilience.NewBreaker (which panics when Threshold>0 && Cooldown<=0).
+func TestBreakerCooldownZeroWithThresholdReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_THRESHOLD>0 with WORKER_BREAKER_COOLDOWN_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
+func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "100")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for cooldown < 500ms, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
+// TestBreakerCooldownTooLowZeroThresholdReturnsError verifies that a cooldown
+// below 500ms is rejected even when the breaker is disabled (threshold=0),
+// preventing a config landmine that only surfaces when threshold is later raised.
+func TestBreakerCooldownTooLowZeroThresholdReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	// threshold=0 (default, breaker disabled) but cooldown too low.
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "100")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_COOLDOWN_MS=100 even with threshold=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
+// TestBreakerCooldownTooHighReturnsError verifies that a cooldown above 300000ms
+// (5 minutes) is rejected, preventing a misconfigured value from permanently
+// locking the breaker open.
+func TestBreakerCooldownTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "300001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_COOLDOWN_MS=300001, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
+func TestWorkerMaxConnsTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "10001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for GATEWAY_WORKER_MAX_CONNS=10001, got nil")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_WORKER_MAX_CONNS") {
+		t.Errorf("error %q does not mention GATEWAY_WORKER_MAX_CONNS", err.Error())
+	}
+}
+
+func TestRetryBackoffTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "60001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_BACKOFF_MS=60001, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_BACKOFF_MS") {
+		t.Errorf("error %q does not mention WORKER_RETRY_BACKOFF_MS", err.Error())
+	}
+}
+
+func TestRetryMaxNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_MAX=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_MAX") {
+		t.Errorf("error %q does not mention WORKER_RETRY_MAX", err.Error())
+	}
+}
+
+func TestWorkerMaxConnsNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for GATEWAY_WORKER_MAX_CONNS=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_WORKER_MAX_CONNS") {
+		t.Errorf("error %q does not mention GATEWAY_WORKER_MAX_CONNS", err.Error())
+	}
+}
+
+// TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
+// return the configured millisecond values as time.Duration (with the correct
+// * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
+// when constructing resilience.Policy and resilience.BreakerConfig.
+func TestConfigDurationHelpers(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "250")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "2000")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := c.RetryBaseBackoff(), 250*time.Millisecond; got != want {
+		t.Errorf("RetryBaseBackoff = %v, want %v", got, want)
+	}
+	if got, want := c.BreakerCooldown(), 2*time.Second; got != want {
+		t.Errorf("BreakerCooldown = %v, want %v", got, want)
 	}
 }

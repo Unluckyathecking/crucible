@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -17,6 +18,13 @@ type Config struct {
 	WorkerURL       string `envconfig:"WORKER_URL"           default:"http://localhost:8081"`
 	WorkerTimeoutMS int    `envconfig:"WORKER_TIMEOUT_MS"    default:"10000"`
 	WorkerMaxConns  int    `envconfig:"GATEWAY_WORKER_MAX_CONNS" default:"64"`
+
+	// Resilience — retry and circuit-breaker for gateway→worker calls.
+	// Defaults are disabled (single-shot, no breaker) to preserve current behaviour.
+	WorkerRetryMax          int `envconfig:"WORKER_RETRY_MAX"            default:"0"`
+	WorkerRetryBackoffMS    int `envconfig:"WORKER_RETRY_BACKOFF_MS"     default:"100"`
+	WorkerBreakerThreshold  int `envconfig:"WORKER_BREAKER_THRESHOLD"    default:"0"`
+	WorkerBreakerCooldownMS int `envconfig:"WORKER_BREAKER_COOLDOWN_MS"  default:"5000"`
 
 	// Postgres
 	PostgresDSN      string `envconfig:"POSTGRES_DSN"       required:"true"`
@@ -57,5 +65,81 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
+	// Negative is a misconfiguration error; zero (omitted/unset) is silently
+	// promoted to the operational default. These are intentionally separate checks:
+	// negative → reject with an error, zero → apply the default.
+	if c.WorkerMaxConns < 0 {
+		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
+	}
+	if c.WorkerMaxConns == 0 {
+		c.WorkerMaxConns = 64
+	}
+	if c.WorkerMaxConns > 10000 {
+		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be <= 10000 (got %d)", c.WorkerMaxConns)
+	}
+	if c.WorkerRetryMax < 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_MAX must be >= 0 (got %d)", c.WorkerRetryMax)
+	}
+	if c.WorkerRetryMax > 10 {
+		return nil, fmt.Errorf("WORKER_RETRY_MAX must be <= 10 (got %d)", c.WorkerRetryMax)
+	}
+	if c.WorkerRetryBackoffMS < 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be >= 0 (got %d)", c.WorkerRetryBackoffMS)
+	}
+	if c.WorkerRetryBackoffMS > 60000 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be <= 60000 (1 minute) (got %d)", c.WorkerRetryBackoffMS)
+	}
+	if c.WorkerBreakerThreshold < 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be >= 0 (got %d)", c.WorkerBreakerThreshold)
+	}
+	if c.WorkerBreakerThreshold > 100 {
+		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be <= 100 (got %d)", c.WorkerBreakerThreshold)
+	}
+	if c.WorkerBreakerCooldownMS < 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 0 (got %d)", c.WorkerBreakerCooldownMS)
+	}
+	if c.WorkerBreakerCooldownMS > 300000 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
+	}
+	// Zero cooldown with threshold enabled would panic resilience.NewBreaker
+	// (cooldown=0 makes the breaker immediately re-probe on every Allow after
+	// opening, defeating its purpose). Reject it here to get a clear config error
+	// instead of a startup panic.
+	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got 0)")
+	}
+	// A non-zero cooldown below 500ms causes rapid open/half-open oscillation that
+	// defeats the breaker's purpose. Reject it unconditionally (not just when
+	// threshold > 0) so an operator who sets cooldown=100 and threshold=0 today
+	// cannot silently create a config landmine that breaks startup the moment
+	// they enable the breaker by raising threshold.
+	if c.WorkerBreakerCooldownMS > 0 && c.WorkerBreakerCooldownMS < 500 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 500 when non-zero (got %d)", c.WorkerBreakerCooldownMS)
+	}
+	if c.WorkerTimeoutMS <= 0 {
+		return nil, fmt.Errorf("WORKER_TIMEOUT_MS must be > 0 (got %d)", c.WorkerTimeoutMS)
+	}
+	// With retries enabled a zero backoff hammers the worker without any delay.
+	// retry.go defaults BaseBackoff to 100ms when <= 0, but reject it explicitly
+	// here so the config is self-consistent: retry + no backoff is a misconfiguration.
+	if c.WorkerRetryMax > 1 && c.WorkerRetryBackoffMS == 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be > 0 when WORKER_RETRY_MAX > 1 (got %d)", c.WorkerRetryBackoffMS)
+	}
+	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
+	// aggressive — every threshold-th single-shot failure opens the breaker with no
+	// retry mitigation. Operators should understand this interaction before deploying.
 	return &c, nil
+}
+
+// RetryBaseBackoff converts WorkerRetryBackoffMS to time.Duration.
+// Use this when constructing a resilience.Policy to avoid the nanosecond/
+// millisecond unit mismatch that occurs with a bare time.Duration(int) cast.
+func (c *Config) RetryBaseBackoff() time.Duration {
+	return time.Duration(c.WorkerRetryBackoffMS) * time.Millisecond
+}
+
+// BreakerCooldown converts WorkerBreakerCooldownMS to time.Duration.
+// Use this when constructing a resilience.BreakerConfig to avoid unit mismatch.
+func (c *Config) BreakerCooldown() time.Duration {
+	return time.Duration(c.WorkerBreakerCooldownMS) * time.Millisecond
 }
