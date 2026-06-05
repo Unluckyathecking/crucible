@@ -165,6 +165,9 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 // at any time, including while Invoke goroutines are running.
 func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 	if m != nil {
+		if m.WorkerRetriesTotal == nil || m.WorkerBreakerState == nil || m.WorkerCallDuration == nil {
+			panic("proxy.Client.WithMetrics: Metrics has nil worker instruments")
+		}
 		c.metrics.Store(&clientMetrics{
 			retriesTotal:       m.WorkerRetriesTotal,
 			breakerState:       m.WorkerBreakerState,

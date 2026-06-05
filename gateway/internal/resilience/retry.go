@@ -99,9 +99,11 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	}
 
 	t := time.NewTimer(d)
-	defer t.Stop() // Go 1.23+: Stop is sufficient; no manual drain needed.
 	select {
 	case <-ctx.Done():
+		if !t.Stop() {
+			<-t.C
+		}
 		return ctx.Err()
 	case <-t.C:
 		return nil
