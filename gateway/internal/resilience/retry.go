@@ -88,9 +88,13 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	}
 
 	t := time.NewTimer(d)
-	defer t.Stop()
 	select {
 	case <-ctx.Done():
+		// Drain the channel if the timer already fired before we stopped it,
+		// preventing the buffered value from outliving this call (Go timer idiom).
+		if !t.Stop() {
+			<-t.C
+		}
 		return ctx.Err()
 	case <-t.C:
 		return nil
