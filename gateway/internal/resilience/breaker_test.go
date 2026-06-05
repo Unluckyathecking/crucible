@@ -382,6 +382,8 @@ func TestBreaker_RaceConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// tok (not 0) is passed to RecordFailure to exercise the full
+			// token-matching protocol under concurrency, not just the failure counter.
 			if tok, err := b.Allow(); err == nil {
 				b.RecordFailure(tok)
 			}

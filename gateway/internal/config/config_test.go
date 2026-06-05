@@ -233,7 +233,24 @@ func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("expected error for cooldown < 500ms with threshold > 0, got nil")
+		t.Fatal("expected error for cooldown < 500ms, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
+// TestBreakerCooldownTooLowZeroThresholdReturnsError verifies that a cooldown
+// below 500ms is rejected even when the breaker is disabled (threshold=0),
+// preventing a config landmine that only surfaces when threshold is later raised.
+func TestBreakerCooldownTooLowZeroThresholdReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	// threshold=0 (default, breaker disabled) but cooldown too low.
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "100")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_COOLDOWN_MS=100 even with threshold=0, got nil")
 	}
 	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
 		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())

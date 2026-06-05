@@ -99,11 +99,13 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerCooldownMS > 300000 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
 	}
-	// A cooldown below 500ms causes rapid open/half-open oscillation that defeats
-	// the breaker's purpose — each probe immediately re-opens for the same failure,
-	// wasting a probe slot without giving the worker meaningful recovery time.
-	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS < 500 {
-		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 500 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
+	// A non-zero cooldown below 500ms causes rapid open/half-open oscillation that
+	// defeats the breaker's purpose. Reject it unconditionally (not just when
+	// threshold > 0) so an operator who sets cooldown=100 and threshold=0 today
+	// cannot silently create a config landmine that breaks startup the moment
+	// they enable the breaker by raising threshold.
+	if c.WorkerBreakerCooldownMS > 0 && c.WorkerBreakerCooldownMS < 500 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 500 when non-zero (got %d)", c.WorkerBreakerCooldownMS)
 	}
 	if c.WorkerTimeoutMS <= 0 {
 		return nil, fmt.Errorf("WORKER_TIMEOUT_MS must be > 0 (got %d)", c.WorkerTimeoutMS)

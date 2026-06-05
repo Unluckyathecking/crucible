@@ -58,6 +58,28 @@ type Policy struct {
 	MaxBackoff time.Duration
 }
 
+// ceilingFor computes the exponential backoff ceiling for retry n.
+// base * 2^n, capped at maxB. base is clamped to maxB first so
+// BaseBackoff > MaxBackoff never exceeds the ceiling on the first retry.
+func ceilingFor(base, maxB time.Duration, n int) time.Duration {
+	ceiling := base
+	if ceiling > maxB {
+		ceiling = maxB
+	}
+	for i := 0; i < n; i++ {
+		if ceiling >= maxB {
+			break
+		}
+		// Overflow-safe doubling: cap directly when ceiling > maxB/2.
+		if ceiling > maxB/2 {
+			ceiling = maxB
+		} else {
+			ceiling *= 2
+		}
+	}
+	return ceiling
+}
+
 // Sleep waits for the jittered exponential backoff before retry n.
 // n is 0-indexed: 0 = first retry (base delay), 1 = second retry (base*2), etc.
 // Returns ctx.Err() if the context expires during the wait.
@@ -71,25 +93,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		maxB = 5 * time.Second
 	}
 
-	// Exponential ceiling: base * 2^n, capped at maxB.
-	// Clamp base to maxB first so a BaseBackoff > MaxBackoff doesn't exceed the ceiling
-	// on the first retry. Then double once per retry up to maxB.
-	ceiling := base
-	if ceiling > maxB {
-		ceiling = maxB
-	}
-	for i := 0; i < n; i++ {
-		if ceiling >= maxB {
-			break
-		}
-		// Overflow-safe doubling: if ceiling > maxB/2, doubling would exceed maxB.
-		// Cap directly instead of doubling past it.
-		if ceiling > maxB/2 {
-			ceiling = maxB
-		} else {
-			ceiling *= 2
-		}
-	}
+	ceiling := ceilingFor(base, maxB, n)
 
 	// Equal jitter: uniform in [ceiling/2, ceiling] using crypto/rand.
 	// Cryptographic unpredictability is required to prevent synchronized retry storms

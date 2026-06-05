@@ -231,9 +231,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Circuit-breaker admission: fast-fail without a network call when open.
 		// Allow returns a generation token; pass it to every Record* call so stale
 		// results from earlier breaker generations are silently ignored.
-		// From StateClosed, Allow returns token=0; passing 0 to Record* is always a
-		// no-op for probe-guarded paths because probeGen is always >= 1 in StateHalfOpen
-		// (incremented before assignment), so 0 can never match an active probe slot.
+		// From StateClosed, Allow returns token=0. Since probeGen is incremented to
+		// >= 1 before any HalfOpen transition, a stale 0 token will not match the
+		// active probeGen and is silently ignored by Record*. This is a consequence
+		// of Allow() incrementing probeGen before assignment, not a general invariant.
 		var breakerToken uint64
 		if c.breaker != nil {
 			var berr error
@@ -331,6 +332,9 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	// err != nil (e.g., redirect-policy failure). A single deferred close here
 	// covers both the success path and error paths with non-nil resp, so the body
 	// is always closed exactly once regardless of which path returns.
+	// Note: defer here is scoped to doOnce (a separate function call), not to
+	// Invoke's retry loop — it fires when doOnce returns, not when Invoke returns,
+	// so no body accumulation occurs across retry iterations.
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}

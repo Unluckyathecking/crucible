@@ -125,6 +125,41 @@ func TestPolicy_Sleep_BackoffDoublingAndCap(t *testing.T) {
 	}
 }
 
+// TestPolicy_Sleep_CeilingDoubling verifies the ceiling computation directly:
+// ceilingFor must return base*2^n capped at MaxBackoff, and the doubling
+// relationship must hold exactly between consecutive retry indices. This is a
+// timing-free check that the exponential algorithm is correct regardless of jitter.
+func TestPolicy_Sleep_CeilingDoubling(t *testing.T) {
+	cases := []struct {
+		base, maxB time.Duration
+		n          int
+		want       time.Duration
+	}{
+		{10 * time.Millisecond, 40 * time.Millisecond, 0, 10 * time.Millisecond},
+		{10 * time.Millisecond, 40 * time.Millisecond, 1, 20 * time.Millisecond}, // doubled from n=0
+		{10 * time.Millisecond, 40 * time.Millisecond, 2, 40 * time.Millisecond}, // doubled from n=1
+		{10 * time.Millisecond, 40 * time.Millisecond, 3, 40 * time.Millisecond}, // capped at maxB
+		{10 * time.Second, 5 * time.Millisecond, 0, 5 * time.Millisecond},         // base > max → clamped
+		{1 * time.Millisecond, 5 * time.Millisecond, 100, 5 * time.Millisecond},   // large n stays capped
+	}
+	for _, tc := range cases {
+		if got := ceilingFor(tc.base, tc.maxB, tc.n); got != tc.want {
+			t.Errorf("ceilingFor(base=%v,max=%v,n=%d) = %v, want %v",
+				tc.base, tc.maxB, tc.n, got, tc.want)
+		}
+	}
+	// Verify exact doubling relationship for n=0→1 and n=1→2.
+	c0 := ceilingFor(10*time.Millisecond, 40*time.Millisecond, 0)
+	c1 := ceilingFor(10*time.Millisecond, 40*time.Millisecond, 1)
+	c2 := ceilingFor(10*time.Millisecond, 40*time.Millisecond, 2)
+	if c1 != c0*2 {
+		t.Errorf("ceiling must double n=0→n=1: %v → %v", c0, c1)
+	}
+	if c2 != c1*2 {
+		t.Errorf("ceiling must double n=1→n=2: %v → %v", c1, c2)
+	}
+}
+
 // TestPolicy_Sleep_BaseLargerThanMax verifies that when BaseBackoff > MaxBackoff,
 // Sleep clamps the ceiling to MaxBackoff on the first retry rather than sleeping
 // for the full BaseBackoff. This exercises the documented overflow guard:
