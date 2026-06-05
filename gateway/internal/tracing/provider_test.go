@@ -114,6 +114,13 @@ func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProvider returned unexpected error: %v", err)
 	}
+	// Ensure the provider is properly shut down after the test even when the
+	// cancelled-context call does not fully flush the BatchSpanProcessor.
+	t.Cleanup(func() {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cleanCancel()
+		_ = shutdown(cleanCtx)
+	})
 
 	// Cancel the context before calling shutdown — the BSP must honour it and return
 	// quickly with a context error rather than waiting for the full export timeout.

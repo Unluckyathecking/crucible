@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -27,13 +26,6 @@ const w3cTraceparentMinLen = 55
 
 // propagator is the W3C TraceContext propagator used for header extraction/injection.
 var propagator = propagation.TraceContext{}
-
-func init() {
-	// zerolog.DefaultContextLogger is returned by zerolog.Ctx when no logger has
-	// been stored in context. Without this, Ctx returns a Nop logger (level=Disabled,
-	// nil writer) that silently discards output on the default-off tracing path.
-	zerolog.DefaultContextLogger = &log.Logger
-}
 
 // Middleware returns HTTP middleware that:
 //  1. Extracts an inbound W3C traceparent header to continue a remote parent trace,
@@ -56,8 +48,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Read the base logger from the original request context before deriving
 			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. zerolog.DefaultContextLogger (set in init) ensures Ctx never
-			// returns the Nop sentinel — it returns at least log.Logger when none is stored.
+			// is preserved. middleware.init() sets zerolog.DefaultContextLogger so Ctx
+			// never returns the Nop sentinel when the full gateway stack is loaded.
 			// Work with a value (not pointer) to avoid zerolog pointer aliasing.
 			base := *zerolog.Ctx(r.Context())
 
@@ -88,8 +80,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			}
 			// Noop path: skip log enrichment entirely. The logger remains accessible
 			// via the context chain (tracer.Start returns a derived context), and
-			// zerolog.DefaultContextLogger (set in init) is the fallback for any
-			// call to zerolog.Ctx(ctx) that doesn't find an explicitly stored logger.
+			// zerolog.DefaultContextLogger (set in middleware.init) is the fallback
+			// for any zerolog.Ctx(ctx) call that doesn't find an explicit logger.
 
 			// Reassign r so chi.RouteContext picks up the same context that has the span.
 			r = r.WithContext(ctx)

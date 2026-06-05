@@ -532,6 +532,55 @@ func TestOtelTracingEnabledWithInsecureEndpoint(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointEmptyHostReturnsError verifies that an endpoint whose
+// host part is empty (e.g. ":4318" — port only, no host) is rejected. The
+// gateway must resolve a collector address; a bare port is not valid.
+func TestOtelExporterEndpointEmptyHostReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", ":4318")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for endpoint with empty host (:4318), got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
+// TestOtelExporterEndpointTooLongReturnsError verifies that an endpoint string
+// exceeding 4096 bytes is rejected before any host:port parsing is attempted.
+func TestOtelExporterEndpointTooLongReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", strings.Repeat("x", 4097))
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for endpoint exceeding maximum length, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
+// TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError verifies that a
+// whitespace-only endpoint is treated as empty after trimming and rejected when
+// tracing is enabled, preventing a confusing "endpoint must be set" error at
+// provider-construction time instead of config-load time.
+func TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", "   ")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for whitespace-only endpoint with tracing enabled, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
 // TestOtelExporterEndpointUppercaseSchemeReturnsError verifies that scheme validation
 // is case-insensitive — HTTP:// and HTTPS:// are rejected alongside http:// and https://.
 // URL schemes are case-insensitive per RFC 3986.
