@@ -101,7 +101,7 @@ var (
 
 // Metrics is a test-friendly holder for all observability counters.
 // Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
-// Pass the result to proxy.Client.WithMetrics to inject worker-call metrics into tests.
+// Pass the result to the proxy client's metrics injection method for worker-call metrics in tests.
 type Metrics struct {
 	RequestsTotal      *prometheus.CounterVec
 	RequestDuration    *prometheus.HistogramVec

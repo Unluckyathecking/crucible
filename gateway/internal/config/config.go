@@ -88,8 +88,10 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerCooldownMS > 300000 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
 	}
-	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
-		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
+	// A cooldown below 100ms causes rapid open/half-open oscillation that defeats
+	// the breaker's purpose — each probe immediately re-opens for the same failure.
+	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS < 100 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 100 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
 	}
 	// With retries enabled a zero backoff hammers the worker without any delay.
 	// retry.go defaults BaseBackoff to 100ms when <= 0, but reject it explicitly

@@ -501,27 +501,28 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	defer worker.Close()
 
 	pol := ResiliencePolicy{
-		// 20 attempts with 30ms base. Without ctx stopping retries, this would
-		// make >= 20 calls over many seconds. Context expires at 80ms.
-		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 30 * time.Millisecond, MaxBackoff: 1 * time.Second},
+		// BaseBackoff=500ms ensures the first retry sleep (250-500ms jitter band)
+		// outlasts the 100ms context deadline. Exactly 1 attempt is made, then ctx
+		// expires during the first Sleep — proving ctx stops retries, not MaxAttempts.
+		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 500 * time.Millisecond, MaxBackoff: 500 * time.Millisecond},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// The error must be context-related (deadline or cancel), not a 503 that
-	// happened to arrive before the deadline.
+	// The error must be context-related (deadline or cancel), not a 503.
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context error, got %v", err)
 	}
-	// Strictly fewer than MaxAttempts proves ctx stopped retries early.
-	if n := callCount.Load(); n >= 20 {
-		t.Errorf("call count = %d, want < 20 (ctx expiry should stop retries before MaxAttempts)", n)
+	// Exactly 1 call: the 500ms backoff outlasts the 100ms ctx so Sleep returns
+	// DeadlineExceeded before a second call can be dispatched.
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("call count = %d, want 1 (ctx should expire during first retry sleep)", n)
 	}
 }
 
@@ -600,6 +601,12 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
+	// Inject fake clock before failures so the baseline timestamp is known.
+	// Advancing fakeNow later proves the injected clock — not real time — controls
+	// the cooldown transition.
+	var fakeNow = time.Now()
+	c.WithBreakerClock(func() time.Time { return fakeNow })
+
 	// Open the breaker with exactly Threshold failures.
 	for i := 0; i < 2; i++ {
 		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
@@ -611,9 +618,8 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 		t.Fatal("expected StateOpen after threshold failures")
 	}
 
-	// Advance the fake clock 2 hours past real now so Allow() sees the cooldown as elapsed.
-	fakeNow := time.Now().Add(2 * time.Hour)
-	c.WithBreakerClock(func() time.Time { return fakeNow })
+	// Advance just past cooldown — proves injected clock controls the transition.
+	fakeNow = fakeNow.Add(time.Hour + time.Millisecond)
 
 	// Probe: Allow() detects cooldown elapsed → StateHalfOpen; doOnce succeeds → StateClosed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})

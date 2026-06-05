@@ -66,12 +66,13 @@ type ResiliencePolicy struct {
 
 // Client forwards InvokeRequests to a worker.
 type Client struct {
-	workerURL    string
-	http         *http.Client
-	retry        resilience.Policy
-	breaker      *resilience.Breaker
-	retriesTotal prometheus.Counter
-	breakerState prometheus.Gauge
+	workerURL          string
+	http               *http.Client
+	retry              resilience.Policy
+	breaker            *resilience.Breaker
+	retriesTotal       prometheus.Counter
+	breakerState       prometheus.Gauge
+	workerCallDuration prometheus.Histogram
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
@@ -92,10 +93,11 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		pol = policies[0]
 	}
 	c := &Client{
-		workerURL:    workerURL,
-		retry:        pol.Retry,
-		retriesTotal: observability.WorkerRetriesTotal,
-		breakerState: observability.WorkerBreakerState,
+		workerURL:          workerURL,
+		retry:              pol.Retry,
+		retriesTotal:       observability.WorkerRetriesTotal,
+		breakerState:       observability.WorkerBreakerState,
+		workerCallDuration: observability.WorkerCallDuration,
 		http: &http.Client{
 			Timeout: timeout, // per-request ceiling; enforces WORKER_TIMEOUT_MS
 			Transport: &http.Transport{
@@ -139,11 +141,12 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 
 // WithMetrics replaces the default package-level Prometheus vars with the metrics
 // from an isolated test registry. Intended for deterministic tests only; do not
-// call after Invoke goroutines are running.
+// call after Invoke goroutines are running (no synchronisation on the field writes).
 func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 	if m != nil {
 		c.retriesTotal = m.WorkerRetriesTotal
 		c.breakerState = m.WorkerBreakerState
+		c.workerCallDuration = m.WorkerCallDuration
 	}
 	return c
 }
@@ -274,12 +277,18 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*In
 
 	start := time.Now()
 	resp, err := c.http.Do(req)
-	observability.WorkerCallDuration.Observe(time.Since(start).Seconds())
+	c.workerCallDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		// resp is nil for most transport errors, but can be non-nil when a redirect
 		// policy fires (e.g., too many redirects) — close the body in that case.
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
+		}
+		// resp != nil signals a redirect-policy or protocol error, not a transient
+		// transport failure. Return statusNone so the retry/breaker logic treats it
+		// as a persistent non-retryable error, not a worker health failure.
+		if resp != nil {
+			return nil, statusNone, fmt.Errorf("worker call: %w", err)
 		}
 		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
