@@ -130,9 +130,10 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 // WithBreakerClock injects a test clock into the circuit breaker. Intended for
 // deterministic tests only; do not call after Invoke goroutines are running.
 func (c *Client) WithBreakerClock(now func() time.Time) *Client {
-	if c.breaker != nil {
-		c.breaker.WithNow(now)
+	if now == nil || c.breaker == nil {
+		return c
 	}
+	c.breaker.WithNow(now)
 	return c
 }
 
@@ -156,6 +157,9 @@ func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 // the caller boundary — the route handler maps every non-nil error to 502 WORKER_UNREACHABLE
 // with retryable=true, so callers must not branch on the specific error value.
 func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse, error) {
+	if in == nil {
+		return nil, fmt.Errorf("worker call: nil InvokeRequest")
+	}
 	body, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -227,8 +231,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 				// a real error response and that health signal must reach the breaker.
 				c.breaker.RecordFailure(breakerToken)
 			case status == statusNone:
-				// Pre-flight build error: never reached the worker; release any probe slot.
-				c.breaker.RecordAbort(breakerToken)
+				// Pre-flight build error (bad URL, request-build failure): the worker is
+				// unreachable due to a persistent config problem. Record as failure so the
+				// breaker opens and stops wasting probes on an impossible target.
+				c.breaker.RecordFailure(breakerToken)
 			case status == 0 && ctx.Err() == nil:
 				// Transport/network error with no HTTP response and no ctx cancellation.
 				c.breaker.RecordFailure(breakerToken)

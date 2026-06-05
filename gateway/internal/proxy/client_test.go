@@ -745,6 +745,19 @@ func TestInvoke_DefaultPolicy_SingleShot(t *testing.T) {
 	}
 }
 
+// TestInvoke_NilRequest verifies that a nil InvokeRequest returns a clear error rather
+// than panicking with a nil-dereference.
+func TestInvoke_NilRequest(t *testing.T) {
+	c := New("http://unused", 5*time.Second, 0)
+	_, err := c.Invoke(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil InvokeRequest, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil InvokeRequest") {
+		t.Errorf("error %q should mention nil InvokeRequest", err.Error())
+	}
+}
+
 // TestInvoke_MetricsInjection verifies that WithMetrics causes retriesTotal to increment
 // once per retry attempt. Uses an isolated prometheus.NewRegistry() to avoid polluting
 // the package-level DefaultRegisterer across test runs.
