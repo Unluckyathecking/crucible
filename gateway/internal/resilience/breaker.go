@@ -176,6 +176,10 @@ func (b *Breaker) RecordSuccess(token uint64) {
 			onState = b.onState
 		}
 		// Stale token: silently ignore — do not close the breaker or release the probe slot.
+		// probeInFlight remains true so the active probe retains exclusive access to the
+		// half-open slot until it calls RecordSuccess/RecordFailure/RecordAbort with the
+		// current generation token. No probe slot leak is possible: only the matching
+		// generation token can release probeInFlight (here) or re-arm it (RecordAbort).
 	case StateClosed:
 		// Normal healthy call: reset the failure streak so transient failures are
 		// forgotten once a success arrives. probeInFlight is only ever true in

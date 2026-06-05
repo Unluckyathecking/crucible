@@ -178,7 +178,7 @@ func TestWorkerMaxConnsZeroDefaultsTo64(t *testing.T) {
 		t.Fatalf("Load: unexpected error for GATEWAY_WORKER_MAX_CONNS=0: %v", err)
 	}
 	if c.WorkerMaxConns != 64 {
-		t.Errorf("WorkerMaxConns = %d, want 64 (silent default for zero/negative)", c.WorkerMaxConns)
+		t.Errorf("WorkerMaxConns = %d, want 64 (zero is silently promoted to the operational default; negative values are rejected by earlier validation)", c.WorkerMaxConns)
 	}
 }
 

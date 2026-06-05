@@ -341,6 +341,9 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 		// returning. Return statusNone so retry/breaker logic treats this as a
 		// persistent non-retryable error, not a transient worker health failure.
 		if resp != nil && resp.Body != nil {
+			// Explicit close — not defer — because we return immediately below.
+			// The defer registered later (after the err==nil guard) is not reached
+			// on this error path, so explicit close is the only body cleanup here.
 			resp.Body.Close()
 		}
 		if resp != nil {
