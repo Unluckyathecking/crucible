@@ -99,5 +99,8 @@ func Load() (*Config, error) {
 	if c.WorkerRetryMax > 1 && c.WorkerRetryBackoffMS == 0 {
 		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be > 0 when WORKER_RETRY_MAX > 1 (got %d)", c.WorkerRetryBackoffMS)
 	}
+	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
+	// aggressive — every threshold-th single-shot failure opens the breaker with no
+	// retry mitigation. Operators should understand this interaction before deploying.
 	return &c, nil
 }

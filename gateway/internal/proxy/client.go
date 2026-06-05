@@ -24,8 +24,9 @@ import (
 
 const (
 	defaultTimeout = 30 * time.Second
-	// defaultMaxConns caps total connections per worker host so a slow worker
-	// can't pin gateway sockets/goroutines without bound. Used when maxConns <= 0.
+	// defaultMaxConns is the fallback connection ceiling when New() is called with
+	// maxConns <= 0. In production the value comes from GATEWAY_WORKER_MAX_CONNS;
+	// this constant is the in-process guard for callers that omit the argument.
 	defaultMaxConns = 64
 
 	// statusNone is the sentinel status returned by doOnce when the call failed
@@ -249,10 +250,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 				// a real error response and that health signal must reach the breaker.
 				c.breaker.RecordFailure(breakerToken)
 			case status == statusNone:
-				// Pre-flight build error (bad URL, request-build failure): the worker is
-				// unreachable due to a persistent config problem. Record as failure so the
-				// breaker opens and stops wasting probes on an impossible target.
-				c.breaker.RecordFailure(breakerToken)
+				// Pre-flight build error (bad URL, request-build failure): the worker was
+				// never contacted, so no health signal exists. Release the probe slot without
+				// recording a verdict — this is a local config error, not worker health.
+				c.breaker.RecordAbort(breakerToken)
 			case status == 0 && ctx.Err() == nil:
 				// Transport/network error with no HTTP response and no ctx cancellation.
 				c.breaker.RecordFailure(breakerToken)

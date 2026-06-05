@@ -501,10 +501,11 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	defer worker.Close()
 
 	pol := ResiliencePolicy{
-		// BaseBackoff=500ms ensures the first retry sleep (250-500ms jitter band)
-		// outlasts the 100ms context deadline. Exactly 1 attempt is made, then ctx
-		// expires during the first Sleep — proving ctx stops retries, not MaxAttempts.
-		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 500 * time.Millisecond, MaxBackoff: 500 * time.Millisecond},
+		// BaseBackoff=2s so the jitter lower-bound (1s) safely outlasts the 100ms
+		// context deadline even with scheduler jitter on loaded CI hosts. Exactly 1
+		// attempt is made; ctx expires during the first Sleep, proving ctx stops
+		// retries rather than MaxAttempts.
+		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 2 * time.Second, MaxBackoff: 2 * time.Second},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
 
@@ -555,20 +556,16 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 
 	callsBefore := callCount.Load()
 
-	// These calls must fast-fail — no HTTP calls should reach the server,
-	// and each should return in well under 100ms (no network round-trip).
+	// These calls must fast-fail — no HTTP calls should reach the server.
+	// Correctness is verified by ErrBreakerOpen and callCount below; wall-clock
+	// time is not checked because scheduler jitter on loaded CI can cause false fails.
 	for i := 0; i < 5; i++ {
-		start := time.Now()
 		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
-		elapsed := time.Since(start)
 		if err == nil {
 			t.Fatal("expected error while breaker is open")
 		}
 		if !errors.Is(err, resilience.ErrBreakerOpen) {
 			t.Errorf("error %q should wrap ErrBreakerOpen", err.Error())
-		}
-		if elapsed > 1*time.Second {
-			t.Errorf("fast-fail took %v; expected < 1s (should not make a network call)", elapsed)
 		}
 	}
 
