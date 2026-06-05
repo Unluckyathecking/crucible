@@ -278,12 +278,24 @@ func TestSpanNamedByChiRoutePattern(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	_, plain := findSpan(t, sr.Ended(), "gateway.request")
-	_, named := findSpan(t, sr.Ended(), "/items/{id}")
+	namedSpan, named := findSpan(t, sr.Ended(), "/items/{id}")
 	if plain {
 		t.Error("span was not renamed from gateway.request to the chi route pattern")
 	}
 	if !named {
 		t.Error("expected span named /items/{id} after chi routing, not found")
+	}
+	if named {
+		var httpRoute string
+		for _, a := range namedSpan.Attributes() {
+			if string(a.Key) == "http.route" {
+				httpRoute = a.Value.AsString()
+				break
+			}
+		}
+		if httpRoute != "/items/{id}" {
+			t.Errorf("http.route attribute = %q, want /items/{id}", httpRoute)
+		}
 	}
 }
 

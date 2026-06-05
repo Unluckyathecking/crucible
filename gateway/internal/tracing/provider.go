@@ -1,9 +1,9 @@
 // Package tracing provides OpenTelemetry tracing primitives for the Crucible gateway.
 //
-// Default-disabled: the zero config (OTEL_TRACING_ENABLED=false / TracerProvider nil in
-// server.Deps) uses a noop.TracerProvider that dials no exporter and adds no overhead.
-// Call NewProvider to construct a live OTLP-exporting provider, then pass the result to
-// server.Deps.TracerProvider.
+// Two usage patterns:
+//   - Default-off: pass nil TracerProvider to Middleware — zero overhead, no exporter dialed.
+//   - Live traces: call NewProvider with an OTLP endpoint, pass the returned TracerProvider
+//     to Middleware and server.Deps, and call the returned shutdown function at process exit.
 package tracing
 
 import (

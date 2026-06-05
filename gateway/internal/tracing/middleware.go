@@ -53,7 +53,10 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// when no prior middleware has stored a logger in the context. Guard against
 			// nil (paranoid: zerolog never returns nil, but the nil check costs nothing)
 			// and against the disabled fallback — both indicate "no logger yet in context."
-			base := zerolog.Ctx(ctx)
+			// Use r.Context() for the logger lookup so that any logger already
+			// stored by upstream middleware (e.g. RequestID) is preserved across
+			// the propagator.Extract / tracer.Start context derivations.
+			base := zerolog.Ctx(r.Context())
 			if base == nil || base.GetLevel() == zerolog.Disabled {
 				l := log.Logger
 				base = &l
