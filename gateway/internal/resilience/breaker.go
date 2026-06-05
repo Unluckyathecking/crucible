@@ -105,19 +105,15 @@ func (b *Breaker) Allow() error {
 //   - StateOpen: stale success from a call admitted before the breaker tripped;
 //     failure streak is preserved so the cooldown + probe path decides recovery.
 //
-// probeInFlight invariants:
-//   - StateClosed: Allow() in Closed never sets probeInFlight; it is always false.
-//   - StateOpen: RecordFailure unconditionally clears probeInFlight before any Open
-//     transition, so it is always false on entry here.
-//   - StateHalfOpen: probeInFlight was set by the Allow() that admitted the probe;
-//     this is the only state where probeInFlight can be true on entry.
+// probeInFlight is only ever true in StateHalfOpen. In StateClosed, Allow() never
+// sets it. In StateOpen, RecordFailure clears it unconditionally before any Open
+// transition, so it is always false on entry in those two states.
 //
-// Known limitation: a stale success from a StateClosed request that completes
-// after Allow() has already transitioned the breaker to StateHalfOpen will close
-// the breaker without the intended probe. This race is self-correcting: the
-// actual probe still runs and, if the worker is unhealthy, RecordFailure will
-// re-open the breaker. Fixing it precisely requires a per-probe generation token
-// (API change), which is out of scope for this implementation.
+// Known limitation: a stale StateClosed success that arrives after the breaker has
+// already entered StateHalfOpen will close the breaker prematurely. This is
+// self-correcting: the actual probe still runs and RecordFailure will re-open if
+// the worker is unhealthy. A per-probe generation token would prevent it but is
+// out of scope for this implementation.
 func (b *Breaker) RecordSuccess() {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return
