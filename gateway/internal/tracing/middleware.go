@@ -98,6 +98,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// Wrap the response writer to capture the HTTP status code for span annotation.
 			ww := httputil.NewStatusRecorder(w)
 
+			// Capture request fields now, before next.ServeHTTP, so that handler
+			// mutations to r.URL (a pointer field) don't affect span attributes.
+			method := r.Method
+			path := r.URL.Path
+
 			// span, r, and ww are all declared within this http.HandlerFunc invocation —
 			// each concurrent request gets its own independent copies allocated on each
 			// call. The defer below closes over only this invocation's span; there is no
@@ -105,8 +110,8 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// single closure so their ordering is unambiguous.
 			defer func() {
 				span.SetAttributes(
-					attribute.String("http.method", r.Method),
-					attribute.String("http.path", r.URL.Path),
+					attribute.String("http.method", method),
+					attribute.String("http.path", path),
 					attribute.Int("http.status_code", ww.Status),
 				)
 

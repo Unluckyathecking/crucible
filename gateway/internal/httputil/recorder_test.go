@@ -142,17 +142,17 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if n != 4 {
 		t.Errorf("Write returned %d bytes, want 4", n)
 	}
-	// Write calls WriteHeader(200) because wroteHeader is still false after 1xx.
+	// Write directly sets Status=200 and calls inner.WriteHeader(200) because
+	// wroteHeader is still false after 1xx.
 	if sr.Status != http.StatusOK {
 		t.Errorf("Status = %d after 1xx+Write, want %d", sr.Status, http.StatusOK)
 	}
 	if !sr.wroteHeader {
 		t.Error("wroteHeader must be true after Write")
 	}
-	// httptest.ResponseRecorder committed Code=100 on WriteHeader(100); the deferred
-	// WriteHeader(200) from Write is silently ignored by the inner recorder. The
-	// authoritative status is sr.Status, not inner.Code, which is what middleware
-	// logging and Prometheus metrics consume.
+	// httptest.ResponseRecorder committed Code=100 on WriteHeader(100); the explicit
+	// inner.WriteHeader(200) from Write is silently ignored. The authoritative status
+	// is sr.Status, which middleware logging and Prometheus metrics consume.
 }
 
 func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {

@@ -37,11 +37,14 @@ func (s *StatusRecorder) WriteHeader(code int) {
 }
 
 // Write triggers an implicit 200 if no status has been committed yet.
-// Delegating to s.WriteHeader ensures Status and wroteHeader are set
-// through the single canonical path, keeping the two fields in sync.
+// Fields are set directly (not via s.WriteHeader) so that a preceding 1xx
+// WriteHeader — already forwarded to the inner writer — does not cause a
+// second WriteHeader call that the inner writer would silently discard.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
-		s.WriteHeader(http.StatusOK)
+		s.Status = http.StatusOK
+		s.wroteHeader = true
+		s.ResponseWriter.WriteHeader(http.StatusOK)
 	}
 	return s.ResponseWriter.Write(b)
 }
