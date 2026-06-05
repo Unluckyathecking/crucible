@@ -101,9 +101,9 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	t := time.NewTimer(d)
 	select {
 	case <-ctx.Done():
-		if !t.Stop() {
-			<-t.C
-		}
+		// Go 1.23+ guarantees that when Stop returns false (timer already fired),
+		// the runtime has already drained the channel — explicit drain would block.
+		t.Stop()
 		return ctx.Err()
 	case <-t.C:
 		return nil

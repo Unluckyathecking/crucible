@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -218,43 +217,21 @@ func TestNew_DefaultMaxConns(t *testing.T) {
 }
 
 func TestInvoke_StalledConnection(t *testing.T) {
-	// Start a raw TCP listener that accepts connections but never writes a response.
-	// This simulates a worker that hangs after TCP handshake.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var held []net.Conn
-		defer func() {
-			for _, c := range held {
-				_ = c.Close()
-			}
-		}()
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			held = append(held, conn)
-		}
-	}()
-	// Close the listener first (unblocks Accept → goroutine exits), then wait.
+	// Worker that accepts connections but never writes a response.
+	// The done channel lets cleanup unblock any in-flight handler goroutines
+	// before srv.Close() waits for them, preventing a deadlock.
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
 	t.Cleanup(func() {
-		l.Close()
-		wg.Wait()
+		close(done) // unblock handler goroutines first
+		srv.Close()
 	})
 
-	workerURL := "http://" + l.Addr().String()
-	// Set a very short timeout so the test runs fast.
-	c := New(workerURL, 50*time.Millisecond, 0)
-
+	c := New(srv.URL, 50*time.Millisecond, 0)
 	start := time.Now()
-	_, err = c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "slow"})
 	duration := time.Since(start)
 
 	if err == nil {
