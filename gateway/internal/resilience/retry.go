@@ -3,7 +3,7 @@ package resilience
 
 import (
 	"context"
-	crand "crypto/rand" // aliased to distinguish from math/rand at every call site
+	"crypto/rand"
 	"errors"
 	"math/big"
 	"time"
@@ -73,9 +73,8 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		if ceiling >= maxB {
 			break
 		}
-		// Overflow-safe doubling: if ceiling > maxB/2, doubling would exceed maxB
-		// (and could wrap on 32-bit builds where time.Duration is int32).
-		// Cap to maxB directly instead of doubling past it.
+		// Overflow-safe doubling: if ceiling > maxB/2, doubling would exceed maxB.
+		// Cap directly instead of doubling past it.
 		if ceiling > maxB/2 {
 			ceiling = maxB
 		} else {
@@ -89,7 +88,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {
-		jitter, err := crand.Int(crand.Reader, big.NewInt(int64(half)+1))
+		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
 		if err != nil {
 			d = half // fallback on OS RNG failure; preserves partial desynchronization
 		} else {
