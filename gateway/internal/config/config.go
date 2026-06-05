@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -139,8 +140,13 @@ func Load() (*Config, error) {
 	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 {
 		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
 	}
-	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
-		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
+	if c.OtelTracingEnabled {
+		if c.OtelExporterEndpoint == "" {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
+		}
+		if strings.Contains(c.OtelExporterEndpoint, "://") {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+		}
 	}
 	return &c, nil
 }

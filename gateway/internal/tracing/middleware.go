@@ -87,8 +87,9 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				attribute.Int("http.status_code", ww.Status),
 			)
 
-			// Mark 4xx and 5xx as span errors per OTel HTTP semantic conventions.
-			if ww.Status >= 400 {
+			// Only server errors (5xx) indicate a gateway failure; 4xx are
+			// client errors the server handled correctly per OTel conventions.
+			if ww.Status >= 500 {
 				span.SetStatus(codes.Error, http.StatusText(ww.Status))
 			}
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -24,6 +25,9 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
+
+// tracePropagator injects/extracts W3C TraceContext headers on outbound worker calls.
+var tracePropagator = propagation.TraceContext{}
 
 const (
 	defaultTimeout = 30 * time.Second
@@ -270,7 +274,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
-		resp, status, err := c.doOnce(ctx, body, in.RequestID, m)
+		resp, status, err := c.doOnce(ctx, body, in.RequestID, m, attempt)
 		// Count retries only after doOnce returned: the metric reflects real HTTP
 		// dispatches, not intents that were cancelled by ctx/breaker before dispatch.
 		if attempt > 0 {
@@ -327,10 +331,15 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics) (_ *InvokeResponse, _ int, retErr error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, _ int, retErr error) {
 	// Wrap each attempt in a client span so retry causality is visible in traces.
 	// TracerProvider is inherited from the active span — no-op when tracing is disabled.
 	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer("crucible.proxy").Start(ctx, "proxy.invoke")
+	span.SetAttributes(
+		attribute.String("http.url", c.workerURL+"/invoke"),
+		attribute.String("http.method", http.MethodPost),
+		attribute.Int("retry.attempt", attempt),
+	)
 	defer func() {
 		if retErr != nil {
 			span.RecordError(retErr)
@@ -349,7 +358,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	}
 	// Propagate W3C traceparent when a span is active in ctx; no-op when absent.
 	// X-Request-ID set above is not removed or modified.
-	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
+	tracePropagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	start := time.Now()
 	resp, err := c.http.Do(req)

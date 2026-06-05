@@ -9,6 +9,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -41,7 +42,10 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
+		sdktrace.WithBatcher(exp,
+			sdktrace.WithBatchTimeout(5*time.Second),
+			sdktrace.WithExportTimeout(30*time.Second),
+		),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)

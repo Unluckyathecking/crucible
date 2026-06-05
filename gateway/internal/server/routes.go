@@ -68,7 +68,7 @@ func NewRouter(d *Deps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(mw.RequestID)
-	r.Use(tracing.Middleware(d.TracerProvider)) // after RequestID; before AccessLog/observability
+	r.Use(tracing.Middleware(d.TracerProvider)) // after RequestID, before AccessLog
 	r.Use(mw.AccessLog)
 	r.Use(mw.Recovery)
 	r.Use(observability.Middleware)

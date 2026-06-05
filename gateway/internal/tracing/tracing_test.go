@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +33,9 @@ func newTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.SpanRec
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		tp.Shutdown(ctx)
+		if err := tp.Shutdown(ctx); err != nil {
+			t.Errorf("tracer provider shutdown failed: %v", err)
+		}
 	})
 	return tp, sr
 }
@@ -254,5 +257,62 @@ func TestSpanNamedByChiRoutePattern(t *testing.T) {
 	}
 	if !named {
 		t.Error("expected span named /items/{id} after chi routing, not found")
+	}
+}
+
+// TestNoOpWhenDisabledWithNilProvider verifies the Middleware(nil) code path —
+// the production default when TracerProvider is not wired — produces no Traceparent.
+func TestNoOpWhenDisabledWithNilProvider(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+
+	var outboundHeaders http.Header
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outboundHeaders = make(http.Header)
+		propagation.TraceContext{}.Inject(r.Context(), propagation.HeaderCarrier(outboundHeaders))
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tracing.Middleware(nil)(handler).ServeHTTP(rec, req)
+
+	if tp := outboundHeaders.Get("Traceparent"); tp != "" {
+		t.Errorf("expected no Traceparent header for nil provider, got %q", tp)
+	}
+}
+
+// TestConcurrentRequestsGetDistinctTraceIDs verifies that concurrent requests through
+// the same middleware instance each receive a unique trace ID and do not share context.
+func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
+	tp, _ := newTestProvider(t)
+
+	const n = 20
+	var wg sync.WaitGroup
+	traceIDs := make([]string, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			rec := httptest.NewRecorder()
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				traceIDs[idx] = oteltrace.SpanFromContext(r.Context()).SpanContext().TraceID().String()
+				w.WriteHeader(http.StatusOK)
+			})
+			tracing.Middleware(tp)(handler).ServeHTTP(rec, req)
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]bool)
+	for i, id := range traceIDs {
+		if id == "" || id == strings.Repeat("0", 32) {
+			t.Errorf("goroutine %d: got empty or zero trace ID", i)
+			continue
+		}
+		if seen[id] {
+			t.Errorf("goroutine %d: duplicate trace ID %s", i, id)
+		}
+		seen[id] = true
 	}
 }

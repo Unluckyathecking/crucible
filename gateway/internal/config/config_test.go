@@ -457,6 +457,22 @@ func TestOtelExporterInsecureTrue(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointWithSchemeReturnsError verifies that an endpoint containing
+// a URL scheme (e.g. http://) is rejected — the OTLP exporter expects host:port only.
+func TestOtelExporterEndpointWithSchemeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for endpoint with http:// scheme, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
 // TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
 func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	setRequiredEnv(t)
