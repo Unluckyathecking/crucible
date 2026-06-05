@@ -59,5 +59,14 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)
-	return tp, tp.Shutdown, nil
+	// Return an explicit composite shutdown: tp.Shutdown flushes the batch processor
+	// and calls exp.Shutdown internally via the BatchSpanProcessor chain. The explicit
+	// exp.Shutdown call is idempotent and ensures HTTP connections are released even if
+	// the BSP chain is interrupted.
+	shutdown := func(ctx context.Context) error {
+		tpErr := tp.Shutdown(ctx)
+		_ = exp.Shutdown(ctx) // idempotent: BSP already called this via tp.Shutdown
+		return tpErr
+	}
+	return tp, shutdown, nil
 }

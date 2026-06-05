@@ -50,15 +50,14 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				base = &log.Logger
 			}
 
-			// Extract parent span from inbound W3C traceparent header (no-op if absent).
-			// Reject oversized traceparent headers without mutating the original request.
-			// W3C traceparent v0 is exactly 55 chars; 128 guards against header-stuffing attacks.
-			extractHeaders := r.Header
-			if traceparentVal := r.Header.Get("Traceparent"); len(traceparentVal) > 128 {
-				extractHeaders = r.Header.Clone()
-				extractHeaders.Del("Traceparent")
+			// Extract parent span from inbound W3C traceparent header.
+			// W3C traceparent v0 is exactly 55 chars; skip extraction for oversized values
+			// to guard against header-stuffing. propagator.Extract is a no-op when the
+			// header is absent; both paths result in a fresh root span for bad input.
+			ctx := r.Context()
+			if tv := r.Header.Get("Traceparent"); len(tv) <= 128 {
+				ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 			}
-			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(extractHeaders))
 
 			// Start gateway.request span — child of remote parent or new root span.
 			ctx, span := tracer.Start(ctx, "gateway.request")
