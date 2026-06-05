@@ -152,11 +152,11 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			// n is 0-indexed: attempt-1 gives n=0 (base) for first retry,
 			// n=1 (base*2) for second retry, etc.
 			if err := c.retry.Sleep(ctx, attempt-1); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("worker call: %w", err)
 			}
 			// Confirm context is still live before proceeding.
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("worker call: %w", err)
 			}
 		}
 
@@ -165,7 +165,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// errors stop retries via the IsRetryable check. This catches the narrow
 		// window where a successful Sleep returns but ctx.Err() is already set.
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
 		// Circuit-breaker admission: fast-fail without a network call when open.
@@ -173,6 +173,16 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.breaker.Allow(); err != nil {
 				return nil, fmt.Errorf("worker call: %w", err)
 			}
+		}
+
+		// Check context after Allow and before the network call: if the caller
+		// cancelled between Allow and doOnce, release any half-open probe slot
+		// and skip the wasted HTTP call.
+		if err := ctx.Err(); err != nil {
+			if c.breaker != nil {
+				c.breaker.RecordAbort()
+			}
+			return nil, fmt.Errorf("worker call: %w", err)
 		}
 
 		// Count only actual retry attempts dispatched past the breaker gate.

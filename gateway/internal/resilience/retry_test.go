@@ -79,3 +79,18 @@ func TestPolicy_Sleep_DefaultsApplied(t *testing.T) {
 		t.Fatalf("Sleep with zero Policy: %v", err)
 	}
 }
+
+func TestPolicy_Sleep_CapBoundary(t *testing.T) {
+	// Verify the overflow guard and MaxBackoff cap logic with large n.
+	// With base=1ms and maxB=5ms, cap should hit maxB by n=2 (1→2→4ms, capped at 5).
+	p := Policy{BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Large n should not overflow and should complete quickly (cap is 5ms).
+	for _, n := range []int{10, 50, 100, 1000} {
+		if err := p.Sleep(ctx, n); err != nil {
+			t.Fatalf("Sleep(ctx, %d): %v", n, err)
+		}
+	}
+}

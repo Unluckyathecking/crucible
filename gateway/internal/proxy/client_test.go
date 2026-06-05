@@ -489,12 +489,16 @@ func TestInvoke_NoRetryOn200Success(t *testing.T) {
 // with MaxAttempts > 1 and a retryable 5xx, retries stop when the ctx deadline
 // passes rather than spinning all MaxAttempts.
 func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
+	var callCount atomic.Int32
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer worker.Close()
 
 	pol := ResiliencePolicy{
+		// 20 attempts with 30ms base. Without ctx stopping retries, this would
+		// make >= 20 calls over many seconds. Context expires at 80ms.
 		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 30 * time.Millisecond, MaxBackoff: 1 * time.Second},
 	}
 	c := New(worker.URL, 5*time.Second, 0, pol)
@@ -502,15 +506,14 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
 	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "x"})
-	elapsed := time.Since(start)
-
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if elapsed > 1*time.Second {
-		t.Errorf("Invoke took %v; should have stopped well before 1s on ctx expiry", elapsed)
+	// With 80ms context and 30ms base backoff, at most 2-3 HTTP calls should
+	// occur before the context expires. 20 would require >> 600ms.
+	if n := callCount.Load(); n > 4 {
+		t.Errorf("call count = %d, want <= 4 (ctx expiry should stop retries early)", n)
 	}
 }
 
