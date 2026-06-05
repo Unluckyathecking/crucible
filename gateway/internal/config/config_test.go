@@ -217,3 +217,43 @@ func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
 		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
 	}
 }
+
+func TestWorkerMaxConnsTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "GATEWAY_WORKER_MAX_CONNS", "10001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for GATEWAY_WORKER_MAX_CONNS=10001, got nil")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_WORKER_MAX_CONNS") {
+		t.Errorf("error %q does not mention GATEWAY_WORKER_MAX_CONNS", err.Error())
+	}
+}
+
+func TestRetryBackoffTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "3")
+	setenv(t, "WORKER_RETRY_BACKOFF_MS", "60001")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_BACKOFF_MS=60001, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_BACKOFF_MS") {
+		t.Errorf("error %q does not mention WORKER_RETRY_BACKOFF_MS", err.Error())
+	}
+}
+
+func TestRetryMaxNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_RETRY_MAX", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_RETRY_MAX=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_RETRY_MAX") {
+		t.Errorf("error %q does not mention WORKER_RETRY_MAX", err.Error())
+	}
+}

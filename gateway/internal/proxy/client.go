@@ -131,16 +131,16 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		workerCallDuration: observability.WorkerCallDuration,
 	})
 	if pol.Breaker.Threshold > 0 {
-		// Read CurrentState() at callback time rather than using the captured s:
-		// the breaker lock is released before onState fires, so a concurrent probe
-		// can advance the state past s before this callback runs. CurrentState()
-		// holds its own lock and always reflects the authoritative state, preventing
-		// the gauge from showing a stale intermediate state after rapid transitions.
+		// s is the state at transition time. The breaker lock is already released
+		// when onState fires, so a concurrent transition may advance the state past
+		// s before this callback runs — transient gauge staleness is acceptable and
+		// self-corrects on the next transition. Using s avoids accessing c through
+		// the closure after New() returns, which would require separate synchronization.
 		// The metrics load is atomic; the nil guard is belt-and-suspenders for any
 		// zero-value Client construction that bypassed New().
-		c.breaker = resilience.NewBreaker(pol.Breaker, func(_ resilience.State) {
+		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
 			if mv := c.metrics.Load(); mv != nil {
-				mv.(*clientMetrics).breakerState.Set(float64(c.breaker.CurrentState()))
+				mv.(*clientMetrics).breakerState.Set(float64(s))
 			}
 		})
 	}
@@ -274,7 +274,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 				// never contacted, so no health signal exists. Release the probe slot without
 				// recording a verdict — this is a local config error, not worker health.
 				c.breaker.RecordAbort(breakerToken)
-			case status == 0 && ctx.Err() != context.Canceled:
+			case status == 0 && !errors.Is(err, context.Canceled):
 				// Transport/network error or per-request timeout (DeadlineExceeded or nil
 				// ctx error): the worker was unreachable or too slow. Record as failure so
 				// a sustained pattern opens the breaker and subsequent calls fast-fail
