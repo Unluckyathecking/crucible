@@ -52,6 +52,19 @@ var (
 		Help: "Number of worker error responses, by structured error code.",
 	}, []string{"code"})
 
+	// WorkerRetriesTotal counts retry attempts (not initial calls) on transient failures.
+	WorkerRetriesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_worker_retries_total",
+		Help: "Number of worker call retry attempts after transient transport or 5xx failures.",
+	})
+
+	// WorkerBreakerState tracks the current circuit-breaker state:
+	// 0 = closed (healthy), 1 = open (fast-failing), 2 = half-open (probing).
+	WorkerBreakerState = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_worker_breaker_state",
+		Help: "Current circuit-breaker state: 0=closed 1=open 2=half-open.",
+	})
+
 	UsageRecordsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_usage_records_total",
 		Help: "Number of usage_events rows recorded.",
@@ -88,6 +101,8 @@ type Metrics struct {
 	RequestDuration    *prometheus.HistogramVec
 	WorkerCallDuration prometheus.Histogram
 	WorkerErrorsTotal  *prometheus.CounterVec
+	WorkerRetriesTotal prometheus.Counter
+	WorkerBreakerState prometheus.Gauge
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
@@ -118,6 +133,14 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_worker_errors_total",
 			Help: "Number of worker error responses, by structured error code.",
 		}, []string{"code"}),
+		WorkerRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_worker_retries_total",
+			Help: "Number of worker call retry attempts after transient transport or 5xx failures.",
+		}),
+		WorkerBreakerState: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_worker_breaker_state",
+			Help: "Current circuit-breaker state: 0=closed 1=open 2=half-open.",
+		}),
 		UsageRecordsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_usage_records_total",
 			Help: "Number of usage_events rows recorded.",
@@ -144,6 +167,8 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RequestDuration,
 		m.WorkerCallDuration,
 		m.WorkerErrorsTotal,
+		m.WorkerRetriesTotal,
+		m.WorkerBreakerState,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,

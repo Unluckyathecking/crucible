@@ -18,6 +18,13 @@ type Config struct {
 	WorkerTimeoutMS int    `envconfig:"WORKER_TIMEOUT_MS"    default:"10000"`
 	WorkerMaxConns  int    `envconfig:"GATEWAY_WORKER_MAX_CONNS" default:"64"`
 
+	// Resilience — retry and circuit-breaker for gateway→worker calls.
+	// Defaults are disabled (single-shot, no breaker) to preserve current behaviour.
+	WorkerRetryMax          int `envconfig:"WORKER_RETRY_MAX"            default:"0"`
+	WorkerRetryBackoffMS    int `envconfig:"WORKER_RETRY_BACKOFF_MS"     default:"100"`
+	WorkerBreakerThreshold  int `envconfig:"WORKER_BREAKER_THRESHOLD"    default:"0"`
+	WorkerBreakerCooldownMS int `envconfig:"WORKER_BREAKER_COOLDOWN_MS"  default:"5000"`
+
 	// Postgres
 	PostgresDSN      string `envconfig:"POSTGRES_DSN"       required:"true"`
 	PostgresMaxConns int    `envconfig:"POSTGRES_MAX_CONNS" default:"20"`
@@ -56,6 +63,21 @@ func Load() (*Config, error) {
 	case "sanitized", "full":
 	default:
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
+	}
+	if c.WorkerRetryMax < 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_MAX must be >= 0 (got %d)", c.WorkerRetryMax)
+	}
+	if c.WorkerRetryMax > 10 {
+		return nil, fmt.Errorf("WORKER_RETRY_MAX must be <= 10 (got %d)", c.WorkerRetryMax)
+	}
+	if c.WorkerRetryBackoffMS < 0 {
+		return nil, fmt.Errorf("WORKER_RETRY_BACKOFF_MS must be >= 0 (got %d)", c.WorkerRetryBackoffMS)
+	}
+	if c.WorkerBreakerThreshold < 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_THRESHOLD must be >= 0 (got %d)", c.WorkerBreakerThreshold)
+	}
+	if c.WorkerBreakerCooldownMS < 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be >= 0 (got %d)", c.WorkerBreakerCooldownMS)
 	}
 	return &c, nil
 }

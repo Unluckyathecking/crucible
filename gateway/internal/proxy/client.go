@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
 
 const (
@@ -23,6 +24,11 @@ const (
 	// defaultMaxConns caps total connections per worker host so a slow worker
 	// can't pin gateway sockets/goroutines without bound. Used when maxConns <= 0.
 	defaultMaxConns = 64
+
+	// statusNone is the sentinel status returned by doOnce when the call failed
+	// before an HTTP response was received for reasons other than a transport error
+	// (e.g. request-build failure). It is not retryable.
+	statusNone = -1
 )
 
 // InvokeRequest mirrors the proto for HTTP/JSON wire encoding.
@@ -49,22 +55,43 @@ type InvokeError struct {
 	Retryable bool   `json:"retryable"`
 }
 
+// ResiliencePolicy bundles the retry and circuit-breaker configuration for a Client.
+// Zero value disables both (single-shot, no breaker), reproducing today's behaviour.
+type ResiliencePolicy struct {
+	Retry   resilience.Policy
+	Breaker resilience.BreakerConfig
+}
+
 // Client forwards InvokeRequests to a worker.
 type Client struct {
 	workerURL string
 	http      *http.Client
+	retry     resilience.Policy
+	breaker   *resilience.Breaker
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
 // to a 30s timeout to prevent infinite hangs from unresponsive workers.
 // maxConns caps total connections per worker host; if 0 or negative it
 // defaults to 64 so a slow worker can't exhaust gateway sockets/goroutines.
-func New(workerURL string, timeout time.Duration, maxConns int) *Client {
+// An optional ResiliencePolicy enables retries and circuit-breaking; the zero
+// value (omitted) disables both, preserving today's single-shot behaviour.
+func New(workerURL string, timeout time.Duration, maxConns int, policies ...ResiliencePolicy) *Client {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
 	if maxConns <= 0 {
 		maxConns = defaultMaxConns
+	}
+	var pol ResiliencePolicy
+	if len(policies) > 0 {
+		pol = policies[0]
+	}
+	var b *resilience.Breaker
+	if pol.Breaker.Threshold > 0 {
+		b = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
+			observability.WorkerBreakerState.Set(float64(s))
+		})
 	}
 	return &Client{
 		workerURL: workerURL,
@@ -87,32 +114,89 @@ func New(workerURL string, timeout time.Duration, maxConns int) *Client {
 				// are bounded by the Dialer connect timeout above.
 			},
 		},
+		retry:   pol.Retry,
+		breaker: b,
 	}
 }
 
 // Invoke POSTs an InvokeRequest to the worker's /invoke endpoint and decodes the response.
 // Returns a transport error if the network call fails or the worker returns an unexpected shape.
 // Returns a successful (*InvokeResponse, nil) if the worker returned a structured error envelope.
+// With a ResiliencePolicy, retries transport errors and 5xx responses up to MaxAttempts times;
+// HTTP 200 responses (including worker error envelopes) are never retried.
 func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse, error) {
 	body, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	maxAttempts := c.retry.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			if err := c.retry.Sleep(ctx, attempt); err != nil {
+				return nil, err
+			}
+		}
+
+		// Circuit-breaker admission: fast-fail without a network call when open.
+		if c.breaker != nil {
+			if err := c.breaker.Allow(); err != nil {
+				return nil, fmt.Errorf("worker call: %w", err)
+			}
+		}
+
+		resp, status, err := c.doOnce(ctx, body, in.RequestID)
+
+		// Update breaker: only retryable outcomes (transport + 5xx) count as failures.
+		if c.breaker != nil {
+			if resilience.IsRetryable(err, status) {
+				c.breaker.RecordFailure()
+			} else if err == nil {
+				c.breaker.RecordSuccess()
+			}
+		}
+
+		if err == nil {
+			return resp, nil
+		}
+
+		if !resilience.IsRetryable(err, status) {
+			return nil, err
+		}
+
+		// Will retry — record attempt and continue.
+		observability.WorkerRetriesTotal.Inc()
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// doOnce executes a single HTTP attempt against the worker.
+// Returns (response, statusCode, error):
+//   - error != nil, status == 0: transport/network error before HTTP response (retryable)
+//   - error != nil, status == statusNone: pre-flight build error (not retryable)
+//   - error != nil, status != 0: HTTP error (retryable if status >= 500)
+//   - error == nil: HTTP 200, response decoded successfully
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*InvokeResponse, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workerURL+"/invoke", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, statusNone, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if in.RequestID != "" {
-		req.Header.Set("X-Request-ID", in.RequestID)
+	if requestID != "" {
+		req.Header.Set("X-Request-ID", requestID)
 	}
 
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	observability.WorkerCallDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
-		return nil, fmt.Errorf("worker call: %w", err)
+		return nil, 0, fmt.Errorf("worker call: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -123,16 +207,17 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		bodyPeek, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		// Drain anything past the peek so the connection can be reused from the pool.
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("worker returned status %d: %s",
+		return nil, resp.StatusCode, fmt.Errorf("worker returned status %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(bodyPeek)))
 	}
 
+	// HTTP 200: decode. Errors here are NOT retryable — the worker already did the work.
 	var out InvokeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode worker response: %w", err)
+		return nil, http.StatusOK, fmt.Errorf("decode worker response: %w", err)
 	}
 	if out.Payload == nil && out.Error == nil {
-		return nil, errors.New("worker returned neither payload nor error")
+		return nil, http.StatusOK, errors.New("worker returned neither payload nor error")
 	}
-	return &out, nil
+	return &out, http.StatusOK, nil
 }

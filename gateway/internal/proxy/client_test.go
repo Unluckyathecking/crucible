@@ -9,8 +9,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
 
 func TestInvoke_Success(t *testing.T) {
@@ -354,5 +357,230 @@ func TestInvoke_LargeSuccessBody(t *testing.T) {
 	// Payload should decode the full body without truncation.
 	if len(resp.Payload) < 64*1024 {
 		t.Errorf("payload length %d, want >= 64 KB", len(resp.Payload))
+	}
+}
+
+// ── Resilience tests ──────────────────────────────────────────────────────────
+
+// TestInvoke_RetryOn5xx verifies that 5xx responses are retried and the final
+// success is returned without error.
+func TestInvoke_RetryOn5xx(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := callCount.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.BillableUnits != 1 {
+		t.Errorf("billable_units = %d, want 1", resp.BillableUnits)
+	}
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("call count = %d, want 3 (2 failures + 1 success)", n)
+	}
+}
+
+// TestInvoke_NoRetryOn200WorkerError asserts that a worker error envelope (HTTP 200
+// with error field) is returned immediately without any retry — the worker already
+// did billable work.
+func TestInvoke_NoRetryOn200WorkerError(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"BAD_INPUT","message":"bad","retryable":false},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 5, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 10 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != "BAD_INPUT" {
+		t.Fatalf("expected BAD_INPUT worker error, got %+v", resp.Error)
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("call count = %d, want 1 (no retry on HTTP 200 worker error)", n)
+	}
+}
+
+// TestInvoke_NoRetryOn200Success asserts that a successful HTTP 200 response is
+// not retried even when MaxAttempts > 1.
+func TestInvoke_NoRetryOn200Success(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":2}`))
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 5, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 10 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("call count = %d, want 1 (no retry on HTTP 200 success)", n)
+	}
+}
+
+// TestInvoke_RetriesStopOnCtxExpired extends TestInvoke_ContextDeadlineHonored:
+// with MaxAttempts > 1 and a retryable 5xx, retries stop when the ctx deadline
+// passes rather than spinning all MaxAttempts.
+func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 20, BaseBackoff: 30 * time.Millisecond, MaxBackoff: 1 * time.Second},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.Invoke(ctx, &InvokeRequest{Operation: "x"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("Invoke took %v; should have stopped well before 1s on ctx expiry", elapsed)
+	}
+}
+
+// TestInvoke_BreakerFastFailWhileOpen asserts that zero HTTP calls reach the test
+// server once the circuit breaker has opened.
+func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: time.Hour},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	// Drive the breaker open with exactly Threshold failures.
+	for i := 0; i < 2; i++ {
+		c.Invoke(context.Background(), &InvokeRequest{Operation: "x"}) //nolint:errcheck
+	}
+	if c.breaker.CurrentState() != resilience.StateOpen {
+		t.Fatalf("breaker not open after %d failures", 2)
+	}
+
+	callsBefore := callCount.Load()
+
+	// These calls must fast-fail — no HTTP calls should reach the server.
+	for i := 0; i < 5; i++ {
+		_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+		if err == nil {
+			t.Fatal("expected error while breaker is open")
+		}
+		if !strings.Contains(err.Error(), "worker call") {
+			t.Errorf("error %q should have transport-error shape", err.Error())
+		}
+	}
+
+	if after := callCount.Load(); after != callsBefore {
+		t.Errorf("got %d HTTP calls while breaker was open, want 0", after-callsBefore)
+	}
+}
+
+// TestInvoke_BreakerClosesOnSuccessfulProbe verifies the full breaker lifecycle:
+// open → half-open (after cooldown) → closed (after successful probe).
+func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
+	var callCount atomic.Int32
+	// Server returns 5xx until the 3rd call, then succeeds.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := callCount.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	const cooldown = 20 * time.Millisecond
+	pol := ResiliencePolicy{
+		Breaker: resilience.BreakerConfig{Threshold: 2, Cooldown: cooldown},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	// Open the breaker.
+	for i := 0; i < 2; i++ {
+		c.Invoke(context.Background(), &InvokeRequest{Operation: "x"}) //nolint:errcheck
+	}
+	if c.breaker.CurrentState() != resilience.StateOpen {
+		t.Fatal("expected StateOpen after threshold failures")
+	}
+
+	// Wait for cooldown so breaker transitions to half-open on next Allow().
+	time.Sleep(cooldown * 2)
+
+	// Probe call should succeed and close the breaker.
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err != nil {
+		t.Fatalf("probe Invoke: %v", err)
+	}
+	if resp.BillableUnits != 1 {
+		t.Errorf("probe billable_units = %d, want 1", resp.BillableUnits)
+	}
+	if c.breaker.CurrentState() != resilience.StateClosed {
+		t.Errorf("breaker state = %v, want StateClosed after successful probe", c.breaker.CurrentState())
+	}
+}
+
+// TestInvoke_DefaultPolicy_SingleShot verifies that the zero ResiliencePolicy
+// reproduces today's exact single-shot behaviour (no retry on 5xx).
+func TestInvoke_DefaultPolicy_SingleShot(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0) // no policy = single shot
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("call count = %d, want 1 (single-shot with no retry policy)", n)
 	}
 }
