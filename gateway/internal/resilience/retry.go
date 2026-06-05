@@ -39,8 +39,17 @@ func IsRetryable(err error, status int) bool {
 	if status < 0 {
 		return false
 	}
-	// Transport/network error (no HTTP response) or HTTP 5xx server error.
-	return (err != nil && status == 0) || status >= 500
+	// HTTP 5xx: server-side failure, safe to retry.
+	if status >= 500 {
+		return true
+	}
+	// Transport/network error: no HTTP response arrived (conn refused, reset, etc.).
+	// status == 0 signals this; status in [1, 499] means a real HTTP response arrived
+	// (even 4xx), which is not retryable.
+	if err != nil && status == 0 {
+		return true
+	}
+	return false
 }
 
 // Sleep waits for the jittered exponential backoff before retry n.

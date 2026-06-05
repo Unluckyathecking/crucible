@@ -55,7 +55,14 @@ type Breaker struct {
 // b.state may have advanced further due to concurrent goroutines. For operational
 // metrics (e.g. Prometheus gauges) this transient staleness is acceptable — it
 // self-corrects on the next state transition.
+//
+// Panics if cfg.Threshold > 0 and cfg.Cooldown <= 0: a zero cooldown makes the
+// breaker transition to HalfOpen on the very next Allow() after opening, defeating
+// the purpose of the open state.
 func NewBreaker(cfg BreakerConfig, onState func(State)) *Breaker {
+	if cfg.Threshold > 0 && cfg.Cooldown <= 0 {
+		panic("resilience: BreakerConfig.Cooldown must be > 0 when Threshold > 0")
+	}
 	return &Breaker{cfg: cfg, onState: onState, now: time.Now}
 }
 

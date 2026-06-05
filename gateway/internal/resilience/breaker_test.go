@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+func TestBreaker_ZeroCooldownPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewBreaker with Threshold>0 and Cooldown=0 should panic")
+		}
+	}()
+	NewBreaker(BreakerConfig{Threshold: 1, Cooldown: 0}, nil)
+}
+
 func TestBreaker_Disabled(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 0}, nil)
 	for i := 0; i < 10; i++ {

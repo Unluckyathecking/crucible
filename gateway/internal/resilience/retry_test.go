@@ -18,8 +18,12 @@ func TestIsRetryable(t *testing.T) {
 		{"transport error", errors.New("connect refused"), 0, true},
 		{"500", nil, 500, true},
 		{"503", nil, 503, true},
-		{"4xx not retried", nil, 400, false},
+		// 4xx is never retried regardless of whether err is nil or non-nil.
+		// status in [1,499] means a real HTTP response arrived; the worker is reachable.
+		{"4xx nil err", nil, 400, false},
+		{"4xx with err", fmt.Errorf("worker returned status 400: bad request"), 400, false},
 		{"200 not retried", nil, 200, false},
+		{"200 with err (decode error)", fmt.Errorf("decode worker response: unexpected EOF"), 200, false},
 		// context.Canceled and context.DeadlineExceeded are never retryable — both
 		// mean the caller no longer wants the result (or the per-call http.Client
 		// timeout fired, in which case retrying the same slow worker just wastes time).
