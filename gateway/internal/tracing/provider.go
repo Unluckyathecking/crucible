@@ -21,6 +21,11 @@ import (
 // insecure disables TLS — use true only for localhost/sidecar collectors.
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
 // The returned shutdown function flushes pending spans; call it at process exit.
+//
+// TLS limitation: custom CA certificates and mutual TLS (mTLS) are not
+// supported — the exporter uses the system certificate pool when insecure=false.
+// To use a private CA or mTLS, replace this constructor with one that calls
+// otlptracehttp.WithTLSClientConfig(tlsCfg) directly.
 func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
 	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
 	if insecure {

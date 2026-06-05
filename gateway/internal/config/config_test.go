@@ -473,6 +473,40 @@ func TestOtelExporterEndpointWithSchemeReturnsError(t *testing.T) {
 	}
 }
 
+// TestOtelExporterInsecureInvalidValueReturnsError verifies that a non-boolean
+// OTEL_EXPORTER_INSECURE value is rejected at load time rather than silently
+// defaulting to false, preventing a misconfigured deployment from exposing TLS
+// traffic on what the operator intended to be an insecure link.
+func TestOtelExporterInsecureInvalidValueReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_EXPORTER_INSECURE", "not-a-bool")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_EXPORTER_INSECURE=not-a-bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_INSECURE") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_INSECURE", err.Error())
+	}
+}
+
+// TestOtelExporterEndpointWithHttpsSchemeReturnsError verifies that an endpoint
+// containing an https:// scheme is also rejected — the OTLP exporter expects
+// host:port only; TLS is controlled via OTEL_EXPORTER_INSECURE.
+func TestOtelExporterEndpointWithHttpsSchemeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", "https://localhost:4318")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for endpoint with https:// scheme, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
 // TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
 func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	setRequiredEnv(t)

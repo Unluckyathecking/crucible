@@ -49,14 +49,14 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// so they are always recorded before End fires.
 			defer span.End()
 
-			// Determine the base logger. zerolog.Ctx returns the disabled fallback
-			// when no prior middleware has stored a logger in the context. In that case
-			// use the global logger so downstream callers (AccessLog, handlers) are not
-			// silenced. A level == Disabled on the context logger is used as the signal
-			// since zerolog has no public "is default fallback" API.
+			// Determine the base logger. zerolog.Ctx returns a disabled logger pointer
+			// when no prior middleware has stored a logger in the context. Guard against
+			// nil (paranoid: zerolog never returns nil, but the nil check costs nothing)
+			// and against the disabled fallback — both indicate "no logger yet in context."
 			base := zerolog.Ctx(ctx)
-			if base.GetLevel() == zerolog.Disabled {
-				base = &log.Logger
+			if base == nil || base.GetLevel() == zerolog.Disabled {
+				l := log.Logger
+				base = &l
 			}
 
 			sc := span.SpanContext()
@@ -93,10 +93,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				span.SetStatus(codes.Error, http.StatusText(ww.Status))
 			}
 
-			// Rename span from the chi route pattern after routing has resolved.
+			// Rename span and record http.route after routing has resolved.
 			// "gateway.request" is only the initial placeholder — chi populates
 			// RoutePattern during ServeHTTP, so it's available here but not at span start.
 			if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
+				span.SetAttributes(attribute.String("http.route", rctx.RoutePattern()))
 				span.SetName(rctx.RoutePattern())
 			}
 		})
