@@ -45,7 +45,11 @@ type Breaker struct {
 // NewBreaker creates a Breaker. If cfg.Threshold <= 0 the breaker is disabled and
 // every Allow returns nil. onState (may be nil) is called on every state transition
 // and receives the new state; it is invoked after the internal lock is released,
-// so it may safely call back into the breaker or acquire other locks.
+// so it may safely call back into the breaker or acquire other locks. The state
+// parameter s is the value at the moment of transition; by the time onState runs,
+// b.state may have advanced further due to concurrent goroutines. For operational
+// metrics (e.g. Prometheus gauges) this transient staleness is acceptable — it
+// self-corrects on the next state transition.
 func NewBreaker(cfg BreakerConfig, onState func(State)) *Breaker {
 	return &Breaker{cfg: cfg, onState: onState, now: time.Now}
 }
@@ -130,9 +134,10 @@ func (b *Breaker) RecordSuccess() {
 		onState = b.onState
 	case StateOpen:
 		// Stale success from a request admitted before the breaker tripped.
-		// Neither the failure streak nor probeInFlight is modified: recovery
-		// requires a successful probe, not a stale in-flight reply. See the
-		// invariant comment above for why probeInFlight is always false here.
+		// Failure streak is preserved — recovery requires a successful probe.
+		// probeInFlight is always false in StateOpen per the invariant above;
+		// the clear is defensive so future refactors can't accidentally leak it.
+		b.probeInFlight = false
 	case StateClosed:
 		// Normal healthy call: reset the failure streak so transient failures are
 		// forgotten once a success arrives. probeInFlight is always false here
