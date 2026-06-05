@@ -98,29 +98,30 @@ func (b *Breaker) Allow() error {
 	return result
 }
 
-// RecordSuccess records a successful call. Closes the breaker only from StateHalfOpen;
-// resets the failure counter and probe slot from any non-open state. In StateOpen,
-// the call is a stale in-flight from before the breaker opened — failure streak is
-// preserved so the cooldown + probe path decides recovery.
+// RecordSuccess records a successful call.
+//   - StateClosed: resets the failure counter (partial streak forgotten).
+//   - StateHalfOpen: closes the breaker (probe succeeded).
+//   - StateOpen: stale success from a call admitted before the breaker tripped;
+//     failure streak is preserved so the cooldown + probe path decides recovery.
 func (b *Breaker) RecordSuccess() {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return
 	}
 	b.mu.Lock()
-	if b.state == StateOpen {
-		// Release stale probe slot if one was in flight (idempotent if already false).
-		if b.probeInFlight {
-			b.probeInFlight = false
-		}
-		b.mu.Unlock()
-		return // stale success; preserve failure streak
-	}
-	b.failures = 0
-	b.probeInFlight = false
 	var onState func(State)
-	if b.state == StateHalfOpen {
+	switch b.state {
+	case StateOpen:
+		// Stale in-flight — do NOT reset failures; preserve the streak that opened the
+		// breaker so recovery requires a full successful probe, not a race-won old reply.
+		b.probeInFlight = false
+	case StateHalfOpen:
+		b.failures = 0
+		b.probeInFlight = false
 		b.state = StateClosed
 		onState = b.onState
+	default: // StateClosed
+		b.failures = 0
+		b.probeInFlight = false
 	}
 	b.mu.Unlock()
 	if onState != nil {
