@@ -31,6 +31,10 @@ import (
 // outbound worker calls. It is stateless and safe for concurrent use.
 var tracePropagator = propagation.TraceContext{}
 
+// noopTP is a shared no-op TracerProvider used as a fallback when tracing is
+// disabled. It is stateless and allocated once to avoid per-request allocation.
+var noopTP = noop.NewTracerProvider()
+
 const (
 	defaultTimeout = 30 * time.Second
 	// defaultMaxConns is the fallback connection ceiling when New() is called with
@@ -342,11 +346,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	// custom TracerProvider implementations that may return nil from TracerProvider().
 	tp := oteltrace.SpanFromContext(ctx).TracerProvider()
 	if tp == nil {
-		tp = noop.NewTracerProvider()
+		tp = noopTP
 	}
 	tracer := tp.Tracer(proxyTracerName)
 	if tracer == nil {
-		tracer = noop.NewTracerProvider().Tracer(proxyTracerName)
+		tracer = noopTP.Tracer(proxyTracerName)
 	}
 	ctx, span := tracer.Start(ctx, "proxy.invoke")
 	span.SetAttributes(

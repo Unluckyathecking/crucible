@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -147,6 +148,9 @@ func Load() (*Config, error) {
 		lower := strings.ToLower(c.OtelExporterEndpoint)
 		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+		}
+		if _, _, err := net.SplitHostPort(c.OtelExporterEndpoint); err != nil {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be valid host:port (got %q): %w", c.OtelExporterEndpoint, err)
 		}
 	}
 	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {

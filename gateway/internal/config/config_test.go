@@ -587,6 +587,26 @@ func TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointMalformedHostPortReturnsError verifies that endpoints
+// without a valid host:port format are rejected at config load time, so operators
+// get a clear error rather than a runtime failure in the OTLP exporter.
+func TestOtelExporterEndpointMalformedHostPortReturnsError(t *testing.T) {
+	for _, endpoint := range []string{"localhost", "host:port:extra"} {
+		t.Run(endpoint, func(t *testing.T) {
+			setRequiredEnv(t)
+			setenv(t, "OTEL_EXPORTER_ENDPOINT", endpoint)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for malformed endpoint %q, got nil", endpoint)
+			}
+			if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+				t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+			}
+		})
+	}
+}
+
 // TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
 // return the configured millisecond values as time.Duration (with the correct
 // * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
