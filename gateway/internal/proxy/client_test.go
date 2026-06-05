@@ -603,9 +603,15 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 
 	// Inject fake clock before failures so the baseline timestamp is known.
 	// Advancing fakeNow later proves the injected clock — not real time — controls
-	// the cooldown transition.
-	var fakeNow = time.Now()
-	c.WithBreakerClock(func() time.Time { return fakeNow })
+	// the cooldown transition. mu guards fakeNow between the test goroutine and the
+	// clock closure, which is called from within breaker's mutex-protected paths.
+	var mu sync.Mutex
+	fakeNow := time.Now()
+	c.WithBreakerClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return fakeNow
+	})
 
 	// Open the breaker with exactly Threshold failures.
 	for i := 0; i < 2; i++ {
@@ -619,7 +625,9 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	}
 
 	// Advance just past cooldown — proves injected clock controls the transition.
+	mu.Lock()
 	fakeNow = fakeNow.Add(time.Hour + time.Millisecond)
+	mu.Unlock()
 
 	// Probe: Allow() detects cooldown elapsed → StateHalfOpen; doOnce succeeds → StateClosed.
 	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})

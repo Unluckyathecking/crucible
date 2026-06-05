@@ -182,10 +182,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			}
 		}
 
-		// belt-and-suspenders ctx guard: IsRetryable already rejects
-		// context.DeadlineExceeded and context.Canceled, so in-flight context
-		// errors stop retries via the IsRetryable check. This catches the narrow
-		// window where a successful Sleep returns but ctx.Err() is already set.
+		// Fast-path context check: skip the breaker mutex acquisition and HTTP
+		// call if the context is already dead after Sleep returns. IsRetryable
+		// also checks ctx.Err(), but that runs after doOnce; this guard avoids
+		// the unnecessary Allow() lock and network round-trip entirely.
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
