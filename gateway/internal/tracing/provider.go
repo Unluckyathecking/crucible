@@ -9,7 +9,7 @@ package tracing
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"net"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -36,10 +36,10 @@ const (
 )
 
 // NewProvider constructs a TracerProvider that exports spans via OTLP/HTTP to endpoint.
-// endpoint must be a full URL including scheme, e.g. "http://localhost:4318" or
-// "https://otel-collector.internal:4318". The scheme controls TLS: http → insecure
-// (no TLS), https → TLS with the system certificate pool. Custom CA or mTLS require
-// replacing this constructor with one that calls otlptracehttp.WithTLSClientConfig.
+// endpoint must be in host:port format without a scheme, e.g. "localhost:4318" or
+// "otel-collector.internal:4318" — matching the format validated by config.Load via
+// OTEL_EXPORTER_ENDPOINT. insecure disables TLS; set true for localhost/sidecar
+// collectors that do not serve TLS (mirrors config.OtelExporterInsecure).
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
 // The returned shutdown function flushes pending spans; call it at process exit with
 // a context whose deadline exceeds batchExportTimeout so in-flight exports complete.
@@ -47,13 +47,16 @@ const (
 // Note: exporter creation uses context.Background internally (not a caller-supplied
 // context) so a short-lived caller context cannot abort startup. The exporterCreationTimeout
 // constant is the startup bound.
-func NewProvider(endpoint string, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
 	if endpoint == "" {
 		return nil, nil, fmt.Errorf("tracing: endpoint cannot be empty")
 	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" {
-		return nil, nil, fmt.Errorf("tracing: endpoint %q must be a URL with host (e.g. http://localhost:4318 or https://otel-collector:4318)", endpoint)
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tracing: endpoint %q must be host:port (e.g. localhost:4318): %w", endpoint, err)
+	}
+	if host == "" {
+		return nil, nil, fmt.Errorf("tracing: endpoint %q must have a non-empty host", endpoint)
 	}
 
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
@@ -68,10 +71,10 @@ func NewProvider(endpoint string, sampleRatio float64) (*sdktrace.TracerProvider
 		return nil, nil, fmt.Errorf("tracing: merge resource: %w", mergeErr)
 	}
 
-	// WithEndpoint takes host:port (no scheme). WithInsecure() is only added when the
-	// caller explicitly uses an http:// scheme; https:// (or any other scheme) uses TLS.
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(u.Host)}
-	if u.Scheme == "http" {
+	// WithEndpoint takes host:port (no scheme). WithInsecure() skips TLS for
+	// localhost or in-cluster collectors that don't serve TLS.
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	if insecure {
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 

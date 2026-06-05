@@ -9,8 +9,9 @@ import "net/http"
 // it here so one copy can't drift from the other.
 type StatusRecorder struct {
 	http.ResponseWriter
-	Status      int
-	wroteHeader bool
+	Status          int
+	wroteHeader     bool // true once a non-1xx status has been committed on StatusRecorder
+	innerHeaderSent bool // true once WriteHeader has been forwarded to the inner writer
 }
 
 // Compile-time assertion: *StatusRecorder must implement http.Flusher.
@@ -33,18 +34,25 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	if code >= 200 {
 		s.wroteHeader = true
 	}
+	s.innerHeaderSent = true
 	s.ResponseWriter.WriteHeader(code)
 }
 
 // Write records an implicit 200 on StatusRecorder if no non-1xx status has been
-// committed yet, then delegates to the inner writer. The inner writer's own Write
-// triggers the implicit 200 on itself — we do NOT call s.ResponseWriter.WriteHeader
-// here — so that a preceding 1xx WriteHeader (already forwarded) does not cause a
-// double WriteHeader call on the inner writer.
+// committed yet, then delegates to the inner writer. When no WriteHeader has been
+// forwarded to the inner writer yet (innerHeaderSent == false), we explicitly send
+// WriteHeader(200) so the inner writer records the correct status code. After a
+// 1xx WriteHeader (innerHeaderSent == true), we skip the explicit call to avoid a
+// double WriteHeader on the inner writer — the inner writer's Write handles body
+// delivery in that case.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
 		s.Status = http.StatusOK
 		s.wroteHeader = true
+		if !s.innerHeaderSent {
+			s.innerHeaderSent = true
+			s.ResponseWriter.WriteHeader(http.StatusOK)
+		}
 	}
 	return s.ResponseWriter.Write(b)
 }
