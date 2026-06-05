@@ -54,7 +54,8 @@ func NewBreaker(cfg BreakerConfig, onState func(State)) *Breaker {
 	return &Breaker{cfg: cfg, onState: onState, now: time.Now}
 }
 
-// WithNow overrides the clock source. Intended for deterministic tests only.
+// WithNow overrides the clock source. Intended for deterministic tests only;
+// do not call while Allow/RecordSuccess/RecordFailure are being called concurrently.
 func (b *Breaker) WithNow(now func() time.Time) *Breaker {
 	b.mu.Lock()
 	defer b.mu.Unlock()

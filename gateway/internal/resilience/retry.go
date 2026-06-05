@@ -24,9 +24,10 @@ type Policy struct {
 // shape and HTTP status alone. It does NOT check caller context liveness — callers
 // must check ctx.Err() separately as a belt-and-suspenders guard.
 //
-// status == 0 means a transport/network error occurred before an HTTP response
-// arrived (connection refused, reset, etc.). status < 0 means a pre-flight build
-// error that never reached the worker (not retryable).
+// status == 0 with a non-nil error means a transport/network error occurred before
+// an HTTP response arrived (connection refused, reset, etc.) — this is retryable.
+// status == 0 with a nil error is not retryable (should not occur in practice).
+// status < 0 means a pre-flight build error that never reached the worker (not retryable).
 func IsRetryable(err error, status int) bool {
 	// Cancellation and deadline expiry are never retryable — both signal the caller
 	// no longer wants the result. DeadlineExceeded covers both caller-context expiry
@@ -90,13 +91,8 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	t := time.NewTimer(d)
 	select {
 	case <-ctx.Done():
-		// Non-blocking drain: safe for all Go versions. If the timer already fired,
-		// the value is removed; if the channel is empty, the default branch fires.
 		if !t.Stop() {
-			select {
-			case <-t.C:
-			default:
-			}
+			<-t.C
 		}
 		return ctx.Err()
 	case <-t.C:
