@@ -49,6 +49,9 @@ const (
 // To use a private CA or mTLS, replace this constructor with one that calls
 // otlptracehttp.WithTLSClientConfig(tlsCfg) directly.
 func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+	if endpoint == "" {
+		return nil, nil, fmt.Errorf("tracing: endpoint cannot be empty")
+	}
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	res, err := resource.Merge(
 		resource.Default(),

@@ -9,6 +9,16 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
+// TestNewProviderEmptyEndpointReturnsError verifies that NewProvider rejects an empty
+// endpoint immediately rather than constructing an exporter that silently fails at
+// export time. This protects callers that bypass config.Load validation.
+func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
+	_, _, err := tracing.NewProvider("", true, 1.0)
+	if err == nil {
+		t.Fatal("NewProvider with empty endpoint should return an error, got nil")
+	}
+}
+
 // TestNewProviderReturnsWorkingProvider verifies the happy path: NewProvider with a
 // syntactically valid (though unreachable) endpoint returns a non-nil TracerProvider
 // and shutdown function with no error, and the shutdown function completes cleanly.

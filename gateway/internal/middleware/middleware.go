@@ -64,9 +64,10 @@ func AccessLog(next http.Handler) http.Handler {
 		// Use the context logger (enriched by tracing middleware with trace_id/span_id
 		// when tracing is active). Fall back to the global logger so log lines are never
 		// silently dropped when AccessLog is used standalone or before tracing middleware.
-		logger := zerolog.Ctx(r.Context())
-		if logger.GetLevel() == zerolog.Disabled {
-			logger = &log.Logger
+		// Work with a zerolog.Logger value (not pointer) to avoid zerolog pointer aliasing.
+		logger := log.Logger
+		if l := zerolog.Ctx(r.Context()); l.GetLevel() != zerolog.Disabled {
+			logger = *l
 		}
 		logger.Info().
 			Str("request_id", rid).
