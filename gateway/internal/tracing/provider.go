@@ -17,11 +17,28 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+const (
+	// exporterCreationTimeout caps how long NewProvider blocks while opening the OTLP
+	// connection during startup. A slow or unreachable collector must not stall boot.
+	// Uses context.Background so a short-lived caller context cannot shorten the window.
+	exporterCreationTimeout = 10 * time.Second
+
+	// batchExportTimeout is the per-flush deadline passed to the OTLP exporter by the
+	// BatchSpanProcessor. Set longer than batchFlushInterval so a full batch always
+	// has time to drain before the flush interval fires again.
+	batchExportTimeout = 10 * time.Second
+
+	// batchFlushInterval is the maximum time a span sits in the BatchSpanProcessor
+	// queue before the processor forces a flush. Increasing this value reduces HTTP
+	// traffic at the cost of higher trace delivery latency.
+	batchFlushInterval = 5 * time.Second
+)
+
 // NewProvider constructs a TracerProvider that exports spans via OTLP/HTTP to endpoint.
 // insecure disables TLS — use true only for localhost/sidecar collectors.
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
 // The returned shutdown function flushes pending spans; call it at process exit with
-// a context whose deadline exceeds the export timeout (10 s) so in-flight exports complete.
+// a context whose deadline exceeds batchExportTimeout so in-flight exports complete.
 //
 // TLS limitation: custom CA certificates and mutual TLS (mTLS) are not
 // supported — the exporter uses the system certificate pool when insecure=false.
@@ -44,7 +61,7 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 
 	// Bound exporter creation so a slow/unreachable collector doesn't block startup.
 	// Use Background (not ctx) so a short-lived caller context cannot shorten the bound.
-	expCtx, expCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	expCtx, expCancel := context.WithTimeout(context.Background(), exporterCreationTimeout)
 	defer expCancel()
 	exp, err := otlptracehttp.New(expCtx, opts...)
 	if err != nil {
@@ -53,16 +70,16 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp,
-			sdktrace.WithBatchTimeout(5*time.Second),
-			sdktrace.WithExportTimeout(10*time.Second),
+			sdktrace.WithBatchTimeout(batchFlushInterval),
+			sdktrace.WithExportTimeout(batchExportTimeout),
 		),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)
-	// Return an explicit composite shutdown: tp.Shutdown flushes the batch processor
-	// and calls exp.Shutdown internally via the BatchSpanProcessor chain. The explicit
-	// exp.Shutdown call is idempotent; return its error when tp.Shutdown succeeds so
-	// callers can detect HTTP-connection-drain failures.
+	// Composite shutdown: tp.Shutdown flushes the BatchSpanProcessor and calls
+	// exp.Shutdown internally. The second exp.Shutdown call is idempotent; its error
+	// is propagated when tp.Shutdown succeeds so callers can detect HTTP drain failures
+	// that the BSP swallowed.
 	shutdown := func(ctx context.Context) error {
 		tpErr := tp.Shutdown(ctx)
 		expErr := exp.Shutdown(ctx) // idempotent: BSP already called this via tp.Shutdown

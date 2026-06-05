@@ -62,3 +62,56 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 	}
 	span.End()
 }
+
+// TestNewProviderSampleRatioOne verifies that a sample ratio of 1.0 is accepted and
+// that every root span created by the resulting provider is sampled.
+func TestNewProviderSampleRatioOne(t *testing.T) {
+	ctx := context.Background()
+	tp, shutdown, err := tracing.NewProvider(ctx, "localhost:4318", true, 1.0)
+	if err != nil {
+		t.Fatalf("NewProvider(ratio=1) returned unexpected error: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := shutdown(shutCtx); err != nil {
+			t.Errorf("shutdown returned unexpected error: %v", err)
+		}
+	})
+
+	// ParentBased(TraceIDRatioBased(1)) samples all root spans.
+	_, span := tp.Tracer("test").Start(ctx, "test.span")
+	if !span.SpanContext().IsSampled() {
+		t.Error("ratio=1 provider must sample all root spans")
+	}
+	span.End()
+}
+
+// TestNewProviderShutdownWithCancelledContext verifies that calling the shutdown
+// function with an already-cancelled context returns an error promptly rather than
+// blocking until batchExportTimeout. This guards against a process-exit hang where
+// the caller accidentally passes a context that is already done.
+func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
+	ctx := context.Background()
+	_, shutdown, err := tracing.NewProvider(ctx, "localhost:4318", true, 1.0)
+	if err != nil {
+		t.Fatalf("NewProvider returned unexpected error: %v", err)
+	}
+
+	// Cancel the context before calling shutdown — the BSP must honour it and return
+	// quickly with a context error rather than waiting for the full export timeout.
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- shutdown(cancelledCtx) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("shutdown with cancelled context should return an error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("shutdown with cancelled context blocked for > 5 s; expected prompt return")
+	}
+}

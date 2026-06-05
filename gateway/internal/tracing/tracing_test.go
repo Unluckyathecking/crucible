@@ -398,6 +398,33 @@ func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
 	}
 }
 
+// TestOversizedTraceparentIsRejected verifies that an inbound Traceparent header longer
+// than the 128-byte guard is not extracted, causing the middleware to start a fresh root
+// span instead of continuing the remote trace. This prevents header-stuffing attacks
+// from injecting arbitrarily large values into the OTel propagation layer.
+func TestOversizedTraceparentIsRejected(t *testing.T) {
+	tp, sr := newTestProvider(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	// Craft a well-structured but oversized traceparent: valid prefix followed by enough
+	// padding to exceed the 128-byte limit enforced by maxTraceparentLen in middleware.go.
+	oversized := "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01" + strings.Repeat("x", 100)
+	req.Header.Set("Traceparent", oversized)
+	rec := httptest.NewRecorder()
+
+	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
+
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
+	if !ok {
+		t.Fatal("no gateway.unmatched span recorded")
+	}
+	// An oversized traceparent must not be extracted: the resulting span must be a root
+	// span (no parent) rather than a child of the attacker-controlled remote span.
+	if gwSpan.Parent().SpanID().IsValid() {
+		t.Errorf("oversized traceparent must not be extracted; got parent span ID %s", gwSpan.Parent().SpanID())
+	}
+}
+
 // TestConcurrentRequestsGetDistinctTraceIDs verifies that concurrent requests through
 // the same middleware instance each receive a unique trace ID and do not share context.
 func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
