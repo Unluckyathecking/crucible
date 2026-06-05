@@ -95,10 +95,10 @@ func (b *Breaker) RecordSuccess() {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.probeInFlight = false
 	if b.state == StateOpen {
-		return // stale success; preserve failure streak, let cooldown+probe decide
+		return // stale success; preserve failure streak and probe slot
 	}
+	b.probeInFlight = false
 	if b.state == StateHalfOpen {
 		b.failures = 0
 		b.setState(StateClosed)
