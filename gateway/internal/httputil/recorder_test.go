@@ -139,6 +139,13 @@ func TestStatusRecorder1xxThenWrite(t *testing.T) {
 	if !sr.wroteHeader {
 		t.Error("wroteHeader must be true after Write")
 	}
+	// httptest.ResponseRecorder sets its internal wroteHeader=true on the first
+	// WriteHeader call regardless of whether the code is informational, so the
+	// subsequent WriteHeader(200) delegated by Write is a no-op on the inner
+	// recorder. inner.Code therefore reflects the 100 that was forwarded first.
+	if inner.Code != http.StatusContinue {
+		t.Errorf("inner.Code = %d; expected %d (httptest ignores WriteHeader after 1xx)", inner.Code, http.StatusContinue)
+	}
 }
 
 func TestStatusRecorderFlushDelegatesToFlusher(t *testing.T) {

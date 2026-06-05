@@ -56,12 +56,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Read the base logger from the original request context before deriving
-			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
-			// is preserved. middleware.init() sets zerolog.DefaultContextLogger so Ctx
-			// never returns the Nop sentinel when the full gateway stack is loaded.
-			// Work with a value (not pointer) to avoid zerolog pointer aliasing.
-			base := *zerolog.Ctx(r.Context())
+			// Read the base logger pointer from the original request context before
+			// deriving new contexts, so any logger stored by upstream middleware
+			// (e.g. RequestID) is preserved. middleware.init() sets
+			// zerolog.DefaultContextLogger so Ctx never returns nil here.
+			base := zerolog.Ctx(r.Context())
 
 			// Extract parent span from inbound W3C traceparent header.
 			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be
