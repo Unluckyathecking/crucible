@@ -14,7 +14,7 @@ import (
 // export time. This protects callers that bypass config.Load validation.
 func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
 	t.Parallel()
-	_, _, err := tracing.NewProvider("", true, 1.0)
+	_, _, err := tracing.NewProvider("", 1.0)
 	if err == nil {
 		t.Fatal("NewProvider with empty endpoint should return an error, got nil")
 	}
@@ -26,7 +26,7 @@ func TestNewProviderEmptyEndpointReturnsError(t *testing.T) {
 func TestNewProviderReturnsWorkingProvider(t *testing.T) {
 	t.Parallel()
 	// otlptracehttp connects lazily — construction succeeds without a live collector.
-	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
+	tp, shutdown, err := tracing.NewProvider("http://localhost:4318", 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider returned unexpected error: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestNewProviderReturnsWorkingProvider(t *testing.T) {
 // that root spans created by the resulting provider are not sampled.
 func TestNewProviderSampleRatioZero(t *testing.T) {
 	t.Parallel()
-	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 0.0)
+	tp, shutdown, err := tracing.NewProvider("http://localhost:4318", 0.0)
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=0) returned unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 // that every root span created by the resulting provider is sampled.
 func TestNewProviderSampleRatioOne(t *testing.T) {
 	t.Parallel()
-	tp, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
+	tp, shutdown, err := tracing.NewProvider("http://localhost:4318", 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=1) returned unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestNewProviderSampleRatioOne(t *testing.T) {
 // process-exit hang when the caller accidentally passes an already-done context.
 func TestNewProviderShutdownWithCancelledContext(t *testing.T) {
 	t.Parallel()
-	_, shutdown, err := tracing.NewProvider("localhost:4318", true, 1.0)
+	_, shutdown, err := tracing.NewProvider("http://localhost:4318", 1.0)
 	if err != nil {
 		t.Fatalf("NewProvider returned unexpected error: %v", err)
 	}

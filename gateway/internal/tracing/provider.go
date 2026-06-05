@@ -9,6 +9,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -35,7 +36,10 @@ const (
 )
 
 // NewProvider constructs a TracerProvider that exports spans via OTLP/HTTP to endpoint.
-// insecure disables TLS — use true only for localhost/sidecar collectors.
+// endpoint must be a full URL including scheme, e.g. "http://localhost:4318" or
+// "https://otel-collector.internal:4318". The scheme controls TLS: http → insecure
+// (no TLS), https → TLS with the system certificate pool. Custom CA or mTLS require
+// replacing this constructor with one that calls otlptracehttp.WithTLSClientConfig.
 // sampleRatio must be in [0.0, 1.0]; 1.0 samples every trace, 0.0 samples none.
 // The returned shutdown function flushes pending spans; call it at process exit with
 // a context whose deadline exceeds batchExportTimeout so in-flight exports complete.
@@ -43,29 +47,31 @@ const (
 // Note: exporter creation uses context.Background internally (not a caller-supplied
 // context) so a short-lived caller context cannot abort startup. The exporterCreationTimeout
 // constant is the startup bound.
-//
-// TLS limitation: custom CA certificates and mutual TLS (mTLS) are not
-// supported — the exporter uses the system certificate pool when insecure=false.
-// To use a private CA or mTLS, replace this constructor with one that calls
-// otlptracehttp.WithTLSClientConfig(tlsCfg) directly.
-func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
+func NewProvider(endpoint string, sampleRatio float64) (*sdktrace.TracerProvider, func(context.Context) error, error) {
 	if endpoint == "" {
 		return nil, nil, fmt.Errorf("tracing: endpoint cannot be empty")
 	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return nil, nil, fmt.Errorf("tracing: endpoint %q must be a URL with host (e.g. http://localhost:4318 or https://otel-collector:4318)", endpoint)
+	}
+
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	// Re-use the default resource's schema URL so the merge result has a consistent schema
 	// and downstream collectors can resolve attribute semantics correctly.
 	defaultRes := resource.Default()
-	res, err := resource.Merge(
+	res, mergeErr := resource.Merge(
 		defaultRes,
 		resource.NewWithAttributes(defaultRes.SchemaURL(), attribute.String("service.name", "crucible-gateway")),
 	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("tracing: merge resource: %w", err)
+	if mergeErr != nil {
+		return nil, nil, fmt.Errorf("tracing: merge resource: %w", mergeErr)
 	}
 
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
-	if insecure {
+	// WithEndpoint takes host:port (no scheme). WithInsecure() is only added when the
+	// caller explicitly uses an http:// scheme; https:// (or any other scheme) uses TLS.
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(u.Host)}
+	if u.Scheme == "http" {
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 
