@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -64,15 +65,22 @@ type ResiliencePolicy struct {
 	Breaker resilience.BreakerConfig
 }
 
-// Client forwards InvokeRequests to a worker.
-type Client struct {
-	workerURL          string
-	http               *http.Client
-	retry              resilience.Policy
-	breaker            *resilience.Breaker
+// clientMetrics groups Prometheus instruments that WithMetrics can hot-swap atomically.
+// Storing them as a unit in atomic.Value ensures the swap is indivisible — a concurrent
+// Invoke either observes the full old set or the full new set, never a partial mix.
+type clientMetrics struct {
 	retriesTotal       prometheus.Counter
 	breakerState       prometheus.Gauge
 	workerCallDuration prometheus.Histogram
+}
+
+// Client forwards InvokeRequests to a worker.
+type Client struct {
+	workerURL string
+	http      *http.Client
+	retry     resilience.Policy
+	breaker   *resilience.Breaker
+	metrics   atomic.Value // always stores clientMetrics; swapped atomically by WithMetrics
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
@@ -93,11 +101,8 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 		pol = policies[0]
 	}
 	c := &Client{
-		workerURL:          workerURL,
-		retry:              pol.Retry,
-		retriesTotal:       observability.WorkerRetriesTotal,
-		breakerState:       observability.WorkerBreakerState,
-		workerCallDuration: observability.WorkerCallDuration,
+		workerURL: workerURL,
+		retry:     pol.Retry,
 		http: &http.Client{
 			Timeout: timeout, // per-request ceiling; enforces WORKER_TIMEOUT_MS
 			Transport: &http.Transport{
@@ -118,19 +123,25 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 			},
 		},
 	}
+	c.metrics.Store(clientMetrics{
+		retriesTotal:       observability.WorkerRetriesTotal,
+		breakerState:       observability.WorkerBreakerState,
+		workerCallDuration: observability.WorkerCallDuration,
+	})
 	if pol.Breaker.Threshold > 0 {
-		// The closure captures c (a pointer), so breakerState is read at callback time —
-		// WithMetrics can update c.breakerState after construction and the callback will
-		// automatically use the new gauge.
+		// The closure loads metrics atomically at callback time, so a WithMetrics
+		// swap between construction and the first callback is picked up automatically.
 		c.breaker = resilience.NewBreaker(pol.Breaker, func(s resilience.State) {
-			c.breakerState.Set(float64(s))
+			c.metrics.Load().(clientMetrics).breakerState.Set(float64(s))
 		})
 	}
 	return c
 }
 
-// WithBreakerClock injects a test clock into the circuit breaker. Intended for
-// deterministic tests only; do not call after Invoke goroutines are running.
+// WithBreakerClock injects a test clock into the circuit breaker. The clock is
+// stored through the breaker's own mutex, so this call is safe to make at any time;
+// prefer calling before dispatching concurrent Invoke calls to avoid surprising
+// time-ordering during the race window.
 func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 	if now == nil || c.breaker == nil {
 		return c
@@ -140,13 +151,16 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 }
 
 // WithMetrics replaces the default package-level Prometheus vars with the metrics
-// from an isolated test registry. Intended for deterministic tests only; do not
-// call after Invoke goroutines are running (no synchronisation on the field writes).
+// from an isolated test registry. The swap is atomic: a concurrent Invoke either
+// observes the old metrics set or the new one, never a partial mix. Safe to call
+// at any time, including while Invoke goroutines are running.
 func (c *Client) WithMetrics(m *observability.Metrics) *Client {
 	if m != nil {
-		c.retriesTotal = m.WorkerRetriesTotal
-		c.breakerState = m.WorkerBreakerState
-		c.workerCallDuration = m.WorkerCallDuration
+		c.metrics.Store(clientMetrics{
+			retriesTotal:       m.WorkerRetriesTotal,
+			breakerState:       m.WorkerBreakerState,
+			workerCallDuration: m.WorkerCallDuration,
+		})
 	}
 	return c
 }
@@ -168,6 +182,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	m := c.metrics.Load().(clientMetrics)
 	maxAttempts := c.retry.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 1
@@ -215,10 +230,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// Count the retry before the call so the metric captures every retry attempt
 		// dispatched, regardless of the outcome (including pre-flight build errors).
 		if attempt > 0 {
-			c.retriesTotal.Inc()
+			m.retriesTotal.Inc()
 		}
 
-		resp, status, err := c.doOnce(ctx, body, in.RequestID)
+		resp, status, err := c.doOnce(ctx, body, in.RequestID, m)
 
 		// Update breaker state BEFORE the retry-exhaustion check so every attempt,
 		// including the final one, is recorded. Skipping this on retry exhaustion
@@ -271,7 +286,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status == statusNone: pre-flight build error (not retryable)
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
-func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*InvokeResponse, int, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m clientMetrics) (*InvokeResponse, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workerURL+"/invoke", bytes.NewReader(body))
 	if err != nil {
 		return nil, statusNone, fmt.Errorf("build request: %w", err)
@@ -283,7 +298,7 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string) (*In
 
 	start := time.Now()
 	resp, err := c.http.Do(req)
-	c.workerCallDuration.Observe(time.Since(start).Seconds())
+	m.workerCallDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		// resp is nil for most transport errors, but can be non-nil when a redirect
 		// policy fires (e.g., too many redirects) — close the body in that case.

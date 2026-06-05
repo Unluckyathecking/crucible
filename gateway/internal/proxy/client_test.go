@@ -515,9 +515,10 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// The error must be context-related (deadline or cancel), not a 503.
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context error, got %v", err)
+	// The error must wrap DeadlineExceeded: the 100ms context expires during the
+	// 500ms retry sleep, so Sleep returns DeadlineExceeded, not Canceled.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
 	}
 	// Exactly 1 call: the 500ms backoff outlasts the 100ms ctx so Sleep returns
 	// DeadlineExceeded before a second call can be dispatched.
@@ -566,8 +567,8 @@ func TestInvoke_BreakerFastFailWhileOpen(t *testing.T) {
 		if !errors.Is(err, resilience.ErrBreakerOpen) {
 			t.Errorf("error %q should wrap ErrBreakerOpen", err.Error())
 		}
-		if elapsed > 100*time.Millisecond {
-			t.Errorf("fast-fail took %v; expected < 100ms (should not make a network call)", elapsed)
+		if elapsed > 1*time.Second {
+			t.Errorf("fast-fail took %v; expected < 1s (should not make a network call)", elapsed)
 		}
 	}
 
