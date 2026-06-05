@@ -125,6 +125,25 @@ func TestPolicy_Sleep_BackoffDoublingAndCap(t *testing.T) {
 	}
 }
 
+// TestPolicy_Sleep_BaseLargerThanMax verifies that when BaseBackoff > MaxBackoff,
+// Sleep clamps the ceiling to MaxBackoff on the first retry rather than sleeping
+// for the full BaseBackoff. This exercises the documented overflow guard:
+// "Clamp base to maxB first so a BaseBackoff > MaxBackoff doesn't exceed the ceiling."
+func TestPolicy_Sleep_BaseLargerThanMax(t *testing.T) {
+	p := Policy{BaseBackoff: 10 * time.Second, MaxBackoff: 5 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if err := p.Sleep(ctx, 0); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("Sleep took %v; base > max should be capped at MaxBackoff (%v), not BaseBackoff", elapsed, p.MaxBackoff)
+	}
+}
+
 func TestPolicy_Sleep_CapBoundary(t *testing.T) {
 	// Verify the overflow guard and MaxBackoff cap logic with large n.
 	// With base=1ms and maxB=5ms, cap should hit maxB by n=2 (1→2→4ms, capped at 5).

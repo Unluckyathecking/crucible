@@ -233,7 +233,9 @@ func (b *Breaker) RecordFailure(token uint64) {
 		}
 		// Stale token: do not re-open or reset the cooldown — this result is not
 		// meaningful for the active probe.
-	// StateOpen: already open; don't reset the cooldown timer on new failures.
+	case StateOpen:
+		// Already open; don't reset the cooldown timer on new failures — the
+		// existing cooldown window is the intended recovery gate.
 	}
 	b.mu.Unlock()
 	// StateOpen is a compile-time constant, not a read of b.state — no race.
