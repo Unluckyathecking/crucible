@@ -76,11 +76,11 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	half := cap / 2
 	var d time.Duration
 	if half > 0 {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
+		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
 		if err != nil {
 			d = half // theoretical fallback; crypto/rand.Int only errors on OS RNG failure
 		} else {
-			d = half + time.Duration(n.Int64())
+			d = half + time.Duration(jitter.Int64())
 		}
 	} else {
 		d = cap
