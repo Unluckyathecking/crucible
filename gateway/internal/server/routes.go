@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
@@ -27,6 +29,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
@@ -56,6 +59,8 @@ type Deps struct {
 	// DB is optional. When set, the idempotency middleware is active on /v1 routes.
 	// When nil (default when main.go is unmodified), the middleware is a pass-through.
 	DB *pgxpool.Pool
+	// TracerProvider is optional. When nil, a noop tracer is used (default-off).
+	TracerProvider oteltrace.TracerProvider
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -63,6 +68,7 @@ func NewRouter(d *Deps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(mw.RequestID)
+	r.Use(tracing.Middleware(d.TracerProvider)) // after RequestID; before AccessLog/observability
 	r.Use(mw.AccessLog)
 	r.Use(mw.Recovery)
 	r.Use(observability.Middleware)

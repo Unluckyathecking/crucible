@@ -344,6 +344,105 @@ func TestWorkerMaxConnsNegativeReturnsError(t *testing.T) {
 	}
 }
 
+// --- OTel tracing field tests ---
+
+// TestOtelTracingDisabledByDefault verifies OTEL_TRACING_ENABLED defaults to false.
+func TestOtelTracingDisabledByDefault(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.OtelTracingEnabled {
+		t.Error("OtelTracingEnabled should default to false")
+	}
+	if c.OtelExporterEndpoint != "" {
+		t.Errorf("OtelExporterEndpoint should default to empty, got %q", c.OtelExporterEndpoint)
+	}
+	if c.OtelSampleRatio != 1.0 {
+		t.Errorf("OtelSampleRatio should default to 1.0, got %g", c.OtelSampleRatio)
+	}
+}
+
+// TestOtelTracingEnabledWithEndpointIsValid verifies that OTEL_TRACING_ENABLED=true
+// with a non-empty OTEL_EXPORTER_ENDPOINT is accepted.
+func TestOtelTracingEnabledWithEndpointIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	setenv(t, "OTEL_EXPORTER_ENDPOINT", "localhost:4318")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if !c.OtelTracingEnabled {
+		t.Error("OtelTracingEnabled = false, want true")
+	}
+	if c.OtelExporterEndpoint != "localhost:4318" {
+		t.Errorf("OtelExporterEndpoint = %q, want localhost:4318", c.OtelExporterEndpoint)
+	}
+}
+
+// TestOtelTracingEnabledWithoutEndpointReturnsError verifies that enabling tracing
+// without providing an exporter endpoint is rejected.
+func TestOtelTracingEnabledWithoutEndpointReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_TRACING_ENABLED", "true")
+	// OTEL_EXPORTER_ENDPOINT intentionally not set.
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_TRACING_ENABLED=true without OTEL_EXPORTER_ENDPOINT, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+		t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+	}
+}
+
+// TestOtelSampleRatioValidValues verifies that edge values 0.0, 0.5 and 1.0 are accepted.
+func TestOtelSampleRatioValidValues(t *testing.T) {
+	for _, ratio := range []string{"0.0", "0.5", "1.0"} {
+		t.Run("ratio="+ratio, func(t *testing.T) {
+			setRequiredEnv(t)
+			setenv(t, "OTEL_SAMPLE_RATIO", ratio)
+
+			_, err := Load()
+			if err != nil {
+				t.Errorf("Load: unexpected error for OTEL_SAMPLE_RATIO=%s: %v", ratio, err)
+			}
+		})
+	}
+}
+
+// TestOtelSampleRatioNegativeReturnsError verifies that a negative sample ratio is rejected.
+func TestOtelSampleRatioNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_SAMPLE_RATIO", "-0.1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_SAMPLE_RATIO=-0.1, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_SAMPLE_RATIO") {
+		t.Errorf("error %q does not mention OTEL_SAMPLE_RATIO", err.Error())
+	}
+}
+
+// TestOtelSampleRatioAboveOneReturnsError verifies that a sample ratio > 1.0 is rejected.
+func TestOtelSampleRatioAboveOneReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "OTEL_SAMPLE_RATIO", "1.1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for OTEL_SAMPLE_RATIO=1.1, got nil")
+	}
+	if !strings.Contains(err.Error(), "OTEL_SAMPLE_RATIO") {
+		t.Errorf("error %q does not mention OTEL_SAMPLE_RATIO", err.Error())
+	}
+}
+
 // TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
 // return the configured millisecond values as time.Duration (with the correct
 // * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch

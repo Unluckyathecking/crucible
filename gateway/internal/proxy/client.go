@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
@@ -333,6 +334,9 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if requestID != "" {
 		req.Header.Set("X-Request-ID", requestID)
 	}
+	// Propagate W3C traceparent when a span is active in ctx; no-op when absent.
+	// X-Request-ID set above is not removed or modified.
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	start := time.Now()
 	resp, err := c.http.Do(req)

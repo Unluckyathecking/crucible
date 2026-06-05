@@ -49,6 +49,11 @@ type Config struct {
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
+
+	// Tracing (OTel) — disabled by default; zero-config dials no exporter.
+	OtelTracingEnabled   bool    `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
+	OtelExporterEndpoint string  `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
+	OtelSampleRatio      float64 `envconfig:"OTEL_SAMPLE_RATIO"      default:"1.0"`
 }
 
 // Load reads config from the environment and validates it.
@@ -128,6 +133,12 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
+	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 {
+		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
+	}
+	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
+		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
+	}
 	return &c, nil
 }
 
