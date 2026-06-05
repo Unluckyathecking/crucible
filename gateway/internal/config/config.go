@@ -144,7 +144,8 @@ func Load() (*Config, error) {
 		if c.OtelExporterEndpoint == "" {
 			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")
 		}
-		if strings.HasPrefix(c.OtelExporterEndpoint, "http://") || strings.HasPrefix(c.OtelExporterEndpoint, "https://") {
+		lower := strings.ToLower(c.OtelExporterEndpoint)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
 		}
 	}

@@ -532,6 +532,27 @@ func TestOtelTracingEnabledWithInsecureEndpoint(t *testing.T) {
 	}
 }
 
+// TestOtelExporterEndpointUppercaseSchemeReturnsError verifies that scheme validation
+// is case-insensitive — HTTP:// and HTTPS:// are rejected alongside http:// and https://.
+// URL schemes are case-insensitive per RFC 3986.
+func TestOtelExporterEndpointUppercaseSchemeReturnsError(t *testing.T) {
+	for _, endpoint := range []string{"HTTP://localhost:4318", "HTTPS://localhost:4318"} {
+		t.Run(endpoint, func(t *testing.T) {
+			setRequiredEnv(t)
+			setenv(t, "OTEL_TRACING_ENABLED", "true")
+			setenv(t, "OTEL_EXPORTER_ENDPOINT", endpoint)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for endpoint %q with uppercase scheme, got nil", endpoint)
+			}
+			if !strings.Contains(err.Error(), "OTEL_EXPORTER_ENDPOINT") {
+				t.Errorf("error %q does not mention OTEL_EXPORTER_ENDPOINT", err.Error())
+			}
+		})
+	}
+}
+
 // TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
 func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	setRequiredEnv(t)

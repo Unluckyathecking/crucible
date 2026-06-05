@@ -25,12 +25,15 @@ func TestNewProviderReturnsWorkingProvider(t *testing.T) {
 		t.Fatal("NewProvider returned nil shutdown function")
 	}
 
-	// Shutdown should not block or error when no spans have been exported.
-	shutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := shutdown(shutCtx); err != nil {
-		t.Errorf("shutdown returned unexpected error: %v", err)
-	}
+	// t.Cleanup runs shutdown with a fresh context after the test body completes,
+	// avoiding any ambiguity about context cancellation order.
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := shutdown(shutCtx); err != nil {
+			t.Errorf("shutdown returned unexpected error: %v", err)
+		}
+	})
 }
 
 // TestNewProviderSampleRatioZero verifies that a sample ratio of 0 is accepted and
@@ -41,9 +44,16 @@ func TestNewProviderSampleRatioZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProvider(ratio=0) returned unexpected error: %v", err)
 	}
-	shutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	defer shutdown(shutCtx)
+
+	// t.Cleanup ensures shutdown runs with a fresh context that is not derived from
+	// the test-local ctx, eliminating any defer ordering ambiguity.
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := shutdown(shutCtx); err != nil {
+			t.Errorf("shutdown returned unexpected error: %v", err)
+		}
+	})
 
 	// ParentBased(TraceIDRatioBased(0)) drops all root spans.
 	_, span := tp.Tracer("test").Start(ctx, "test.span")
