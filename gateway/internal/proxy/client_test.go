@@ -613,6 +613,9 @@ func TestInvoke_BreakerClosesOnSuccessfulProbe(t *testing.T) {
 	if c.breaker.CurrentState() != resilience.StateClosed {
 		t.Errorf("breaker state = %v, want StateClosed after successful probe", c.breaker.CurrentState())
 	}
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("call count = %d, want 3 (2 threshold failures + 1 probe success)", n)
+	}
 }
 
 // TestInvoke_DefaultPolicy_SingleShot verifies that the zero ResiliencePolicy

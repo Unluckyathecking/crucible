@@ -57,10 +57,10 @@ var (
 		Help: "Number of worker error responses, by structured error code.",
 	}, []string{"code"})
 
-	// WorkerRetriesTotal counts retry attempts (not initial calls) on transient failures.
+	// WorkerRetriesTotal counts retry attempts dispatched past the breaker gate and ctx check.
 	WorkerRetriesTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_worker_retries_total",
-		Help: "Number of worker call retry attempts after transient transport or 5xx failures.",
+		Help: "Number of worker call retry attempts dispatched past the breaker gate (attempt > 0).",
 	})
 
 	// WorkerBreakerState tracks the current circuit-breaker state:
@@ -140,7 +140,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		}, []string{"code"}),
 		WorkerRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_worker_retries_total",
-			Help: "Number of worker call retry attempts after transient transport or 5xx failures.",
+			Help: "Number of worker call retry attempts dispatched past the breaker gate (attempt > 0).",
 		}),
 		WorkerBreakerState: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "crucible_worker_breaker_state",

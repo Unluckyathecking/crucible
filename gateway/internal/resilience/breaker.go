@@ -71,6 +71,7 @@ func (b *Breaker) Allow() error {
 	b.mu.Lock()
 	var onState func(State)
 	var result error
+	var newState State
 	switch b.state {
 	case StateOpen:
 		if b.now().Before(b.openUntil) {
@@ -80,6 +81,7 @@ func (b *Breaker) Allow() error {
 			b.state = StateHalfOpen
 			b.probeInFlight = true
 			onState = b.onState
+			newState = StateHalfOpen
 		}
 	case StateHalfOpen:
 		if b.probeInFlight {
@@ -91,7 +93,7 @@ func (b *Breaker) Allow() error {
 	}
 	b.mu.Unlock()
 	if onState != nil {
-		onState(StateHalfOpen)
+		onState(newState)
 	}
 	return result
 }

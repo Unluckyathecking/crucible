@@ -3,6 +3,7 @@ package resilience
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -224,5 +225,52 @@ func TestBreaker_RaceConcurrent(t *testing.T) {
 	}
 	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatalf("Allow() = %v, want ErrBreakerOpen", err)
+	}
+}
+
+func TestBreaker_RaceConcurrentHalfOpenProbe(t *testing.T) {
+	// Open the breaker, advance past cooldown, then race N goroutines through Allow().
+	// Exactly 1 must be admitted as the probe; the rest must get ErrBreakerOpen.
+	// The probe then succeeds and the breaker must close.
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
+
+	b.RecordFailure()              // → StateOpen
+	now = now.Add(2 * time.Second) // past cooldown
+
+	const n = 50
+	var admitted, blocked atomic.Int32
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-ready
+			if err := b.Allow(); err == nil {
+				admitted.Add(1)
+			} else {
+				blocked.Add(1)
+			}
+		}()
+	}
+	close(ready) // release all goroutines simultaneously
+	wg.Wait()
+
+	if got := admitted.Load(); got != 1 {
+		t.Fatalf("admitted = %d, want 1 (only one probe slot in half-open)", got)
+	}
+	if got := blocked.Load(); int(got) != n-1 {
+		t.Fatalf("blocked = %d, want %d", got, n-1)
+	}
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatalf("state = %v, want StateHalfOpen before probe resolution", b.CurrentState())
+	}
+
+	// Successful probe must close the breaker.
+	b.RecordSuccess()
+	if b.CurrentState() != StateClosed {
+		t.Fatalf("state = %v, want StateClosed after successful probe", b.CurrentState())
 	}
 }
