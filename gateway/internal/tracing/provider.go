@@ -31,7 +31,7 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 	// Build the resource first so that a merge error never leaks an already-opened exporter.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes("", attribute.String("service.name", "crucible-gateway")),
+		resource.NewSchemaless(attribute.String("service.name", "crucible-gateway")),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: merge resource: %w", err)
@@ -45,8 +45,8 @@ func NewProvider(ctx context.Context, endpoint string, insecure bool, sampleRati
 	// Bound exporter creation so a slow/unreachable collector doesn't block startup.
 	// Use Background (not ctx) so a short-lived caller context cannot shorten the bound.
 	expCtx, expCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer expCancel()
 	exp, err := otlptracehttp.New(expCtx, opts...)
-	expCancel() // release the timeout context immediately; the exporter manages its own lifecycle
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: create OTLP exporter: %w", err)
 	}

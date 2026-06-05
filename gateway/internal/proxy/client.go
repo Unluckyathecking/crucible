@@ -344,7 +344,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if tp == nil {
 		tp = noop.NewTracerProvider()
 	}
-	ctx, span := tp.Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
+	tracer := tp.Tracer(proxyTracerName)
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer(proxyTracerName)
+	}
+	ctx, span := tracer.Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),
 		attribute.String("http.method", http.MethodPost),
