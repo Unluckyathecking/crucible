@@ -222,19 +222,20 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			switch {
 			case err == nil:
 				c.breaker.RecordSuccess(breakerToken) // clean HTTP 200 — worker is healthy
-			case ctx.Err() != nil:
-				// Caller cancelled before/during call: release probe slot without a verdict.
-				c.breaker.RecordAbort(breakerToken)
+			case status >= 500:
+				// HTTP 5xx: record failure even if ctx is cancelled — the worker produced
+				// a real error response and that health signal must reach the breaker.
+				c.breaker.RecordFailure(breakerToken)
 			case status == statusNone:
 				// Pre-flight build error: never reached the worker; release any probe slot.
 				c.breaker.RecordAbort(breakerToken)
-			case status >= 500:
-				c.breaker.RecordFailure(breakerToken) // HTTP 5xx
-			case status == 0:
-				c.breaker.RecordFailure(breakerToken) // transport/network error, no HTTP response
+			case status == 0 && ctx.Err() == nil:
+				// Transport/network error with no HTTP response and no ctx cancellation.
+				c.breaker.RecordFailure(breakerToken)
 			default:
-				// 4xx or 200 decode error: worker responded but outcome is ambiguous.
-				// Release any half-open probe slot without recording a health verdict.
+				// Covers: ctx cancelled with no HTTP response (status==0), 4xx, 200 decode
+				// error. Worker outcome is ambiguous or caller abandoned — release the probe
+				// slot without recording a health verdict.
 				c.breaker.RecordAbort(breakerToken)
 			}
 		}
