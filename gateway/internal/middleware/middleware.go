@@ -24,7 +24,9 @@ func init() {
 	// even when no specific logger has been stored in context. Without this, Ctx
 	// returns the Nop sentinel (nil writer) and AccessLog output would be silently
 	// discarded when tracing middleware is absent or uses a noop provider.
-	zerolog.DefaultContextLogger = &log.Logger
+	if zerolog.DefaultContextLogger == nil {
+		zerolog.DefaultContextLogger = &log.Logger
+	}
 }
 
 // RequestID stamps an X-Request-ID on every request, honouring an inbound one if reasonable.
