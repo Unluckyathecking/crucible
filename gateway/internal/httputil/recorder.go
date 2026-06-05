@@ -37,10 +37,12 @@ func (s *StatusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Write calls WriteHeader(200) on the first write so the same guard that
+// protects WriteHeader is used for the implicit-200 path. This ensures
+// a prior explicit WriteHeader(5xx) is never overwritten.
 func (s *StatusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
-		s.wroteHeader = true
-		s.Status = http.StatusOK
+		s.WriteHeader(http.StatusOK)
 	}
 	return s.ResponseWriter.Write(b)
 }

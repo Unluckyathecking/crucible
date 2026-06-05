@@ -85,11 +85,11 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 					Str("span_id", sc.SpanID().String()).
 					Logger()
 				ctx = l.WithContext(ctx)
-			} else {
-				// Noop provider — no span IDs to add, but still inject the logger so
-				// AccessLog and handlers can call zerolog.Ctx(ctx) safely.
-				ctx = base.WithContext(ctx)
 			}
+			// Noop path: skip log enrichment entirely. The logger remains accessible
+			// via the context chain (tracer.Start returns a derived context), and
+			// zerolog.DefaultContextLogger (set in init) is the fallback for any
+			// call to zerolog.Ctx(ctx) that doesn't find an explicitly stored logger.
 
 			// Reassign r so chi.RouteContext picks up the same context that has the span.
 			r = r.WithContext(ctx)
