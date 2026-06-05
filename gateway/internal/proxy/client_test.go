@@ -20,6 +20,19 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
 
+// TestNew_MultiplePoliciesPanics verifies that passing more than one ResiliencePolicy
+// to New panics immediately. The variadic is for optional-parameter ergonomics only;
+// silently ignoring extras would be a footgun.
+func TestNew_MultiplePoliciesPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for multiple ResiliencePolicies, got nil")
+		}
+	}()
+	pol := ResiliencePolicy{Retry: resilience.Policy{MaxAttempts: 1}}
+	New("http://unused", 5*time.Second, 0, pol, pol)
+}
+
 func TestInvoke_Success(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/invoke" {
