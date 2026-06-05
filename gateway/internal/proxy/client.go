@@ -335,9 +335,12 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 //   - error != nil, status != 0: HTTP error (retryable if status >= 500)
 //   - error == nil: HTTP 200, response decoded successfully
 func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *clientMetrics, attempt int) (_ *InvokeResponse, status int, retErr error) {
-	// Wrap each attempt in a client span so retry causality is visible in traces.
-	// SpanFromContext returns a noop span (never nil) when no span is in context, and
-	// noop.TracerProvider() returns the noop provider (never nil) per OTel API contract.
+	// Wrap each attempt in a child span so retry causality is visible in traces.
+	// Derive the tracer from the span already in ctx (placed there by tracing.Middleware).
+	// When tracing is enabled the span carries the gateway provider, so the proxy span
+	// is automatically registered with the same exporter. When tracing is disabled or no
+	// span is present, SpanFromContext returns a noop span whose TracerProvider() returns
+	// the noop provider — Start is then a no-op with zero overhead.
 	ctx, span := oteltrace.SpanFromContext(ctx).TracerProvider().Tracer(proxyTracerName).Start(ctx, "proxy.invoke")
 	span.SetAttributes(
 		attribute.String("http.url", c.workerURL+"/invoke"),

@@ -436,6 +436,32 @@ func TestOversizedTraceparentIsRejected(t *testing.T) {
 	}
 }
 
+// TestMalformedTraceparentStartsRootSpan verifies that a traceparent header that passes
+// the length bounds but has invalid W3C structure is not extracted. The middleware must
+// fall back to a fresh root span rather than panicking or propagating a corrupt context.
+func TestMalformedTraceparentStartsRootSpan(t *testing.T) {
+	t.Parallel()
+	tp, sr := newTestProvider(t)
+
+	// A 55-character string of garbage — passes the length gate but is not valid W3C.
+	// The propagator must reject it and leave the context unchanged (root span).
+	malformed := strings.Repeat("x", 55)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("traceparent", malformed)
+	rec := httptest.NewRecorder()
+
+	tracing.Middleware(tp)(okHandler).ServeHTTP(rec, req)
+
+	gwSpan, ok := findSpan(t, sr.Ended(), "gateway.unmatched")
+	if !ok {
+		t.Fatal("no gateway.unmatched span recorded")
+	}
+	if gwSpan.Parent().SpanID().IsValid() {
+		t.Errorf("malformed traceparent must not be extracted; got parent span ID %s", gwSpan.Parent().SpanID())
+	}
+}
+
 // TestConcurrentRequestsGetDistinctTraceIDs verifies that concurrent requests through
 // the same middleware instance each receive a unique trace ID and do not share context.
 func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {

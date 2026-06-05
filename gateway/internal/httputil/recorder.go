@@ -35,3 +35,12 @@ func (s *StatusRecorder) Write(b []byte) (int, error) {
 	}
 	return s.ResponseWriter.Write(b)
 }
+
+// Flush implements http.Flusher by delegating to the underlying writer when it
+// supports flushing. This preserves the optional interface through the wrapper so
+// downstream type assertions like w.(http.Flusher) succeed on a StatusRecorder.
+func (s *StatusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

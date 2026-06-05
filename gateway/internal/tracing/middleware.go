@@ -60,10 +60,12 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// Extract parent span from inbound W3C traceparent header.
 			// Reject strings shorter than w3cTraceparentMinLen (55) — they can never be
 			// valid and passing them to the propagator wastes parse work. The upper bound
-			// (128) allows for future version extensions while capping header-stuffing exposure.
+			// (64) provides a small margin over version-00's 55 bytes for potential future
+			// spec extensions while minimising header-stuffing attack surface; no published
+			// W3C traceparent extension exceeds this length.
 			// propagator.Extract is a no-op when the header is absent; both paths produce
 			// a fresh root span for absent or malformed input.
-			const maxTraceparentLen = 128
+			const maxTraceparentLen = 64
 			ctx := r.Context()
 			if tv := r.Header.Get("traceparent"); len(tv) >= w3cTraceparentMinLen && len(tv) <= maxTraceparentLen {
 				ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))

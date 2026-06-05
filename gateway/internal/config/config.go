@@ -142,6 +142,10 @@ func Load() (*Config, error) {
 	if c.OtelSampleRatio < 0.0 || c.OtelSampleRatio > 1.0 {
 		return nil, fmt.Errorf("OTEL_SAMPLE_RATIO must be in [0.0, 1.0] (got %g)", c.OtelSampleRatio)
 	}
+	// Trim whitespace so " localhost:4318" or "localhost:4318 " (a common copy-paste
+	// mistake) is treated equivalently to "localhost:4318". Do this before the empty
+	// check so a whitespace-only value is caught by the enabled+empty guard below.
+	c.OtelExporterEndpoint = strings.TrimSpace(c.OtelExporterEndpoint)
 	// Scheme validation is unconditional: an endpoint with a scheme is always wrong
 	// regardless of whether tracing is enabled, preventing latent misconfigurations.
 	if c.OtelExporterEndpoint != "" {
