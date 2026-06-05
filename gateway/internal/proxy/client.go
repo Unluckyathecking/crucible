@@ -96,7 +96,7 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 	return &Client{
 		workerURL: workerURL,
 		http: &http.Client{
-			Timeout: timeout,
+			Timeout: timeout, // per-request ceiling; enforces WORKER_TIMEOUT_MS
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
 					Timeout:   2 * time.Second,

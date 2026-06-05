@@ -101,13 +101,14 @@ var (
 
 // Metrics is a test-friendly holder for all observability counters.
 // Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
+// Note: WorkerRetriesTotal and WorkerBreakerState are NOT included here because
+// proxy.Client references the package-level vars directly and cannot be injected
+// with a test registry; adding them to this struct would be dead weight.
 type Metrics struct {
 	RequestsTotal      *prometheus.CounterVec
 	RequestDuration    *prometheus.HistogramVec
 	WorkerCallDuration prometheus.Histogram
 	WorkerErrorsTotal  *prometheus.CounterVec
-	WorkerRetriesTotal prometheus.Counter
-	WorkerBreakerState prometheus.Gauge
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
@@ -138,14 +139,6 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_worker_errors_total",
 			Help: "Number of worker error responses, by structured error code.",
 		}, []string{"code"}),
-		WorkerRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "crucible_worker_retries_total",
-			Help: "Number of worker call retry attempts dispatched past the breaker gate (attempt > 0).",
-		}),
-		WorkerBreakerState: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "crucible_worker_breaker_state",
-			Help: "Current circuit-breaker state: 0=closed 1=open 2=half-open.",
-		}),
 		UsageRecordsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_usage_records_total",
 			Help: "Number of usage_events rows recorded.",
@@ -172,8 +165,6 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RequestDuration,
 		m.WorkerCallDuration,
 		m.WorkerErrorsTotal,
-		m.WorkerRetriesTotal,
-		m.WorkerBreakerState,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,

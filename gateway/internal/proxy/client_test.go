@@ -510,11 +510,11 @@ func TestInvoke_RetriesStopOnCtxExpired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// With 30ms base backoff and 80ms deadline, at most 2 sleeps fit before the
-	// context expires (0ms + ~15ms + ~30ms ≈ 45ms for 3 calls), so well under 5.
-	// Assert a tight upper bound to prove ctx actually stopped retries early.
-	if n := callCount.Load(); n > 5 {
-		t.Errorf("call count = %d, want <= 5 (ctx expiry should stop retries early, not reach MaxAttempts=20)", n)
+	// With 30ms base backoff and 80ms deadline, at most 3 calls occur:
+	// call 0 (0ms) + sleep ~15ms + call 1 (~15ms) + sleep ~30-60ms > 80ms budget.
+	// <= 3 proves ctx actually stopped retries early, not just "didn't reach 20".
+	if n := callCount.Load(); n > 3 {
+		t.Errorf("call count = %d, want <= 3 (ctx expiry should stop retries early, not reach MaxAttempts=20)", n)
 	}
 }
 
