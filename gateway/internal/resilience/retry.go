@@ -101,11 +101,15 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	half := ceiling / 2
 	var d time.Duration
 	if half > 0 {
-		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
+		// Use SetUint64 so the conversion is sign-safe: half is always >= 0
+		// (ceilingFor returns a non-negative duration), and uint64 has sufficient
+		// range even when MaxBackoff approaches time.Duration max (~292 years).
+		limit := new(big.Int).SetUint64(uint64(half) + 1)
+		jitter, err := rand.Int(rand.Reader, limit)
 		if err != nil {
 			d = half // fallback on OS RNG failure; preserves partial desynchronization
 		} else {
-			d = half + time.Duration(jitter.Int64())
+			d = half + time.Duration(jitter.Uint64())
 		}
 	} else {
 		d = ceiling

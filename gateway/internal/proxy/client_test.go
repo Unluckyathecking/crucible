@@ -254,7 +254,12 @@ func TestInvoke_StalledConnection(t *testing.T) {
 		<-done
 	}))
 	t.Cleanup(func() {
-		close(done) // unblock handler goroutines first
+		// Close done BEFORE srv.Close: the handler goroutine blocks on <-done.
+		// srv.Close blocks until active requests complete; if done is never
+		// closed the handler never returns and srv.Close deadlocks.
+		// After close(done) the handler goroutine returns, srv.Close drains
+		// promptly, and there is no data race on w.
+		close(done)
 		srv.Close()
 	})
 

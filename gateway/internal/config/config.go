@@ -65,11 +65,13 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("WORKER_ERROR_EXPOSURE must be 'sanitized' or 'full' (got %q)", c.ErrorExposure)
 	}
+	// Negative is a misconfiguration error; zero (omitted/unset) is silently
+	// promoted to the operational default. These are intentionally separate checks:
+	// negative → reject with an error, zero → apply the default.
 	if c.WorkerMaxConns < 0 {
 		return nil, fmt.Errorf("GATEWAY_WORKER_MAX_CONNS must be >= 0 (got %d)", c.WorkerMaxConns)
 	}
 	if c.WorkerMaxConns == 0 {
-		// Zero means "unset" — apply the same default as proxy.New.
 		c.WorkerMaxConns = 64
 	}
 	if c.WorkerMaxConns > 10000 {

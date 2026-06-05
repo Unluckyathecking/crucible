@@ -220,10 +220,10 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			}
 		}
 
-		// Fast-path context check: skip the breaker mutex acquisition and HTTP
-		// call if the context is already dead after Sleep returns. IsRetryable
-		// also checks ctx.Err(), but that runs after doOnce; this guard avoids
-		// the unnecessary Allow() lock and network round-trip entirely.
+		// Context check before Allow() — executes on EVERY attempt, including
+		// attempt 0 (no preceding Sleep). Ensures the context is alive before
+		// acquiring the breaker lock. A second check after Allow() (below) covers
+		// the narrow race window between mutex release and the network call.
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
