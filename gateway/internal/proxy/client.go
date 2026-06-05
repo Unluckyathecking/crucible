@@ -119,6 +119,15 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 	}
 }
 
+// WithBreakerClock injects a test clock into the circuit breaker. Intended for
+// deterministic tests only; do not call after Invoke goroutines are running.
+func (c *Client) WithBreakerClock(now func() time.Time) *Client {
+	if c.breaker != nil {
+		c.breaker.WithNow(now)
+	}
+	return c
+}
+
 // Invoke POSTs an InvokeRequest to the worker's /invoke endpoint and decodes the response.
 // Returns a transport error if the network call fails or the worker returns an unexpected shape.
 // Returns a successful (*InvokeResponse, nil) if the worker returned a structured error envelope.
@@ -169,20 +178,22 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		resp, status, err := c.doOnce(ctx, body, in.RequestID)
 
 		// Update breaker state based on the outcome.
+		// err==nil is checked first: a successful HTTP 200 closes the breaker regardless
+		// of ctx state, since the worker already did the work and we must record that.
 		if c.breaker != nil {
 			switch {
+			case err == nil:
+				c.breaker.RecordSuccess() // clean HTTP 200 — worker is healthy
 			case ctx.Err() != nil:
-				// Caller cancelled: release probe slot without recording a health signal.
+				// Caller cancelled before/during call: release probe slot without a verdict.
 				c.breaker.RecordAbort()
 			case status == statusNone:
 				// Pre-flight build error: never reached the worker; release any probe slot.
 				c.breaker.RecordAbort()
-			case err != nil && status >= 500:
+			case status >= 500:
 				c.breaker.RecordFailure() // HTTP 5xx
-			case err != nil && status == 0:
+			case status == 0:
 				c.breaker.RecordFailure() // transport/network error, no HTTP response
-			case err == nil:
-				c.breaker.RecordSuccess() // clean HTTP 200 — worker is healthy
 			default:
 				// 4xx or 200 decode error: worker responded but outcome is ambiguous.
 				// Release any half-open probe slot without recording a health verdict.

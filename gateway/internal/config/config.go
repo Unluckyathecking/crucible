@@ -97,5 +97,8 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerCooldownMS > 300000 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
 	}
+	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got %d)", c.WorkerBreakerCooldownMS)
+	}
 	return &c, nil
 }

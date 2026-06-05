@@ -54,10 +54,15 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		maxB = 5 * time.Second
 	}
 
-	// Exponential cap: base * 2^(n-1), capped at maxB. n is small (max 10),
-	// so the loop is at most 9 iterations; no overflow risk within that range.
+	// Exponential cap: base * 2^(n-1), capped at maxB.
+	// Check cap > maxB/2 before doubling to guard against int64 overflow on
+	// large n or large base values (Policy is public; callers control n).
 	cap := base
 	for i := 1; i < n; i++ {
+		if cap > maxB/2 {
+			cap = maxB
+			break
+		}
 		cap *= 2
 		if cap >= maxB {
 			cap = maxB
@@ -72,7 +77,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	if half > 0 {
 		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
 		if err != nil {
-			d = half // theoretical fallback; crypto/rand.Int only errors on OS RNG failure
+			d = cap // conservative fallback: wait the full cap on OS RNG failure
 		} else {
 			d = half + time.Duration(jitter.Int64())
 		}
