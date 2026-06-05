@@ -226,6 +226,23 @@ func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
 	}
 }
 
+// TestBreakerCooldownZeroWithThresholdReturnsError verifies that zero cooldown
+// is rejected when the breaker is enabled, preventing a startup panic in
+// resilience.NewBreaker (which panics when Threshold>0 && Cooldown<=0).
+func TestBreakerCooldownZeroWithThresholdReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
+	setenv(t, "WORKER_BREAKER_COOLDOWN_MS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WORKER_BREAKER_THRESHOLD>0 with WORKER_BREAKER_COOLDOWN_MS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "WORKER_BREAKER_COOLDOWN_MS") {
+		t.Errorf("error %q does not mention WORKER_BREAKER_COOLDOWN_MS", err.Error())
+	}
+}
+
 func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")

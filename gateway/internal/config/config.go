@@ -101,6 +101,13 @@ func Load() (*Config, error) {
 	if c.WorkerBreakerCooldownMS > 300000 {
 		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be <= 300000 (5 minutes) (got %d)", c.WorkerBreakerCooldownMS)
 	}
+	// Zero cooldown with threshold enabled would panic resilience.NewBreaker
+	// (cooldown=0 makes the breaker immediately re-probe on every Allow after
+	// opening, defeating its purpose). Reject it here to get a clear config error
+	// instead of a startup panic.
+	if c.WorkerBreakerThreshold > 0 && c.WorkerBreakerCooldownMS == 0 {
+		return nil, fmt.Errorf("WORKER_BREAKER_COOLDOWN_MS must be > 0 when WORKER_BREAKER_THRESHOLD > 0 (got 0)")
+	}
 	// A non-zero cooldown below 500ms causes rapid open/half-open oscillation that
 	// defeats the breaker's purpose. Reject it unconditionally (not just when
 	// threshold > 0) so an operator who sets cooldown=100 and threshold=0 today
