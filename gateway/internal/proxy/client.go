@@ -165,9 +165,14 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		}
 
 		// Circuit-breaker admission: fast-fail without a network call when open.
+		// Allow returns a generation token; pass it to every Record* call so stale
+		// results from earlier breaker generations are silently ignored.
+		var breakerToken uint64
 		if c.breaker != nil {
-			if err := c.breaker.Allow(); err != nil {
-				return nil, fmt.Errorf("worker call: %w", err)
+			var berr error
+			breakerToken, berr = c.breaker.Allow()
+			if berr != nil {
+				return nil, fmt.Errorf("worker call: %w", berr)
 			}
 		}
 
@@ -176,7 +181,7 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		// and skip the wasted HTTP call.
 		if err := ctx.Err(); err != nil {
 			if c.breaker != nil {
-				c.breaker.RecordAbort()
+				c.breaker.RecordAbort(breakerToken)
 			}
 			return nil, fmt.Errorf("worker call: %w", err)
 		}
@@ -197,21 +202,21 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 		if c.breaker != nil {
 			switch {
 			case err == nil:
-				c.breaker.RecordSuccess() // clean HTTP 200 — worker is healthy
+				c.breaker.RecordSuccess(breakerToken) // clean HTTP 200 — worker is healthy
 			case ctx.Err() != nil:
 				// Caller cancelled before/during call: release probe slot without a verdict.
-				c.breaker.RecordAbort()
+				c.breaker.RecordAbort(breakerToken)
 			case status == statusNone:
 				// Pre-flight build error: never reached the worker; release any probe slot.
-				c.breaker.RecordAbort()
+				c.breaker.RecordAbort(breakerToken)
 			case status >= 500:
-				c.breaker.RecordFailure() // HTTP 5xx
+				c.breaker.RecordFailure(breakerToken) // HTTP 5xx
 			case status == 0:
-				c.breaker.RecordFailure() // transport/network error, no HTTP response
+				c.breaker.RecordFailure(breakerToken) // transport/network error, no HTTP response
 			default:
 				// 4xx or 200 decode error: worker responded but outcome is ambiguous.
 				// Release any half-open probe slot without recording a health verdict.
-				c.breaker.RecordAbort()
+				c.breaker.RecordAbort(breakerToken)
 			}
 		}
 

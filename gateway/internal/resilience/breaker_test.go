@@ -11,8 +11,8 @@ import (
 func TestBreaker_Disabled(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 0}, nil)
 	for i := 0; i < 10; i++ {
-		b.RecordFailure()
-		if err := b.Allow(); err != nil {
+		b.RecordFailure(0)
+		if _, err := b.Allow(); err != nil {
 			t.Fatalf("disabled breaker Allow() = %v, want nil", err)
 		}
 	}
@@ -23,11 +23,11 @@ func TestBreaker_Disabled(t *testing.T) {
 
 func TestBreaker_NilSafe(t *testing.T) {
 	var b *Breaker
-	if err := b.Allow(); err != nil {
+	if _, err := b.Allow(); err != nil {
 		t.Fatalf("nil Breaker.Allow() = %v, want nil", err)
 	}
-	b.RecordSuccess()
-	b.RecordFailure()
+	b.RecordSuccess(0)
+	b.RecordFailure(0)
 	if b.CurrentState() != StateClosed {
 		t.Errorf("nil Breaker.CurrentState() = %v, want StateClosed", b.CurrentState())
 	}
@@ -37,16 +37,16 @@ func TestBreaker_OpenAfterThreshold(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 3, Cooldown: time.Minute}, nil)
 
 	for i := 0; i < 2; i++ {
-		b.RecordFailure()
+		b.RecordFailure(0)
 		if b.CurrentState() != StateClosed {
 			t.Fatalf("after %d failures want StateClosed, got %v", i+1, b.CurrentState())
 		}
-		if err := b.Allow(); err != nil {
+		if _, err := b.Allow(); err != nil {
 			t.Fatalf("Allow() after %d failures = %v, want nil", i+1, err)
 		}
 	}
 
-	b.RecordFailure() // 3rd failure — must open
+	b.RecordFailure(0) // 3rd failure — must open
 	if b.CurrentState() != StateOpen {
 		t.Fatalf("after threshold want StateOpen, got %v", b.CurrentState())
 	}
@@ -54,10 +54,10 @@ func TestBreaker_OpenAfterThreshold(t *testing.T) {
 
 func TestBreaker_FastFailWhileOpen(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Hour}, nil)
-	b.RecordFailure()
+	b.RecordFailure(0)
 
 	for i := 0; i < 5; i++ {
-		if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+		if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 			t.Fatalf("Allow() = %v, want ErrBreakerOpen while open", err)
 		}
 	}
@@ -68,24 +68,28 @@ func TestBreaker_HalfOpenAfterCooldown(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
 
-	b.RecordFailure()
+	b.RecordFailure(0)
 
-	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatal("expected ErrBreakerOpen before cooldown")
 	}
 
 	// Advance past cooldown.
 	now = now.Add(2 * time.Second)
 
-	if err := b.Allow(); err != nil {
+	tok, err := b.Allow()
+	if err != nil {
 		t.Fatalf("Allow() after cooldown = %v, want nil (probe)", err)
+	}
+	if tok == 0 {
+		t.Fatal("probe Allow() returned token 0, want non-zero generation token")
 	}
 	if b.CurrentState() != StateHalfOpen {
 		t.Fatalf("want StateHalfOpen after cooldown probe, got %v", b.CurrentState())
 	}
 
 	// A second concurrent caller should still be blocked.
-	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatalf("concurrent Allow() during probe = %v, want ErrBreakerOpen", err)
 	}
 }
@@ -97,12 +101,13 @@ func TestBreaker_ClosesOnSuccessfulProbe(t *testing.T) {
 		transitions = append(transitions, s)
 	}).WithNow(func() time.Time { return now })
 
-	b.RecordFailure()         // → StateOpen
+	b.RecordFailure(0)        // → StateOpen
 	now = now.Add(2 * time.Second)
-	if err := b.Allow(); err != nil { // probe → StateHalfOpen
+	tok, err := b.Allow()     // probe → StateHalfOpen
+	if err != nil {
 		t.Fatalf("Allow(): %v", err)
 	}
-	b.RecordSuccess() // → StateClosed
+	b.RecordSuccess(tok) // → StateClosed
 
 	if b.CurrentState() != StateClosed {
 		t.Fatalf("want StateClosed after successful probe, got %v", b.CurrentState())
@@ -117,7 +122,7 @@ func TestBreaker_ClosesOnSuccessfulProbe(t *testing.T) {
 		}
 	}
 	// Verify breaker accepts calls after closing.
-	if err := b.Allow(); err != nil {
+	if _, err := b.Allow(); err != nil {
 		t.Fatalf("Allow() after close = %v, want nil", err)
 	}
 }
@@ -127,26 +132,26 @@ func TestBreaker_ReopensOnFailedProbe(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
 
-	b.RecordFailure()
+	b.RecordFailure(0)
 	now = now.Add(2 * time.Second)
-	b.Allow()         // probe
-	b.RecordFailure() // probe failed → re-open
+	tok, _ := b.Allow()    // probe
+	b.RecordFailure(tok)   // probe failed → re-open
 
 	if b.CurrentState() != StateOpen {
 		t.Fatalf("want StateOpen after failed probe, got %v", b.CurrentState())
 	}
-	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatalf("Allow() after re-open = %v, want ErrBreakerOpen", err)
 	}
 }
 
 func TestBreaker_SuccessResetsFailureCount(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 3, Cooldown: time.Minute}, nil)
-	b.RecordFailure()
-	b.RecordFailure()
-	b.RecordSuccess() // resets failure count
-	b.RecordFailure()
-	b.RecordFailure()
+	b.RecordFailure(0)
+	b.RecordFailure(0)
+	b.RecordSuccess(0) // resets failure count
+	b.RecordFailure(0)
+	b.RecordFailure(0)
 	// Still only 2 failures after the reset, should still be closed.
 	if b.CurrentState() != StateClosed {
 		t.Fatalf("want StateClosed (count was reset), got %v", b.CurrentState())
@@ -156,24 +161,25 @@ func TestBreaker_SuccessResetsFailureCount(t *testing.T) {
 func TestBreaker_RecordSuccessFromOpenDoesNotClose(t *testing.T) {
 	// Simulate a request admitted while the breaker is Closed; concurrent failures then open
 	// the breaker before the request completes. The stale RecordSuccess must not close the
-	// breaker, and must release the probeInFlight slot so a future probe can proceed.
+	// breaker, and must not interfere with a future probe.
 	now := time.Now()
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
-	if err := b.Allow(); err != nil { // request admitted from Closed state
+	staleTok, err := b.Allow() // request admitted from Closed state (token == 0)
+	if err != nil {
 		t.Fatal("Allow():", err)
 	}
-	b.RecordFailure() // concurrent failure opens the breaker while the request is in flight
+	b.RecordFailure(0) // concurrent failure opens the breaker while the request is in flight
 	if b.CurrentState() != StateOpen {
 		t.Fatal("want StateOpen after threshold failure")
 	}
-	b.RecordSuccess() // stale success from the earlier Allow(); must NOT close
+	b.RecordSuccess(staleTok) // stale success from the earlier Allow(); must NOT close
 	if b.CurrentState() != StateOpen {
 		t.Fatalf("RecordSuccess from Open closed breaker; want StateOpen")
 	}
 	// After cooldown the probe slot must be free for a fresh probe.
 	now = now.Add(2 * time.Second)
-	if err := b.Allow(); err != nil {
+	if _, err := b.Allow(); err != nil {
 		t.Fatalf("Allow() after stale success + cooldown = %v, want nil (fresh probe)", err)
 	}
 }
@@ -183,65 +189,140 @@ func TestBreaker_RecordAbortReleasesProbeWithoutClosing(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
 
-	b.RecordFailure()        // → StateOpen
+	b.RecordFailure(0)             // → StateOpen
 	now = now.Add(2 * time.Second) // past cooldown
-	if err := b.Allow(); err != nil { // → StateHalfOpen, probeInFlight = true
+	tok, err := b.Allow()          // → StateHalfOpen, probeInFlight = true
+	if err != nil {
 		t.Fatalf("Allow(): %v", err)
 	}
-	b.RecordAbort() // caller cancelled probe; release slot without health signal
+	b.RecordAbort(tok) // caller cancelled probe; release slot without health signal
 
 	// Breaker must stay HalfOpen — no recovery was confirmed.
 	if b.CurrentState() != StateHalfOpen {
 		t.Fatalf("want StateHalfOpen after abort, got %v", b.CurrentState())
 	}
 	// Probe slot must be free so the next request can attempt a fresh probe.
-	if err := b.Allow(); err != nil {
+	if _, err := b.Allow(); err != nil {
 		t.Fatalf("Allow() after abort = %v, want nil (fresh probe available)", err)
 	}
 }
 
-// TestBreaker_StaleStateClosed_ClosesHalfOpenPrematurely documents the known limitation
-// described in RecordSuccess: a stale success from a StateClosed-admitted request that
-// arrives while the breaker is already HalfOpen will close the breaker prematurely.
-// This is self-correcting — the probe still runs, and RecordFailure re-opens the breaker
-// if the worker remains unhealthy. A per-probe generation token would prevent it but is
-// out of scope for this implementation.
-func TestBreaker_StaleStateClosed_ClosesHalfOpenPrematurely(t *testing.T) {
+// TestBreaker_StaleSuccessIgnoredInHalfOpen verifies that a stale RecordSuccess from
+// a StateClosed-admitted request that arrives while the breaker is already HalfOpen does
+// NOT close the breaker. The generation token prevents the stale result from being applied.
+func TestBreaker_StaleSuccessIgnoredInHalfOpen(t *testing.T) {
 	now := time.Now()
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
 
 	// A stale request admitted from StateClosed (will complete after the probe window).
-	if err := b.Allow(); err != nil {
+	// StateClosed calls return token 0.
+	staleTok, err := b.Allow()
+	if err != nil {
 		t.Fatal("Allow() stale:", err)
+	}
+	if staleTok != 0 {
+		t.Fatalf("StateClosed Allow() returned non-zero token %d, want 0", staleTok)
 	}
 
 	// One failure opens the breaker (Threshold=1).
-	b.RecordFailure()
+	b.RecordFailure(0)
 	if b.CurrentState() != StateOpen {
 		t.Fatal("want StateOpen after threshold failure")
 	}
 
 	// Advance past cooldown so Allow() transitions to HalfOpen for a probe.
 	now = now.Add(2 * time.Second)
-	if err := b.Allow(); err != nil {
+	probeTok, err := b.Allow()
+	if err != nil {
 		t.Fatal("probe Allow():", err)
+	}
+	if probeTok == 0 {
+		t.Fatal("probe Allow() returned token 0, want non-zero generation token")
 	}
 	if b.CurrentState() != StateHalfOpen {
 		t.Fatal("want StateHalfOpen before stale success")
 	}
 
-	// Stale RecordSuccess from the earlier StateClosed call closes the breaker prematurely.
-	b.RecordSuccess()
-	if b.CurrentState() != StateClosed {
-		t.Fatal("want StateClosed — known limitation: stale success closes HalfOpen prematurely")
+	// Stale RecordSuccess from the earlier StateClosed call must be ignored.
+	b.RecordSuccess(staleTok) // token 0 != probeGen, so this is a no-op
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatal("want StateHalfOpen — stale success must not close the breaker")
 	}
 
-	// Self-correcting: the actual probe's failure re-opens the breaker (failures reset → 0,
-	// Threshold=1, so one failure suffices).
-	b.RecordFailure()
-	if b.CurrentState() != StateOpen {
-		t.Fatal("want StateOpen after probe failure re-opens breaker")
+	// The real probe's success correctly closes the breaker.
+	b.RecordSuccess(probeTok)
+	if b.CurrentState() != StateClosed {
+		t.Fatal("want StateClosed after real probe success")
+	}
+}
+
+// TestBreaker_StaleAbortIgnoredInHalfOpen verifies that a stale RecordAbort from a
+// StateClosed-admitted request does not release the active probe's slot.
+func TestBreaker_StaleAbortIgnoredInHalfOpen(t *testing.T) {
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
+
+	// Stale request from StateClosed.
+	staleTok, err := b.Allow()
+	if err != nil {
+		t.Fatal("Allow() stale:", err)
+	}
+
+	b.RecordFailure(0) // open
+	now = now.Add(2 * time.Second)
+	probeTok, err := b.Allow() // probe → HalfOpen
+	if err != nil {
+		t.Fatal("probe Allow():", err)
+	}
+
+	// Stale RecordAbort must not clear the active probe slot.
+	b.RecordAbort(staleTok)
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatalf("want StateHalfOpen after stale abort, got %v", b.CurrentState())
+	}
+	// Probe slot must still be in-flight; a concurrent Allow() must be blocked.
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("Allow() after stale abort = %v, want ErrBreakerOpen (probe still in-flight)", err)
+	}
+
+	// Real probe succeeds → closes breaker.
+	b.RecordSuccess(probeTok)
+	if b.CurrentState() != StateClosed {
+		t.Fatal("want StateClosed after real probe success")
+	}
+}
+
+// TestBreaker_StaleFailureIgnoredInHalfOpen verifies that a stale RecordFailure from a
+// StateClosed-admitted request does not re-open the breaker while a newer probe is active.
+func TestBreaker_StaleFailureIgnoredInHalfOpen(t *testing.T) {
+	now := time.Now()
+	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
+		WithNow(func() time.Time { return now })
+
+	staleTok, err := b.Allow()
+	if err != nil {
+		t.Fatal("Allow() stale:", err)
+	}
+
+	b.RecordFailure(0) // open
+	now = now.Add(2 * time.Second)
+	probeTok, err := b.Allow() // probe → HalfOpen
+	if err != nil {
+		t.Fatal("probe Allow():", err)
+	}
+
+	// Stale failure must not re-open the breaker or reset the cooldown.
+	b.RecordFailure(staleTok)
+	if b.CurrentState() != StateHalfOpen {
+		t.Fatalf("want StateHalfOpen after stale failure, got %v", b.CurrentState())
+	}
+
+	// Real probe succeeds → closes breaker normally.
+	b.RecordSuccess(probeTok)
+	if b.CurrentState() != StateClosed {
+		t.Fatal("want StateClosed after real probe success")
 	}
 }
 
@@ -257,8 +338,8 @@ func TestBreaker_RaceConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := b.Allow(); err == nil {
-				b.RecordFailure()
+			if tok, err := b.Allow(); err == nil {
+				b.RecordFailure(tok)
 			}
 		}()
 	}
@@ -268,7 +349,7 @@ func TestBreaker_RaceConcurrent(t *testing.T) {
 	if got := b.CurrentState(); got != StateOpen {
 		t.Fatalf("after concurrent failures: state = %v, want StateOpen", got)
 	}
-	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+	if _, err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatalf("Allow() = %v, want ErrBreakerOpen", err)
 	}
 }
@@ -281,11 +362,12 @@ func TestBreaker_RaceConcurrentHalfOpenProbe(t *testing.T) {
 	b := NewBreaker(BreakerConfig{Threshold: 1, Cooldown: time.Second}, nil).
 		WithNow(func() time.Time { return now })
 
-	b.RecordFailure()              // → StateOpen
+	b.RecordFailure(0)             // → StateOpen
 	now = now.Add(2 * time.Second) // past cooldown
 
 	const n = 50
 	var admitted, blocked atomic.Int32
+	var probeToken atomic.Uint64
 	ready := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -293,8 +375,9 @@ func TestBreaker_RaceConcurrentHalfOpenProbe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-ready
-			if err := b.Allow(); err == nil {
+			if tok, err := b.Allow(); err == nil {
 				admitted.Add(1)
+				probeToken.Store(tok)
 			} else {
 				blocked.Add(1)
 			}
@@ -314,7 +397,7 @@ func TestBreaker_RaceConcurrentHalfOpenProbe(t *testing.T) {
 	}
 
 	// Successful probe must close the breaker.
-	b.RecordSuccess()
+	b.RecordSuccess(probeToken.Load())
 	if b.CurrentState() != StateClosed {
 		t.Fatalf("state = %v, want StateClosed after successful probe", b.CurrentState())
 	}
