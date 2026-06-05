@@ -39,21 +39,19 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Read the base logger from the original request context before deriving
+			// new contexts, so any logger stored by upstream middleware (e.g. RequestID)
+			// is preserved. zerolog.Ctx never returns nil but may return a disabled logger.
+			base := zerolog.Ctx(r.Context())
+			if base.GetLevel() == zerolog.Disabled {
+				base = &log.Logger
+			}
+
 			// Extract parent span from inbound W3C traceparent header (no-op if absent).
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
 			// Start gateway.request span — child of remote parent or new root span.
 			ctx, span := tracer.Start(ctx, "gateway.request")
-
-			// Use r.Context() for the logger lookup so any logger stored by upstream
-			// middleware (e.g. RequestID) is preserved across the propagator.Extract /
-			// tracer.Start context derivations. zerolog.Ctx never returns nil, but may
-			// return a disabled logger when no logger has been stored in the context yet.
-			base := zerolog.Ctx(r.Context())
-			if base.GetLevel() == zerolog.Disabled {
-				l := log.Logger
-				base = &l
-			}
 
 			sc := span.SpanContext()
 			if sc.IsValid() {
@@ -78,8 +76,12 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 			// A single deferred closure records all span attributes, updates status,
 			// resolves the span name from the chi route pattern, and ends the span.
 			// All mutations and span.End() are in the same closure so their ordering
-			// is unambiguous regardless of how the handler exits.
+			// is unambiguous. The nil guard is defensive — OTel SDK never returns nil
+			// from tracer.Start, but makes the safety contract explicit.
 			defer func() {
+				if span == nil {
+					return
+				}
 				span.SetAttributes(
 					attribute.String("http.method", r.Method),
 					attribute.String("http.path", r.URL.Path),
@@ -96,12 +98,13 @@ func Middleware(tp oteltrace.TracerProvider) func(http.Handler) http.Handler {
 				// "gateway.request" is only the initial placeholder — chi populates
 				// RoutePattern during ServeHTTP, so it's available here but not at span start.
 				// When chi is active but no route matched (404), use "gateway.unmatched"
-				// so the span name is still meaningful and distinct from a matched route.
+				// so every span carries http.route and dashboards can group uniformly.
 				if rctx := chi.RouteContext(r.Context()); rctx != nil {
 					if rctx.RoutePattern() != "" {
 						span.SetAttributes(attribute.String("http.route", rctx.RoutePattern()))
 						span.SetName(rctx.RoutePattern())
 					} else {
+						span.SetAttributes(attribute.String("http.route", "gateway.unmatched"))
 						span.SetName("gateway.unmatched")
 					}
 				}

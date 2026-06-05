@@ -18,6 +18,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
@@ -320,9 +321,21 @@ func TestSpanNamedGatewayUnmatchedForUnknownRoute(t *testing.T) {
 	if plain {
 		t.Error("span was not renamed from gateway.request for unmatched chi route")
 	}
-	_, unmatched := findSpan(t, sr.Ended(), "gateway.unmatched")
+	unmatchedSpan, unmatched := findSpan(t, sr.Ended(), "gateway.unmatched")
 	if !unmatched {
 		t.Error("expected span named gateway.unmatched for unmatched chi route, not found")
+	}
+	if unmatched {
+		var httpRoute string
+		for _, a := range unmatchedSpan.Attributes() {
+			if string(a.Key) == "http.route" {
+				httpRoute = a.Value.AsString()
+				break
+			}
+		}
+		if httpRoute != "gateway.unmatched" {
+			t.Errorf("http.route attribute = %q, want gateway.unmatched", httpRoute)
+		}
 	}
 }
 
@@ -343,6 +356,38 @@ func TestNoOpWhenDisabledWithNilProvider(t *testing.T) {
 
 	if tp := outboundHeaders.Get("Traceparent"); tp != "" {
 		t.Errorf("expected no Traceparent header for nil provider, got %q", tp)
+	}
+}
+
+// TestFullMiddlewareStackLogCarriesRequestAndTraceIDs verifies that when RequestID,
+// tracing.Middleware, and AccessLog are stacked together (as in the production route),
+// the access log line carries both request_id (from RequestID middleware) and
+// trace_id/span_id (injected by tracing middleware). This covers the integration
+// between tracing's context-logger enrichment and AccessLog's consumption of it.
+func TestFullMiddlewareStackLogCarriesRequestAndTraceIDs(t *testing.T) {
+	tp, _ := newTestProvider(t)
+
+	var buf strings.Builder
+	testLogger := zerolog.New(&buf)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	// Inject test logger so the tracing middleware enriches it with trace_id/span_id.
+	req = req.WithContext(testLogger.WithContext(req.Context()))
+	rec := httptest.NewRecorder()
+
+	// Stack mirrors the production chain: RequestID → tracing → AccessLog → handler.
+	stack := middleware.RequestID(tracing.Middleware(tp)(middleware.AccessLog(okHandler)))
+	stack.ServeHTTP(rec, req)
+
+	output := buf.String()
+	if !strings.Contains(output, `"request_id"`) {
+		t.Errorf("expected request_id field in access log, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"trace_id"`) {
+		t.Errorf("expected trace_id field in access log, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"span_id"`) {
+		t.Errorf("expected span_id field in access log, got:\n%s", output)
 	}
 }
 

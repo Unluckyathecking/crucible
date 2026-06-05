@@ -898,22 +898,24 @@ func newProxyTestProvider(t *testing.T) (*sdktrace.TracerProvider, *tracetest.Sp
 // TestInvoke_TraceparentHeaderPropagated verifies that a valid W3C traceparent
 // header is injected on the outbound worker HTTP request when a real span is
 // active in the calling context. This is the gateway→worker trace seam.
+// Also verifies that X-Request-ID is preserved alongside the traceparent.
 func TestInvoke_TraceparentHeaderPropagated(t *testing.T) {
 	tp, _ := newProxyTestProvider(t)
 
 	ctx, parentSpan := tp.Tracer("test").Start(context.Background(), "parent")
 	defer parentSpan.End()
 
-	var capturedTraceparent string
+	var capturedTraceparent, capturedRequestID string
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedTraceparent = r.Header.Get("Traceparent")
+		capturedRequestID = r.Header.Get("X-Request-ID")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
 	}))
 	defer worker.Close()
 
 	c := New(worker.URL, 5*time.Second, 0)
-	if _, err := c.Invoke(ctx, &InvokeRequest{Operation: "op"}); err != nil {
+	if _, err := c.Invoke(ctx, &InvokeRequest{Operation: "op", RequestID: "test-rid"}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 
@@ -932,6 +934,16 @@ func TestInvoke_TraceparentHeaderPropagated(t *testing.T) {
 	}
 	if parts[1] == strings.Repeat("0", 32) {
 		t.Error("trace ID is all zeros — span context is not valid")
+	}
+	if len(parts[2]) != 16 {
+		t.Errorf("span ID = %q (%d chars), want 16 hex chars", parts[2], len(parts[2]))
+	}
+	if parts[2] == strings.Repeat("0", 16) {
+		t.Error("span ID is all zeros — span context is not valid")
+	}
+	// Verify X-Request-ID is preserved when traceparent is injected.
+	if capturedRequestID == "" {
+		t.Error("X-Request-ID header missing — traceparent injection must not remove it")
 	}
 }
 
