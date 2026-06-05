@@ -129,11 +129,10 @@ func (b *Breaker) RecordSuccess() {
 		b.state = StateClosed
 		onState = b.onState
 	case StateOpen:
-		// Stale success from a request admitted before the breaker tripped. The failure
-		// streak is preserved — recovery still requires a successful probe, not a stale
-		// in-flight reply. probeInFlight is always false here (see invariants above);
-		// the assignment is a defensive no-op that makes the guarantee explicit.
-		b.probeInFlight = false
+		// Stale success from a request admitted before the breaker tripped.
+		// Neither the failure streak nor probeInFlight is modified: recovery
+		// requires a successful probe, not a stale in-flight reply. See the
+		// invariant comment above for why probeInFlight is always false here.
 	case StateClosed:
 		// Normal healthy call: reset the failure streak so transient failures are
 		// forgotten once a success arrives. probeInFlight is always false here
