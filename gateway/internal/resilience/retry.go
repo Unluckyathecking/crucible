@@ -42,7 +42,8 @@ func IsRetryable(err error, status int) bool {
 	return (err != nil && status == 0) || status >= 500
 }
 
-// Sleep waits for the jittered exponential backoff before attempt n (1 = before 2nd try).
+// Sleep waits for the jittered exponential backoff before retry n.
+// n is 0-indexed: 0 = first retry (base delay), 1 = second retry (base*2), etc.
 // Returns ctx.Err() if the context expires during the wait.
 func (p Policy) Sleep(ctx context.Context, n int) error {
 	base := p.BaseBackoff
@@ -54,11 +55,11 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 		maxB = 5 * time.Second
 	}
 
-	// Exponential cap: base * 2^(n-1), capped at maxB.
+	// Exponential cap: base * 2^n, capped at maxB.
 	// Check cap > maxB/2 before doubling to guard against int64 overflow on
 	// large n or large base values (Policy is public; callers control n).
 	cap := base
-	for i := 1; i < n; i++ {
+	for i := 0; i < n; i++ {
 		if cap > maxB/2 {
 			cap = maxB
 			break
@@ -77,7 +78,7 @@ func (p Policy) Sleep(ctx context.Context, n int) error {
 	if half > 0 {
 		jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)+1))
 		if err != nil {
-			d = cap // conservative fallback: wait the full cap on OS RNG failure
+			d = half // fallback on OS RNG failure; preserves partial desynchronization
 		} else {
 			d = half + time.Duration(jitter.Int64())
 		}

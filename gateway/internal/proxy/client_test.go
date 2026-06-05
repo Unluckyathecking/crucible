@@ -407,6 +407,30 @@ func TestInvoke_RetryOn5xx(t *testing.T) {
 	}
 }
 
+// TestInvoke_RetryRespectsMaxAttempts verifies that a permanently-failing worker is
+// called exactly MaxAttempts times and no more.
+func TestInvoke_RetryRespectsMaxAttempts(t *testing.T) {
+	var callCount atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer worker.Close()
+
+	pol := ResiliencePolicy{
+		Retry: resilience.Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+	}
+	c := New(worker.URL, 5*time.Second, 0, pol)
+
+	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	if err == nil {
+		t.Fatal("Invoke: expected error for always-503 worker, got nil")
+	}
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("call count = %d, want 3 (MaxAttempts exhausted)", n)
+	}
+}
+
 // TestInvoke_NoRetryOn200WorkerError asserts that a worker error envelope (HTTP 200
 // with error field) is returned immediately without any retry — the worker already
 // did billable work.

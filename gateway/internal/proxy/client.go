@@ -149,15 +149,15 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			if err := c.retry.Sleep(ctx, attempt); err != nil {
+			// n is 0-indexed: attempt-1 gives n=0 (base) for first retry,
+			// n=1 (base*2) for second retry, etc.
+			if err := c.retry.Sleep(ctx, attempt-1); err != nil {
 				return nil, err
 			}
-			// Confirm context is still live before counting the retry — guards
-			// against the narrow window between Sleep returning and ctx expiry.
+			// Confirm context is still live before proceeding.
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			observability.WorkerRetriesTotal.Inc()
 		}
 
 		// Belt-and-suspenders ctx guard: IsRetryable already rejects
@@ -173,6 +173,11 @@ func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse
 			if err := c.breaker.Allow(); err != nil {
 				return nil, fmt.Errorf("worker call: %w", err)
 			}
+		}
+
+		// Count only actual retry attempts dispatched past the breaker gate.
+		if attempt > 0 {
+			observability.WorkerRetriesTotal.Inc()
 		}
 
 		resp, status, err := c.doOnce(ctx, body, in.RequestID)

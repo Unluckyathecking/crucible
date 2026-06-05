@@ -42,7 +42,8 @@ func TestIsRetryable(t *testing.T) {
 
 func TestPolicy_Sleep_HappyPath(t *testing.T) {
 	p := Policy{MaxAttempts: 3, BaseBackoff: 1 * time.Millisecond, MaxBackoff: 5 * time.Millisecond}
-	if err := p.Sleep(context.Background(), 1); err != nil {
+	// n=0: first retry, base delay.
+	if err := p.Sleep(context.Background(), 0); err != nil {
 		t.Fatalf("Sleep: %v", err)
 	}
 }
@@ -53,7 +54,7 @@ func TestPolicy_Sleep_ContextExpired(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := p.Sleep(ctx, 1)
+	err := p.Sleep(ctx, 0)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -62,7 +63,8 @@ func TestPolicy_Sleep_ContextExpired(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("Sleep returned %v, want context error", err)
 	}
-	if elapsed > 500*time.Millisecond {
+	// Context expires after 20ms; Sleep must return promptly (well under 100ms).
+	if elapsed > 100*time.Millisecond {
 		t.Errorf("Sleep took %v; should have returned promptly on ctx expiry", elapsed)
 	}
 }
@@ -72,7 +74,8 @@ func TestPolicy_Sleep_DefaultsApplied(t *testing.T) {
 	p := Policy{}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := p.Sleep(ctx, 1); err != nil {
+	// n=0: first retry with default base (100ms), well within the 2s context.
+	if err := p.Sleep(ctx, 0); err != nil {
 		t.Fatalf("Sleep with zero Policy: %v", err)
 	}
 }

@@ -44,8 +44,8 @@ type Breaker struct {
 
 // NewBreaker creates a Breaker. If cfg.Threshold <= 0 the breaker is disabled and
 // every Allow returns nil. onState (may be nil) is called on every state transition
-// and receives the new state; it is called while the internal lock is held, so it
-// must not call back into the breaker.
+// and receives the new state; it is invoked after the internal lock is released,
+// so it may safely call back into the breaker or acquire other locks.
 func NewBreaker(cfg BreakerConfig, onState func(State)) *Breaker {
 	return &Breaker{cfg: cfg, onState: onState, now: time.Now}
 }
@@ -60,30 +60,38 @@ func (b *Breaker) WithNow(now func() time.Time) *Breaker {
 
 // Allow returns nil if the call may proceed, or ErrBreakerOpen to fast-fail it
 // without making a network call.
-// When Allow returns nil from a half-open state the caller MUST call RecordSuccess
-// or RecordFailure to release the in-flight probe slot.
+// When Allow returns nil from a half-open state the caller MUST call RecordSuccess,
+// RecordFailure, or RecordAbort to release the in-flight probe slot.
 func (b *Breaker) Allow() error {
 	if b == nil || b.cfg.Threshold <= 0 {
 		return nil
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	switch b.state {
 	case StateOpen:
 		if b.now().Before(b.openUntil) {
+			b.mu.Unlock()
 			return ErrBreakerOpen
 		}
 		// Cooldown elapsed — allow one probe.
-		b.setState(StateHalfOpen)
+		b.state = StateHalfOpen
 		b.probeInFlight = true
+		onState := b.onState
+		b.mu.Unlock()
+		if onState != nil {
+			onState(StateHalfOpen)
+		}
 		return nil
 	case StateHalfOpen:
 		if b.probeInFlight {
+			b.mu.Unlock()
 			return ErrBreakerOpen
 		}
 		b.probeInFlight = true
+		b.mu.Unlock()
 		return nil
 	default: // StateClosed
+		b.mu.Unlock()
 		return nil
 	}
 }
@@ -97,14 +105,20 @@ func (b *Breaker) RecordSuccess() {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.state == StateOpen {
+		b.mu.Unlock()
 		return // stale success; preserve failure streak and probe slot
 	}
 	b.failures = 0
 	b.probeInFlight = false
+	var onState func(State)
 	if b.state == StateHalfOpen {
-		b.setState(StateClosed)
+		b.state = StateClosed
+		onState = b.onState
+	}
+	b.mu.Unlock()
+	if onState != nil {
+		onState(StateClosed)
 	}
 }
 
@@ -117,8 +131,8 @@ func (b *Breaker) RecordAbort() {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.probeInFlight = false
+	b.mu.Unlock()
 }
 
 // RecordFailure records a failed call and may open the breaker.
@@ -127,20 +141,26 @@ func (b *Breaker) RecordFailure() {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.probeInFlight = false
 	b.failures++
+	var onState func(State)
 	switch b.state {
 	case StateClosed:
 		if b.failures >= b.cfg.Threshold {
 			b.openUntil = b.now().Add(b.cfg.Cooldown)
-			b.setState(StateOpen)
+			b.state = StateOpen
+			onState = b.onState
 		}
 	case StateHalfOpen:
 		// Probe failed — reset cooldown and re-open.
 		b.openUntil = b.now().Add(b.cfg.Cooldown)
-		b.setState(StateOpen)
+		b.state = StateOpen
+		onState = b.onState
 	// StateOpen: already open; don't reset the cooldown timer on new failures.
+	}
+	b.mu.Unlock()
+	if onState != nil {
+		onState(StateOpen)
 	}
 }
 
@@ -152,11 +172,4 @@ func (b *Breaker) CurrentState() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.state
-}
-
-func (b *Breaker) setState(s State) {
-	b.state = s
-	if b.onState != nil {
-		b.onState(s)
-	}
 }

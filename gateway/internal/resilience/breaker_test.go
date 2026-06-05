@@ -189,18 +189,26 @@ func TestBreaker_RecordAbortReleasesProbeWithoutClosing(t *testing.T) {
 }
 
 func TestBreaker_RaceConcurrent(t *testing.T) {
+	// Each goroutine records one failure. With 100 goroutines and Threshold=5,
+	// the breaker must open; verify it did so correctly after the storm.
 	b := NewBreaker(BreakerConfig{Threshold: 5, Cooldown: 50 * time.Millisecond}, nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			b.Allow()
-			b.RecordFailure()
-			b.Allow()
-			b.RecordSuccess()
-			b.CurrentState()
+			if err := b.Allow(); err == nil {
+				b.RecordFailure()
+			}
 		}()
 	}
 	wg.Wait()
+
+	// After >= Threshold concurrent failures the breaker must be open.
+	if got := b.CurrentState(); got != StateOpen {
+		t.Fatalf("after concurrent failures: state = %v, want StateOpen", got)
+	}
+	if err := b.Allow(); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("Allow() = %v, want ErrBreakerOpen", err)
+	}
 }
