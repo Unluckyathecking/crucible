@@ -124,6 +124,9 @@ func New(workerURL string, timeout time.Duration, maxConns int, policies ...Resi
 // Returns a successful (*InvokeResponse, nil) if the worker returned a structured error envelope.
 // With a ResiliencePolicy, retries transport errors and 5xx responses up to MaxAttempts times;
 // HTTP 200 responses (including worker error envelopes) are never retried.
+// All non-nil errors (transport failures, circuit-breaker rejection, 5xx) are equivalent at
+// the caller boundary — the route handler maps every non-nil error to 502 WORKER_UNREACHABLE
+// with retryable=true, so callers must not branch on the specific error value.
 func (c *Client) Invoke(ctx context.Context, in *InvokeRequest) (*InvokeResponse, error) {
 	body, err := json.Marshal(in)
 	if err != nil {
