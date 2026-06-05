@@ -143,9 +143,11 @@ func Load() (*Config, error) {
 	}
 	// Scheme validation is unconditional: an endpoint with a scheme is always wrong
 	// regardless of whether tracing is enabled, preventing latent misconfigurations.
-	if lower := strings.ToLower(c.OtelExporterEndpoint); lower != "" &&
-		(strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")) {
-		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+	if c.OtelExporterEndpoint != "" {
+		lower := strings.ToLower(c.OtelExporterEndpoint)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+			return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be host:port without scheme (got %q)", c.OtelExporterEndpoint)
+		}
 	}
 	if c.OtelTracingEnabled && c.OtelExporterEndpoint == "" {
 		return nil, fmt.Errorf("OTEL_EXPORTER_ENDPOINT must be set when OTEL_TRACING_ENABLED=true")

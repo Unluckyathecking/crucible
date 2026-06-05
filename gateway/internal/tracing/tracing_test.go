@@ -88,6 +88,9 @@ func TestInboundTraceparentContinuesTrace(t *testing.T) {
 	if !gwSpan.Parent().SpanID().IsValid() {
 		t.Error("gateway span must have a valid parent when inbound traceparent is present")
 	}
+	if gwSpan.Parent().SpanID() != parentSC.SpanID() {
+		t.Errorf("parent span ID = %s, want %s (must point to exact parent span)", gwSpan.Parent().SpanID(), parentSC.SpanID())
+	}
 }
 
 // TestAbsentTraceparentStartsRootSpan verifies that a request without a traceparent
@@ -432,6 +435,12 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 		t.Errorf("ended span count = %d, want %d (each goroutine must produce exactly one span)", got, n)
 	}
 
+	// Build a set of trace IDs from the recorded spans for cross-reference.
+	recordedIDs := make(map[string]bool, n)
+	for _, s := range sr.Ended() {
+		recordedIDs[s.SpanContext().TraceID().String()] = true
+	}
+
 	seen := make(map[string]bool)
 	for i, id := range traceIDs {
 		if id == "" || id == strings.Repeat("0", 32) {
@@ -442,5 +451,9 @@ func TestConcurrentRequestsGetDistinctTraceIDs(t *testing.T) {
 			t.Errorf("goroutine %d: duplicate trace ID %s", i, id)
 		}
 		seen[id] = true
+		// Verify the trace ID seen inside the handler matches a recorded span.
+		if !recordedIDs[id] {
+			t.Errorf("goroutine %d: trace ID %s not found in recorded spans (context/recorder mismatch)", i, id)
+		}
 	}
 }
