@@ -99,9 +99,11 @@ func (b *Breaker) RecordSuccess() {
 	if b.state == StateOpen {
 		return // stale success; preserve failure streak, let cooldown+probe decide
 	}
-	b.failures = 0
 	if b.state == StateHalfOpen {
+		b.failures = 0
 		b.setState(StateClosed)
+	} else { // StateClosed
+		b.failures = 0
 	}
 }
 
