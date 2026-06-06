@@ -65,8 +65,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider")
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
-		if shutdown == nil {
-			shutdown = func(_ context.Context) error { return nil }
+		shutdownFn := shutdown
+		if shutdownFn == nil {
+			shutdownFn = func(_ context.Context) error { return nil }
 		}
 		c.TracerProvider = tp
 		// sync.Once guarantees the provider's shutdown runs exactly once;
@@ -75,7 +76,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
 			once.Do(func() {
-				shutdownErr = shutdown(ctx)
+				shutdownErr = shutdownFn(ctx)
 			})
 			return shutdownErr
 		}

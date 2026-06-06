@@ -14,7 +14,10 @@ import (
 
 func TestAssemble_DefaultOff(t *testing.T) {
 	cfg := &config.Config{}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Fatal("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +59,10 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 		WorkerRetryMax:       3,
 		WorkerRetryBackoffMS: 200,
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Fatal("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +85,10 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 		WorkerBreakerThreshold:  5,
 		WorkerBreakerCooldownMS: 3000,
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Fatal("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +110,10 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 		WorkerRetryMax:       1,
 		WorkerRetryBackoffMS: 0,
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Fatal("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,7 +264,10 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("no-op", func(t *testing.T) {
-		c, err := Assemble(&config.Config{})
+		c, err := assemble(&config.Config{}, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			t.Fatal("ctor must not be called when tracing is disabled")
+			return nil, nil, nil
+		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -337,6 +352,28 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Error("provider shutdown must be called on Shutdown()")
 		}
 	})
+}
+
+func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
+	// When WorkerBreakerCooldownMS is zero, BreakerCooldown() returns zero;
+	// assemble must accept it rather than treat it as an error.
+	cfg := &config.Config{
+		WorkerBreakerThreshold:  1,
+		WorkerBreakerCooldownMS: 0,
+	}
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Fatal("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Breaker.Threshold != 1 {
+		t.Errorf("Threshold: want 1, got %d", c.Policy.Breaker.Threshold)
+	}
+	if c.Policy.Breaker.Cooldown != 0 {
+		t.Errorf("Cooldown: want 0 when config helper returns zero, got %v", c.Policy.Breaker.Cooldown)
+	}
 }
 
 func TestAssemble_AllEnabled(t *testing.T) {
