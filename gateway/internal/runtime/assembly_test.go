@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -544,14 +545,21 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		var wg sync.WaitGroup
+		errCh := make(chan error, 10)
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = tc.Shutdown(context.Background())
+				if err := tc.Shutdown(context.Background()); err != nil {
+					errCh <- err
+				}
 			}()
 		}
 		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			t.Errorf("unexpected shutdown error: %v", err)
+		}
 		if callCount.Load() != 1 {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
@@ -743,7 +751,7 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
 	// assemble must reject OtelSampleRatio values outside [0.0, 1.0] before
 	// calling the ctor, so the ctor is never invoked with an invalid ratio.
-	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0, math.NaN(), math.Inf(1)} {
+	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		cfg := &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
@@ -752,9 +760,14 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 		c, err := assemble(cfg, mustNotCallCtor(t))
 		if err == nil {
 			t.Errorf("OtelSampleRatio=%v: want error for out-of-range value, got nil", ratio)
+			continue
 		}
 		if c.Shutdown == nil {
 			t.Errorf("OtelSampleRatio=%v: want non-nil no-op Shutdown on error", ratio)
+		}
+		want := fmt.Sprintf("%v", ratio)
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("OtelSampleRatio=%v: want error message to contain %q, got %v", ratio, want, err)
 		}
 	}
 }

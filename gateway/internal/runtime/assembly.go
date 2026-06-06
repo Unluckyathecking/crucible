@@ -27,8 +27,10 @@ const tracerCleanupTimeout = 10 * time.Second
 // A nil shutdown is a no-op; callers need not guard against it.
 // Cleanup adds a tracerCleanupTimeout deadline; if ctx already has a shorter
 // deadline that takes precedence. Callers block for at most tracerCleanupTimeout.
-// If shutdown returns nil but the context deadline was exceeded (i.e. the
-// shutdown function ignored its context), the deadline error is reported.
+// If shutdown returns nil but our cleanup deadline fired (and the parent context
+// was not already expired), the deadline error is reported so callers know the
+// shutdown function ignored its deadline. Pre-existing parent expiry is ignored
+// to avoid misattributing a caller's cancelled context as a cleanup failure.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
@@ -36,8 +38,10 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
 	shutdownErr := shutdown(timeoutCtx)
-	// If shutdown returned nil but the context deadline was exceeded, capture it.
-	if shutdownErr == nil {
+	// Only capture a timeout error if it arose during our cleanup window:
+	// a pre-existing parent context expiry (ctx.Err() != nil) is ignored to
+	// avoid misattributing an already-cancelled caller context as cleanup failure.
+	if shutdownErr == nil && timeoutCtx.Err() != nil && ctx.Err() == nil {
 		shutdownErr = timeoutCtx.Err()
 	}
 	if shutdownErr != nil {
@@ -75,8 +79,9 @@ type Components struct {
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		// tracing.NewProvider returns a concrete *sdktrace.TracerProvider.
-		// We propagate nil explicitly so the interface return value is nil,
-		// not a non-nil interface wrapping a nil pointer.
+		// The nil check is on the concrete pointer (not an interface), so it
+		// correctly catches a nil *sdktrace.TracerProvider before widening it
+		// to a non-nil oteltrace.TracerProvider interface wrapping a nil pointer.
 		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
 		if tp == nil {
 			return nil, shutdown, err
@@ -105,7 +110,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	}
 
 	if cfg.OtelTracingEnabled {
-		if r := cfg.OtelSampleRatio; r < 0 || r > 1.0 || math.IsNaN(r) {
+		if r := cfg.OtelSampleRatio; r < 0 || r > 1.0 || math.IsNaN(r) || math.IsInf(r, 0) {
 			return c, fmt.Errorf("runtime: OtelSampleRatio %v out of range [0.0, 1.0]", r)
 		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
