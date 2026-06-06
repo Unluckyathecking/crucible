@@ -24,18 +24,13 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// ctx is the parent for the cleanup timeout; a nil ctx falls back to
-// context.Background(). Cleanup always adds a tracerCleanupTimeout deadline on
-// top of the parent so callers block for at most tracerCleanupTimeout.
+// Cleanup always adds a tracerCleanupTimeout deadline on top of ctx so callers
+// block for at most tracerCleanupTimeout.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	parent := ctx
-	if parent == nil {
-		parent = context.Background()
-	}
-	timeoutCtx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
 		if baseErr == nil {
@@ -67,9 +62,13 @@ type Components struct {
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		// tracing.NewProvider returns *sdktrace.TracerProvider (a concrete pointer,
+		// not the oteltrace.TracerProvider interface). Assigning a nil concrete
+		// pointer directly to the interface return type boxes it into a non-nil
+		// interface value, hiding the nil from callers. Checking first and returning
+		// untyped nil prevents that gotcha.
 		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
 		if tp == nil {
-			// Return untyped nil to avoid the typed-nil interface gotcha.
 			return nil, shutdown, err
 		}
 		return tp, shutdown, err

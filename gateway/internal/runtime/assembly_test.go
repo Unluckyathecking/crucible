@@ -218,6 +218,9 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	if !shutdownCalled.Load() {
 		t.Error("shutdown cleanup must be called when constructor returns nil provider with non-nil shutdown")
 	}
+	if c2.TracerProvider != nil {
+		t.Error("TracerProvider: want nil when constructor returns nil provider")
+	}
 	if c2.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider with cleanup error")
 	}
@@ -294,12 +297,18 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 	}
 
 	t.Run("nil-shutdown", func(t *testing.T) {
+		// ctor returns (nonNilProvider, nil, wantErr): the nil shutdown means
+		// cleanupTracer is a no-op bypass — nothing to track, nothing to clean up.
+		// assemble must propagate the error and leave TracerProvider nil.
 		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return fakeTP, nil, wantErr
 		}
 		c, err := assemble(cfg, partialCtor)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if !strings.Contains(err.Error(), "constructing tracer provider") {
+			t.Errorf("error wrapping: want 'constructing tracer provider' context, got %v", err)
 		}
 		if c.TracerProvider != nil {
 			t.Error("TracerProvider: want nil when ctor returns error")
@@ -369,6 +378,35 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		}
 		if !shutdownCalled.Load() {
 			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
+		}
+	})
+
+	t.Run("nil-provider-with-error", func(t *testing.T) {
+		// ctor returns (nil, nonNilShutdown, wantErr): assemble hits the ctorErr != nil
+		// branch, calls cleanupTracer with the non-nil shutdown (which must be invoked),
+		// then propagates the wrapped error. TracerProvider must remain nil.
+		var shutdownCalled atomic.Bool
+		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return nil, func(_ context.Context) error {
+				shutdownCalled.Store(true)
+				return nil
+			}, wantErr
+		}
+		c, err := assemble(cfg, partialCtor)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if c.TracerProvider != nil {
+			t.Error("TracerProvider: want nil when ctor returns error")
+		}
+		if !shutdownCalled.Load() {
+			t.Error("ctor cleanup func must be called when ctor returns nil provider with non-nil shutdown and error")
+		}
+		if c.Shutdown == nil {
+			t.Fatal("Shutdown: want non-nil no-op even on nil-provider error")
+		}
+		if err := c.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown on nil-provider error: unexpected error %v", err)
 		}
 	})
 }
