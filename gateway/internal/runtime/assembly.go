@@ -69,16 +69,25 @@ func Assemble(cfg *config.Config) (Components, error) {
 		}
 		c.TracerProvider = tp
 		// Chain the provider shutdown after any previous shutdown. sync.Once
-		// guarantees the delegate runs exactly once; the result is cached and
-		// returned on all subsequent calls regardless of the context passed.
+		// guarantees the delegate runs exactly once. done is closed when the
+		// delegate finishes so callers can either receive the cached result or
+		// bail early if their own context expires first.
 		prevShutdown := c.Shutdown
+		shutdownFn := shutdown // explicit copy; avoids any ambiguity about closure capture
 		var once sync.Once
 		var shutdownErr error
+		done := make(chan struct{})
 		c.Shutdown = func(ctx context.Context) error {
 			once.Do(func() {
-				shutdownErr = errors.Join(prevShutdown(ctx), shutdown(ctx))
+				defer close(done)
+				shutdownErr = errors.Join(prevShutdown(ctx), shutdownFn(ctx))
 			})
-			return shutdownErr
+			select {
+			case <-done:
+				return shutdownErr
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 
