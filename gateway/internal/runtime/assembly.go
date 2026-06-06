@@ -23,47 +23,34 @@ func noopShutdown(_ context.Context) error { return nil }
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// Cleanup adds a tracerCleanupTimeout deadline to ctx; callers block for at
+// Cleanup adds a tracerCleanupTimeout deadline to ctx; the caller blocks for at
 // most tracerCleanupTimeout (or the remaining deadline of ctx, whichever is shorter).
-// Shutdown runs in a goroutine so a hung provider cannot block the caller beyond
-// the deadline. Panics from shutdown are recovered and returned as errors.
-// If shutdown ignores context cancellation entirely, the goroutine may outlive
-// the call; this is an acceptable trade-off against stalling server startup.
+// Panics from shutdown are recovered and returned as errors.
+// Providers must respect context cancellation; if a provider blocks ignoring ctx,
+// the caller blocks until the provider returns.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
-	type result struct{ err error }
-	ch := make(chan result, 1) // buffered: goroutine can send even after we return on timeout
-	go func() {
-		var r result
+	var shutdownErr error
+	func() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				recErr, _ := rec.(error)
 				if recErr == nil {
 					recErr = fmt.Errorf("%v", rec)
 				}
-				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %w", recErr)
-			}
-			// Non-blocking send: buffer capacity 1 guarantees success when parent is
-			// still waiting; default drops the result if parent already timed out.
-			select {
-			case ch <- r:
-			default:
+				shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %w", recErr)
 			}
 		}()
-		r.err = shutdown(timeoutCtx)
+		shutdownErr = shutdown(timeoutCtx)
 	}()
-	var shutdownErr error
-	select {
-	case r := <-ch:
-		shutdownErr = r.err
-	case <-timeoutCtx.Done():
-		shutdownErr = fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err())
-	}
 	if shutdownErr != nil {
+		if timeoutCtx.Err() != nil {
+			shutdownErr = fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err())
+		}
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
 		}
@@ -73,15 +60,15 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. Always obtain Components through Assemble — a literal
-// Components{} has a nil Shutdown and must not be used directly.
+// proxy.New and server.Deps. Always obtain Components through Assemble — a
+// zero-value Components has a nil Shutdown and must not be used.
 //
 // Values returned by Assemble are always safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
 // Shutdown is always non-nil (it is the no-op on any error return from Assemble).
 //
 // The unexported _ field prevents positional struct literals outside this package,
-// but does not prevent the zero-value Components{}; always use Assemble.
+// but does NOT prevent the zero-value Components{}; always use Assemble.
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
@@ -147,7 +134,8 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 		// The closure below calls it exactly once via sync.Once and caches the
 		// result; panics are recovered and stored as errors. The first caller's
 		// context is used; subsequent callers receive the cached result regardless
-		// of their context.
+		// of their context. Copies of Components share the same sync.Once state,
+		// so calling Shutdown on any copy is idempotent across all copies.
 		shutdownFn := shutdown
 		if shutdownFn == nil {
 			shutdownFn = noopShutdown
