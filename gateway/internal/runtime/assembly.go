@@ -33,6 +33,9 @@ func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(ctx); shutdownErr != nil {
+		if baseErr == nil {
+			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
+		}
 		return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 	}
 	return baseErr
@@ -100,6 +103,8 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, errors.New("runtime: config is nil")
 	}
 
+	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative,
+	// so >0 is the sole activation gate; zero means disabled and no negative values reach here.
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
