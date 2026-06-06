@@ -33,10 +33,11 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
+		wrapped := fmt.Errorf("runtime: cleaning up partial tracer provider (timeout=%v): %w", tracerCleanupTimeout, shutdownErr)
 		if baseErr == nil {
-			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
+			return wrapped
 		}
-		return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
+		return errors.Join(baseErr, wrapped)
 	}
 	return baseErr
 }
@@ -62,11 +63,9 @@ type Components struct {
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		// tracing.NewProvider returns *sdktrace.TracerProvider (a concrete pointer,
-		// not the oteltrace.TracerProvider interface). Assigning a nil concrete
-		// pointer directly to the interface return type boxes it into a non-nil
-		// interface value, hiding the nil from callers. Checking first and returning
-		// untyped nil prevents that gotcha.
+		// tracing.NewProvider returns a concrete *sdktrace.TracerProvider.
+		// We propagate nil explicitly so the interface return value is nil,
+		// not a non-nil interface wrapping a nil pointer.
 		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
 		if tp == nil {
 			return nil, shutdown, err

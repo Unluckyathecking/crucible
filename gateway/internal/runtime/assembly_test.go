@@ -142,16 +142,13 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 	fakeTP := noop.NewTracerProvider()
 
+	var gotEndpoint string
+	var gotInsecure bool
+	var gotSampleRatio float64
 	mockCtor := func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		if endpoint != "otel.example.com:4317" {
-			t.Errorf("endpoint: want %q, got %q", "otel.example.com:4317", endpoint)
-		}
-		if !insecure {
-			t.Error("insecure: want true")
-		}
-		if sampleRatio != 0.5 {
-			t.Errorf("sampleRatio: want 0.5, got %v", sampleRatio)
-		}
+		gotEndpoint = endpoint
+		gotInsecure = insecure
+		gotSampleRatio = sampleRatio
 		return fakeTP, fakeShutdown, nil
 	}
 
@@ -164,6 +161,15 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	c, err := assemble(cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotEndpoint != "otel.example.com:4317" {
+		t.Errorf("endpoint: want %q, got %q", "otel.example.com:4317", gotEndpoint)
+	}
+	if !gotInsecure {
+		t.Error("insecure: want true")
+	}
+	if gotSampleRatio != 0.5 {
+		t.Errorf("sampleRatio: want 0.5, got %v", gotSampleRatio)
 	}
 	if c.TracerProvider != fakeTP {
 		t.Errorf("TracerProvider: want fakeTP, got %v", c.TracerProvider)
@@ -690,8 +696,16 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	// sync.Once caches shutdownErr; both calls must return the same error message.
+	// sync.Once caches shutdownErr; all subsequent calls must return the same error.
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
+	}
+	// Third call verifies the error is stable, not regenerated or cleared.
+	err3 := c.Shutdown(context.Background())
+	if err3 == nil {
+		t.Fatal("third Shutdown after panic: want cached non-nil error, got nil")
+	}
+	if err3.Error() != err1.Error() {
+		t.Errorf("third cached panic error: want same error message, got %q and %q", err3.Error(), err1.Error())
 	}
 }
