@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"sync"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -22,9 +23,11 @@ var noopShutdown = func(_ context.Context) error { return nil }
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. newShutdownHandle heap-allocates the handle; the returned
 // bound method value (handle.shutdown) captures the pointer, so all copies of a
-// Components struct share the same idempotent shutdown state.
+// Components struct share the same idempotent shutdown state. mu guards h.err
+// to make the synchronisation explicit for both normal and panic-recovery paths.
 type shutdownHandle struct {
 	once sync.Once
+	mu   sync.Mutex
 	err  error
 	fn   func(context.Context) error
 }
@@ -40,19 +43,18 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				// Use %v uniformly so callers get a consistent error string
-				// regardless of whether the panic value is an error or not.
+				h.mu.Lock()
 				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+				h.mu.Unlock()
 			}
 		}()
-		h.err = h.fn(ctx)
+		err := h.fn(ctx)
+		h.mu.Lock()
+		h.err = err
+		h.mu.Unlock()
 	})
-	// The Go memory model guarantees that the return of once.Do in any goroutine
-	// happens after the completion of the first f() invocation (see
-	// https://go.dev/ref/mem#sync: "all the Do returns happen after that f()
-	// returns"). The write to h.err inside f() therefore happens-before every
-	// return from every concurrent once.Do call — this read is race-free without
-	// additional synchronization. The Go race detector confirms this is safe.
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	return h.err
 }
 
@@ -125,14 +127,24 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		if cfg.OtelExporterEndpoint == "" {
 			return Components{Shutdown: noopShutdown}, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
 		}
+		// Validate endpoint format before passing to the OTLP constructor so
+		// misconfigured values produce a clear error at assembly time rather than
+		// a confusing dial error at first trace export.
+		host, _, err := net.SplitHostPort(cfg.OtelExporterEndpoint)
+		if err != nil {
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelExporterEndpoint must be host:port (e.g. localhost:4318): %w", err)
+		}
+		if host == "" {
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelExporterEndpoint must have a non-empty host, got %q", cfg.OtelExporterEndpoint)
+		}
 		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
 		// ±Inf are already caught by the < 0 || > 1 bounds (−∞ < 0 and +∞ > 1 are
 		// both true in IEEE 754); math.IsNaN is the only special-case needed.
 		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %g", cfg.OtelSampleRatio)
 		}
-		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
-		if err != nil {
+		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
+		if ctorErr != nil {
 			// If the constructor returned a cleanup func alongside the error,
 			// call it now to avoid leaking a partially-initialised provider.
 			// context.Background is used intentionally: assemble has no caller
@@ -140,10 +152,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			// Join any cleanup error into the returned error so both failures surface.
 			if shutdown != nil {
 				if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
-					err = errors.Join(err, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
+					ctorErr = errors.Join(ctorErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 				}
 			}
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", err)
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
 		}
 		if tp == nil {
 			// Guard against a constructor that returns (nil, shutdown, nil).
@@ -153,7 +165,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
 				if cleanupErr := shutdown(context.Background()); cleanupErr != nil {
-					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up nil provider: %w", cleanupErr))
+					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", cleanupErr))
 				}
 			}
 			return Components{Shutdown: noopShutdown}, nilErr

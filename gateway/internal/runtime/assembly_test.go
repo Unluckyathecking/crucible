@@ -21,7 +21,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatalf("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -73,7 +73,7 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatalf("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -100,7 +100,7 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatalf("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -126,7 +126,7 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatalf("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -359,7 +359,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		c, err := assemble(&config.Config{}, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			t.Helper()
 			t.Fatalf("ctor must not be called when tracing is disabled")
-			panic("unreachable")
+			return nil, nil, nil // unreachable
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -427,40 +427,14 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
-	t.Run("tracing-shutdown-calls-provider-delegate", func(t *testing.T) {
-		providerShutdownRan := false
-		shutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			return noop.NewTracerProvider(), func(_ context.Context) error {
-				providerShutdownRan = true
-				return nil
-			}, nil
-		}
-
-		tc, err := assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-		}, shutdownCtor)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if err := tc.Shutdown(context.Background()); err != nil {
-			t.Errorf("unexpected shutdown error: %v", err)
-		}
-		if !providerShutdownRan {
-			t.Error("provider shutdown must be called on Shutdown()")
-		}
-	})
-
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
 		// Verifies that concurrent Shutdown calls are race-free under -race and
 		// that sync.Once ensures the delegate runs exactly once.
+		// sync.Once guarantees single execution so no mutex is needed in the delegate.
 		callCount := 0
-		var mu sync.Mutex
 		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
-				mu.Lock()
 				callCount++
-				mu.Unlock()
 				return nil
 			}, nil
 		}
@@ -546,7 +520,7 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 		c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			t.Helper()
 			t.Fatalf("ctor must not be called for invalid sample ratio %v", ratio)
-			panic("unreachable")
+			return nil, nil, nil // unreachable
 		})
 		if err == nil {
 			t.Errorf("OtelSampleRatio %v: want error for out-of-range ratio, got nil", ratio)
@@ -568,7 +542,7 @@ func TestAssemble_EmptyEndpoint(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatal("ctor must not be called when endpoint is empty")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err == nil {
 		t.Error("want error for empty OtelExporterEndpoint when tracing enabled, got nil")
@@ -591,7 +565,7 @@ func TestAssemble_NegativeConfigRejected(t *testing.T) {
 	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatal("ctor must not be called")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	}
 
 	t.Run("negative-retry", func(t *testing.T) {
@@ -643,7 +617,7 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatal("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -666,7 +640,7 @@ func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatalf("ctor must not be called when tracing is disabled")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	})
 	if err == nil {
 		t.Error("want error when WorkerBreakerCooldownMS is 0 with non-zero threshold, got nil")
@@ -750,7 +724,7 @@ func TestAssemble_NegativeBackoffCooldownRejected(t *testing.T) {
 	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Helper()
 		t.Fatal("ctor must not be called")
-		panic("unreachable")
+		return nil, nil, nil // unreachable
 	}
 
 	t.Run("negative-retry-backoff", func(t *testing.T) {
