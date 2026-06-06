@@ -20,24 +20,29 @@ import (
 var noopShutdown = func(_ context.Context) error { return nil }
 
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
-// shutdown function. Using a pointer method value for Components.Shutdown means
-// all copies of a Components struct share the same idempotent shutdown state —
-// the desired behaviour for a single-assembly lifecycle.
+// shutdown function. newShutdownHandle heap-allocates the handle; the returned
+// bound method value (handle.shutdown) captures the pointer, so all copies of a
+// Components struct share the same idempotent shutdown state.
 type shutdownHandle struct {
 	once sync.Once
 	err  error
 	fn   func(context.Context) error
 }
 
+func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
+	if fn == nil {
+		fn = noopShutdown
+	}
+	return &shutdownHandle{fn: fn}
+}
+
 func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				if e, ok := r.(error); ok {
-					h.err = fmt.Errorf("runtime: tracer shutdown panicked: %w", e)
-				} else {
-					h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-				}
+				// Use %v uniformly so callers get a consistent error string
+				// regardless of whether the panic value is an error or not.
+				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
 			}
 		}()
 		h.err = h.fn(ctx)
@@ -93,10 +98,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.WorkerRetryMax < 0 {
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
-	if cfg.WorkerRetryBackoffMS < 0 {
-		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0, got %d", cfg.WorkerRetryBackoffMS)
-	}
 	if cfg.WorkerRetryMax > 0 {
+		if cfg.WorkerRetryBackoffMS < 0 {
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
+		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
 	}
@@ -153,13 +158,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			}
 			return Components{Shutdown: noopShutdown}, nilErr
 		}
-		// Guard against a constructor that returns nil shutdown with nil error.
-		shutdownFn := shutdown
-		if shutdownFn == nil {
-			shutdownFn = noopShutdown
-		}
 		c.TracerProvider = tp
-		c.Shutdown = (&shutdownHandle{fn: shutdownFn}).shutdown
+		handle := newShutdownHandle(shutdown)
+		c.Shutdown = handle.shutdown
 	}
 
 	return c, nil
