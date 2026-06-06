@@ -13,7 +13,9 @@ import (
 )
 
 func TestAssemble_DefaultOff(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{
+		// all fields at zero values: tracing disabled, no retry, no breaker
+	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
@@ -452,6 +454,26 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
 		}
 	})
+}
+
+func TestAssemble_InvalidSampleRatio(t *testing.T) {
+	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range are
+	// rejected before the ctor is called.
+	for _, ratio := range []float64{-0.1, 1.1, 2.0, -1.0} {
+		ratio := ratio
+		cfg := &config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      ratio,
+		}
+		_, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			t.Errorf("ctor must not be called for invalid sample ratio %v", ratio)
+			return nil, nil, nil
+		})
+		if err == nil {
+			t.Errorf("OtelSampleRatio %v: want error for out-of-range ratio, got nil", ratio)
+		}
+	}
 }
 
 func TestAssemble_NonPositiveConfigTreatedAsDisabled(t *testing.T) {

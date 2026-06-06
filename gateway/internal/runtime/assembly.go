@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -22,10 +23,8 @@ var noopShutdown = func(_ context.Context) error { return nil }
 // proxy.New and server.Deps. Zero values are safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing.
 //
-// Shutdown is a closure that captures a sync.Once on the heap. Copying a
-// Components value copies the func pointer but all copies share the same
-// once-guarded execution: the provider shuts down exactly once regardless of
-// how many copies exist.
+// Shutdown must be called to release resources. Components contains internal
+// synchronization state and must not be copied after first use.
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
@@ -68,6 +67,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	}
 
 	if cfg.OtelTracingEnabled {
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 {
+			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
+		}
 		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if err != nil {
 			// If the constructor returned a cleanup func alongside the error,
@@ -93,19 +95,22 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// sync.Once guarantees the provider shuts down exactly once. Concurrent
-		// callers block until the first completes; the returned error is then
-		// safe to read due to the happens-before edge in once.Do's internal
-		// synchronisation.
+		// sync.Once guarantees the provider shuts down exactly once. atomic.Pointer
+		// stores the error result so concurrent callers observe the written value
+		// without relying solely on happens-before reasoning about once.Do internals.
 		var h struct {
 			once sync.Once
-			err  error
+			err  atomic.Pointer[error]
 		}
 		c.Shutdown = func(ctx context.Context) error {
 			h.once.Do(func() {
-				h.err = shutdownFn(ctx)
+				e := shutdownFn(ctx)
+				h.err.Store(&e)
 			})
-			return h.err
+			if e := h.err.Load(); e != nil {
+				return *e
+			}
+			return nil
 		}
 	}
 
