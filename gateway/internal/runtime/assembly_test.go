@@ -657,3 +657,46 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
 }
+
+func TestCleanupTracer_CancelledContext(t *testing.T) {
+	// When the context is already cancelled, cleanupTracer must skip the shutdown
+	// call (to avoid an immediately-failing I/O attempt) and join the cancellation
+	// cause with baseErr so callers can inspect both.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var shutdownCalled bool
+	shutdown := func(_ context.Context) error {
+		shutdownCalled = true
+		return nil
+	}
+
+	t.Run("with-base-err", func(t *testing.T) {
+		sentinel := errors.New("ctor failed")
+		err := cleanupTracer(ctx, shutdown, sentinel)
+		if shutdownCalled {
+			t.Error("shutdown must not be called when context is already cancelled")
+		}
+		if !errors.Is(err, sentinel) {
+			t.Errorf("want sentinel in error chain, got %v", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("want context.Canceled in error chain, got %v", err)
+		}
+	})
+
+	t.Run("nil-base-err", func(t *testing.T) {
+		err := cleanupTracer(ctx, shutdown, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("want context.Canceled in returned error, got %v", err)
+		}
+	})
+
+	t.Run("nil-shutdown", func(t *testing.T) {
+		sentinel := errors.New("base only")
+		err := cleanupTracer(ctx, nil, sentinel)
+		if err != sentinel {
+			t.Errorf("nil shutdown: want sentinel returned as-is, got %v", err)
+		}
+	})
+}
