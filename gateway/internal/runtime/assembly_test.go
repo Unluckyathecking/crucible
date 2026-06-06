@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 
@@ -50,9 +51,15 @@ func TestAssemble_DefaultOff(t *testing.T) {
 }
 
 func TestAssemble_NilConfig(t *testing.T) {
-	_, err := Assemble(nil)
+	c, err := Assemble(nil)
 	if err == nil {
 		t.Error("want error for nil config, got nil")
+	}
+	if c.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on nil config error")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("no-op shutdown on nil config: unexpected error %v", err)
 	}
 }
 
@@ -190,6 +197,23 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	}
 	if c.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider error")
+	}
+
+	// When the constructor returns (nil, nonNilShutdown, nil), the cleanup func
+	// must be called to avoid leaking any resources it holds.
+	shutdownCalled := false
+	nilProviderWithShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return nil, func(_ context.Context) error {
+			shutdownCalled = true
+			return nil
+		}, nil
+	}
+	_, err = assemble(cfg, nilProviderWithShutdownCtor)
+	if err == nil {
+		t.Fatal("want error when constructor returns nil provider, got nil")
+	}
+	if !shutdownCalled {
+		t.Error("shutdown cleanup must be called when constructor returns nil provider with non-nil shutdown")
 	}
 }
 
@@ -457,22 +481,48 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 }
 
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
-	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range are
-	// rejected before the ctor is called.
-	for _, ratio := range []float64{-0.1, 1.1, 2.0, -1.0} {
+	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range (including
+	// NaN and Inf which slip through naive < 0 || > 1 guards) are rejected before
+	// the ctor is called.
+	invalid := []float64{-0.1, 1.1, 2.0, -1.0, math.NaN(), math.Inf(1), math.Inf(-1)}
+	for _, ratio := range invalid {
 		ratio := ratio
 		cfg := &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
 			OtelSampleRatio:      ratio,
 		}
-		_, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			t.Errorf("ctor must not be called for invalid sample ratio %v", ratio)
 			return nil, nil, nil
 		})
 		if err == nil {
 			t.Errorf("OtelSampleRatio %v: want error for out-of-range ratio, got nil", ratio)
 		}
+		if c.Shutdown == nil {
+			t.Errorf("OtelSampleRatio %v: Shutdown must be non-nil no-op even on validation error", ratio)
+		}
+	}
+}
+
+func TestAssemble_EmptyEndpoint(t *testing.T) {
+	// OtelExporterEndpoint must not be empty when tracing is enabled.
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "",
+	}
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Error("ctor must not be called when endpoint is empty")
+		return nil, nil, nil
+	})
+	if err == nil {
+		t.Error("want error for empty OtelExporterEndpoint when tracing enabled, got nil")
+	}
+	if c.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on empty endpoint error")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("no-op shutdown on empty endpoint error: unexpected error %v", err)
 	}
 }
 

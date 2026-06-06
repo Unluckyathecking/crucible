@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
-	"sync/atomic"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -23,8 +23,8 @@ var noopShutdown = func(_ context.Context) error { return nil }
 // proxy.New and server.Deps. Zero values are safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing.
 //
-// Shutdown must be called to release resources. Components contains internal
-// synchronization state and must not be copied after first use.
+// Shutdown must be called to release resources. On any error return from Assemble,
+// Shutdown is still non-nil and safe to call (it is the no-op).
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
@@ -35,9 +35,10 @@ type Components struct {
 // With all resilience and tracing knobs at their defaults it returns a
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
+// On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	if cfg == nil {
-		return Components{}, errors.New("runtime: config is nil")
+		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
 	}
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return tracing.NewProvider(endpoint, insecure, sampleRatio)
@@ -48,7 +49,7 @@ func Assemble(cfg *config.Config) (Components, error) {
 // factory, allowing tests to avoid dialling a real OTLP endpoint.
 func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
 	if cfg == nil {
-		return Components{}, errors.New("runtime: config is nil")
+		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
 	}
 
 	c := Components{
@@ -67,7 +68,13 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	}
 
 	if cfg.OtelTracingEnabled {
-		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 {
+		if cfg.OtelExporterEndpoint == "" {
+			return c, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
+		}
+		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
+		// Inf is also rejected: it is outside [0.0, 1.0] semantically but passes
+		// the < 0 || > 1 check for positive infinity.
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) || math.IsInf(cfg.OtelSampleRatio, 0) {
 			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
 		}
 		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
@@ -87,6 +94,11 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			return c, fmt.Errorf("runtime: constructing tracer provider: %w", err)
 		}
 		if tp == nil {
+			// Guard against a constructor that returns (nil, shutdown, nil).
+			// Call any provided cleanup to avoid resource leaks.
+			if shutdown != nil {
+				_ = shutdown(context.Background())
+			}
 			return c, errors.New("runtime: tracer provider constructor returned nil provider")
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
@@ -95,22 +107,17 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// sync.Once guarantees the provider shuts down exactly once. atomic.Pointer
-		// stores the error result so concurrent callers observe the written value
-		// without relying solely on happens-before reasoning about once.Do internals.
-		var h struct {
-			once sync.Once
-			err  atomic.Pointer[error]
-		}
+		// sync.Once guarantees the provider shuts down exactly once. Per the Go
+		// memory model, the write to shutdownErr inside once.Do happens-before
+		// the return of every concurrent once.Do call, so the subsequent read is
+		// race-free without additional synchronisation.
+		var once sync.Once
+		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
-			h.once.Do(func() {
-				e := shutdownFn(ctx)
-				h.err.Store(&e)
+			once.Do(func() {
+				shutdownErr = shutdownFn(ctx)
 			})
-			if e := h.err.Load(); e != nil {
-				return *e
-			}
-			return nil
+			return shutdownErr
 		}
 	}
 
