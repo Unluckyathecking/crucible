@@ -35,9 +35,9 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
+	timeoutCtx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
 	defer cancel()
-	if shutdownErr := shutdown(ctx); shutdownErr != nil {
+	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
 		}
