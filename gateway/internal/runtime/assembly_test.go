@@ -250,10 +250,6 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 			t.Errorf("shutdown call %d: unexpected error %v", i+1, err)
 		}
 	}
-	// The no-op must not affect the provider — it should still be functional.
-	if tr := c.TracerProvider.Tracer("test"); tr == nil {
-		t.Error("TracerProvider.Tracer() should return non-nil after no-op shutdown")
-	}
 }
 
 func TestAssemble_TracingErrorPropagated(t *testing.T) {

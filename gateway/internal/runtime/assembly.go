@@ -18,6 +18,10 @@ import (
 // noopShutdown is the no-op Shutdown used when tracing is disabled or on error paths.
 func noopShutdown(_ context.Context) error { return nil }
 
+// tracerCleanupTimeout bounds the cleanup of a partially-initialised tracer provider
+// so a hung OTLP flush cannot stall server startup indefinitely.
+const tracerCleanupTimeout = 10 * time.Second
+
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. newShutdownHandle heap-allocates the handle; the returned
 // bound method value (handle.shutdown) captures the pointer, so all copies of a
@@ -39,15 +43,20 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 
 func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
+		var panicked bool
 		defer func() {
 			if r := recover(); r != nil {
+				panicked = true
 				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
 			}
 		}()
-		h.err = h.fn(ctx)
+		if err := h.fn(ctx); !panicked {
+			h.err = err
+		}
 	})
-	// once.Do's completion synchronizes-with any caller that observes done==1,
-	// so this read of h.err is race-free even if the body panicked.
+	// once.Do guarantees a happens-before edge between the body and any
+	// subsequent caller that observes completion, so this read of h.err is
+	// race-free even if the body panicked.
 	return h.err
 }
 
@@ -125,7 +134,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			// A 10 s timeout bounds cleanup so a hung OTLP flush cannot stall
 			// server startup indefinitely. Join any cleanup error so both surface.
 			if shutdown != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 				if shutdownErr := shutdown(cleanupCtx); shutdownErr != nil {
 					ctorErr = errors.Join(ctorErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 				}
@@ -140,7 +149,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			// partial-init cleanup above.
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 				if cleanupErr := shutdown(cleanupCtx); cleanupErr != nil {
 					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", cleanupErr))
 				}
