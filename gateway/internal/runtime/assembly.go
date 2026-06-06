@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -24,15 +25,22 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// Cleanup always adds a tracerCleanupTimeout deadline on top of ctx so callers
-// block for at most tracerCleanupTimeout.
+// Cleanup adds a tracerCleanupTimeout deadline; if ctx already has a shorter
+// deadline that takes precedence. Callers block for at most tracerCleanupTimeout.
+// If shutdown returns nil but the context deadline was exceeded (i.e. the
+// shutdown function ignored its context), the deadline error is reported.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
-	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
+	shutdownErr := shutdown(timeoutCtx)
+	// If shutdown returned nil but the context deadline was exceeded, capture it.
+	if shutdownErr == nil {
+		shutdownErr = timeoutCtx.Err()
+	}
+	if shutdownErr != nil {
 		wrapped := fmt.Errorf("runtime: cleaning up partial tracer provider (timeout=%v): %w", tracerCleanupTimeout, shutdownErr)
 		if baseErr == nil {
 			return wrapped
@@ -43,8 +51,9 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. The zero value Components{} has a nil Shutdown
-// and must not be used directly — always obtain Components through Assemble.
+// proxy.New and server.Deps. The blank field prevents literal construction
+// outside this package; always obtain Components through Assemble, which
+// guarantees Shutdown is non-nil and all fields are consistently initialised.
 //
 // Values returned by Assemble are always safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
@@ -96,13 +105,12 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	}
 
 	if cfg.OtelTracingEnabled {
-		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1.0 {
-			return c, fmt.Errorf("runtime: OtelSampleRatio %v out of range [0.0, 1.0]", cfg.OtelSampleRatio)
+		if r := cfg.OtelSampleRatio; r < 0 || r > 1.0 || math.IsNaN(r) {
+			return c, fmt.Errorf("runtime: OtelSampleRatio %v out of range [0.0, 1.0]", r)
 		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			wrappedCtorErr := fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
-			return c, cleanupTracer(context.Background(), shutdown, wrappedCtorErr)
+			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(context.Background(), shutdown, ctorErr))
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)

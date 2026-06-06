@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -483,6 +484,46 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
+	t.Run("concurrent-shutdown-error-cached", func(t *testing.T) {
+		// When the provider shutdown returns an error, concurrent callers must all
+		// receive the same cached error without re-invoking shutdown.
+		wantErr := errors.New("provider shutdown failed concurrent")
+		var callCount atomic.Int32
+		errShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return noop.NewTracerProvider(), func(_ context.Context) error {
+				callCount.Add(1)
+				return wantErr
+			}, nil
+		}
+		tc, err := assemble(&config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+		}, errShutdownCtor)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		const n = 10
+		errs := make(chan error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- tc.Shutdown(context.Background())
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		if callCount.Load() != 1 {
+			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
+		}
+		for e := range errs {
+			if !errors.Is(e, wantErr) {
+				t.Errorf("want error %v, got %v", wantErr, e)
+			}
+		}
+	})
+
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
 		// Verifies that concurrent Shutdown calls are race-free under -race and
 		// that sync.Once ensures the delegate runs exactly once.
@@ -702,7 +743,7 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
 	// assemble must reject OtelSampleRatio values outside [0.0, 1.0] before
 	// calling the ctor, so the ctor is never invoked with an invalid ratio.
-	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0} {
+	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0, math.NaN(), math.Inf(1)} {
 		cfg := &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
