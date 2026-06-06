@@ -22,6 +22,18 @@ func noopShutdown(_ context.Context) error { return nil }
 // so a hung OTLP flush cannot stall server startup indefinitely.
 const tracerCleanupTimeout = 10 * time.Second
 
+// cleanupTracer calls shutdown within tracerCleanupTimeout and joins any
+// resulting error into baseErr so both the original failure and the cleanup
+// failure surface together.
+func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
+	defer cancel()
+	if shutdownErr := shutdown(ctx); shutdownErr != nil {
+		return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
+	}
+	return baseErr
+}
+
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. newShutdownHandle heap-allocates the handle; the returned
 // bound method value (handle.shutdown) captures the pointer, so all copies of a
@@ -149,29 +161,17 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		if ctorErr != nil {
 			// If the constructor returned a cleanup func alongside the error,
 			// call it now to avoid leaking a partially-initialised provider.
-			// A 10 s timeout bounds cleanup so a hung OTLP flush cannot stall
-			// server startup indefinitely. Join any cleanup error so both surface.
 			if shutdown != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
-				defer cleanupCancel()
-				if shutdownErr := shutdown(cleanupCtx); shutdownErr != nil {
-					ctorErr = errors.Join(ctorErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
-				}
+				ctorErr = cleanupTracer(shutdown, ctorErr)
 			}
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
 		}
 		if tp == nil {
 			// Guard against a constructor that returns (nil, shutdown, nil).
-			// Call any provided cleanup to avoid resource leaks. Join any cleanup
-			// error into the returned error for visibility, consistent with the
-			// partial-init cleanup above.
+			// Call any provided cleanup to avoid resource leaks.
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
-				defer cleanupCancel()
-				if cleanupErr := shutdown(cleanupCtx); cleanupErr != nil {
-					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", cleanupErr))
-				}
+				nilErr = cleanupTracer(shutdown, nilErr)
 			}
 			return Components{Shutdown: noopShutdown}, nilErr
 		}

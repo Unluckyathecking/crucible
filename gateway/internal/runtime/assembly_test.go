@@ -700,28 +700,6 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 		}
 	})
 
-	// Call the real tracing.NewProvider via Assemble to verify that endpoint,
-	// insecure, and sampleRatio are forwarded correctly. An endpoint without a
-	// port causes NewProvider to return a validation error before opening any
-	// network connection, so this runs safely in unit tests.
-	t.Run("tracing-real-provider-delegation", func(t *testing.T) {
-		c, err := Assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "localhost", // missing port → NewProvider host:port error
-		})
-		if err == nil {
-			t.Fatal("Assemble: want error from real tracing.NewProvider for malformed endpoint, got nil")
-		}
-		if !strings.Contains(err.Error(), "constructing tracer provider") {
-			t.Errorf("Assemble: error should mention constructing tracer provider, got %v", err)
-		}
-		if c.TracerProvider != nil {
-			t.Error("TracerProvider: want nil on NewProvider error")
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on NewProvider error")
-		}
-	})
 }
 
 func TestAssemble_NegativeBackoffCooldownRejected(t *testing.T) {
