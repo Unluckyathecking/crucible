@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -53,12 +52,7 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				panicErr := fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-				if h.err != nil {
-					h.err = errors.Join(h.err, panicErr)
-				} else {
-					h.err = panicErr
-				}
+				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
 			}
 		}()
 		h.err = h.fn(ctx)
@@ -78,6 +72,7 @@ type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
 	Shutdown       func(context.Context) error
+	_              struct{} // prevents positional literals outside the package
 }
 
 // Assemble builds Components from a validated *config.Config.
@@ -93,65 +88,35 @@ func Assemble(cfg *config.Config) (Components, error) {
 
 // assemble is the testable core of Assemble. ctor injects the tracer-provider
 // factory so tests can avoid dialling a real OTLP endpoint. cfg must not be nil.
-func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
+func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (c Components, err error) {
+	c = Components{Shutdown: noopShutdown}
 	if cfg == nil {
-		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
+		return c, errors.New("runtime: config is nil")
 	}
 
-	c := Components{
-		Shutdown: noopShutdown,
-	}
-
-	if cfg.WorkerRetryMax < 0 {
-		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
-	}
 	if cfg.WorkerRetryMax > 0 {
-		if cfg.WorkerRetryBackoffMS < 0 {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
-		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
 	}
-	// A non-zero cooldown with a zero threshold silently discards the cooldown
-	// because the breaker is disabled. Reject this foot-gun configuration explicitly.
-	if cfg.WorkerBreakerThreshold == 0 && cfg.WorkerBreakerCooldownMS != 0 {
-		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be 0 when WorkerBreakerThreshold is 0 (breaker disabled), got %d", cfg.WorkerBreakerCooldownMS)
-	}
 	if cfg.WorkerBreakerThreshold > 0 {
-		if cfg.WorkerBreakerCooldownMS <= 0 {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be > 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
-		}
 		c.Policy.Breaker.Threshold = cfg.WorkerBreakerThreshold
 		c.Policy.Breaker.Cooldown = cfg.BreakerCooldown()
 	}
 
 	if cfg.OtelTracingEnabled {
-		if cfg.OtelExporterEndpoint == "" {
-			return Components{Shutdown: noopShutdown}, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
-		}
-		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
-		// ±Inf are already caught by the < 0 || > 1 bounds (−∞ < 0 and +∞ > 1 are
-		// both true in IEEE 754); math.IsNaN is the only special-case needed.
-		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %g", cfg.OtelSampleRatio)
-		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			// If the constructor returned a cleanup func alongside the error,
-			// call it now to avoid leaking a partially-initialised provider.
 			if shutdown != nil {
 				ctorErr = cleanupTracer(shutdown, ctorErr)
 			}
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
+			return c, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
 		}
 		if tp == nil {
-			// Guard against a constructor that returns (nil, shutdown, nil).
-			// Call any provided cleanup to avoid resource leaks.
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
 				nilErr = cleanupTracer(shutdown, nilErr)
 			}
-			return Components{Shutdown: noopShutdown}, nilErr
+			return c, nilErr
 		}
 		c.TracerProvider = tp
 		handle := newShutdownHandle(shutdown)

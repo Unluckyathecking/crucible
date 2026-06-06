@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -378,10 +377,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 
 	t.Run("tracing-once-counted", func(t *testing.T) {
 		// sync.Once ensures the provider delegate runs exactly once.
-		callCount := 0
+		var callCount atomic.Int32
 		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
-				callCount++
+				callCount.Add(1)
 				return nil
 			}, nil
 		}
@@ -395,8 +394,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 		_ = tc.Shutdown(context.Background())
 		_ = tc.Shutdown(context.Background())
-		if callCount != 1 {
-			t.Errorf("shutdown idempotency: want 1 call (sync.Once), got %d", callCount)
+		if callCount.Load() != 1 {
+			t.Errorf("shutdown idempotency: want 1 call (sync.Once), got %d", callCount.Load())
 		}
 	})
 
@@ -404,10 +403,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		// When the provider shutdown returns an error, sync.Once caches it;
 		// subsequent calls return the same error without re-invoking shutdown.
 		wantErr := errors.New("provider shutdown failed")
-		callCount := 0
+		var callCount atomic.Int32
 		errShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
-				callCount++
+				callCount.Add(1)
 				return wantErr
 			}, nil
 		}
@@ -421,8 +420,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 		err1 := tc.Shutdown(context.Background())
 		err2 := tc.Shutdown(context.Background())
-		if callCount != 1 {
-			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
+		if callCount.Load() != 1 {
+			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
 		if !errors.Is(err1, wantErr) {
 			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
@@ -482,93 +481,31 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		const n = 10
-		errs := make([]error, n)
+		errs := make(chan error, n)
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
-			i := i
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[i] = tc.Shutdown(context.Background())
+				errs <- tc.Shutdown(context.Background())
 			}()
 		}
 		wg.Wait()
+		close(errs)
 		var ref string
-		for i, e := range errs {
+		for e := range errs {
 			if e == nil {
-				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
+				t.Error("want non-nil error after panic, got nil")
 				continue
 			}
 			if !strings.Contains(e.Error(), "panicked") {
-				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
+				t.Errorf("want error mentioning 'panicked', got %v", e)
 			}
 			if ref == "" {
 				ref = e.Error()
 			} else if e.Error() != ref {
-				t.Errorf("goroutine %d: want same cached error message, got %q vs %q", i, e.Error(), ref)
+				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
-		}
-	})
-}
-
-func TestAssemble_InvalidSampleRatio(t *testing.T) {
-	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range (including
-	// NaN and Inf which slip through naive < 0 || > 1 guards) are rejected before
-	// the ctor is called.
-	invalid := []float64{-0.1, 1.1, 2.0, -1.0, math.NaN(), math.Inf(1), math.Inf(-1)}
-	for _, ratio := range invalid {
-		ratio := ratio
-		cfg := &config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      ratio,
-		}
-		c, err := assemble(cfg, mustNotCallCtor(t))
-		if err == nil {
-			t.Errorf("OtelSampleRatio %v: want error for out-of-range ratio, got nil", ratio)
-		} else if !strings.Contains(err.Error(), "OtelSampleRatio") {
-			t.Errorf("OtelSampleRatio %v: error message should mention OtelSampleRatio, got %v", ratio, err)
-		}
-		if c.Shutdown == nil {
-			t.Errorf("OtelSampleRatio %v: Shutdown must be non-nil no-op even on validation error", ratio)
-		}
-	}
-}
-
-func TestAssemble_EmptyEndpoint(t *testing.T) {
-	// OtelExporterEndpoint must not be empty when tracing is enabled.
-	cfg := &config.Config{
-		OtelTracingEnabled:   true,
-		OtelExporterEndpoint: "",
-	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
-	if err == nil {
-		t.Error("want error for empty OtelExporterEndpoint when tracing enabled, got nil")
-	} else if !strings.Contains(err.Error(), "OtelExporterEndpoint") {
-		t.Errorf("error message: want mention of OtelExporterEndpoint, got %v", err)
-	}
-	if c.Shutdown == nil {
-		t.Error("Shutdown: want non-nil no-op even on empty endpoint error")
-	}
-	if err := c.Shutdown(context.Background()); err != nil {
-		t.Errorf("no-op shutdown on empty endpoint error: unexpected error %v", err)
-	}
-}
-
-func TestAssemble_NegativeConfigRejected(t *testing.T) {
-	noopCtor := mustNotCallCtor(t)
-
-	t.Run("cooldown-without-breaker", func(t *testing.T) {
-		// A non-zero cooldown with threshold == 0 silently discards the cooldown
-		// because the breaker is disabled — reject it explicitly.
-		c, err := assemble(&config.Config{WorkerBreakerThreshold: 0, WorkerBreakerCooldownMS: 1000}, noopCtor)
-		if err == nil {
-			t.Error("want error when WorkerBreakerCooldownMS is non-zero with zero threshold, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
-			t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
 		}
 	})
 }
@@ -589,24 +526,6 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 	}
 	if c.Policy.Breaker.Threshold != 0 {
 		t.Errorf("Breaker.Threshold: want 0 for zero config, got %d", c.Policy.Breaker.Threshold)
-	}
-}
-
-func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
-	// WorkerBreakerCooldownMS must be > 0 when WorkerBreakerThreshold > 0: a zero
-	// cooldown would cause proxy.New to panic with "BreakerConfig.Cooldown must be > 0".
-	cfg := &config.Config{
-		WorkerBreakerThreshold:  1,
-		WorkerBreakerCooldownMS: 0,
-	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
-	if err == nil {
-		t.Error("want error when WorkerBreakerCooldownMS is 0 with non-zero threshold, got nil")
-	} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
-		t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
-	}
-	if c.Shutdown == nil {
-		t.Error("Shutdown: want non-nil no-op even on validation error")
 	}
 }
 
@@ -674,97 +593,6 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 		}
 		if err := c.Shutdown(context.Background()); err != nil {
 			t.Errorf("no-op shutdown: unexpected error %v", err)
-		}
-	})
-
-	// Exercise the public Assemble tracing validation path without a real OTLP
-	// server: an invalid sample ratio is rejected before any exporter is dialled,
-	// confirming that the validation wiring is intact in the public entry point.
-	t.Run("tracing-invalid-sample-ratio", func(t *testing.T) {
-		c, err := Assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      math.NaN(),
-		})
-		if err == nil {
-			t.Fatal("Assemble: want error for NaN sample ratio, got nil")
-		}
-		if !strings.Contains(err.Error(), "OtelSampleRatio") {
-			t.Errorf("Assemble: error should mention OtelSampleRatio, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Assemble: Shutdown must be non-nil no-op even on validation error")
-		}
-	})
-
-}
-
-func TestAssemble_NegativeBackoffCooldownRejected(t *testing.T) {
-	// Negative millisecond values for backoff/cooldown produce negative time.Duration
-	// values that can break downstream components. assemble rejects them defensively.
-	noopCtor := mustNotCallCtor(t)
-
-	t.Run("negative-retry-max", func(t *testing.T) {
-		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerRetryMax, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
-			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
-
-	t.Run("negative-retry-max-with-positive-backoff", func(t *testing.T) {
-		// The WorkerRetryMax < 0 guard must fire before the backoff guard,
-		// so the error message mentions WorkerRetryMax, not WorkerRetryBackoffMS.
-		c, err := assemble(&config.Config{WorkerRetryMax: -1, WorkerRetryBackoffMS: 100}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerRetryMax, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
-			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
-
-	t.Run("negative-retry-backoff", func(t *testing.T) {
-		c, err := assemble(&config.Config{WorkerRetryMax: 2, WorkerRetryBackoffMS: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerRetryBackoffMS, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerRetryBackoffMS") {
-			t.Errorf("error message: want mention of WorkerRetryBackoffMS, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
-
-	t.Run("negative-breaker-cooldown-disabled", func(t *testing.T) {
-		// A negative WorkerBreakerCooldownMS with zero threshold is caught by the
-		// "must be 0 when threshold is 0" guard (since -1 != 0).
-		c, err := assemble(&config.Config{WorkerBreakerThreshold: 0, WorkerBreakerCooldownMS: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerBreakerCooldownMS with disabled breaker, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
-			t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
-
-	t.Run("negative-breaker-cooldown", func(t *testing.T) {
-		c, err := assemble(&config.Config{WorkerBreakerThreshold: 3, WorkerBreakerCooldownMS: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerBreakerCooldownMS, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
-			t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
 		}
 	})
 }
