@@ -15,10 +15,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 )
 
-// mustNotCallCtor returns a ctor stub that fatally fails the test if invoked.
-// The return satisfies the Go compiler's requirement for non-void function
-// signatures; t.Fatal calls runtime.Goexit (not a language-level terminator),
-// so the compiler cannot statically determine the function never returns.
+// mustNotCallCtor returns a ctor stub that fails the test if invoked.
 func mustNotCallCtor(t *testing.T) func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 	t.Helper()
 	return func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
@@ -709,6 +706,20 @@ func TestAssemble_NegativeBackoffCooldownRejected(t *testing.T) {
 
 	t.Run("negative-retry-max", func(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerRetryMax, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
+			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+
+	t.Run("negative-retry-max-with-positive-backoff", func(t *testing.T) {
+		// The WorkerRetryMax < 0 guard must fire before the backoff guard,
+		// so the error message mentions WorkerRetryMax, not WorkerRetryBackoffMS.
+		c, err := assemble(&config.Config{WorkerRetryMax: -1, WorkerRetryBackoffMS: 100}, noopCtor)
 		if err == nil {
 			t.Error("want error for negative WorkerRetryMax, got nil")
 		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {

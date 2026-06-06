@@ -22,9 +22,7 @@ func noopShutdown(_ context.Context) error { return nil }
 // so a hung OTLP flush cannot stall server startup indefinitely.
 const tracerCleanupTimeout = 10 * time.Second
 
-// cleanupTracer calls shutdown within tracerCleanupTimeout and joins any
-// resulting error into baseErr so both the original failure and the cleanup
-// failure surface together.
+// cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 	defer cancel()
@@ -34,12 +32,10 @@ func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
 	return baseErr
 }
 
-// shutdownHandle bundles a sync.Once with its cached error and the underlying
-// shutdown function. newShutdownHandle heap-allocates the handle; the returned
-// bound method value (handle.shutdown) captures the pointer, so all copies of a
-// Components struct share the same idempotent shutdown state. All writes to h.err
-// occur inside once.Do, so sync.Once's happens-before guarantee makes a separate
-// mutex unnecessary.
+// shutdownHandle wraps sync.Once to call h.fn at most once and cache the result.
+// The closure passed to once.Do recovers any panic from h.fn and stores it as an
+// error, so the closure always returns normally; once.Do marks it done on the
+// first call regardless of panics.
 type shutdownHandle struct {
 	once sync.Once
 	err  error
@@ -55,23 +51,19 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 
 func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
-		var fnErr error
 		defer func() {
 			if r := recover(); r != nil {
 				panicErr := fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-				if fnErr != nil {
-					h.err = errors.Join(fnErr, panicErr)
+				if h.err != nil {
+					h.err = errors.Join(h.err, panicErr)
 				} else {
 					h.err = panicErr
 				}
 			}
 		}()
-		fnErr = h.fn(ctx)
-		h.err = fnErr
+		h.err = h.fn(ctx)
 	})
-	// once.Do guarantees a happens-before edge between the body and any
-	// subsequent caller that observes completion, so this read of h.err is
-	// race-free even if the body panicked.
+	// once.Do's happens-before guarantee makes this read race-free.
 	return h.err
 }
 
@@ -100,10 +92,7 @@ func Assemble(cfg *config.Config) (Components, error) {
 }
 
 // assemble is the testable core of Assemble. ctor injects the tracer-provider
-// factory, allowing tests to avoid dialling a real OTLP endpoint.
-// cfg must not be nil; the nil guard exists because assemble is a test seam
-// called directly in tests that construct *config.Config by hand — returning
-// an error is friendlier than a nil-pointer panic at the first field access.
+// factory so tests can avoid dialling a real OTLP endpoint. cfg must not be nil.
 func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
 	if cfg == nil {
 		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
@@ -113,19 +102,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		Shutdown: noopShutdown,
 	}
 
-	// The guards below are safety nets for *Config values constructed outside
-	// config.Load (e.g. in tests or via struct literals). config.Load rejects
-	// these combinations, but assemble is also the test injection seam, so it
-	// applies them independently to prevent silent misbehaviour at the
-	// runtime layer.
-
-	// Negative retry counts are meaningless; zero disables retry.
 	if cfg.WorkerRetryMax < 0 {
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
 	if cfg.WorkerRetryMax > 0 {
-		// Negative backoff produces a negative time.Duration which breaks
-		// downstream exponential-backoff logic.
 		if cfg.WorkerRetryBackoffMS < 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
 		}
@@ -138,8 +118,6 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be 0 when WorkerBreakerThreshold is 0 (breaker disabled), got %d", cfg.WorkerBreakerCooldownMS)
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
-		// A non-positive cooldown produces a zero or negative time.Duration
-		// which disables the breaker's recovery window.
 		if cfg.WorkerBreakerCooldownMS <= 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be > 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
 		}
