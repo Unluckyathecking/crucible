@@ -67,7 +67,15 @@ type Components struct {
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		return tracing.NewProvider(endpoint, insecure, sampleRatio)
+		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
+		if tp == nil {
+			// Explicitly return an untyped nil rather than a nil *sdktrace.TracerProvider.
+			// Assigning a nil concrete pointer to an interface produces a non-nil interface
+			// value (the Go typed-nil gotcha), which would bypass the tp == nil guard in
+			// assemble and silently store a nil-underlying provider that panics on use.
+			return nil, shutdown, err
+		}
+		return tp, shutdown, err
 	})
 }
 
