@@ -43,17 +43,19 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 
 func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
+		var fnErr error
 		defer func() {
 			if r := recover(); r != nil {
 				panicErr := fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-				if h.err != nil {
-					h.err = errors.Join(h.err, panicErr)
+				if fnErr != nil {
+					h.err = errors.Join(fnErr, panicErr)
 				} else {
 					h.err = panicErr
 				}
 			}
 		}()
-		h.err = h.fn(ctx)
+		fnErr = h.fn(ctx)
+		h.err = fnErr
 	})
 	// once.Do guarantees a happens-before edge between the body and any
 	// subsequent caller that observes completion, so this read of h.err is
@@ -87,6 +89,9 @@ func Assemble(cfg *config.Config) (Components, error) {
 
 // assemble is the testable core of Assemble. ctor injects the tracer-provider
 // factory, allowing tests to avoid dialling a real OTLP endpoint.
+// cfg must not be nil; the nil guard exists because assemble is a test seam
+// called directly in tests that construct *config.Config by hand — returning
+// an error is friendlier than a nil-pointer panic at the first field access.
 func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
 	if cfg == nil {
 		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
@@ -96,12 +101,19 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		Shutdown: noopShutdown,
 	}
 
-	// Build resilience policy. Fields are set directly to avoid importing the
-	// resilience package; the types are already carried by proxy.ResiliencePolicy.
+	// The guards below are safety nets for *Config values constructed outside
+	// config.Load (e.g. in tests or via struct literals). config.Load rejects
+	// these combinations, but assemble is also the test injection seam, so it
+	// applies them independently to prevent silent misbehaviour at the
+	// runtime layer.
+
+	// Negative retry counts are meaningless; zero disables retry.
 	if cfg.WorkerRetryMax < 0 {
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
 	if cfg.WorkerRetryMax > 0 {
+		// Negative backoff produces a negative time.Duration which breaks
+		// downstream exponential-backoff logic.
 		if cfg.WorkerRetryBackoffMS < 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
 		}
@@ -114,6 +126,8 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be 0 when WorkerBreakerThreshold is 0 (breaker disabled), got %d", cfg.WorkerBreakerCooldownMS)
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
+		// A non-positive cooldown produces a zero or negative time.Duration
+		// which disables the breaker's recovery window.
 		if cfg.WorkerBreakerCooldownMS <= 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be > 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
 		}
