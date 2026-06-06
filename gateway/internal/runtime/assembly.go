@@ -37,9 +37,6 @@ type Components struct {
 // shutdown — preserving today's exact single-shot behaviour.
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
-	if cfg == nil {
-		return Components{Shutdown: noopShutdown}, errors.New("runtime: config is nil")
-	}
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
@@ -58,9 +55,18 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 
 	// Build resilience policy. Fields are set directly to avoid importing the
 	// resilience package; the types are already carried by proxy.ResiliencePolicy.
+	// config.Load already rejects negative values, but assemble guards defensively
+	// so that a *config.Config constructed directly (e.g. in tests) cannot produce
+	// a silently broken policy with a nonsensical negative count.
+	if cfg.WorkerRetryMax < 0 {
+		return c, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
+	}
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
+	}
+	if cfg.WorkerBreakerThreshold < 0 {
+		return c, fmt.Errorf("runtime: WorkerBreakerThreshold must be >= 0, got %d", cfg.WorkerBreakerThreshold)
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
 		c.Policy.Breaker.Threshold = cfg.WorkerBreakerThreshold
@@ -99,7 +105,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			if shutdown != nil {
 				_ = shutdown(context.Background())
 			}
-			return c, errors.New("runtime: tracer provider constructor returned nil provider")
+			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
 		shutdownFn := shutdown

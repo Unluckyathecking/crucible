@@ -419,6 +419,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if !errors.Is(err2, wantErr) {
 			t.Errorf("second shutdown: want error wrapping %v, got %v", wantErr, err2)
 		}
+		// sync.Once caches the error value; both calls must return the same pointer.
+		if err1 != err2 {
+			t.Errorf("cached error identity: want same error pointer, got different values %v and %v", err1, err2)
+		}
 	})
 
 	t.Run("tracing-shutdown-calls-provider-delegate", func(t *testing.T) {
@@ -526,25 +530,56 @@ func TestAssemble_EmptyEndpoint(t *testing.T) {
 	}
 }
 
-func TestAssemble_NonPositiveConfigTreatedAsDisabled(t *testing.T) {
-	// Non-positive values (zero or negative) for retry/breaker counts are
-	// treated as "disabled" by the > 0 guards, producing zero-value policy fields.
+func TestAssemble_NegativeConfigRejected(t *testing.T) {
+	// Negative retry/breaker counts are rejected. config.Load already validates
+	// these, but assemble guards defensively for *config.Config values constructed
+	// directly (e.g. in tests) to surface misconfiguration rather than silently
+	// producing a disabled policy.
+	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Error("ctor must not be called")
+		return nil, nil, nil
+	}
+
+	t.Run("negative-retry", func(t *testing.T) {
+		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerRetryMax, got nil")
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+
+	t.Run("negative-breaker", func(t *testing.T) {
+		c, err := assemble(&config.Config{WorkerBreakerThreshold: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerBreakerThreshold, got nil")
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+}
+
+func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
+	// Zero values for retry/breaker counts produce a zero-value policy (disabled),
+	// matching the behaviour of an unconfigured gateway.
 	cfg := &config.Config{
-		WorkerRetryMax:         -1,
-		WorkerBreakerThreshold: -1,
+		WorkerRetryMax:         0,
+		WorkerBreakerThreshold: 0,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Error("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if c.Policy.Retry.MaxAttempts != 0 {
-		t.Errorf("Retry.MaxAttempts: want 0 for negative config, got %d", c.Policy.Retry.MaxAttempts)
+		t.Errorf("Retry.MaxAttempts: want 0 for zero config, got %d", c.Policy.Retry.MaxAttempts)
 	}
 	if c.Policy.Breaker.Threshold != 0 {
-		t.Errorf("Breaker.Threshold: want 0 for negative config, got %d", c.Policy.Breaker.Threshold)
+		t.Errorf("Breaker.Threshold: want 0 for zero config, got %d", c.Policy.Breaker.Threshold)
 	}
 }
 
@@ -609,4 +644,28 @@ func TestAssemble_AllEnabled(t *testing.T) {
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("shutdown: unexpected error %v", err)
 	}
+}
+
+func TestAssemble_PublicTracingEnabled(t *testing.T) {
+	// Verifies that the public Assemble function (not the internal assemble)
+	// correctly delegates to tracing.NewProvider. The OTLP/HTTP exporter does
+	// not dial on creation, so this works without a running collector.
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "localhost:4318",
+		OtelExporterInsecure: true,
+		OtelSampleRatio:      1.0,
+	}
+	c, err := Assemble(cfg)
+	if err != nil {
+		t.Fatalf("Assemble: unexpected error: %v", err)
+	}
+	if c.TracerProvider == nil {
+		t.Error("TracerProvider: want non-nil from Assemble with tracing enabled")
+	}
+	if c.Shutdown == nil {
+		t.Fatal("Shutdown: want non-nil")
+	}
+	// Shutdown may fail if the exporter cannot flush (no collector running); ignore it.
+	_ = c.Shutdown(context.Background())
 }
