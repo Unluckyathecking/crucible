@@ -35,6 +35,13 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	}
 }
 
+func TestAssemble_NilConfig(t *testing.T) {
+	_, err := Assemble(nil)
+	if err == nil {
+		t.Error("want error for nil config, got nil")
+	}
+}
+
 func TestAssemble_RetryEnabled(t *testing.T) {
 	cfg := &config.Config{
 		WorkerRetryMax:       3,
@@ -137,9 +144,15 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	_, err := Assemble(cfg)
+	c, err := Assemble(cfg)
 	if !errors.Is(err, wantErr) {
 		t.Errorf("error: want %v, got %v", wantErr, err)
+	}
+	if c.TracerProvider != nil {
+		t.Error("TracerProvider: want nil on provider error")
+	}
+	if c.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on provider error")
 	}
 }
 
@@ -156,9 +169,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	}
 
-	// Tracing shutdown delegates to the provider's shutdown; verify no panic on
-	// repeated calls (the underlying closure is called each time — idempotency
-	// is the provider's responsibility, which the SDK guarantees).
+	// Tracing shutdown is wrapped with sync.Once: the delegate runs exactly once
+	// regardless of how many times c.Shutdown is called.
 	orig := tracerProviderConstructor
 	t.Cleanup(func() { tracerProviderConstructor = orig })
 
@@ -180,7 +192,58 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	}
 	_ = tc.Shutdown(context.Background())
 	_ = tc.Shutdown(context.Background())
-	if callCount != 2 {
-		t.Errorf("shutdown call count: want 2, got %d", callCount)
+	if callCount != 1 {
+		t.Errorf("shutdown idempotency: want 1 call (sync.Once), got %d", callCount)
+	}
+}
+
+func TestAssemble_AllEnabled(t *testing.T) {
+	orig := tracerProviderConstructor
+	t.Cleanup(func() { tracerProviderConstructor = orig })
+
+	shutdownCalls := 0
+	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return noop.NewTracerProvider(), func(_ context.Context) error {
+			shutdownCalls++
+			return nil
+		}, nil
+	}
+
+	cfg := &config.Config{
+		WorkerRetryMax:          2,
+		WorkerRetryBackoffMS:    100,
+		WorkerBreakerThreshold:  3,
+		WorkerBreakerCooldownMS: 1000,
+		OtelTracingEnabled:      true,
+		OtelExporterEndpoint:    "otel.example.com:4317",
+		OtelSampleRatio:         1.0,
+	}
+	c, err := Assemble(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Retry.MaxAttempts != 2 {
+		t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
+	}
+	if c.Policy.Retry.BaseBackoff != 100*time.Millisecond {
+		t.Errorf("Retry.BaseBackoff: want 100ms, got %v", c.Policy.Retry.BaseBackoff)
+	}
+	if c.Policy.Breaker.Threshold != 3 {
+		t.Errorf("Breaker.Threshold: want 3, got %d", c.Policy.Breaker.Threshold)
+	}
+	if c.Policy.Breaker.Cooldown != time.Second {
+		t.Errorf("Breaker.Cooldown: want 1s, got %v", c.Policy.Breaker.Cooldown)
+	}
+	if c.TracerProvider == nil {
+		t.Error("TracerProvider: want non-nil")
+	}
+	if c.Shutdown == nil {
+		t.Fatal("Shutdown: want non-nil")
+	}
+	// Shutdown must delegate to provider exactly once (sync.Once idempotency).
+	_ = c.Shutdown(context.Background())
+	_ = c.Shutdown(context.Background())
+	if shutdownCalls != 1 {
+		t.Errorf("shutdown delegate calls: want 1 (idempotent), got %d", shutdownCalls)
 	}
 }

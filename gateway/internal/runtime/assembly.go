@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -21,6 +23,7 @@ type Components struct {
 
 // tracerProviderConstructor is the seam that tests replace to avoid dialling a real
 // OTLP exporter. Production code always uses tracing.NewProvider.
+// NOT safe for concurrent mutation; do not call t.Parallel() in tests that swap this.
 var tracerProviderConstructor = func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 	return tracing.NewProvider(endpoint, insecure, sampleRatio)
 }
@@ -30,6 +33,10 @@ var tracerProviderConstructor = func(endpoint string, insecure bool, sampleRatio
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
 func Assemble(cfg *config.Config) (Components, error) {
+	if cfg == nil {
+		return Components{}, errors.New("runtime: config is nil")
+	}
+
 	c := Components{
 		Shutdown: func(_ context.Context) error { return nil },
 	}
@@ -48,10 +55,26 @@ func Assemble(cfg *config.Config) (Components, error) {
 	if cfg.OtelTracingEnabled {
 		tp, shutdown, err := tracerProviderConstructor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if err != nil {
-			return Components{}, err
+			// Return c (not Components{}) so the caller gets a nil TracerProvider
+			// and a non-nil no-op Shutdown even when provider construction fails.
+			return c, err
 		}
 		c.TracerProvider = tp
-		c.Shutdown = shutdown
+		// Chain prev shutdown before the provider's shutdown so future resilience
+		// subsystems that register their own shutdown are not silently dropped.
+		prevShutdown := c.Shutdown
+		var once sync.Once
+		var shutdownErr error
+		c.Shutdown = func(ctx context.Context) error {
+			once.Do(func() {
+				if err := prevShutdown(ctx); err != nil {
+					shutdownErr = err
+					return
+				}
+				shutdownErr = shutdown(ctx)
+			})
+			return shutdownErr
+		}
 	}
 
 	return c, nil
