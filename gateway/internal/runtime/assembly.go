@@ -24,16 +24,18 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// ctx is accepted for future extensibility; cleanup always uses a fresh
-// background-derived timeout so a pre-cancelled parent context cannot prevent
-// cleanup from running. Callers block for at most tracerCleanupTimeout.
+// ctx is the parent for the cleanup timeout; a nil ctx falls back to
+// context.Background(). Cleanup always adds a tracerCleanupTimeout deadline on
+// top of the parent so callers block for at most tracerCleanupTimeout.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	// Always derive from Background so cleanup cannot be cut short by a
-	// cancelled parent context — startup has no request context.
-	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(ctx); shutdownErr != nil {
 		if baseErr == nil {
