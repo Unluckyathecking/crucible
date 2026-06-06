@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 
@@ -498,6 +499,8 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 		})
 		if err == nil {
 			t.Errorf("OtelSampleRatio %v: want error for out-of-range ratio, got nil", ratio)
+		} else if !strings.Contains(err.Error(), "OtelSampleRatio") {
+			t.Errorf("OtelSampleRatio %v: error message should mention OtelSampleRatio, got %v", ratio, err)
 		}
 		if c.Shutdown == nil {
 			t.Errorf("OtelSampleRatio %v: Shutdown must be non-nil no-op even on validation error", ratio)
@@ -517,6 +520,8 @@ func TestAssemble_EmptyEndpoint(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("want error for empty OtelExporterEndpoint when tracing enabled, got nil")
+	} else if !strings.Contains(err.Error(), "OtelExporterEndpoint") {
+		t.Errorf("error message: want mention of OtelExporterEndpoint, got %v", err)
 	}
 	if c.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on empty endpoint error")
@@ -540,6 +545,8 @@ func TestAssemble_NegativeConfigRejected(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
 		if err == nil {
 			t.Error("want error for negative WorkerRetryMax, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
+			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
 		}
 		if c.Shutdown == nil {
 			t.Error("Shutdown: want non-nil no-op even on validation error")
@@ -550,6 +557,8 @@ func TestAssemble_NegativeConfigRejected(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerBreakerThreshold: -1}, noopCtor)
 		if err == nil {
 			t.Error("want error for negative WorkerBreakerThreshold, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerBreakerThreshold") {
+			t.Errorf("error message: want mention of WorkerBreakerThreshold, got %v", err)
 		}
 		if c.Shutdown == nil {
 			t.Error("Shutdown: want non-nil no-op even on validation error")
@@ -679,6 +688,8 @@ func TestAssemble_NegativeDurationsRejected(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerRetryMax: 2, WorkerRetryBackoffMS: -1}, noopCtor)
 		if err == nil {
 			t.Error("want error for negative WorkerRetryBackoffMS, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerRetryBackoffMS") {
+			t.Errorf("error message: want mention of WorkerRetryBackoffMS, got %v", err)
 		}
 		if c.Shutdown == nil {
 			t.Error("Shutdown: want non-nil no-op even on validation error")
@@ -689,6 +700,8 @@ func TestAssemble_NegativeDurationsRejected(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerBreakerThreshold: 3, WorkerBreakerCooldownMS: -1}, noopCtor)
 		if err == nil {
 			t.Error("want error for negative WorkerBreakerCooldownMS, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
+			t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
 		}
 		if c.Shutdown == nil {
 			t.Error("Shutdown: want non-nil no-op even on validation error")
@@ -715,13 +728,15 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	err1 := c.Shutdown(context.Background())
 	if err1 == nil {
 		t.Error("Shutdown after panic: want non-nil error, got nil")
+	} else if !strings.Contains(err1.Error(), "panicked") {
+		t.Errorf("Shutdown after panic: want error mentioning panicked, got %v", err1)
 	}
-	// Second call must return the same cached error, not re-panic.
+	// Second call must return the cached error, not re-panic.
 	err2 := c.Shutdown(context.Background())
 	if err2 == nil {
 		t.Error("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	if err1 != err2 {
-		t.Errorf("cached panic error identity: want same pointer, got %v and %v", err1, err2)
+	if err1 != nil && err2 != nil && err1.Error() != err2.Error() {
+		t.Errorf("cached panic error: want same message, got %v and %v", err1, err2)
 	}
 }

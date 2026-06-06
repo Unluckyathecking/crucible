@@ -119,24 +119,31 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// sync.Once guarantees the provider shuts down exactly once. Per the Go
-		// memory model, the write to shutdownErr inside once.Do happens-before
-		// the return of every concurrent once.Do call, so the subsequent read is
-		// race-free without additional synchronisation. recover() prevents a
-		// panicking shutdownFn from leaving shutdownErr as nil, which would hide
-		// the failure on all subsequent calls.
-		var once sync.Once
-		var shutdownErr error
+		// h bundles the sync.Once and its cached result so both are heap-allocated
+		// together and their relationship is explicit to readers and the race detector.
+		// sync.Once guarantees Shutdown runs exactly once; per the Go memory model the
+		// write to h.err inside once.Do happens-before the return of every concurrent
+		// once.Do call, so the subsequent read is race-free. recover() converts a
+		// panicking shutdownFn into an error so callers always see a failure rather
+		// than a silently nil result.
+		var h struct {
+			once sync.Once
+			err  error
+		}
 		c.Shutdown = func(ctx context.Context) error {
-			once.Do(func() {
+			h.once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+						if e, ok := r.(error); ok {
+							h.err = fmt.Errorf("runtime: tracer shutdown panicked: %w", e)
+						} else {
+							h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+						}
 					}
 				}()
-				shutdownErr = shutdownFn(ctx)
+				h.err = shutdownFn(ctx)
 			})
-			return shutdownErr
+			return h.err
 		}
 	}
 
