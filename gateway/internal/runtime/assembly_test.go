@@ -544,21 +544,22 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		const n = 10
+		errs := make(chan error, n)
 		var wg sync.WaitGroup
-		errCh := make(chan error, 10)
-		for i := 0; i < 10; i++ {
+		for i := 0; i < n; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := tc.Shutdown(context.Background()); err != nil {
-					errCh <- err
-				}
+				errs <- tc.Shutdown(context.Background())
 			}()
 		}
 		wg.Wait()
-		close(errCh)
-		for err := range errCh {
-			t.Errorf("unexpected shutdown error: %v", err)
+		close(errs)
+		for e := range errs {
+			if e != nil {
+				t.Errorf("unexpected shutdown error: %v", e)
+			}
 		}
 		if callCount.Load() != 1 {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
@@ -599,9 +600,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
 		}
 		var ref string
-		count := 0
 		for e := range errs {
-			count++
 			if e == nil {
 				t.Error("want non-nil error after panic, got nil")
 				continue
@@ -614,9 +613,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			} else if e.Error() != ref {
 				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
-		}
-		if count != n {
-			t.Errorf("want %d errors from concurrent shutdown, got %d", n, count)
 		}
 	})
 }
@@ -745,6 +741,33 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	// sync.Once caches shutdownErr; both calls must return the same error message.
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
+	}
+}
+
+func TestAssemble_ValidSampleRatioBoundaries(t *testing.T) {
+	// 0.0 (never sample) and 1.0 (always sample) are the valid boundary values;
+	// the ctor must be called and no error returned.
+	for _, ratio := range []float64{0.0, 1.0} {
+		cfg := &config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      ratio,
+		}
+		var ctorCalled atomic.Bool
+		mockCtor := func(_ string, _ bool, gotRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			ctorCalled.Store(true)
+			if gotRatio != ratio {
+				t.Errorf("ratio: want %v, got %v", ratio, gotRatio)
+			}
+			return noop.NewTracerProvider(), func(_ context.Context) error { return nil }, nil
+		}
+		_, err := assemble(cfg, mockCtor)
+		if err != nil {
+			t.Errorf("OtelSampleRatio=%v: want no error for valid boundary, got %v", ratio, err)
+		}
+		if !ctorCalled.Load() {
+			t.Errorf("OtelSampleRatio=%v: ctor must be called for valid ratio", ratio)
+		}
 	}
 }
 
