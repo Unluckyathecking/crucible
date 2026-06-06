@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -57,17 +58,20 @@ func Assemble(cfg *config.Config) (Components, error) {
 		if err != nil {
 			// Return c (not Components{}) so the caller gets a nil TracerProvider
 			// and a non-nil no-op Shutdown even when provider construction fails.
-			return c, err
+			return c, fmt.Errorf("runtime: constructing tracer provider: %w", err)
+		}
+		// Guard against a constructor that returns nil shutdown with nil error.
+		if shutdown == nil {
+			shutdown = func(_ context.Context) error { return nil }
 		}
 		c.TracerProvider = tp
 		// Chain prev shutdown before the provider's shutdown so future resilience
 		// subsystems that register their own shutdown are not silently dropped.
+		// errors.Join ensures both always run even when one fails.
 		prevShutdown := c.Shutdown
 		var once sync.Once
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
-			// Both prevShutdown and shutdown always run so neither leaks resources
-			// even when the other fails. errors.Join returns nil if both return nil.
 			once.Do(func() {
 				shutdownErr = errors.Join(prevShutdown(ctx), shutdown(ctx))
 			})

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,8 +22,14 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	if c.Policy.Retry.MaxAttempts != 0 {
 		t.Errorf("Retry.MaxAttempts: want 0, got %d", c.Policy.Retry.MaxAttempts)
 	}
+	if c.Policy.Retry.BaseBackoff != 0 {
+		t.Errorf("Retry.BaseBackoff: want 0, got %v", c.Policy.Retry.BaseBackoff)
+	}
 	if c.Policy.Breaker.Threshold != 0 {
 		t.Errorf("Breaker.Threshold: want 0, got %d", c.Policy.Breaker.Threshold)
+	}
+	if c.Policy.Breaker.Cooldown != 0 {
+		t.Errorf("Breaker.Cooldown: want 0, got %v", c.Policy.Breaker.Cooldown)
 	}
 	if c.TracerProvider != nil {
 		t.Error("TracerProvider: want nil when tracing disabled")
@@ -30,7 +37,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil no-op func")
 	}
-	// Call twice to verify idempotency of the no-op.
+	// Call twice to verify no-op idempotency.
 	for i := 0; i < 2; i++ {
 		if err := c.Shutdown(context.Background()); err != nil {
 			t.Errorf("no-op shutdown call %d: unexpected error %v", i+1, err)
@@ -46,8 +53,8 @@ func TestAssemble_NilConfig(t *testing.T) {
 }
 
 func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
-	// Negative values for retry/breaker pass the > 0 gate as disabled (same as 0).
-	// This is intentional: config.Load validates env vars; Assemble trusts the contract.
+	// Negative values pass the > 0 gate as disabled (same as 0).
+	// config.Load validates env vars; Assemble trusts the validated contract.
 	cfg := &config.Config{
 		WorkerRetryMax:         -1,
 		WorkerBreakerThreshold: -5,
@@ -167,8 +174,9 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
 	c, err := Assemble(cfg)
+	// Assemble wraps the error; errors.Is unwraps the chain.
 	if !errors.Is(err, wantErr) {
-		t.Errorf("error: want %v, got %v", wantErr, err)
+		t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
 	}
 	if c.TracerProvider != nil {
 		t.Error("TracerProvider: want nil on provider error")
@@ -194,32 +202,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
-	t.Run("tracing-once", func(t *testing.T) {
-		// sync.Once ensures the delegate runs exactly once regardless of call count.
-		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			callCount := 0
-			shutdown := func(_ context.Context) error {
-				callCount++
-				return nil
-			}
-			return noop.NewTracerProvider(), shutdown, nil
-		}
-		t.Cleanup(func() { tracerProviderConstructor = orig })
-
-		tc, err := Assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		_ = tc.Shutdown(context.Background())
-		_ = tc.Shutdown(context.Background())
-		// Cannot observe callCount here since it's inside the closure; we verify
-		// indirectly: the returned error is stable and no panic occurs.
-	})
-
 	t.Run("tracing-once-counted", func(t *testing.T) {
+		// sync.Once ensures the provider delegate runs exactly once.
 		callCount := 0
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -244,8 +228,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	})
 
 	t.Run("shutdown-error-cached", func(t *testing.T) {
-		// When the provider shutdown returns an error, subsequent calls return
-		// the same cached error without re-invoking shutdown.
+		// When the provider shutdown returns an error, sync.Once caches it;
+		// subsequent calls return the same error without re-invoking shutdown.
 		wantErr := errors.New("provider shutdown failed")
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -267,12 +251,14 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
 		}
 		if err1 != err2 {
-			t.Errorf("second shutdown: want cached error %v, got %v", err1, err2)
+			t.Errorf("second shutdown: want same cached error, got different value %v", err2)
 		}
 	})
 
-	t.Run("both-shutdowns-run-on-prev-error", func(t *testing.T) {
-		// When prevShutdown fails, the provider shutdown must still run (no early return).
+	t.Run("provider-shutdown-called", func(t *testing.T) {
+		// Verifies that the provider shutdown function is invoked on Shutdown().
+		// Note: prevShutdown is always the no-op at assembly time; the errors.Join
+		// path where both fail is not exercisable through the public API.
 		providerShutdownRan := false
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -289,15 +275,52 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// Inject a failing prevShutdown by directly wrapping the assembled shutdown.
-		// We can't inject a failing prevShutdown into Assemble directly, but we can
-		// verify the provider runs by assembling normally (prevShutdown is the no-op).
-		// The critical path (errors.Join) is tested here indirectly.
 		if err := tc.Shutdown(context.Background()); err != nil {
 			t.Errorf("unexpected shutdown error: %v", err)
 		}
 		if !providerShutdownRan {
-			t.Error("provider shutdown must run even when prevShutdown is no-op")
+			t.Error("provider shutdown must be called on Shutdown()")
+		}
+	})
+
+	t.Run("concurrent-idempotent", func(t *testing.T) {
+		// Multiple goroutines calling Shutdown concurrently must be race-free
+		// and the delegate must run exactly once (sync.Once guarantee).
+		callCount := 0
+		var mu sync.Mutex
+		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return noop.NewTracerProvider(), func(_ context.Context) error {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return nil
+			}, nil
+		}
+		t.Cleanup(func() { tracerProviderConstructor = orig })
+
+		tc, err := Assemble(&config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = tc.Shutdown(context.Background())
+			}()
+		}
+		wg.Wait()
+
+		mu.Lock()
+		got := callCount
+		mu.Unlock()
+		if got != 1 {
+			t.Errorf("concurrent shutdown: want 1 call (sync.Once), got %d", got)
 		}
 	})
 }
