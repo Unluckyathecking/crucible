@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,9 +119,9 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	orig := tracerProviderConstructor
 	defer func() { tracerProviderConstructor = orig }()
 
-	shutdownCalls := 0
+	var shutdownCalls atomic.Int32
 	fakeShutdown := func(_ context.Context) error {
-		shutdownCalls++
+		shutdownCalls.Add(1)
 		return nil
 	}
 	fakeTP := noop.NewTracerProvider()
@@ -155,8 +156,8 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 		t.Fatal("Shutdown: want non-nil")
 	}
 	_ = c.Shutdown(context.Background())
-	if shutdownCalls != 1 {
-		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls)
+	if shutdownCalls.Load() != 1 {
+		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls.Load())
 	}
 }
 
@@ -256,8 +257,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 
 	t.Run("tracing-once-counted", func(t *testing.T) {
 		// sync.Once ensures the provider delegate runs exactly once.
-		defer func() { tracerProviderConstructor = orig }()
-
 		callCount := 0
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -283,8 +282,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("shutdown-error-cached", func(t *testing.T) {
 		// When the provider shutdown returns an error, sync.Once caches it;
 		// subsequent calls return the same error without re-invoking shutdown.
-		defer func() { tracerProviderConstructor = orig }()
-
 		wantErr := errors.New("provider shutdown failed")
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -310,8 +307,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	})
 
 	t.Run("tracing-shutdown-calls-provider-delegate", func(t *testing.T) {
-		defer func() { tracerProviderConstructor = orig }()
-
 		providerShutdownRan := false
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -338,8 +333,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("shutdown-once-under-concurrency", func(t *testing.T) {
 		// Multiple goroutines calling Shutdown concurrently must be race-free
 		// and the delegate must run exactly once (sync.Once guarantee).
-		defer func() { tracerProviderConstructor = orig }()
-
 		callCount := 0
 		var mu sync.Mutex
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
@@ -359,6 +352,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		var wg sync.WaitGroup
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
@@ -367,7 +363,16 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				_ = tc.Shutdown(context.Background())
 			}()
 		}
-		wg.Wait()
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Error("concurrent shutdown timed out")
+		}
 
 		mu.Lock()
 		got := callCount
