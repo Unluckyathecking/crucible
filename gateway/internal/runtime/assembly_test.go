@@ -15,7 +15,7 @@ import (
 func TestAssemble_DefaultOff(t *testing.T) {
 	cfg := &config.Config{}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Fatal("ctor must not be called when tracing is disabled")
+		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil no-op func")
 	}
-	// Call twice to verify no-op idempotency.
+	// Verify Shutdown is safe to call repeatedly without panic.
 	for i := 0; i < 2; i++ {
 		if err := c.Shutdown(context.Background()); err != nil {
 			t.Errorf("no-op shutdown call %d: unexpected error %v", i+1, err)
@@ -60,7 +60,7 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 		WorkerRetryBackoffMS: 200,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Fatal("ctor must not be called when tracing is disabled")
+		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 		WorkerBreakerCooldownMS: 3000,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Fatal("ctor must not be called when tracing is disabled")
+		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 		WorkerRetryBackoffMS: 0,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Fatal("ctor must not be called when tracing is disabled")
+		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -233,7 +233,10 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 		t.Error("TracerProvider: want nil on provider error")
 	}
 	if c.Shutdown == nil {
-		t.Error("Shutdown: want non-nil no-op even on provider error")
+		t.Fatal("Shutdown: want non-nil no-op even on provider error")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown on provider error: unexpected error %v", err)
 	}
 }
 
@@ -258,7 +261,10 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		t.Error("TracerProvider: want nil when ctor returns error")
 	}
 	if c.Shutdown == nil {
-		t.Error("Shutdown: want non-nil no-op even on partial error")
+		t.Fatal("Shutdown: want non-nil no-op even on partial error")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown on partial error: unexpected error %v", err)
 	}
 }
 
@@ -362,7 +368,7 @@ func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
 		WorkerBreakerCooldownMS: 0,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Fatal("ctor must not be called when tracing is disabled")
+		t.Errorf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {

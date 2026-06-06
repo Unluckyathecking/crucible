@@ -62,7 +62,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			return c, fmt.Errorf("runtime: constructing tracer provider: %w", err)
 		}
 		if tp == nil {
-			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider")
+			return c, errors.New("runtime: tracer provider constructor returned nil provider")
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
 		shutdownFn := shutdown
