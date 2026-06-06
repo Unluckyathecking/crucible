@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -56,19 +55,22 @@ type Components struct {
 }
 
 // Assemble builds Components from a validated *config.Config.
+// ctx is used on error paths to bound cleanup of a partially-initialised tracer
+// provider; it is not used on the happy path. Pass context.Background() if no
+// caller deadline applies.
 // With all resilience and tracing knobs at their defaults it returns a
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
 // On error, the returned Components always has a non-nil no-op Shutdown.
-func Assemble(cfg *config.Config) (Components, error) {
-	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+func Assemble(ctx context.Context, cfg *config.Config) (Components, error) {
+	return assemble(ctx, cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
 }
 
 // assemble is the testable core of Assemble. ctor injects the tracer-provider
 // factory so tests can avoid dialling a real OTLP endpoint. cfg must not be nil.
-func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
+func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
 	c := Components{Shutdown: noopShutdown}
 	if cfg == nil {
 		return c, errors.New("runtime: config is nil")
@@ -89,11 +91,11 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.OtelTracingEnabled {
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			return c, cleanupTracer(context.Background(), shutdown, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr))
+			return c, cleanupTracer(ctx, shutdown, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr))
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
-			return c, cleanupTracer(context.Background(), shutdown, nilErr)
+			return c, cleanupTracer(ctx, shutdown, nilErr)
 		}
 		c.TracerProvider = tp
 		// shutdownFn is an explicit value copy of the constructor's cleanup func.
@@ -113,7 +115,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
 					}
 				}()
 				shutdownErr = shutdownFn(ctx)

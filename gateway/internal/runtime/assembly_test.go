@@ -29,7 +29,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 	cfg := &config.Config{
 		// all fields at zero values: tracing disabled, no retry, no breaker
 	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 }
 
 func TestAssemble_NilConfig(t *testing.T) {
-	c, err := Assemble(nil)
+	c, err := Assemble(context.Background(), nil)
 	if err == nil {
 		t.Error("want error for nil config, got nil")
 	}
@@ -77,7 +77,7 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 		WorkerRetryMax:       3,
 		WorkerRetryBackoffMS: 200,
 	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 		WorkerBreakerThreshold:  5,
 		WorkerBreakerCooldownMS: 3000,
 	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 		WorkerRetryMax:       1,
 		WorkerRetryBackoffMS: 0,
 	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 		OtelExporterInsecure: true,
 		OtelSampleRatio:      0.5,
 	}
-	c, err := assemble(cfg, mockCtor)
+	c, err := assemble(context.Background(), cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := assemble(cfg, nilCtor)
+	c, err := assemble(context.Background(), cfg, nilCtor)
 	if err == nil {
 		t.Fatal("want error when constructor returns nil provider, got nil")
 	}
@@ -211,7 +211,7 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 			return nil
 		}, nil
 	}
-	c2, err := assemble(cfg, nilProviderWithShutdownCtor)
+	c2, err := assemble(context.Background(), cfg, nilProviderWithShutdownCtor)
 	if err == nil {
 		t.Fatal("want error when constructor returns nil provider, got nil")
 	}
@@ -235,7 +235,7 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := assemble(cfg, nilShutdownCtor)
+	c, err := assemble(context.Background(), cfg, nilShutdownCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := assemble(cfg, errCtor)
+	c, err := assemble(context.Background(), cfg, errCtor)
 	// assemble wraps the error; errors.Is unwraps the chain.
 	if !errors.Is(err, wantErr) {
 		t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
@@ -294,7 +294,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return fakeTP, nil, wantErr
 		}
-		c, err := assemble(cfg, partialCtor)
+		c, err := assemble(context.Background(), cfg, partialCtor)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
 		}
@@ -322,7 +322,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 				return nil
 			}, wantErr
 		}
-		c, err := assemble(cfg, partialCtor)
+		c, err := assemble(context.Background(), cfg, partialCtor)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
 		}
@@ -351,7 +351,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 				return cleanupErr
 			}, wantErr
 		}
-		c, err := assemble(cfg, partialCtor)
+		c, err := assemble(context.Background(), cfg, partialCtor)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("ctor error: want %v (or wrapping it), got %v", wantErr, err)
 		}
@@ -372,7 +372,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("no-op", func(t *testing.T) {
-		c, err := assemble(&config.Config{}, mustNotCallCtor(t))
+		c, err := assemble(context.Background(), &config.Config{}, mustNotCallCtor(t))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -393,7 +393,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}, nil
 		}
 
-		tc, err := assemble(&config.Config{
+		tc, err := assemble(context.Background(), &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
 		}, mockCtor)
@@ -419,7 +419,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}, nil
 		}
 
-		tc, err := assemble(&config.Config{
+		tc, err := assemble(context.Background(), &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
 		}, errShutdownCtor)
@@ -431,11 +431,14 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if callCount.Load() != 1 {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
-		if !errors.Is(err1, wantErr) {
+		if err1 != wantErr {
 			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
 		}
-		if !errors.Is(err2, wantErr) {
-			t.Errorf("second shutdown: want error wrapping %v, got %v", wantErr, err2)
+		if err2 != wantErr {
+			t.Errorf("second shutdown: want same cached error %v, got %v", wantErr, err2)
+		}
+		if err1 != err2 {
+			t.Errorf("cached error: want identical error value, got %v vs %v", err1, err2)
 		}
 	})
 
@@ -451,7 +454,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				return nil
 			}, nil
 		}
-		tc, err := assemble(&config.Config{
+		tc, err := assemble(context.Background(), &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
 		}, mockCtor)
@@ -483,7 +486,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				panic("concurrent panic test")
 			}, nil
 		}
-		tc, err := assemble(&config.Config{
+		tc, err := assemble(context.Background(), &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
 		}, mockCtor)
@@ -500,11 +503,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				errs <- tc.Shutdown(context.Background())
 			}()
 		}
-		wg.Wait()
-		close(errs)
-		if panicCount.Load() != 1 {
-			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
-		}
+		go func() {
+			wg.Wait()
+			close(errs)
+		}()
 		var ref string
 		count := 0
 		for e := range errs {
@@ -522,6 +524,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
 		}
+		if panicCount.Load() != 1 {
+			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
+		}
 		if count != n {
 			t.Errorf("want %d errors from concurrent shutdown, got %d", n, count)
 		}
@@ -535,7 +540,7 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 		WorkerRetryMax:         0,
 		WorkerBreakerThreshold: 0,
 	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -565,7 +570,7 @@ func TestAssemble_AllEnabled(t *testing.T) {
 		OtelExporterEndpoint:    "otel.example.com:4317",
 		OtelSampleRatio:         1.0,
 	}
-	c, err := assemble(cfg, mockCtor)
+	c, err := assemble(context.Background(), cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -600,7 +605,7 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 	// exercising the no-tracing path, which requires no real OTLP server.
 	// The delegation path for tracing is covered by the assemble+mock tests above.
 	t.Run("no-tracing", func(t *testing.T) {
-		c, err := Assemble(&config.Config{
+		c, err := Assemble(context.Background(), &config.Config{
 			WorkerRetryMax:       2,
 			WorkerRetryBackoffMS: 50,
 		})
@@ -631,7 +636,7 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 			panic("simulated provider panic")
 		}, nil
 	}
-	c, err := assemble(&config.Config{
+	c, err := assemble(context.Background(), &config.Config{
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}, panicCtor)
