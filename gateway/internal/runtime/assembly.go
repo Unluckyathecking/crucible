@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -23,22 +24,18 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// If ctx is already cancelled the cleanup is skipped and the cancellation cause
-// is joined with baseErr rather than attempting a shutdown that would fail
-// immediately. Otherwise a tracerCleanupTimeout deadline is added on top of ctx
-// so callers block for at most tracerCleanupTimeout. ctx must not be nil.
+// ctx is the parent for the cleanup timeout; a nil ctx falls back to
+// context.Background(). Cleanup always adds a tracerCleanupTimeout deadline on
+// top of the parent so callers block for at most tracerCleanupTimeout.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		ctxErrMsg := fmt.Errorf("runtime: skipping tracer cleanup (context done): %w", ctxErr)
-		if baseErr == nil {
-			return ctxErrMsg
-		}
-		return errors.Join(baseErr, ctxErrMsg)
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
 	}
-	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
+	timeoutCtx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
 		if baseErr == nil {
@@ -102,7 +99,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.OtelTracingEnabled {
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			return c, cleanupTracer(context.Background(), shutdown, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr))
+			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(context.Background(), shutdown, ctorErr))
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
@@ -126,7 +123,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v", r)
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
 					}
 				}()
 				shutdownErr = shutdownFn(ctx)
