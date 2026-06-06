@@ -86,17 +86,20 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 		return c, errors.New("runtime: config is nil")
 	}
 
-	// config.Load is expected to validate WorkerRetryMax and WorkerBreakerThreshold
-	// as non-negative; negative values are treated as disabled (same as zero).
-	// >0 is the activation gate for retry/breaker; zero means disabled.
-	// Tracing is gated separately by OtelTracingEnabled.
+	// >0 gates retry/breaker activation; zero or negative means disabled.
+	// Duration helpers (RetryBaseBackoff, BreakerCooldown) are only written when
+	// they return a positive value, guarding against negative env-var inputs.
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
-		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
+		if b := cfg.RetryBaseBackoff(); b > 0 {
+			c.Policy.Retry.BaseBackoff = b
+		}
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
 		c.Policy.Breaker.Threshold = cfg.WorkerBreakerThreshold
-		c.Policy.Breaker.Cooldown = cfg.BreakerCooldown()
+		if d := cfg.BreakerCooldown(); d > 0 {
+			c.Policy.Breaker.Cooldown = d
+		}
 	}
 
 	if cfg.OtelTracingEnabled {

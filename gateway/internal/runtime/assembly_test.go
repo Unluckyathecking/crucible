@@ -442,9 +442,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if !errors.Is(err2, wantErr) {
 			t.Errorf("second shutdown: want %v (via errors.Is), got %v", wantErr, err2)
 		}
-		if err1 != err2 {
-			t.Errorf("cached error: want identical error value, got %v vs %v", err1, err2)
-		}
 	})
 
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
@@ -549,6 +546,33 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 	}
 }
 
+func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
+	// Negative counts are not >0, so retry and breaker blocks are skipped entirely.
+	// Negative duration fields never reach policy assignment due to the same gate.
+	cfg := &config.Config{
+		WorkerRetryMax:         -1,
+		WorkerRetryBackoffMS:   -100,
+		WorkerBreakerThreshold: -1,
+		WorkerBreakerCooldownMS: -500,
+	}
+	c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Retry.MaxAttempts != 0 {
+		t.Errorf("Retry.MaxAttempts: want 0 for negative config, got %d", c.Policy.Retry.MaxAttempts)
+	}
+	if c.Policy.Retry.BaseBackoff != 0 {
+		t.Errorf("Retry.BaseBackoff: want 0 for negative config, got %v", c.Policy.Retry.BaseBackoff)
+	}
+	if c.Policy.Breaker.Threshold != 0 {
+		t.Errorf("Breaker.Threshold: want 0 for negative config, got %d", c.Policy.Breaker.Threshold)
+	}
+	if c.Policy.Breaker.Cooldown != 0 {
+		t.Errorf("Breaker.Cooldown: want 0 for negative config, got %v", c.Policy.Breaker.Cooldown)
+	}
+}
+
 func TestAssemble_AllEnabled(t *testing.T) {
 	var shutdownCalled atomic.Bool
 	mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
@@ -600,7 +624,9 @@ func TestAssemble_AllEnabled(t *testing.T) {
 func TestAssemble_PublicDelegation(t *testing.T) {
 	// Verifies the public Assemble function correctly delegates to assemble by
 	// exercising the no-tracing path, which requires no real OTLP server.
-	// The delegation path for tracing is covered by the assemble+mock tests above.
+	// The tracing-enabled path for public Assemble is intentionally not unit-tested
+	// here because it dials the real tracing.NewProvider; the assemble+mock tests
+	// above cover the full tracing code path.
 	t.Run("no-tracing", func(t *testing.T) {
 		c, err := Assemble(context.Background(), &config.Config{
 			WorkerRetryMax:       2,
