@@ -23,11 +23,11 @@ var noopShutdown = func(_ context.Context) error { return nil }
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. newShutdownHandle heap-allocates the handle; the returned
 // bound method value (handle.shutdown) captures the pointer, so all copies of a
-// Components struct share the same idempotent shutdown state. mu guards h.err
-// to make the synchronisation explicit for both normal and panic-recovery paths.
+// Components struct share the same idempotent shutdown state. All writes to h.err
+// occur inside once.Do, so sync.Once's happens-before guarantee makes a separate
+// mutex unnecessary.
 type shutdownHandle struct {
 	once sync.Once
-	mu   sync.Mutex
 	err  error
 	fn   func(context.Context) error
 }
@@ -43,18 +43,11 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				h.mu.Lock()
 				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-				h.mu.Unlock()
 			}
 		}()
-		err := h.fn(ctx)
-		h.mu.Lock()
-		h.err = err
-		h.mu.Unlock()
+		h.err = h.fn(ctx)
 	})
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	return h.err
 }
 
