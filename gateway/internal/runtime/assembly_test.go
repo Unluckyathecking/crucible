@@ -202,10 +202,10 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 
 	// When the constructor returns (nil, nonNilShutdown, nil), the cleanup func
 	// must be called to avoid leaking any resources it holds.
-	shutdownCalled := false
+	var shutdownCalled atomic.Bool
 	nilProviderWithShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return nil, func(_ context.Context) error {
-			shutdownCalled = true
+			shutdownCalled.Store(true)
 			return nil
 		}, nil
 	}
@@ -213,7 +213,7 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error when constructor returns nil provider, got nil")
 	}
-	if !shutdownCalled {
+	if !shutdownCalled.Load() {
 		t.Error("shutdown cleanup must be called when constructor returns nil provider with non-nil shutdown")
 	}
 }
@@ -310,10 +310,10 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 	t.Run("non-nil-shutdown", func(t *testing.T) {
 		// When ctor returns a non-nil cleanup func alongside the error, assemble
 		// must call it to avoid leaking the partially-initialised provider.
-		shutdownCalled := false
+		var shutdownCalled atomic.Bool
 		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return fakeTP, func(_ context.Context) error {
-				shutdownCalled = true
+				shutdownCalled.Store(true)
 				return nil
 			}, wantErr
 		}
@@ -324,7 +324,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		if c.TracerProvider != nil {
 			t.Error("TracerProvider: want nil when ctor returns error")
 		}
-		if !shutdownCalled {
+		if !shutdownCalled.Load() {
 			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
 		}
 		if c.Shutdown == nil {
@@ -339,10 +339,10 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		// When the cleanup func itself errors, assemble must join both the ctor
 		// error and the cleanup error so callers see both failures.
 		cleanupErr := errors.New("cleanup failed")
-		shutdownCalled := false
+		var shutdownCalled atomic.Bool
 		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return fakeTP, func(_ context.Context) error {
-				shutdownCalled = true
+				shutdownCalled.Store(true)
 				return cleanupErr
 			}, wantErr
 		}
@@ -353,10 +353,13 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		if !errors.Is(err, cleanupErr) {
 			t.Errorf("cleanup error: want %v joined into returned error, got %v", cleanupErr, err)
 		}
+		if !strings.Contains(err.Error(), "cleaning up partial tracer provider") {
+			t.Errorf("want cleanup context in error, got %v", err)
+		}
 		if c.TracerProvider != nil {
 			t.Error("TracerProvider: want nil when ctor returns error")
 		}
-		if !shutdownCalled {
+		if !shutdownCalled.Load() {
 			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
 		}
 	})
