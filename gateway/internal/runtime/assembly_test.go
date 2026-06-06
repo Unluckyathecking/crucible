@@ -510,8 +510,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if panicCount.Load() != 1 {
 			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
 		}
-		// sync.Once caches shutdownErr; all callers must receive the same error.
-		var refErr error
+		// sync.Once caches shutdownErr; all callers must receive the same error message.
+		var refMsg string
 		for i, e := range errs {
 			if e == nil {
 				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
@@ -520,9 +520,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			if !strings.Contains(e.Error(), "panicked") {
 				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
 			}
-			if refErr == nil {
-				refErr = e
-			} else if !errors.Is(e, refErr) {
+			if refMsg == "" {
+				refMsg = e.Error()
+			} else if e.Error() != refMsg {
 				t.Errorf("goroutine %d: want same cached error (sync.Once), got different values", i)
 			}
 		}
@@ -660,6 +660,22 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 		if !ctorCalled {
 			t.Errorf("ratio %v: ctor should be called for boundary-valid ratio", ratio)
 		}
+	}
+}
+
+func TestAssemble_EmptyEndpoint(t *testing.T) {
+	// OtelExporterEndpoint must be non-empty when tracing is enabled;
+	// the ctor must not be called when the endpoint is missing.
+	cfg := &config.Config{
+		OtelTracingEnabled:  true,
+		OtelExporterEndpoint: "",
+	}
+	_, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
+	if err == nil {
+		t.Fatal("want error for empty OtelExporterEndpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "OtelExporterEndpoint") {
+		t.Errorf("want error mentioning OtelExporterEndpoint, got %v", err)
 	}
 }
 

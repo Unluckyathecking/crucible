@@ -47,9 +47,11 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 				}
 				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %w", recErr)
 			}
+			// Non-blocking send: buffer capacity 1 guarantees success when parent is
+			// still waiting; default drops the result if parent already timed out.
 			select {
 			case ch <- r:
-			case <-timeoutCtx.Done():
+			default:
 			}
 		}()
 		r.err = shutdown(timeoutCtx)
@@ -126,6 +128,9 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 	}
 
 	if cfg.OtelTracingEnabled {
+		if cfg.OtelExporterEndpoint == "" {
+			return c, fmt.Errorf("runtime: OtelExporterEndpoint is required when OtelTracingEnabled is true")
+		}
 		if !(cfg.OtelSampleRatio >= 0 && cfg.OtelSampleRatio <= 1) {
 			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
 		}
