@@ -60,34 +60,26 @@ func Assemble(cfg *config.Config) (Components, error) {
 			// and a non-nil no-op Shutdown even when provider construction fails.
 			return c, fmt.Errorf("runtime: constructing tracer provider: %w", err)
 		}
+		if tp == nil {
+			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider")
+		}
 		// Guard against a constructor that returns nil shutdown with nil error.
 		if shutdown == nil {
 			shutdown = func(_ context.Context) error { return nil }
 		}
-		if tp == nil {
-			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider")
-		}
 		c.TracerProvider = tp
 		// Chain the provider shutdown after any previous shutdown. sync.Once
-		// guarantees the delegate runs exactly once. done is closed when the
-		// delegate finishes so callers can either receive the cached result or
-		// bail early if their own context expires first.
+		// guarantees the delegate runs exactly once; the result is cached and
+		// returned on all subsequent calls.
 		prevShutdown := c.Shutdown
 		shutdownFn := shutdown // explicit copy; avoids any ambiguity about closure capture
 		var once sync.Once
 		var shutdownErr error
-		done := make(chan struct{})
 		c.Shutdown = func(ctx context.Context) error {
 			once.Do(func() {
-				defer close(done)
 				shutdownErr = errors.Join(prevShutdown(ctx), shutdownFn(ctx))
 			})
-			select {
-			case <-done:
-				return shutdownErr
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			return shutdownErr
 		}
 	}
 
