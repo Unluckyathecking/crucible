@@ -66,12 +66,10 @@ func Assemble(cfg *config.Config) (Components, error) {
 		var once sync.Once
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
+			// Both prevShutdown and shutdown always run so neither leaks resources
+			// even when the other fails. errors.Join returns nil if both return nil.
 			once.Do(func() {
-				if err := prevShutdown(ctx); err != nil {
-					shutdownErr = err
-					return
-				}
-				shutdownErr = shutdown(ctx)
+				shutdownErr = errors.Join(prevShutdown(ctx), shutdown(ctx))
 			})
 			return shutdownErr
 		}
