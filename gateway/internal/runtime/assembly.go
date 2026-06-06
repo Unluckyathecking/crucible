@@ -84,10 +84,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			return c, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
 		}
 		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
-		// Inf is also rejected: it is outside [0.0, 1.0] semantically but passes
-		// the < 0 || > 1 check for positive infinity.
-		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) || math.IsInf(cfg.OtelSampleRatio, 0) {
-			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
+		// ±Inf are already caught by the < 0 || > 1 bounds (−∞ < 0 and +∞ > 1 are
+		// both true in IEEE 754); math.IsNaN is the only special-case needed.
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) {
+			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %g", cfg.OtelSampleRatio)
 		}
 		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if err != nil {
