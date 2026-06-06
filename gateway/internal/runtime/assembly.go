@@ -94,7 +94,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.OtelTracingEnabled {
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(context.Background(), shutdown, ctorErr))
+			return c, cleanupTracer(context.Background(), shutdown, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr))
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
