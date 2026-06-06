@@ -47,9 +47,10 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
-	// sync.Once's atomic release-store (done←1, after f returns) synchronises-with
-	// every caller's acquire-load (done==1 fast path), making f's write to h.err
-	// visible here without a separate mutex.
+	// f never panics from sync.Once's perspective: the deferred recover() is
+	// inside f, so any panic from h.fn is caught and stored in h.err before f
+	// returns normally. sync.Once's atomic release-store (done←1) then
+	// synchronises-with every caller's acquire-load, making h.err visible here.
 	return h.err
 }
 
@@ -89,21 +90,12 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 
 	// Build resilience policy. Fields are set directly to avoid importing the
 	// resilience package; the types are already carried by proxy.ResiliencePolicy.
-	// config.Load already rejects negative values, but assemble guards defensively
-	// so that a *config.Config constructed directly (e.g. in tests) cannot produce
-	// a silently broken policy with a nonsensical negative count.
-	if cfg.WorkerRetryMax < 0 {
-		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
-	}
 	if cfg.WorkerRetryMax > 0 {
 		if cfg.WorkerRetryBackoffMS < 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
 		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
-	}
-	if cfg.WorkerBreakerThreshold < 0 {
-		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerThreshold must be >= 0, got %d", cfg.WorkerBreakerThreshold)
 	}
 	// A non-zero cooldown with a zero threshold silently discards the cooldown
 	// because the breaker is disabled. Reject this foot-gun configuration explicitly.

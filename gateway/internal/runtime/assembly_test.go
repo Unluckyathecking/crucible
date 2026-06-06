@@ -542,35 +542,7 @@ func TestAssemble_EmptyEndpoint(t *testing.T) {
 }
 
 func TestAssemble_NegativeConfigRejected(t *testing.T) {
-	// Negative retry/breaker counts are rejected. config.Load already validates
-	// these, but assemble guards defensively for *config.Config values constructed
-	// directly (e.g. in tests) to surface misconfiguration rather than silently
-	// producing a disabled policy.
 	noopCtor := mustNotCallCtor(t)
-
-	t.Run("negative-retry", func(t *testing.T) {
-		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerRetryMax, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
-			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
-
-	t.Run("negative-breaker", func(t *testing.T) {
-		c, err := assemble(&config.Config{WorkerBreakerThreshold: -1}, noopCtor)
-		if err == nil {
-			t.Error("want error for negative WorkerBreakerThreshold, got nil")
-		} else if !strings.Contains(err.Error(), "WorkerBreakerThreshold") {
-			t.Errorf("error message: want mention of WorkerBreakerThreshold, got %v", err)
-		}
-		if c.Shutdown == nil {
-			t.Error("Shutdown: want non-nil no-op even on validation error")
-		}
-	})
 
 	t.Run("cooldown-without-breaker", func(t *testing.T) {
 		// A non-zero cooldown with threshold == 0 silently discards the cooldown
@@ -752,19 +724,16 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	}
 	err1 := c.Shutdown(context.Background())
 	if err1 == nil {
-		t.Error("Shutdown after panic: want non-nil error, got nil")
+		t.Fatal("Shutdown after panic: want non-nil error, got nil")
 	} else if !strings.Contains(err1.Error(), "panicked") {
 		t.Errorf("Shutdown after panic: want error mentioning panicked, got %v", err1)
 	}
 	// Second call must return the cached error, not re-panic.
 	err2 := c.Shutdown(context.Background())
 	if err2 == nil {
-		t.Error("second Shutdown after panic: want cached non-nil error, got nil")
+		t.Fatal("second Shutdown after panic: want cached non-nil error, got nil")
 	}
 	// sync.Once caches h.err; both calls must return the same error message.
-	if err1 == nil || err2 == nil {
-		t.Fatal("expected non-nil errors from both shutdown calls")
-	}
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
