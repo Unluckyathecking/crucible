@@ -36,7 +36,17 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 	return &shutdownHandle{fn: fn}
 }
 
-func (h *shutdownHandle) shutdown(ctx context.Context) error {
+func (h *shutdownHandle) shutdown(ctx context.Context) (err error) {
+	// Outer guard catches any panic that escapes once.Do (e.g. a future bug
+	// in the underlying SDK). The inner recover is the primary path: it catches
+	// h.fn panics and stores them in h.err before f returns normally, ensuring
+	// sync.Once marks done=1 and all concurrent callers see the cached error
+	// via the happens-before on done.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+		}
+	}()
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -45,19 +55,16 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
-	// f never panics from sync.Once's perspective: the deferred recover() is
-	// inside f, so any panic from h.fn is caught and stored in h.err before f
-	// returns normally. sync.Once's atomic release-store (done←1) then
-	// synchronises-with every caller's acquire-load, making h.err visible here.
 	return h.err
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. Zero values are safe: a zero ResiliencePolicy means
-// single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing.
+// proxy.New and server.Deps. Always obtain Components through Assemble — a literal
+// Components{} has a nil Shutdown and must not be used directly.
 //
-// Shutdown must be called to release resources. On any error return from Assemble,
-// Shutdown is still non-nil and safe to call (it is the no-op).
+// Values returned by Assemble are always safe: a zero ResiliencePolicy means
+// single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
+// Shutdown is always non-nil (it is the no-op on any error return from Assemble).
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider

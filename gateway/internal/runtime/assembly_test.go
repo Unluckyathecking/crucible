@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -422,11 +423,12 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
 		// Verifies that concurrent Shutdown calls are race-free under -race and
 		// that sync.Once ensures the delegate runs exactly once.
-		// sync.Once guarantees single execution so no mutex is needed in the delegate.
-		callCount := 0
+		// atomic.Int32 avoids any question about the happens-before between the
+		// delegate write and the main goroutine's read after wg.Wait().
+		var callCount atomic.Int32
 		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
-				callCount++
+				callCount.Add(1)
 				return nil
 			}, nil
 		}
@@ -446,8 +448,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		if callCount != 1 {
-			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
+		if callCount.Load() != 1 {
+			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
 	})
 
@@ -659,6 +661,20 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 	}
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("no-op shutdown: unexpected error %v", err)
+	}
+}
+
+func TestAssemble_PublicDelegation_TracingError(t *testing.T) {
+	// Exercises the public Assemble path through the real tracing.NewProvider.
+	// A host:port with extra colons causes net.SplitHostPort to fail immediately
+	// (no network dial), confirming the production ctor lambda is wired correctly.
+	_, err := Assemble(&config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "not:a:valid:host:port",
+		OtelSampleRatio:      1.0,
+	})
+	if err == nil {
+		t.Error("want error from real tracing.NewProvider on malformed endpoint, got nil")
 	}
 }
 
