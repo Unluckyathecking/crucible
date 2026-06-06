@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -157,6 +158,10 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 	if c.TracerProvider != fakeTP {
 		t.Errorf("TracerProvider: want fakeTP, got %v", c.TracerProvider)
+	}
+	// Verify the provider is functional, not just present.
+	if tr := c.TracerProvider.Tracer("test"); tr == nil {
+		t.Error("Tracer(): want non-nil tracer from assembled provider")
 	}
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil")
@@ -413,11 +418,45 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Error("provider shutdown must be called on Shutdown()")
 		}
 	})
+
+	t.Run("concurrent-shutdown-race", func(t *testing.T) {
+		// Verifies that concurrent Shutdown calls are race-free under -race and
+		// that sync.Once ensures the delegate runs exactly once.
+		callCount := 0
+		var mu sync.Mutex
+		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return noop.NewTracerProvider(), func(_ context.Context) error {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return nil
+			}, nil
+		}
+		tc, err := assemble(&config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+		}, mockCtor)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = tc.Shutdown(context.Background())
+			}()
+		}
+		wg.Wait()
+		if callCount != 1 {
+			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
+		}
+	})
 }
 
-func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
-	// Negative values for retry/breaker counts are treated as "disabled" by the
-	// > 0 guards, producing zero-value policy fields.
+func TestAssemble_NonPositiveConfigTreatedAsDisabled(t *testing.T) {
+	// Non-positive values (zero or negative) for retry/breaker counts are
+	// treated as "disabled" by the > 0 guards, producing zero-value policy fields.
 	cfg := &config.Config{
 		WorkerRetryMax:         -1,
 		WorkerBreakerThreshold: -1,

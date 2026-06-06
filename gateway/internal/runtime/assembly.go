@@ -37,6 +37,9 @@ type Components struct {
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
 func Assemble(cfg *config.Config) (Components, error) {
+	if cfg == nil {
+		return Components{}, errors.New("runtime: config is nil")
+	}
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
@@ -90,17 +93,19 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// sync.Once guarantees the provider shuts down exactly once. Per the
-		// Go memory model, the write to shutdownErr inside once.Do completes
-		// before the return of every concurrent Do call, so the subsequent
-		// read outside Do is safe without additional synchronisation.
-		var once sync.Once
-		var shutdownErr error
+		// sync.Once guarantees the provider shuts down exactly once. Concurrent
+		// callers block until the first completes; the returned error is then
+		// safe to read due to the happens-before edge in once.Do's internal
+		// synchronisation.
+		var h struct {
+			once sync.Once
+			err  error
+		}
 		c.Shutdown = func(ctx context.Context) error {
-			once.Do(func() {
-				shutdownErr = shutdownFn(ctx)
+			h.once.Do(func() {
+				h.err = shutdownFn(ctx)
 			})
-			return shutdownErr
+			return h.err
 		}
 	}
 
