@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -73,10 +72,7 @@ func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
 		if tp == nil {
-			// Explicitly return an untyped nil rather than a nil concrete pointer.
-			// Assigning a nil concrete pointer to an interface produces a non-nil interface
-			// value (the Go typed-nil gotcha), which would bypass the tp == nil guard in
-			// assemble and silently store a nil-underlying provider that panics on use.
+			// Return untyped nil to avoid the typed-nil interface gotcha.
 			return nil, shutdown, err
 		}
 		return tp, shutdown, err
@@ -130,7 +126,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v", r)
 					}
 				}()
 				shutdownErr = shutdownFn(ctx)

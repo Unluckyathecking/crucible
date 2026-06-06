@@ -665,13 +665,12 @@ func TestCleanupTracer_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var shutdownCalled bool
-	shutdown := func(_ context.Context) error {
-		shutdownCalled = true
-		return nil
-	}
-
 	t.Run("with-base-err", func(t *testing.T) {
+		var shutdownCalled bool
+		shutdown := func(_ context.Context) error {
+			shutdownCalled = true
+			return nil
+		}
 		sentinel := errors.New("ctor failed")
 		err := cleanupTracer(ctx, shutdown, sentinel)
 		if shutdownCalled {
@@ -686,7 +685,15 @@ func TestCleanupTracer_CancelledContext(t *testing.T) {
 	})
 
 	t.Run("nil-base-err", func(t *testing.T) {
+		var shutdownCalled bool
+		shutdown := func(_ context.Context) error {
+			shutdownCalled = true
+			return nil
+		}
 		err := cleanupTracer(ctx, shutdown, nil)
+		if shutdownCalled {
+			t.Error("shutdown must not be called when context is already cancelled")
+		}
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("want context.Canceled in returned error, got %v", err)
 		}
