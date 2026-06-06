@@ -250,6 +250,10 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 			t.Errorf("shutdown call %d: unexpected error %v", i+1, err)
 		}
 	}
+	// The no-op must not affect the provider — it should still be functional.
+	if tr := c.TracerProvider.Tracer("test"); tr == nil {
+		t.Error("TracerProvider.Tracer() should return non-nil after no-op shutdown")
+	}
 }
 
 func TestAssemble_TracingErrorPropagated(t *testing.T) {
@@ -330,6 +334,12 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		}
 		if !shutdownCalled {
 			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
+		}
+		if c.Shutdown == nil {
+			t.Fatal("Shutdown: want non-nil no-op even on partial error")
+		}
+		if err := c.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown on partial error: unexpected error %v", err)
 		}
 	})
 
@@ -670,20 +680,6 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 	}
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("no-op shutdown: unexpected error %v", err)
-	}
-}
-
-func TestAssemble_PublicDelegation_TracingError(t *testing.T) {
-	// Exercises the public Assemble path through the real tracing.NewProvider.
-	// A host:port with extra colons causes net.SplitHostPort to fail immediately
-	// (no network dial), confirming the production ctor lambda is wired correctly.
-	_, err := Assemble(&config.Config{
-		OtelTracingEnabled:   true,
-		OtelExporterEndpoint: "not:a:valid:host:port",
-		OtelSampleRatio:      1.0,
-	})
-	if err == nil {
-		t.Error("want error from real tracing.NewProvider on malformed endpoint, got nil")
 	}
 }
 

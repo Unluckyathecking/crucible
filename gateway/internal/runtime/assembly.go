@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -45,9 +46,8 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
-	// The inner recover ensures f always returns normally, so sync.Once marks
-	// done=1 and all concurrent and subsequent callers see h.err via the
-	// happens-before on done.
+	// once.Do's completion synchronizes-with any caller that observes done==1,
+	// so this read of h.err is race-free even if the body panicked.
 	return h.err
 }
 
@@ -122,13 +122,14 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		if ctorErr != nil {
 			// If the constructor returned a cleanup func alongside the error,
 			// call it now to avoid leaking a partially-initialised provider.
-			// context.Background is used intentionally: assemble has no caller
-			// context to propagate, and this cleanup is best-effort on failure.
-			// Join any cleanup error into the returned error so both failures surface.
+			// A 10 s timeout bounds cleanup so a hung OTLP flush cannot stall
+			// server startup indefinitely. Join any cleanup error so both surface.
 			if shutdown != nil {
-				if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if shutdownErr := shutdown(cleanupCtx); shutdownErr != nil {
 					ctorErr = errors.Join(ctorErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 				}
+				cleanupCancel()
 			}
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
 		}
@@ -139,9 +140,11 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			// partial-init cleanup above.
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
-				if cleanupErr := shutdown(context.Background()); cleanupErr != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if cleanupErr := shutdown(cleanupCtx); cleanupErr != nil {
 					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", cleanupErr))
 				}
+				cleanupCancel()
 			}
 			return Components{Shutdown: noopShutdown}, nilErr
 		}
