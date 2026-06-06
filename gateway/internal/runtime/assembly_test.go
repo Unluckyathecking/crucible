@@ -246,26 +246,51 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 	// provider — the caller should not see a TracerProvider they cannot use.
 	fakeTP := noop.NewTracerProvider()
 	wantErr := errors.New("partial init failure")
-	partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		return fakeTP, nil, wantErr
-	}
 	cfg := &config.Config{
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := assemble(cfg, partialCtor)
-	if !errors.Is(err, wantErr) {
-		t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
-	}
-	if c.TracerProvider != nil {
-		t.Error("TracerProvider: want nil when ctor returns error")
-	}
-	if c.Shutdown == nil {
-		t.Fatal("Shutdown: want non-nil no-op even on partial error")
-	}
-	if err := c.Shutdown(context.Background()); err != nil {
-		t.Errorf("Shutdown on partial error: unexpected error %v", err)
-	}
+
+	t.Run("nil-shutdown", func(t *testing.T) {
+		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return fakeTP, nil, wantErr
+		}
+		c, err := assemble(cfg, partialCtor)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if c.TracerProvider != nil {
+			t.Error("TracerProvider: want nil when ctor returns error")
+		}
+		if c.Shutdown == nil {
+			t.Fatal("Shutdown: want non-nil no-op even on partial error")
+		}
+		if err := c.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown on partial error: unexpected error %v", err)
+		}
+	})
+
+	t.Run("non-nil-shutdown", func(t *testing.T) {
+		// When ctor returns a non-nil cleanup func alongside the error, assemble
+		// must call it to avoid leaking the partially-initialised provider.
+		shutdownCalled := false
+		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return fakeTP, func(_ context.Context) error {
+				shutdownCalled = true
+				return nil
+			}, wantErr
+		}
+		c, err := assemble(cfg, partialCtor)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if c.TracerProvider != nil {
+			t.Error("TracerProvider: want nil when ctor returns error")
+		}
+		if !shutdownCalled {
+			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
+		}
+	})
 }
 
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
@@ -358,6 +383,28 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Error("provider shutdown must be called on Shutdown()")
 		}
 	})
+}
+
+func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
+	// Negative values for retry/breaker counts are treated as "disabled" by the
+	// > 0 guards, producing zero-value policy fields.
+	cfg := &config.Config{
+		WorkerRetryMax:         -1,
+		WorkerBreakerThreshold: -1,
+	}
+	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Errorf("ctor must not be called when tracing is disabled")
+		return nil, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Retry.MaxAttempts != 0 {
+		t.Errorf("Retry.MaxAttempts: want 0 for negative config, got %d", c.Policy.Retry.MaxAttempts)
+	}
+	if c.Policy.Breaker.Threshold != 0 {
+		t.Errorf("Breaker.Threshold: want 0 for negative config, got %d", c.Policy.Breaker.Threshold)
+	}
 }
 
 func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
