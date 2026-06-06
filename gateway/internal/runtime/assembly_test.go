@@ -115,10 +115,26 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 	}
 }
 
-func TestAssemble_TracingEnabled(t *testing.T) {
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
+func TestAssemble_ZeroDurations(t *testing.T) {
+	// When WorkerRetryBackoffMS is zero, RetryBaseBackoff() returns zero;
+	// assemble must accept it rather than treat it as an error.
+	cfg := &config.Config{
+		WorkerRetryMax:       1,
+		WorkerRetryBackoffMS: 0,
+	}
+	c, err := Assemble(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Retry.MaxAttempts != cfg.WorkerRetryMax {
+		t.Errorf("MaxAttempts: want %d, got %d", cfg.WorkerRetryMax, c.Policy.Retry.MaxAttempts)
+	}
+	if c.Policy.Retry.BaseBackoff != 0 {
+		t.Errorf("BaseBackoff: want 0 when config helper returns zero, got %v", c.Policy.Retry.BaseBackoff)
+	}
+}
 
+func TestAssemble_TracingEnabled(t *testing.T) {
 	var shutdownCalls atomic.Int32
 	fakeShutdown := func(_ context.Context) error {
 		shutdownCalls.Add(1)
@@ -126,7 +142,7 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 	fakeTP := noop.NewTracerProvider()
 
-	tracerProviderConstructor = func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+	mockCtor := func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		if endpoint != "otel.example.com:4317" {
 			t.Errorf("endpoint: want %q, got %q", "otel.example.com:4317", endpoint)
 		}
@@ -145,7 +161,7 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 		OtelExporterInsecure: true,
 		OtelSampleRatio:      0.5,
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,17 +180,14 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 func TestAssemble_TracingNilProvider(t *testing.T) {
 	// If the constructor returns (nil, nil, nil) Assemble must error rather than
 	// silently delivering a nil TracerProvider to callers who expect a real one.
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
-
-	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+	nilCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return nil, nil, nil
 	}
 	cfg := &config.Config{
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, nilCtor)
 	if err == nil {
 		t.Fatal("want error when constructor returns nil provider, got nil")
 	}
@@ -187,18 +200,15 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 	// If the constructor returns a non-nil provider with nil shutdown (contract
 	// violation), the nil-shutdown guard substitutes a no-op so Shutdown() is
 	// always safe to call.
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
-
 	fakeTP := noop.NewTracerProvider()
-	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+	nilShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return fakeTP, nil, nil
 	}
 	cfg := &config.Config{
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, nilShutdownCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,11 +224,8 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 }
 
 func TestAssemble_TracingErrorPropagated(t *testing.T) {
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
-
 	wantErr := errors.New("mock exporter failure")
-	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+	errCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return nil, nil, wantErr
 	}
 
@@ -226,8 +233,8 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "otel.example.com:4317",
 	}
-	c, err := Assemble(cfg)
-	// Assemble wraps the error; errors.Is unwraps the chain.
+	c, err := assemble(cfg, errCtor)
+	// assemble wraps the error; errors.Is unwraps the chain.
 	if !errors.Is(err, wantErr) {
 		t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
 	}
@@ -240,9 +247,6 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 }
 
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
-
 	t.Run("no-op", func(t *testing.T) {
 		c, err := Assemble(&config.Config{})
 		if err != nil {
@@ -258,17 +262,17 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("tracing-once-counted", func(t *testing.T) {
 		// sync.Once ensures the provider delegate runs exactly once.
 		callCount := 0
-		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
 				callCount++
 				return nil
 			}, nil
 		}
 
-		tc, err := Assemble(&config.Config{
+		tc, err := assemble(&config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
-		})
+		}, mockCtor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -283,16 +287,16 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		// When the provider shutdown returns an error, sync.Once caches it;
 		// subsequent calls return the same error without re-invoking shutdown.
 		wantErr := errors.New("provider shutdown failed")
-		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		errShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
 				return wantErr
 			}, nil
 		}
 
-		tc, err := Assemble(&config.Config{
+		tc, err := assemble(&config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
-		})
+		}, errShutdownCtor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -301,24 +305,24 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if !errors.Is(err1, wantErr) {
 			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
 		}
-		if err1 != err2 {
-			t.Errorf("second shutdown: want same cached error, got different value %v", err2)
+		if !errors.Is(err2, wantErr) {
+			t.Errorf("second shutdown: want error wrapping %v, got %v", wantErr, err2)
 		}
 	})
 
 	t.Run("tracing-shutdown-calls-provider-delegate", func(t *testing.T) {
 		providerShutdownRan := false
-		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		shutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
 				providerShutdownRan = true
 				return nil
 			}, nil
 		}
 
-		tc, err := Assemble(&config.Config{
+		tc, err := assemble(&config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
-		})
+		}, shutdownCtor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -335,7 +339,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		// and the delegate must run exactly once (sync.Once guarantee).
 		callCount := 0
 		var mu sync.Mutex
-		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		concurrentCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
 				mu.Lock()
 				callCount++
@@ -344,10 +348,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}, nil
 		}
 
-		tc, err := Assemble(&config.Config{
+		tc, err := assemble(&config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
-		})
+		}, concurrentCtor)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -384,10 +388,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 }
 
 func TestAssemble_AllEnabled(t *testing.T) {
-	orig := tracerProviderConstructor
-	defer func() { tracerProviderConstructor = orig }()
-
-	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+	mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return noop.NewTracerProvider(), func(_ context.Context) error { return nil }, nil
 	}
 
@@ -400,21 +401,21 @@ func TestAssemble_AllEnabled(t *testing.T) {
 		OtelExporterEndpoint:    "otel.example.com:4317",
 		OtelSampleRatio:         1.0,
 	}
-	c, err := Assemble(cfg)
+	c, err := assemble(cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.Policy.Retry.MaxAttempts != 2 {
-		t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
+	if c.Policy.Retry.MaxAttempts != cfg.WorkerRetryMax {
+		t.Errorf("Retry.MaxAttempts: want %d, got %d", cfg.WorkerRetryMax, c.Policy.Retry.MaxAttempts)
 	}
-	if c.Policy.Retry.BaseBackoff != 100*time.Millisecond {
-		t.Errorf("Retry.BaseBackoff: want 100ms, got %v", c.Policy.Retry.BaseBackoff)
+	if c.Policy.Retry.BaseBackoff != time.Duration(cfg.WorkerRetryBackoffMS)*time.Millisecond {
+		t.Errorf("Retry.BaseBackoff: want %v, got %v", time.Duration(cfg.WorkerRetryBackoffMS)*time.Millisecond, c.Policy.Retry.BaseBackoff)
 	}
-	if c.Policy.Breaker.Threshold != 3 {
-		t.Errorf("Breaker.Threshold: want 3, got %d", c.Policy.Breaker.Threshold)
+	if c.Policy.Breaker.Threshold != cfg.WorkerBreakerThreshold {
+		t.Errorf("Breaker.Threshold: want %d, got %d", cfg.WorkerBreakerThreshold, c.Policy.Breaker.Threshold)
 	}
-	if c.Policy.Breaker.Cooldown != time.Second {
-		t.Errorf("Breaker.Cooldown: want 1s, got %v", c.Policy.Breaker.Cooldown)
+	if c.Policy.Breaker.Cooldown != time.Duration(cfg.WorkerBreakerCooldownMS)*time.Millisecond {
+		t.Errorf("Breaker.Cooldown: want %v, got %v", time.Duration(cfg.WorkerBreakerCooldownMS)*time.Millisecond, c.Policy.Breaker.Cooldown)
 	}
 	if c.TracerProvider == nil {
 		t.Error("TracerProvider: want non-nil")

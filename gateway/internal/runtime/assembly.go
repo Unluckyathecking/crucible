@@ -22,18 +22,27 @@ type Components struct {
 	Shutdown       func(context.Context) error
 }
 
-// tracerProviderConstructor is the seam that tests replace to avoid dialling a real
-// OTLP exporter. Production code always uses tracing.NewProvider.
-// NOT safe for concurrent mutation; do not call t.Parallel() in tests that swap this.
-var tracerProviderConstructor = func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-	return tracing.NewProvider(endpoint, insecure, sampleRatio)
-}
-
 // Assemble builds Components from a validated *config.Config.
 // With all resilience and tracing knobs at their defaults it returns a
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
 func Assemble(cfg *config.Config) (Components, error) {
+	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		// tracing.NewProvider returns *sdktrace.TracerProvider (a concrete type).
+		// Assigning a nil concrete pointer to an interface produces a non-nil interface
+		// value, defeating the nil guard in assemble. We check the concrete pointer
+		// before the implicit conversion to preserve nil-interface semantics.
+		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
+		if tp == nil {
+			return nil, shutdown, err
+		}
+		return tp, shutdown, err
+	})
+}
+
+// assemble is the testable core of Assemble. ctor injects the tracer-provider
+// factory, allowing tests to avoid dialling a real OTLP endpoint.
+func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
 	if cfg == nil {
 		return Components{}, errors.New("runtime: config is nil")
 	}
@@ -54,7 +63,7 @@ func Assemble(cfg *config.Config) (Components, error) {
 	}
 
 	if cfg.OtelTracingEnabled {
-		tp, shutdown, err := tracerProviderConstructor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
+		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if err != nil {
 			// Return c (not Components{}) so the caller gets a nil TracerProvider
 			// and a non-nil no-op Shutdown even when provider construction fails.
