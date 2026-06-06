@@ -445,8 +445,8 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	})
 
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
-		// Verifies that concurrent Shutdown calls are race-free under -race and
-		// that sync.Once ensures the delegate runs exactly once.
+		// Verifies that concurrent Shutdown calls invoke the delegate exactly once
+		// (sync.Once semantics) and that all concurrent callers return without panic.
 		// atomic.Int32 avoids any question about the happens-before between the
 		// delegate write and the main goroutine's read after wg.Wait().
 		var callCount atomic.Int32

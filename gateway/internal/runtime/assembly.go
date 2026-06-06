@@ -25,22 +25,33 @@ func noopShutdown(_ context.Context) error { return nil }
 // A nil shutdown is a no-op; callers need not guard against it.
 // Cleanup adds a tracerCleanupTimeout deadline to ctx; callers block for at
 // most tracerCleanupTimeout (or the remaining deadline of ctx, whichever is shorter).
-// Panics from shutdown are recovered and returned as errors.
+// Shutdown runs in a goroutine so a hung provider cannot block the caller beyond
+// the deadline. Panics from shutdown are recovered and returned as errors.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
-	var shutdownErr error
-	func() {
+	type result struct{ err error }
+	ch := make(chan result, 1) // buffered: goroutine can send even after we return on timeout
+	go func() {
+		var r result
 		defer func() {
-			if r := recover(); r != nil {
-				shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %v", r)
+			if rec := recover(); rec != nil {
+				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %v", rec)
 			}
+			ch <- r
 		}()
-		shutdownErr = shutdown(timeoutCtx)
+		r.err = shutdown(timeoutCtx)
 	}()
+	var shutdownErr error
+	select {
+	case r := <-ch:
+		shutdownErr = r.err
+	case <-timeoutCtx.Done():
+		shutdownErr = fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err())
+	}
 	if shutdownErr != nil {
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
@@ -57,6 +68,9 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 // Values returned by Assemble are always safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
 // Shutdown is always non-nil (it is the no-op on any error return from Assemble).
+//
+// The unexported _ field prevents positional struct literals outside this package,
+// but does not prevent the zero-value Components{}; always use Assemble.
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
@@ -123,7 +137,7 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 		}
 		var (
 			once        sync.Once
-			shutdownErr error
+			shutdownErr error // written exactly once, inside once.Do
 		)
 		c.Shutdown = func(shutdownCtx context.Context) error {
 			once.Do(func() {
