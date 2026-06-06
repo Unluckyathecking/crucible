@@ -19,6 +19,35 @@ import (
 // assemble call in the common (tracing-off) path.
 var noopShutdown = func(_ context.Context) error { return nil }
 
+// shutdownHandle bundles a sync.Once with its cached error and the underlying
+// shutdown function. Using a pointer method value for Components.Shutdown means
+// all copies of a Components struct share the same idempotent shutdown state —
+// the desired behaviour for a single-assembly lifecycle. Per the Go memory model,
+// the write to h.err inside once.Do happens-before the return of every concurrent
+// once.Do call, so the subsequent read is race-free. recover() converts a panicking
+// fn into an error so callers always see a failure rather than a silently nil result.
+type shutdownHandle struct {
+	once sync.Once
+	err  error
+	fn   func(context.Context) error
+}
+
+func (h *shutdownHandle) shutdown(ctx context.Context) error {
+	h.once.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if e, ok := r.(error); ok {
+					h.err = fmt.Errorf("runtime: tracer shutdown panicked: %w", e)
+				} else {
+					h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+				}
+			}
+		}()
+		h.err = h.fn(ctx)
+	})
+	return h.err
+}
+
 // Components holds the assembled runtime dependencies ready for injection into
 // proxy.New and server.Deps. Zero values are safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing.
@@ -59,21 +88,26 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	// so that a *config.Config constructed directly (e.g. in tests) cannot produce
 	// a silently broken policy with a nonsensical negative count.
 	if cfg.WorkerRetryMax < 0 {
-		return c, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
+		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
 	if cfg.WorkerRetryMax > 0 {
 		if cfg.WorkerRetryBackoffMS < 0 {
-			return c, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
 		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
 	}
 	if cfg.WorkerBreakerThreshold < 0 {
-		return c, fmt.Errorf("runtime: WorkerBreakerThreshold must be >= 0, got %d", cfg.WorkerBreakerThreshold)
+		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerThreshold must be >= 0, got %d", cfg.WorkerBreakerThreshold)
+	}
+	// A non-zero cooldown with a zero threshold silently discards the cooldown
+	// because the breaker is disabled. Reject this foot-gun configuration explicitly.
+	if cfg.WorkerBreakerThreshold == 0 && cfg.WorkerBreakerCooldownMS != 0 {
+		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be 0 when WorkerBreakerThreshold is 0 (breaker disabled), got %d", cfg.WorkerBreakerCooldownMS)
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
-		if cfg.WorkerBreakerCooldownMS < 0 {
-			return c, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be >= 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
+		if cfg.WorkerBreakerCooldownMS <= 0 {
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be > 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
 		}
 		c.Policy.Breaker.Threshold = cfg.WorkerBreakerThreshold
 		c.Policy.Breaker.Cooldown = cfg.BreakerCooldown()
@@ -81,13 +115,13 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 
 	if cfg.OtelTracingEnabled {
 		if cfg.OtelExporterEndpoint == "" {
-			return c, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
+			return Components{Shutdown: noopShutdown}, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
 		}
 		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
 		// ±Inf are already caught by the < 0 || > 1 bounds (−∞ < 0 and +∞ > 1 are
 		// both true in IEEE 754); math.IsNaN is the only special-case needed.
 		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) {
-			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %g", cfg.OtelSampleRatio)
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %g", cfg.OtelSampleRatio)
 		}
 		tp, shutdown, err := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if err != nil {
@@ -101,9 +135,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 					err = errors.Join(err, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 				}
 			}
-			// Return c (not Components{}) so the caller gets a nil TracerProvider
-			// and a non-nil no-op Shutdown even when provider construction fails.
-			return c, fmt.Errorf("runtime: constructing tracer provider: %w", err)
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", err)
 		}
 		if tp == nil {
 			// Guard against a constructor that returns (nil, shutdown, nil).
@@ -111,7 +143,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			if shutdown != nil {
 				_ = shutdown(context.Background())
 			}
-			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
+			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
 		shutdownFn := shutdown
@@ -119,32 +151,7 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// h bundles the sync.Once and its cached result so both are heap-allocated
-		// together and their relationship is explicit to readers and the race detector.
-		// sync.Once guarantees Shutdown runs exactly once; per the Go memory model the
-		// write to h.err inside once.Do happens-before the return of every concurrent
-		// once.Do call, so the subsequent read is race-free. recover() converts a
-		// panicking shutdownFn into an error so callers always see a failure rather
-		// than a silently nil result.
-		var h struct {
-			once sync.Once
-			err  error
-		}
-		c.Shutdown = func(ctx context.Context) error {
-			h.once.Do(func() {
-				defer func() {
-					if r := recover(); r != nil {
-						if e, ok := r.(error); ok {
-							h.err = fmt.Errorf("runtime: tracer shutdown panicked: %w", e)
-						} else {
-							h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-						}
-					}
-				}()
-				h.err = shutdownFn(ctx)
-			})
-			return h.err
-		}
+		c.Shutdown = (&shutdownHandle{fn: shutdownFn}).shutdown
 	}
 
 	return c, nil

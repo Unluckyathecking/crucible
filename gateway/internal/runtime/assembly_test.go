@@ -19,7 +19,7 @@ func TestAssemble_DefaultOff(t *testing.T) {
 		// all fields at zero values: tracing disabled, no retry, no breaker
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Fatalf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -70,7 +70,7 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 		WorkerRetryBackoffMS: 200,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Fatalf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -96,7 +96,7 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 		WorkerBreakerCooldownMS: 3000,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Fatalf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 		WorkerRetryBackoffMS: 0,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Fatalf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
 	if err != nil {
@@ -353,7 +353,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("no-op", func(t *testing.T) {
 		c, err := assemble(&config.Config{}, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			t.Errorf("ctor must not be called when tracing is disabled")
+			t.Fatalf("ctor must not be called when tracing is disabled")
 			return nil, nil, nil
 		})
 		if err != nil {
@@ -479,6 +479,48 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
 		}
 	})
+
+	t.Run("concurrent-panic", func(t *testing.T) {
+		// Verifies that concurrent Shutdown calls where the delegate panics are
+		// race-free under -race: sync.Once + recover() must ensure exactly one
+		// panic is captured and all concurrent callers receive the same cached error.
+		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return noop.NewTracerProvider(), func(_ context.Context) error {
+				panic("concurrent panic test")
+			}, nil
+		}
+		tc, err := assemble(&config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+		}, mockCtor)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		const n = 10
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			i := i
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = tc.Shutdown(context.Background())
+			}()
+		}
+		wg.Wait()
+		var ref error
+		for i, e := range errs {
+			if e == nil {
+				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
+				continue
+			}
+			if ref == nil {
+				ref = e
+			} else if e != ref {
+				t.Errorf("goroutine %d: want cached error identity, got different error %v vs %v", i, e, ref)
+			}
+		}
+	})
 }
 
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
@@ -494,7 +536,7 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 			OtelSampleRatio:      ratio,
 		}
 		c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			t.Errorf("ctor must not be called for invalid sample ratio %v", ratio)
+			t.Fatalf("ctor must not be called for invalid sample ratio %v", ratio)
 			return nil, nil, nil
 		})
 		if err == nil {
@@ -515,7 +557,7 @@ func TestAssemble_EmptyEndpoint(t *testing.T) {
 		OtelExporterEndpoint: "",
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Error("ctor must not be called when endpoint is empty")
+		t.Fatal("ctor must not be called when endpoint is empty")
 		return nil, nil, nil
 	})
 	if err == nil {
@@ -537,7 +579,7 @@ func TestAssemble_NegativeConfigRejected(t *testing.T) {
 	// directly (e.g. in tests) to surface misconfiguration rather than silently
 	// producing a disabled policy.
 	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Error("ctor must not be called")
+		t.Fatal("ctor must not be called")
 		return nil, nil, nil
 	}
 
@@ -559,6 +601,20 @@ func TestAssemble_NegativeConfigRejected(t *testing.T) {
 			t.Error("want error for negative WorkerBreakerThreshold, got nil")
 		} else if !strings.Contains(err.Error(), "WorkerBreakerThreshold") {
 			t.Errorf("error message: want mention of WorkerBreakerThreshold, got %v", err)
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+
+	t.Run("cooldown-without-breaker", func(t *testing.T) {
+		// A non-zero cooldown with threshold == 0 silently discards the cooldown
+		// because the breaker is disabled — reject it explicitly.
+		c, err := assemble(&config.Config{WorkerBreakerThreshold: 0, WorkerBreakerCooldownMS: 1000}, noopCtor)
+		if err == nil {
+			t.Error("want error when WorkerBreakerCooldownMS is non-zero with zero threshold, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
+			t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
 		}
 		if c.Shutdown == nil {
 			t.Error("Shutdown: want non-nil no-op even on validation error")
@@ -589,24 +645,23 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 }
 
 func TestAssemble_ZeroBreakerCooldown(t *testing.T) {
-	// When WorkerBreakerCooldownMS is zero, BreakerCooldown() returns zero;
-	// assemble must accept it rather than treat it as an error.
+	// WorkerBreakerCooldownMS must be > 0 when WorkerBreakerThreshold > 0: a zero
+	// cooldown would cause proxy.New to panic with "BreakerConfig.Cooldown must be > 0".
 	cfg := &config.Config{
 		WorkerBreakerThreshold:  1,
 		WorkerBreakerCooldownMS: 0,
 	}
 	c, err := assemble(cfg, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Errorf("ctor must not be called when tracing is disabled")
+		t.Fatalf("ctor must not be called when tracing is disabled")
 		return nil, nil, nil
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Error("want error when WorkerBreakerCooldownMS is 0 with non-zero threshold, got nil")
+	} else if !strings.Contains(err.Error(), "WorkerBreakerCooldownMS") {
+		t.Errorf("error message: want mention of WorkerBreakerCooldownMS, got %v", err)
 	}
-	if c.Policy.Breaker.Threshold != 1 {
-		t.Errorf("Threshold: want 1, got %d", c.Policy.Breaker.Threshold)
-	}
-	if c.Policy.Breaker.Cooldown != 0 {
-		t.Errorf("Cooldown: want 0 when config helper returns zero, got %v", c.Policy.Breaker.Cooldown)
+	if c.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on validation error")
 	}
 }
 
@@ -680,7 +735,7 @@ func TestAssemble_NegativeDurationsRejected(t *testing.T) {
 	// Negative millisecond values for backoff/cooldown produce negative time.Duration
 	// values that can break downstream components. assemble rejects them defensively.
 	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		t.Error("ctor must not be called")
+		t.Fatal("ctor must not be called")
 		return nil, nil, nil
 	}
 
@@ -736,7 +791,8 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Error("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	if err1 != nil && err2 != nil && err1.Error() != err2.Error() {
-		t.Errorf("cached panic error: want same message, got %v and %v", err1, err2)
+	// sync.Once caches h.err; both calls must return pointer-identical error.
+	if !errors.Is(err2, err1) {
+		t.Errorf("cached panic error: want same error identity (sync.Once cached), got %v and %v", err1, err2)
 	}
 }
