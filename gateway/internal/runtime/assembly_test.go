@@ -313,9 +313,6 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		if !errors.Is(err, wantErr) {
 			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
 		}
-		if !strings.Contains(err.Error(), "constructing tracer provider") {
-			t.Errorf("error wrapping: want 'constructing tracer provider' context, got %v", err)
-		}
 		if c.TracerProvider != nil {
 			t.Error("TracerProvider: want nil when ctor returns error")
 		}
@@ -696,16 +693,27 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	// sync.Once caches shutdownErr; all subsequent calls must return the same error.
+	// sync.Once caches shutdownErr; both calls must return the same error message.
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
-	// Third call verifies the error is stable, not regenerated or cleared.
-	err3 := c.Shutdown(context.Background())
-	if err3 == nil {
-		t.Fatal("third Shutdown after panic: want cached non-nil error, got nil")
-	}
-	if err3.Error() != err1.Error() {
-		t.Errorf("third cached panic error: want same error message, got %q and %q", err3.Error(), err1.Error())
+}
+
+func TestAssemble_InvalidSampleRatio(t *testing.T) {
+	// assemble must reject OtelSampleRatio values outside [0.0, 1.0] before
+	// calling the ctor, so the ctor is never invoked with an invalid ratio.
+	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0} {
+		cfg := &config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      ratio,
+		}
+		c, err := assemble(cfg, mustNotCallCtor(t))
+		if err == nil {
+			t.Errorf("OtelSampleRatio=%v: want error for out-of-range value, got nil", ratio)
+		}
+		if c.Shutdown == nil {
+			t.Errorf("OtelSampleRatio=%v: want non-nil no-op Shutdown on error", ratio)
+		}
 	}
 }

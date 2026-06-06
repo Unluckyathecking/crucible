@@ -43,8 +43,8 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. Always obtain Components through Assemble — a literal
-// Components{} has a nil Shutdown and must not be used directly.
+// proxy.New and server.Deps. The zero value Components{} has a nil Shutdown
+// and must not be used directly — always obtain Components through Assemble.
 //
 // Values returned by Assemble are always safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
@@ -61,6 +61,8 @@ type Components struct {
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
 // On error, the returned Components always has a non-nil no-op Shutdown.
+// If tracing init fails, any partial-provider cleanup is bounded by
+// tracerCleanupTimeout (10 s) — the call is not indefinitely blocking.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		// tracing.NewProvider returns a concrete *sdktrace.TracerProvider.
@@ -82,9 +84,8 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, errors.New("runtime: config is nil")
 	}
 
-	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative
-	// and OtelSampleRatio as [0.0, 1.0], so >0 is the sole activation gate here;
-	// zero means disabled and no invalid values reach assemble.
+	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative,
+	// so >0 is the sole activation gate here; zero means disabled.
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
@@ -95,9 +96,13 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	}
 
 	if cfg.OtelTracingEnabled {
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1.0 {
+			return c, fmt.Errorf("runtime: OtelSampleRatio %v out of range [0.0, 1.0]", cfg.OtelSampleRatio)
+		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(context.Background(), shutdown, ctorErr))
+			wrappedCtorErr := fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
+			return c, cleanupTracer(context.Background(), shutdown, wrappedCtorErr)
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
