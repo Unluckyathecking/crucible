@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -48,7 +49,7 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 		shutdownErr = shutdown(timeoutCtx)
 	}()
 	if shutdownErr != nil {
-		if timeoutCtx.Err() != nil {
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 			// Preserve both the timeout cause and the original shutdown error.
 			shutdownErr = errors.Join(
 				fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err()),
@@ -64,20 +65,19 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. Always obtain Components through Assemble — a
-// zero-value Components has a nil Shutdown and must not be used.
+// proxy.New and server.Deps. Always obtain Components through Assemble — the
+// zero value has a nil Shutdown and is unsafe to use.
 //
 // Values returned by Assemble are always safe: a zero ResiliencePolicy means
 // single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
 // Shutdown is always non-nil (it is the no-op on any error return from Assemble).
 //
-// The unexported _ field prevents positional struct literals outside this package,
-// but does NOT prevent the zero-value Components{}; always use Assemble.
+// The unexported _ field prevents positional struct literals outside this package.
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
 	Shutdown       func(context.Context) error
-	_              struct{} // prevents positional literals outside the package
+	_ struct{} // prevents positional literals outside the package
 }
 
 // Assemble builds Components from a validated *config.Config.
@@ -122,7 +122,7 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 		if cfg.OtelExporterEndpoint == "" {
 			return c, fmt.Errorf("runtime: OtelExporterEndpoint is required when OtelTracingEnabled is true")
 		}
-		if !(cfg.OtelSampleRatio >= 0 && cfg.OtelSampleRatio <= 1) {
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 || math.IsNaN(cfg.OtelSampleRatio) {
 			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
 		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)

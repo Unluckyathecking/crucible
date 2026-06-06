@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -181,6 +182,27 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 	if shutdownCalls.Load() != 1 {
 		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls.Load())
+	}
+}
+
+func TestAssemble_TracingInsecureFalse(t *testing.T) {
+	// Verifies OtelExporterInsecure=false is propagated correctly to the constructor.
+	var gotInsecure bool
+	mockCtor := func(_ string, insecure bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		gotInsecure = insecure
+		return noop.NewTracerProvider(), noopShutdown, nil
+	}
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "otel.example.com:4317",
+		OtelExporterInsecure: false,
+		OtelSampleRatio:      1.0,
+	}
+	if _, err := assemble(context.Background(), cfg, mockCtor); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotInsecure {
+		t.Error("insecure: want false when OtelExporterInsecure=false, got true")
 	}
 }
 
@@ -665,7 +687,7 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 	}
 }
 
-func TestAssemble_EmptyEndpoint(t *testing.T) {
+func TestAssemble_EmptyOtelExporterEndpoint(t *testing.T) {
 	// OtelExporterEndpoint must be non-empty when tracing is enabled;
 	// the ctor must not be called when the endpoint is missing.
 	cfg := &config.Config{
@@ -803,13 +825,15 @@ func TestCleanupTracer(t *testing.T) {
 	})
 
 	t.Run("timeout-preserves-shutdown-error", func(t *testing.T) {
-		// Use a pre-cancelled context so the timeout sub-context expires immediately,
-		// making timeoutCtx.Err() non-nil on the first check after shutdown returns.
-		cancelledCtx, cancel := context.WithCancel(context.Background())
-		cancel()
+		// Pass a context whose deadline is already in the past so that the child
+		// context created by cleanupTracer inherits context.DeadlineExceeded immediately.
+		// This exercises the errors.Join path that preserves both the timeout error
+		// and the original shutdown error.
+		expiredCtx, expCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer expCancel()
 
 		shutErr := errors.New("shutdown error")
-		got := cleanupTracer(cancelledCtx, func(_ context.Context) error { return shutErr }, nil)
+		got := cleanupTracer(expiredCtx, func(_ context.Context) error { return shutErr }, nil)
 		if got == nil {
 			t.Fatal("want non-nil error, got nil")
 		}
