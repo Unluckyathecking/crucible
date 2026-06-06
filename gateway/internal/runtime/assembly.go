@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
 	"sync"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -48,6 +47,9 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
+	// sync.Once's atomic release-store (done←1, after f returns) synchronises-with
+	// every caller's acquire-load (done==1 fast path), making f's write to h.err
+	// visible here without a separate mutex.
 	return h.err
 }
 
@@ -119,16 +121,6 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.OtelTracingEnabled {
 		if cfg.OtelExporterEndpoint == "" {
 			return Components{Shutdown: noopShutdown}, errors.New("runtime: OtelExporterEndpoint must not be empty when tracing is enabled")
-		}
-		// Validate endpoint format before passing to the OTLP constructor so
-		// misconfigured values produce a clear error at assembly time rather than
-		// a confusing dial error at first trace export.
-		host, _, err := net.SplitHostPort(cfg.OtelExporterEndpoint)
-		if err != nil {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelExporterEndpoint must be host:port (e.g. localhost:4318): %w", err)
-		}
-		if host == "" {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: OtelExporterEndpoint must have a non-empty host, got %q", cfg.OtelExporterEndpoint)
 		}
 		// NaN fails all IEEE 754 comparisons, so it must be checked explicitly.
 		// ±Inf are already caught by the < 0 || > 1 bounds (−∞ < 0 and +∞ > 1 are
