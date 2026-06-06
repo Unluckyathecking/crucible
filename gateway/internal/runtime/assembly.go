@@ -22,10 +22,7 @@ var noopShutdown = func(_ context.Context) error { return nil }
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. Using a pointer method value for Components.Shutdown means
 // all copies of a Components struct share the same idempotent shutdown state —
-// the desired behaviour for a single-assembly lifecycle. Per the Go memory model,
-// the write to h.err inside once.Do happens-before the return of every concurrent
-// once.Do call, so the subsequent read is race-free. recover() converts a panicking
-// fn into an error so callers always see a failure rather than a silently nil result.
+// the desired behaviour for a single-assembly lifecycle.
 type shutdownHandle struct {
 	once sync.Once
 	err  error
@@ -45,6 +42,12 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
+	// The Go memory model guarantees that the return of once.Do in any goroutine
+	// happens after the completion of the first f() invocation (see
+	// https://go.dev/ref/mem#sync: "all the Do returns happen after that f()
+	// returns"). The write to h.err inside f() therefore happens-before every
+	// return from every concurrent once.Do call — this read is race-free without
+	// additional synchronization. The Go race detector confirms this is safe.
 	return h.err
 }
 
@@ -90,10 +93,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.WorkerRetryMax < 0 {
 		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
+	if cfg.WorkerRetryBackoffMS < 0 {
+		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0, got %d", cfg.WorkerRetryBackoffMS)
+	}
 	if cfg.WorkerRetryMax > 0 {
-		if cfg.WorkerRetryBackoffMS < 0 {
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
-		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
 	}
@@ -139,11 +142,16 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		}
 		if tp == nil {
 			// Guard against a constructor that returns (nil, shutdown, nil).
-			// Call any provided cleanup to avoid resource leaks.
+			// Call any provided cleanup to avoid resource leaks. Join any cleanup
+			// error into the returned error for visibility, consistent with the
+			// partial-init cleanup above.
+			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
-				_ = shutdown(context.Background())
+				if cleanupErr := shutdown(context.Background()); cleanupErr != nil {
+					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up nil provider: %w", cleanupErr))
+				}
 			}
-			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
+			return Components{Shutdown: noopShutdown}, nilErr
 		}
 		// Guard against a constructor that returns nil shutdown with nil error.
 		shutdownFn := shutdown

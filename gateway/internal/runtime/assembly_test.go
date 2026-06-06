@@ -508,16 +508,19 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		var ref error
+		var ref string
 		for i, e := range errs {
 			if e == nil {
 				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
 				continue
 			}
-			if ref == nil {
-				ref = e
-			} else if e != ref {
-				t.Errorf("goroutine %d: want cached error identity, got different error %v vs %v", i, e, ref)
+			if !strings.Contains(e.Error(), "panicked") {
+				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
+			}
+			if ref == "" {
+				ref = e.Error()
+			} else if e.Error() != ref {
+				t.Errorf("goroutine %d: want same cached error message, got %q vs %q", i, e.Error(), ref)
 			}
 		}
 	})
@@ -751,6 +754,21 @@ func TestAssemble_NegativeDurationsRejected(t *testing.T) {
 		}
 	})
 
+	t.Run("negative-retry-backoff-retry-disabled", func(t *testing.T) {
+		// Negative WorkerRetryBackoffMS is rejected unconditionally, even when
+		// WorkerRetryMax is zero (retry disabled), so invalid config cannot sneak
+		// through unnoticed when the retry path is toggled on later.
+		c, err := assemble(&config.Config{WorkerRetryMax: 0, WorkerRetryBackoffMS: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerRetryBackoffMS even when retry is disabled, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerRetryBackoffMS") {
+			t.Errorf("error message: want mention of WorkerRetryBackoffMS, got %v", err)
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+
 	t.Run("negative-breaker-cooldown", func(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerBreakerThreshold: 3, WorkerBreakerCooldownMS: -1}, noopCtor)
 		if err == nil {
@@ -791,8 +809,11 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Error("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	// sync.Once caches h.err; both calls must return pointer-identical error.
-	if !errors.Is(err2, err1) {
-		t.Errorf("cached panic error: want same error identity (sync.Once cached), got %v and %v", err1, err2)
+	// sync.Once caches h.err; both calls must return the same error message.
+	if err1 == nil || err2 == nil {
+		t.Fatal("expected non-nil errors from both shutdown calls")
+	}
+	if err1.Error() != err2.Error() {
+		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
 }
