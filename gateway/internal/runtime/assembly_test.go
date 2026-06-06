@@ -175,7 +175,9 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil")
 	}
-	_ = c.Shutdown(context.Background())
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown: unexpected error %v", err)
+	}
 	if shutdownCalls.Load() != 1 {
 		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls.Load())
 	}
@@ -220,6 +222,9 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	}
 	if c2.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider with cleanup error")
+	}
+	if err := c2.Shutdown(context.Background()); err != nil {
+		t.Errorf("no-op shutdown on nil provider with cleanup: unexpected error %v", err)
 	}
 }
 

@@ -14,24 +14,34 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
-// noopShutdown is the no-op Shutdown used when tracing is disabled or on error paths.
-func noopShutdown(_ context.Context) error { return nil }
-
 // tracerCleanupTimeout bounds the cleanup of a partially-initialised tracer provider
 // so a hung OTLP flush cannot stall server startup indefinitely.
 const tracerCleanupTimeout = 10 * time.Second
+
+// noopShutdown is the no-op Shutdown used when tracing is disabled or on error paths.
+func noopShutdown(_ context.Context) error { return nil }
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
 // Cleanup adds a tracerCleanupTimeout deadline to ctx; callers block for at
 // most tracerCleanupTimeout (or the remaining deadline of ctx, whichever is shorter).
+// Panics from shutdown are recovered and returned as errors.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
-	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
+	var shutdownErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %v", r)
+			}
+		}()
+		shutdownErr = shutdown(timeoutCtx)
+	}()
+	if shutdownErr != nil {
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
 		}
@@ -111,14 +121,14 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 			once        sync.Once
 			shutdownErr error
 		)
-		c.Shutdown = func(ctx context.Context) error {
+		c.Shutdown = func(shutdownCtx context.Context) error {
 			once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
 						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
 					}
 				}()
-				shutdownErr = shutdownFn(ctx)
+				shutdownErr = shutdownFn(shutdownCtx)
 			})
 			return shutdownErr
 		}
