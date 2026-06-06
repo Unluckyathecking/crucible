@@ -27,10 +27,8 @@ const tracerCleanupTimeout = 10 * time.Second
 // A nil shutdown is a no-op; callers need not guard against it.
 // Cleanup adds a tracerCleanupTimeout deadline; if ctx already has a shorter
 // deadline that takes precedence. Callers block for at most tracerCleanupTimeout.
-// If shutdown returns nil but our tracerCleanupTimeout DeadlineExceeded (and
-// the parent context was not already expired), the deadline error is reported
-// so callers know shutdown ignored its context. context.Canceled (including
-// the shutdown function cancelling its own child context) is not reported.
+// A nil return from shutdown is always treated as success; any non-nil error is
+// wrapped with context and joined with baseErr.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
@@ -38,12 +36,6 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
 	shutdownErr := shutdown(timeoutCtx)
-	// Only capture a DeadlineExceeded from our own cleanup window, not from
-	// context.Canceled (which could mean the shutdown function cancelled its
-	// own context) or from a pre-existing parent expiry (ctx.Err() != nil).
-	if shutdownErr == nil && timeoutCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		shutdownErr = timeoutCtx.Err()
-	}
 	if shutdownErr != nil {
 		wrapped := fmt.Errorf("runtime: cleaning up partial tracer provider (timeout=%v): %w", tracerCleanupTimeout, shutdownErr)
 		if baseErr == nil {
@@ -73,7 +65,8 @@ type Components struct {
 // With all resilience and tracing knobs at their defaults it returns a
 // zero-value ResiliencePolicy, a nil TracerProvider, and a non-nil no-op
 // shutdown — preserving today's exact single-shot behaviour.
-// On error, the returned Components always has a non-nil no-op Shutdown.
+// On error (and assuming the tracer provider constructor does not panic),
+// the returned Components always has a non-nil no-op Shutdown.
 // If tracing init fails, any partial-provider cleanup is bounded by
 // tracerCleanupTimeout (10 s) — the call is not indefinitely blocking.
 func Assemble(cfg *config.Config) (Components, error) {

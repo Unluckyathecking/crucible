@@ -617,6 +617,33 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	})
 }
 
+func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
+	// Negative values must be treated as disabled via the > 0 activation gate.
+	// config.Load validates non-negative, but assemble must handle negative safely.
+	cfg := &config.Config{
+		WorkerRetryMax:          -1,
+		WorkerRetryBackoffMS:    100,
+		WorkerBreakerThreshold:  -5,
+		WorkerBreakerCooldownMS: 1000,
+	}
+	c, err := assemble(cfg, mustNotCallCtor(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Policy.Retry.MaxAttempts != 0 {
+		t.Errorf("Retry.MaxAttempts: want 0 for negative config, got %d", c.Policy.Retry.MaxAttempts)
+	}
+	if c.Policy.Retry.BaseBackoff != 0 {
+		t.Errorf("Retry.BaseBackoff: want 0 for negative config, got %v", c.Policy.Retry.BaseBackoff)
+	}
+	if c.Policy.Breaker.Threshold != 0 {
+		t.Errorf("Breaker.Threshold: want 0 for negative config, got %d", c.Policy.Breaker.Threshold)
+	}
+	if c.Policy.Breaker.Cooldown != 0 {
+		t.Errorf("Breaker.Cooldown: want 0 for negative config, got %v", c.Policy.Breaker.Cooldown)
+	}
+}
+
 func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 	// Zero values for retry/breaker counts produce a zero-value policy (disabled),
 	// matching the behaviour of an unconfigured gateway.
