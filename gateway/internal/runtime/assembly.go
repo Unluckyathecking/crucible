@@ -64,7 +64,7 @@ func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
 		if tp == nil {
-			// Explicitly return an untyped nil rather than a nil *sdktrace.TracerProvider.
+			// Explicitly return an untyped nil rather than a nil concrete pointer.
 			// Assigning a nil concrete pointer to an interface produces a non-nil interface
 			// value (the Go typed-nil gotcha), which would bypass the tp == nil guard in
 			// assemble and silently store a nil-underlying provider that panics on use.

@@ -652,7 +652,7 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	// sync.Once caches h.err; both calls must return the same error message.
+	// sync.Once caches shutdownErr; both calls must return the same error message.
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
