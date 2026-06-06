@@ -352,7 +352,7 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("no-op", func(t *testing.T) {
 		c, err := assemble(&config.Config{}, func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			t.Fatal("ctor must not be called when tracing is disabled")
+			t.Errorf("ctor must not be called when tracing is disabled")
 			return nil, nil, nil
 		})
 		if err != nil {
@@ -648,8 +648,9 @@ func TestAssemble_AllEnabled(t *testing.T) {
 
 func TestAssemble_PublicTracingEnabled(t *testing.T) {
 	// Verifies that the public Assemble function (not the internal assemble)
-	// correctly delegates to tracing.NewProvider. The OTLP/HTTP exporter does
-	// not dial on creation, so this works without a running collector.
+	// correctly delegates to tracing.NewProvider. As of the current OTel SDK,
+	// the OTLP/HTTP exporter does not dial on creation; if that behaviour
+	// changes this test will need a running collector or a test double.
 	cfg := &config.Config{
 		OtelTracingEnabled:   true,
 		OtelExporterEndpoint: "localhost:4318",
@@ -668,4 +669,63 @@ func TestAssemble_PublicTracingEnabled(t *testing.T) {
 	}
 	// Shutdown may fail if the exporter cannot flush (no collector running); ignore it.
 	_ = c.Shutdown(context.Background())
+}
+
+func TestAssemble_NegativeDurationsRejected(t *testing.T) {
+	// Negative millisecond values for backoff/cooldown produce negative time.Duration
+	// values that can break downstream components. assemble rejects them defensively.
+	noopCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		t.Error("ctor must not be called")
+		return nil, nil, nil
+	}
+
+	t.Run("negative-retry-backoff", func(t *testing.T) {
+		c, err := assemble(&config.Config{WorkerRetryMax: 2, WorkerRetryBackoffMS: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerRetryBackoffMS, got nil")
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+
+	t.Run("negative-breaker-cooldown", func(t *testing.T) {
+		c, err := assemble(&config.Config{WorkerBreakerThreshold: 3, WorkerBreakerCooldownMS: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerBreakerCooldownMS, got nil")
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
+}
+
+func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
+	// If shutdownFn panics, recover() inside once.Do must capture the panic as
+	// an error rather than leaving shutdownErr nil (which would silently hide
+	// the failure on all subsequent Shutdown calls).
+	panicCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return noop.NewTracerProvider(), func(_ context.Context) error {
+			panic("simulated provider panic")
+		}, nil
+	}
+	c, err := assemble(&config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "otel.example.com:4317",
+	}, panicCtor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err1 := c.Shutdown(context.Background())
+	if err1 == nil {
+		t.Error("Shutdown after panic: want non-nil error, got nil")
+	}
+	// Second call must return the same cached error, not re-panic.
+	err2 := c.Shutdown(context.Background())
+	if err2 == nil {
+		t.Error("second Shutdown after panic: want cached non-nil error, got nil")
+	}
+	if err1 != err2 {
+		t.Errorf("cached panic error identity: want same pointer, got %v and %v", err1, err2)
+	}
 }

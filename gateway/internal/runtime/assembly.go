@@ -62,6 +62,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
 	}
 	if cfg.WorkerRetryMax > 0 {
+		if cfg.WorkerRetryBackoffMS < 0 {
+			return c, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
+		}
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
 	}
@@ -69,6 +72,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, fmt.Errorf("runtime: WorkerBreakerThreshold must be >= 0, got %d", cfg.WorkerBreakerThreshold)
 	}
 	if cfg.WorkerBreakerThreshold > 0 {
+		if cfg.WorkerBreakerCooldownMS < 0 {
+			return c, fmt.Errorf("runtime: WorkerBreakerCooldownMS must be >= 0 when breaker is enabled, got %d", cfg.WorkerBreakerCooldownMS)
+		}
 		c.Policy.Breaker.Threshold = cfg.WorkerBreakerThreshold
 		c.Policy.Breaker.Cooldown = cfg.BreakerCooldown()
 	}
@@ -116,11 +122,18 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		// sync.Once guarantees the provider shuts down exactly once. Per the Go
 		// memory model, the write to shutdownErr inside once.Do happens-before
 		// the return of every concurrent once.Do call, so the subsequent read is
-		// race-free without additional synchronisation.
+		// race-free without additional synchronisation. recover() prevents a
+		// panicking shutdownFn from leaving shutdownErr as nil, which would hide
+		// the failure on all subsequent calls.
 		var once sync.Once
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
 			once.Do(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+					}
+				}()
 				shutdownErr = shutdownFn(ctx)
 			})
 			return shutdownErr
