@@ -24,14 +24,14 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// Cleanup is called synchronously: the context carries a tracerCleanupTimeout deadline
-// so well-behaved implementations (including the OTel SDK BatchSpanProcessor) return
-// promptly; the caller blocks for at most tracerCleanupTimeout.
-func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
+// ctx is the parent context; a tracerCleanupTimeout deadline is added on top so
+// a hung exporter cannot stall startup regardless of the parent's own deadline.
+// Cleanup is synchronous; callers block for at most tracerCleanupTimeout.
+func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(ctx); shutdownErr != nil {
 		if baseErr == nil {
@@ -104,8 +104,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, errors.New("runtime: config is nil")
 	}
 
-	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative,
-	// so >0 is the sole activation gate; zero means disabled and no negative values reach here.
+	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative
+	// and OtelSampleRatio as [0.0, 1.0], so >0 is the sole activation gate here;
+	// zero means disabled and no invalid values reach assemble.
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
@@ -118,11 +119,11 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 	if cfg.OtelTracingEnabled {
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
-			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(shutdown, ctorErr))
+			return c, fmt.Errorf("runtime: constructing tracer provider: %w", cleanupTracer(context.Background(), shutdown, ctorErr))
 		}
 		if tp == nil {
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
-			return c, cleanupTracer(shutdown, nilErr)
+			return c, cleanupTracer(context.Background(), shutdown, nilErr)
 		}
 		c.TracerProvider = tp
 		handle := newShutdownHandle(shutdown)

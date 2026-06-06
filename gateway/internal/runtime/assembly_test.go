@@ -15,13 +15,13 @@ import (
 )
 
 // mustNotCallCtor returns a ctor stub that fails the test if invoked.
-// Uses t.Errorf + panic rather than t.Fatal so failures surface correctly
-// even if the closure is ever called from a non-test goroutine.
+// Returns an error (rather than panicking) so the failure surfaces as a
+// test failure even if assemble propagates the error to the caller.
 func mustNotCallCtor(t *testing.T) func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 	t.Helper()
 	return func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		t.Errorf("ctor must not be called")
-		panic("ctor must not be called")
+		return nil, nil, errors.New("ctor must not be called")
 	}
 }
 
@@ -498,7 +498,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		wg.Wait()
 		close(errs)
 		var ref string
+		count := 0
 		for e := range errs {
+			count++
 			if e == nil {
 				t.Error("want non-nil error after panic, got nil")
 				continue
@@ -511,6 +513,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			} else if e.Error() != ref {
 				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
+		}
+		if count != n {
+			t.Errorf("want %d errors from concurrent shutdown, got %d", n, count)
 		}
 	})
 }
