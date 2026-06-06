@@ -337,8 +337,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		// When the provider shutdown returns an error, sync.Once caches it;
 		// subsequent calls return the same error without re-invoking shutdown.
 		wantErr := errors.New("provider shutdown failed")
+		callCount := 0
 		errShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
+				callCount++
 				return wantErr
 			}, nil
 		}
@@ -352,6 +354,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 		err1 := tc.Shutdown(context.Background())
 		err2 := tc.Shutdown(context.Background())
+		if callCount != 1 {
+			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount)
+		}
 		if !errors.Is(err1, wantErr) {
 			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
 		}

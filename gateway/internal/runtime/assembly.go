@@ -38,14 +38,7 @@ type Components struct {
 // shutdown — preserving today's exact single-shot behaviour.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
-		if tp == nil {
-			// tracing.NewProvider returns a concrete *sdktrace.TracerProvider; a
-			// typed-nil wrapped in the interface is non-nil, defeating assemble's
-			// nil-provider guard. Return an untyped nil explicitly.
-			return nil, shutdown, err
-		}
-		return tp, shutdown, err
+		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
 }
 
@@ -76,8 +69,12 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		if err != nil {
 			// If the constructor returned a cleanup func alongside the error,
 			// call it now to avoid leaking a partially-initialised provider.
+			// Join cleanup errors into the returned error so callers and
+			// observability systems see both failures.
 			if shutdown != nil {
-				_ = shutdown(context.Background())
+				if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
+					err = errors.Join(err, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
+				}
 			}
 			// Return c (not Components{}) so the caller gets a nil TracerProvider
 			// and a non-nil no-op Shutdown even when provider construction fails.
