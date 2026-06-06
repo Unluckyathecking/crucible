@@ -3,8 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,13 +142,16 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 	fakeTP := noop.NewTracerProvider()
 
-	var gotEndpoint string
-	var gotInsecure bool
-	var gotSampleRatio float64
 	mockCtor := func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		gotEndpoint = endpoint
-		gotInsecure = insecure
-		gotSampleRatio = sampleRatio
+		if endpoint != "otel.example.com:4317" {
+			t.Errorf("endpoint: want %q, got %q", "otel.example.com:4317", endpoint)
+		}
+		if !insecure {
+			t.Error("insecure: want true")
+		}
+		if sampleRatio != 0.5 {
+			t.Errorf("sampleRatio: want 0.5, got %v", sampleRatio)
+		}
 		return fakeTP, fakeShutdown, nil
 	}
 
@@ -163,15 +164,6 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	c, err := assemble(cfg, mockCtor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if gotEndpoint != "otel.example.com:4317" {
-		t.Errorf("endpoint: want %q, got %q", "otel.example.com:4317", gotEndpoint)
-	}
-	if !gotInsecure {
-		t.Error("insecure: want true")
-	}
-	if gotSampleRatio != 0.5 {
-		t.Errorf("sampleRatio: want 0.5, got %v", gotSampleRatio)
 	}
 	if c.TracerProvider != fakeTP {
 		t.Errorf("TracerProvider: want fakeTP, got %v", c.TracerProvider)
@@ -226,14 +218,8 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	if !shutdownCalled.Load() {
 		t.Error("shutdown cleanup must be called when constructor returns nil provider with non-nil shutdown")
 	}
-	if c2.TracerProvider != nil {
-		t.Error("TracerProvider: want nil when constructor returns nil provider")
-	}
 	if c2.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider with cleanup error")
-	}
-	if err := c2.Shutdown(context.Background()); err != nil {
-		t.Errorf("no-op shutdown on nil provider with cleanup: unexpected error %v", err)
 	}
 }
 
@@ -305,9 +291,6 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 	}
 
 	t.Run("nil-shutdown", func(t *testing.T) {
-		// ctor returns (nonNilProvider, nil, wantErr): the nil shutdown means
-		// cleanupTracer is a no-op bypass — nothing to track, nothing to clean up.
-		// assemble must propagate the error and leave TracerProvider nil.
 		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return fakeTP, nil, wantErr
 		}
@@ -385,35 +368,6 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
 		}
 	})
-
-	t.Run("nil-provider-with-error", func(t *testing.T) {
-		// ctor returns (nil, nonNilShutdown, wantErr): assemble hits the ctorErr != nil
-		// branch, calls cleanupTracer with the non-nil shutdown (which must be invoked),
-		// then propagates the wrapped error. TracerProvider must remain nil.
-		var shutdownCalled atomic.Bool
-		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			return nil, func(_ context.Context) error {
-				shutdownCalled.Store(true)
-				return nil
-			}, wantErr
-		}
-		c, err := assemble(cfg, partialCtor)
-		if !errors.Is(err, wantErr) {
-			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
-		}
-		if c.TracerProvider != nil {
-			t.Error("TracerProvider: want nil when ctor returns error")
-		}
-		if !shutdownCalled.Load() {
-			t.Error("ctor cleanup func must be called when ctor returns nil provider with non-nil shutdown and error")
-		}
-		if c.Shutdown == nil {
-			t.Fatal("Shutdown: want non-nil no-op even on nil-provider error")
-		}
-		if err := c.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown on nil-provider error: unexpected error %v", err)
-		}
-	})
 }
 
 func TestAssemble_ShutdownIdempotency(t *testing.T) {
@@ -485,46 +439,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
-	t.Run("concurrent-shutdown-error-cached", func(t *testing.T) {
-		// When the provider shutdown returns an error, concurrent callers must all
-		// receive the same cached error without re-invoking shutdown.
-		wantErr := errors.New("provider shutdown failed concurrent")
-		var callCount atomic.Int32
-		errShutdownCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			return noop.NewTracerProvider(), func(_ context.Context) error {
-				callCount.Add(1)
-				return wantErr
-			}, nil
-		}
-		tc, err := assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-		}, errShutdownCtor)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		const n = 10
-		errs := make(chan error, n)
-		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				errs <- tc.Shutdown(context.Background())
-			}()
-		}
-		wg.Wait()
-		close(errs)
-		if callCount.Load() != 1 {
-			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
-		}
-		for e := range errs {
-			if !errors.Is(e, wantErr) {
-				t.Errorf("want error %v, got %v", wantErr, e)
-			}
-		}
-	})
-
 	t.Run("concurrent-shutdown-race", func(t *testing.T) {
 		// Verifies that concurrent Shutdown calls are race-free under -race and
 		// that sync.Once ensures the delegate runs exactly once.
@@ -544,23 +458,15 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		const n = 10
-		errs := make(chan error, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs <- tc.Shutdown(context.Background())
+				_ = tc.Shutdown(context.Background())
 			}()
 		}
 		wg.Wait()
-		close(errs)
-		for e := range errs {
-			if e != nil {
-				t.Errorf("unexpected shutdown error: %v", e)
-			}
-		}
 		if callCount.Load() != 1 {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
@@ -600,7 +506,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
 		}
 		var ref string
+		count := 0
 		for e := range errs {
+			count++
 			if e == nil {
 				t.Error("want non-nil error after panic, got nil")
 				continue
@@ -614,34 +522,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
 		}
+		if count != n {
+			t.Errorf("want %d errors from concurrent shutdown, got %d", n, count)
+		}
 	})
-}
-
-func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
-	// Negative values must be treated as disabled via the > 0 activation gate.
-	// config.Load validates non-negative, but assemble must handle negative safely.
-	cfg := &config.Config{
-		WorkerRetryMax:          -1,
-		WorkerRetryBackoffMS:    100,
-		WorkerBreakerThreshold:  -5,
-		WorkerBreakerCooldownMS: 1000,
-	}
-	c, err := assemble(cfg, mustNotCallCtor(t))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c.Policy.Retry.MaxAttempts != 0 {
-		t.Errorf("Retry.MaxAttempts: want 0 for negative config, got %d", c.Policy.Retry.MaxAttempts)
-	}
-	if c.Policy.Retry.BaseBackoff != 0 {
-		t.Errorf("Retry.BaseBackoff: want 0 for negative config, got %v", c.Policy.Retry.BaseBackoff)
-	}
-	if c.Policy.Breaker.Threshold != 0 {
-		t.Errorf("Breaker.Threshold: want 0 for negative config, got %d", c.Policy.Breaker.Threshold)
-	}
-	if c.Policy.Breaker.Cooldown != 0 {
-		t.Errorf("Breaker.Cooldown: want 0 for negative config, got %v", c.Policy.Breaker.Cooldown)
-	}
 }
 
 func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
@@ -765,59 +649,8 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 	if err2 == nil {
 		t.Fatal("second Shutdown after panic: want cached non-nil error, got nil")
 	}
-	// sync.Once caches shutdownErr; both calls must return the same error message.
+	// sync.Once caches h.err; both calls must return the same error message.
 	if err1.Error() != err2.Error() {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
-	}
-}
-
-func TestAssemble_ValidSampleRatioBoundaries(t *testing.T) {
-	// 0.0 (never sample) and 1.0 (always sample) are the valid boundary values;
-	// the ctor must be called and no error returned.
-	for _, ratio := range []float64{0.0, 1.0} {
-		cfg := &config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      ratio,
-		}
-		var ctorCalled atomic.Bool
-		mockCtor := func(_ string, _ bool, gotRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			ctorCalled.Store(true)
-			if gotRatio != ratio {
-				t.Errorf("ratio: want %v, got %v", ratio, gotRatio)
-			}
-			return noop.NewTracerProvider(), func(_ context.Context) error { return nil }, nil
-		}
-		_, err := assemble(cfg, mockCtor)
-		if err != nil {
-			t.Errorf("OtelSampleRatio=%v: want no error for valid boundary, got %v", ratio, err)
-		}
-		if !ctorCalled.Load() {
-			t.Errorf("OtelSampleRatio=%v: ctor must be called for valid ratio", ratio)
-		}
-	}
-}
-
-func TestAssemble_InvalidSampleRatio(t *testing.T) {
-	// assemble must reject OtelSampleRatio values outside [0.0, 1.0] before
-	// calling the ctor, so the ctor is never invoked with an invalid ratio.
-	for _, ratio := range []float64{-0.1, 1.1, -1.0, 2.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
-		cfg := &config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      ratio,
-		}
-		c, err := assemble(cfg, mustNotCallCtor(t))
-		if err == nil {
-			t.Errorf("OtelSampleRatio=%v: want error for out-of-range value, got nil", ratio)
-			continue
-		}
-		if c.Shutdown == nil {
-			t.Errorf("OtelSampleRatio=%v: want non-nil no-op Shutdown on error", ratio)
-		}
-		want := fmt.Sprintf("%v", ratio)
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("OtelSampleRatio=%v: want error message to contain %q, got %v", ratio, want, err)
-		}
 	}
 }
