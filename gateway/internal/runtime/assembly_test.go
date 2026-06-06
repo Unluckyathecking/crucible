@@ -211,12 +211,15 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 			return nil
 		}, nil
 	}
-	_, err = assemble(cfg, nilProviderWithShutdownCtor)
+	c2, err := assemble(cfg, nilProviderWithShutdownCtor)
 	if err == nil {
 		t.Fatal("want error when constructor returns nil provider, got nil")
 	}
 	if !shutdownCalled.Load() {
 		t.Error("shutdown cleanup must be called when constructor returns nil provider with non-nil shutdown")
+	}
+	if c2.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on nil provider with cleanup error")
 	}
 }
 
@@ -473,8 +476,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		// Verifies that concurrent Shutdown calls where the delegate panics are
 		// race-free under -race: sync.Once + recover() must ensure exactly one
 		// panic is captured and all concurrent callers receive the same cached error.
+		var panicCount atomic.Int32
 		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
+				panicCount.Add(1)
 				panic("concurrent panic test")
 			}, nil
 		}
@@ -497,6 +502,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 		wg.Wait()
 		close(errs)
+		if panicCount.Load() != 1 {
+			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
+		}
 		var ref string
 		count := 0
 		for e := range errs {
@@ -540,8 +548,12 @@ func TestAssemble_ZeroConfigTreatedAsDisabled(t *testing.T) {
 }
 
 func TestAssemble_AllEnabled(t *testing.T) {
+	var shutdownCalled atomic.Bool
 	mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		return noop.NewTracerProvider(), func(_ context.Context) error { return nil }, nil
+		return noop.NewTracerProvider(), func(_ context.Context) error {
+			shutdownCalled.Store(true)
+			return nil
+		}, nil
 	}
 
 	cfg := &config.Config{
@@ -577,6 +589,9 @@ func TestAssemble_AllEnabled(t *testing.T) {
 	}
 	if err := c.Shutdown(context.Background()); err != nil {
 		t.Errorf("shutdown: unexpected error %v", err)
+	}
+	if !shutdownCalled.Load() {
+		t.Error("shutdown delegate was not called")
 	}
 }
 

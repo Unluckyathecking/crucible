@@ -24,14 +24,16 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// ctx is the parent context; a tracerCleanupTimeout deadline is added on top so
-// a hung exporter cannot stall startup regardless of the parent's own deadline.
-// Cleanup is synchronous; callers block for at most tracerCleanupTimeout.
+// ctx is accepted for future extensibility; cleanup always uses a fresh
+// background-derived timeout so a pre-cancelled parent context cannot prevent
+// cleanup from running. Callers block for at most tracerCleanupTimeout.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	ctx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
+	// Always derive from Background so cleanup cannot be cut short by a
+	// cancelled parent context — startup has no request context.
+	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 	defer cancel()
 	if shutdownErr := shutdown(ctx); shutdownErr != nil {
 		if baseErr == nil {
@@ -40,35 +42,6 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 		return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 	}
 	return baseErr
-}
-
-// shutdownHandle wraps sync.Once to call h.fn at most once and cache the result.
-// The closure passed to once.Do recovers any panic from h.fn and stores it as an
-// error, so the closure always returns normally; once.Do marks it done on the
-// first call regardless of panics.
-type shutdownHandle struct {
-	once sync.Once
-	err  error
-	fn   func(context.Context) error
-}
-
-func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
-	if fn == nil {
-		fn = noopShutdown
-	}
-	return &shutdownHandle{fn: fn}
-}
-
-func (h *shutdownHandle) shutdown(ctx context.Context) error {
-	h.once.Do(func() {
-		defer func() {
-			if r := recover(); r != nil {
-				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
-			}
-		}()
-		h.err = h.fn(ctx)
-	})
-	return h.err
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
@@ -98,8 +71,8 @@ func Assemble(cfg *config.Config) (Components, error) {
 
 // assemble is the testable core of Assemble. ctor injects the tracer-provider
 // factory so tests can avoid dialling a real OTLP endpoint. cfg must not be nil.
-func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (c Components, err error) {
-	c = Components{Shutdown: noopShutdown}
+func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.TracerProvider, func(context.Context) error, error)) (Components, error) {
+	c := Components{Shutdown: noopShutdown}
 	if cfg == nil {
 		return c, errors.New("runtime: config is nil")
 	}
@@ -126,8 +99,30 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			return c, cleanupTracer(context.Background(), shutdown, nilErr)
 		}
 		c.TracerProvider = tp
-		handle := newShutdownHandle(shutdown)
-		c.Shutdown = handle.shutdown
+		// shutdownFn is an explicit value copy of the constructor's cleanup func.
+		// The closure below calls it exactly once via sync.Once and caches the
+		// result; panics are recovered and stored as errors. The first caller's
+		// context is used; subsequent callers receive the cached result regardless
+		// of their context.
+		shutdownFn := shutdown
+		if shutdownFn == nil {
+			shutdownFn = noopShutdown
+		}
+		var (
+			once        sync.Once
+			shutdownErr error
+		)
+		c.Shutdown = func(ctx context.Context) error {
+			once.Do(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
+					}
+				}()
+				shutdownErr = shutdownFn(ctx)
+			})
+			return shutdownErr
+		}
 	}
 
 	return c, nil
