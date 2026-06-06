@@ -49,7 +49,11 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 	}()
 	if shutdownErr != nil {
 		if timeoutCtx.Err() != nil {
-			shutdownErr = fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err())
+			// Preserve both the timeout cause and the original shutdown error.
+			shutdownErr = errors.Join(
+				fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err()),
+				shutdownErr,
+			)
 		}
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)

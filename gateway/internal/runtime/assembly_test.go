@@ -742,3 +742,82 @@ func TestAssemble_ShutdownPanicRecovered(t *testing.T) {
 		t.Errorf("cached panic error: want same error message, got %q and %q", err1.Error(), err2.Error())
 	}
 }
+
+func TestCleanupTracer(t *testing.T) {
+	t.Run("nil-shutdown", func(t *testing.T) {
+		baseErr := errors.New("base")
+		got := cleanupTracer(context.Background(), nil, baseErr)
+		if got != baseErr {
+			t.Errorf("nil shutdown: want baseErr back, got %v", got)
+		}
+	})
+
+	t.Run("success-nil-base", func(t *testing.T) {
+		got := cleanupTracer(context.Background(), func(_ context.Context) error { return nil }, nil)
+		if got != nil {
+			t.Errorf("success/nil base: want nil, got %v", got)
+		}
+	})
+
+	t.Run("success-with-base", func(t *testing.T) {
+		baseErr := errors.New("base")
+		got := cleanupTracer(context.Background(), func(_ context.Context) error { return nil }, baseErr)
+		if got != baseErr {
+			t.Errorf("success/base: want baseErr, got %v", got)
+		}
+	})
+
+	t.Run("shutdown-error-nil-base", func(t *testing.T) {
+		shutErr := errors.New("shutdown failed")
+		got := cleanupTracer(context.Background(), func(_ context.Context) error { return shutErr }, nil)
+		if got == nil {
+			t.Fatal("want non-nil error, got nil")
+		}
+		if !errors.Is(got, shutErr) {
+			t.Errorf("want wrapped shutErr, got %v", got)
+		}
+	})
+
+	t.Run("both-errors-joined", func(t *testing.T) {
+		baseErr := errors.New("base")
+		shutErr := errors.New("shutdown failed")
+		got := cleanupTracer(context.Background(), func(_ context.Context) error { return shutErr }, baseErr)
+		if !errors.Is(got, baseErr) {
+			t.Errorf("want baseErr in joined error, got %v", got)
+		}
+		if !errors.Is(got, shutErr) {
+			t.Errorf("want shutErr in joined error, got %v", got)
+		}
+	})
+
+	t.Run("panic-recovered", func(t *testing.T) {
+		got := cleanupTracer(context.Background(), func(_ context.Context) error {
+			panic("boom")
+		}, nil)
+		if got == nil {
+			t.Fatal("want non-nil error after panic, got nil")
+		}
+		if !strings.Contains(got.Error(), "panicked") {
+			t.Errorf("want error mentioning panicked, got %v", got)
+		}
+	})
+
+	t.Run("timeout-preserves-shutdown-error", func(t *testing.T) {
+		// Use a pre-cancelled context so the timeout sub-context expires immediately,
+		// making timeoutCtx.Err() non-nil on the first check after shutdown returns.
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		shutErr := errors.New("shutdown error")
+		got := cleanupTracer(cancelledCtx, func(_ context.Context) error { return shutErr }, nil)
+		if got == nil {
+			t.Fatal("want non-nil error, got nil")
+		}
+		if !errors.Is(got, shutErr) {
+			t.Errorf("want original shutErr preserved, got %v", got)
+		}
+		if !strings.Contains(got.Error(), "timed out") {
+			t.Errorf("want timeout context mentioned, got %v", got)
+		}
+	})
+}
