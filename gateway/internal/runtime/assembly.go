@@ -36,17 +36,7 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 	return &shutdownHandle{fn: fn}
 }
 
-func (h *shutdownHandle) shutdown(ctx context.Context) (err error) {
-	// Outer guard catches any panic that escapes once.Do (e.g. a future bug
-	// in the underlying SDK). The inner recover is the primary path: it catches
-	// h.fn panics and stores them in h.err before f returns normally, ensuring
-	// sync.Once marks done=1 and all concurrent callers see the cached error
-	// via the happens-before on done.
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
-		}
-	}()
+func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -55,6 +45,9 @@ func (h *shutdownHandle) shutdown(ctx context.Context) (err error) {
 		}()
 		h.err = h.fn(ctx)
 	})
+	// The inner recover ensures f always returns normally, so sync.Once marks
+	// done=1 and all concurrent and subsequent callers see h.err via the
+	// happens-before on done.
 	return h.err
 }
 
@@ -78,13 +71,7 @@ type Components struct {
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
-		if tp == nil {
-			// Return untyped nil so assemble's tp==nil guard sees a nil interface,
-			// not a non-nil interface wrapping a typed nil *sdktrace.TracerProvider.
-			return nil, shutdown, err
-		}
-		return tp, shutdown, err
+		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
 }
 

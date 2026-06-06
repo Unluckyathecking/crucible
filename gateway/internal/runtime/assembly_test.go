@@ -200,6 +200,9 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	if c.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider error")
 	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("no-op shutdown on nil provider: unexpected error %v", err)
+	}
 
 	// When the constructor returns (nil, nonNilShutdown, nil), the cleanup func
 	// must be called to avoid leaking any resources it holds.
@@ -241,8 +244,11 @@ func TestAssemble_TracingNilShutdown(t *testing.T) {
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil")
 	}
-	if err := c.Shutdown(context.Background()); err != nil {
-		t.Errorf("shutdown: unexpected error %v", err)
+	// Call twice to verify the substituted no-op is idempotent and error-free.
+	for i := 0; i < 2; i++ {
+		if err := c.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown call %d: unexpected error %v", i+1, err)
+		}
 	}
 }
 
@@ -297,8 +303,11 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		if c.Shutdown == nil {
 			t.Fatal("Shutdown: want non-nil no-op even on partial error")
 		}
-		if err := c.Shutdown(context.Background()); err != nil {
-			t.Errorf("Shutdown on partial error: unexpected error %v", err)
+		// Call twice to confirm the no-op is safe and idempotent.
+		for i := 0; i < 2; i++ {
+			if err := c.Shutdown(context.Background()); err != nil {
+				t.Errorf("Shutdown on partial error (call %d): unexpected error %v", i+1, err)
+			}
 		}
 	})
 
