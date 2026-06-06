@@ -41,10 +41,6 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 		}()
 		shutdownErr = shutdown(timeoutCtx)
 	}()
-	// Surface context expiry when shutdown returns nil without honouring cancellation.
-	if shutdownErr == nil && timeoutCtx.Err() != nil {
-		shutdownErr = fmt.Errorf("runtime: tracer cleanup incomplete: %w", timeoutCtx.Err())
-	}
 	if shutdownErr != nil {
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
@@ -90,7 +86,8 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 		return c, errors.New("runtime: config is nil")
 	}
 
-	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative.
+	// config.Load is expected to validate WorkerRetryMax and WorkerBreakerThreshold
+	// as non-negative; negative values are treated as disabled (same as zero).
 	// >0 is the activation gate for retry/breaker; zero means disabled.
 	// Tracing is gated separately by OtelTracingEnabled.
 	if cfg.WorkerRetryMax > 0 {

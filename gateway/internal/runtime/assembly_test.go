@@ -499,41 +499,33 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		const n = 10
-		errs := make(chan error, n)
 		var wg sync.WaitGroup
+		errs := make([]error, n)
 		for i := 0; i < n; i++ {
 			wg.Add(1)
-			go func() {
+			go func(i int) {
 				defer wg.Done()
-				errs <- tc.Shutdown(context.Background())
-			}()
+				errs[i] = tc.Shutdown(context.Background())
+			}(i)
 		}
-		go func() {
-			wg.Wait()
-			close(errs)
-		}()
+		wg.Wait()
+		if panicCount.Load() != 1 {
+			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
+		}
 		var ref string
-		count := 0
-		for e := range errs {
-			count++
+		for i, e := range errs {
 			if e == nil {
-				t.Error("want non-nil error after panic, got nil")
+				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
 				continue
 			}
 			if !strings.Contains(e.Error(), "panicked") {
-				t.Errorf("want error mentioning 'panicked', got %v", e)
+				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
 			}
 			if ref == "" {
 				ref = e.Error()
 			} else if e.Error() != ref {
 				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
 			}
-		}
-		if panicCount.Load() != 1 {
-			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
-		}
-		if count != n {
-			t.Errorf("want %d errors from concurrent shutdown, got %d", n, count)
 		}
 	})
 }
