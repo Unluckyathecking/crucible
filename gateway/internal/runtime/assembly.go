@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -62,7 +63,7 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %+v", r)
+				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %+v\n%s", r, debug.Stack())
 			}
 		}()
 		h.err = h.fn(ctx)
