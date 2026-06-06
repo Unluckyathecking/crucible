@@ -221,6 +221,9 @@ func TestAssemble_TracingNilProvider(t *testing.T) {
 	if c2.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on nil provider with cleanup error")
 	}
+	if err := c2.Shutdown(context.Background()); err != nil {
+		t.Errorf("no-op shutdown on nil provider with cleanup: unexpected error %v", err)
+	}
 }
 
 func TestAssemble_TracingNilShutdown(t *testing.T) {
