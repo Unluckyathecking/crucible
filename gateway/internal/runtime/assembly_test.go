@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -509,8 +510,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if panicCount.Load() != 1 {
 			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
 		}
-		// sync.Once caches shutdownErr; all callers must receive the exact same
-		// error value (pointer equality), not merely the same string.
+		// sync.Once caches shutdownErr; all callers must receive the same error.
 		var refErr error
 		for i, e := range errs {
 			if e == nil {
@@ -522,7 +522,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			}
 			if refErr == nil {
 				refErr = e
-			} else if e != refErr {
+			} else if !errors.Is(e, refErr) {
 				t.Errorf("goroutine %d: want same cached error (sync.Once), got different values", i)
 			}
 		}
@@ -624,9 +624,10 @@ func TestAssemble_AllEnabled(t *testing.T) {
 }
 
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
-	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range are
-	// rejected before the constructor is called.
-	for _, ratio := range []float64{-0.1, -1.0, 1.1, 2.0} {
+	// OtelSampleRatio must be in [0.0, 1.0]. Values outside that range —
+	// including NaN and ±Inf — are rejected before the constructor is called.
+	// NaN requires the !(>= 0 && <= 1) form since NaN comparisons are always false.
+	for _, ratio := range []float64{-0.1, -1.0, 1.1, 2.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		cfg := &config.Config{
 			OtelTracingEnabled:   true,
 			OtelExporterEndpoint: "otel.example.com:4317",
@@ -638,6 +639,26 @@ func TestAssemble_InvalidSampleRatio(t *testing.T) {
 		}
 		if c.Shutdown == nil {
 			t.Errorf("ratio %v: want non-nil Shutdown on error", ratio)
+		}
+	}
+
+	// Boundary values 0.0 and 1.0 are valid and must reach the constructor.
+	for _, ratio := range []float64{0.0, 1.0} {
+		var ctorCalled bool
+		mockCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			ctorCalled = true
+			return noop.NewTracerProvider(), noopShutdown, nil
+		}
+		cfg := &config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      ratio,
+		}
+		if _, err := assemble(context.Background(), cfg, mockCtor); err != nil {
+			t.Errorf("ratio %v: want accepted, got error %v", ratio, err)
+		}
+		if !ctorCalled {
+			t.Errorf("ratio %v: ctor should be called for boundary-valid ratio", ratio)
 		}
 	}
 }

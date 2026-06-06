@@ -27,6 +27,8 @@ func noopShutdown(_ context.Context) error { return nil }
 // most tracerCleanupTimeout (or the remaining deadline of ctx, whichever is shorter).
 // Shutdown runs in a goroutine so a hung provider cannot block the caller beyond
 // the deadline. Panics from shutdown are recovered and returned as errors.
+// If shutdown ignores context cancellation entirely, the goroutine may outlive
+// the call; this is an acceptable trade-off against stalling server startup.
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
@@ -39,7 +41,11 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 		var r result
 		defer func() {
 			if rec := recover(); rec != nil {
-				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %v", rec)
+				recErr, _ := rec.(error)
+				if recErr == nil {
+					recErr = fmt.Errorf("%v", rec)
+				}
+				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %w", recErr)
 			}
 			select {
 			case ch <- r:
@@ -120,7 +126,7 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 	}
 
 	if cfg.OtelTracingEnabled {
-		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 {
+		if !(cfg.OtelSampleRatio >= 0 && cfg.OtelSampleRatio <= 1) {
 			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
 		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
@@ -149,7 +155,11 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 			once.Do(func() {
 				defer func() {
 					if r := recover(); r != nil {
-						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+						recErr, _ := r.(error)
+						if recErr == nil {
+							recErr = fmt.Errorf("%v", r)
+						}
+						shutdownErr = fmt.Errorf("runtime: tracer shutdown panicked: %w", recErr)
 					}
 				}()
 				shutdownErr = shutdownFn(shutdownCtx)
