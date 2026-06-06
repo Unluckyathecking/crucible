@@ -13,8 +13,8 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
-// noopShutdown is the no-op used for Components.Shutdown when tracing is
-// disabled. A single package-level value avoids a closure allocation on every
+// noopShutdown is used for Components.Shutdown when tracing is disabled.
+// A single package-level value avoids allocating a new closure on every
 // assemble call in the common (tracing-off) path.
 var noopShutdown = func(_ context.Context) error { return nil }
 
@@ -69,8 +69,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		if err != nil {
 			// If the constructor returned a cleanup func alongside the error,
 			// call it now to avoid leaking a partially-initialised provider.
-			// Join cleanup errors into the returned error so callers and
-			// observability systems see both failures.
+			// context.Background is used intentionally: assemble has no caller
+			// context to propagate, and this cleanup is best-effort on failure.
+			// Join any cleanup error into the returned error so both failures surface.
 			if shutdown != nil {
 				if shutdownErr := shutdown(context.Background()); shutdownErr != nil {
 					err = errors.Join(err, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
@@ -89,8 +90,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			shutdownFn = noopShutdown
 		}
 		c.TracerProvider = tp
-		// sync.Once guarantees the provider's shutdown runs exactly once;
-		// the result is cached and returned on all subsequent calls.
+		// sync.Once guarantees the provider shuts down exactly once. Per the
+		// Go memory model, the write to shutdownErr inside once.Do completes
+		// before the return of every concurrent Do call, so the subsequent
+		// read outside Do is safe without additional synchronisation.
 		var once sync.Once
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {

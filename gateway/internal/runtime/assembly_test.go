@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -69,8 +68,8 @@ func TestAssemble_RetryEnabled(t *testing.T) {
 	if c.Policy.Retry.MaxAttempts != 3 {
 		t.Errorf("MaxAttempts: want 3, got %d", c.Policy.Retry.MaxAttempts)
 	}
-	if c.Policy.Retry.BaseBackoff != 200*time.Millisecond {
-		t.Errorf("BaseBackoff: want 200ms, got %v", c.Policy.Retry.BaseBackoff)
+	if c.Policy.Retry.BaseBackoff != cfg.RetryBaseBackoff() {
+		t.Errorf("BaseBackoff: want %v, got %v", cfg.RetryBaseBackoff(), c.Policy.Retry.BaseBackoff)
 	}
 	if c.Policy.Breaker.Threshold != 0 {
 		t.Errorf("Breaker.Threshold should be zero when breaker disabled, got %d", c.Policy.Breaker.Threshold)
@@ -95,8 +94,8 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 	if c.Policy.Breaker.Threshold != 5 {
 		t.Errorf("Threshold: want 5, got %d", c.Policy.Breaker.Threshold)
 	}
-	if c.Policy.Breaker.Cooldown != 3*time.Second {
-		t.Errorf("Cooldown: want 3s, got %v", c.Policy.Breaker.Cooldown)
+	if c.Policy.Breaker.Cooldown != cfg.BreakerCooldown() {
+		t.Errorf("Cooldown: want %v, got %v", cfg.BreakerCooldown(), c.Policy.Breaker.Cooldown)
 	}
 	if c.Policy.Retry.MaxAttempts != 0 {
 		t.Errorf("Retry.MaxAttempts should be zero when retry disabled, got %d", c.Policy.Retry.MaxAttempts)
@@ -156,8 +155,8 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.TracerProvider == nil {
-		t.Error("TracerProvider: want non-nil")
+	if c.TracerProvider != fakeTP {
+		t.Errorf("TracerProvider: want fakeTP, got %v", c.TracerProvider)
 	}
 	if c.Shutdown == nil {
 		t.Fatal("Shutdown: want non-nil")
@@ -283,6 +282,32 @@ func TestAssemble_TracingPartialError(t *testing.T) {
 		c, err := assemble(cfg, partialCtor)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if c.TracerProvider != nil {
+			t.Error("TracerProvider: want nil when ctor returns error")
+		}
+		if !shutdownCalled {
+			t.Error("ctor cleanup func must be called when ctor returns non-nil shutdown with error")
+		}
+	})
+
+	t.Run("non-nil-shutdown-with-cleanup-error", func(t *testing.T) {
+		// When the cleanup func itself errors, assemble must join both the ctor
+		// error and the cleanup error so callers see both failures.
+		cleanupErr := errors.New("cleanup failed")
+		shutdownCalled := false
+		partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+			return fakeTP, func(_ context.Context) error {
+				shutdownCalled = true
+				return cleanupErr
+			}, wantErr
+		}
+		c, err := assemble(cfg, partialCtor)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("ctor error: want %v (or wrapping it), got %v", wantErr, err)
+		}
+		if !errors.Is(err, cleanupErr) {
+			t.Errorf("cleanup error: want %v joined into returned error, got %v", cleanupErr, err)
 		}
 		if c.TracerProvider != nil {
 			t.Error("TracerProvider: want nil when ctor returns error")
@@ -455,14 +480,14 @@ func TestAssemble_AllEnabled(t *testing.T) {
 	if c.Policy.Retry.MaxAttempts != 2 {
 		t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
 	}
-	if c.Policy.Retry.BaseBackoff != 100*time.Millisecond {
-		t.Errorf("Retry.BaseBackoff: want 100ms, got %v", c.Policy.Retry.BaseBackoff)
+	if c.Policy.Retry.BaseBackoff != cfg.RetryBaseBackoff() {
+		t.Errorf("Retry.BaseBackoff: want %v, got %v", cfg.RetryBaseBackoff(), c.Policy.Retry.BaseBackoff)
 	}
 	if c.Policy.Breaker.Threshold != 3 {
 		t.Errorf("Breaker.Threshold: want 3, got %d", c.Policy.Breaker.Threshold)
 	}
-	if c.Policy.Breaker.Cooldown != time.Second {
-		t.Errorf("Breaker.Cooldown: want 1s, got %v", c.Policy.Breaker.Cooldown)
+	if c.Policy.Breaker.Cooldown != cfg.BreakerCooldown() {
+		t.Errorf("Breaker.Cooldown: want %v, got %v", cfg.BreakerCooldown(), c.Policy.Breaker.Cooldown)
 	}
 	if c.TracerProvider == nil {
 		t.Error("TracerProvider: want non-nil")
