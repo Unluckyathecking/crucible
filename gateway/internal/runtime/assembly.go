@@ -14,10 +14,8 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
-// noopShutdown is used for Components.Shutdown when tracing is disabled.
-// A single package-level value avoids allocating a new closure on every
-// assemble call in the common (tracing-off) path.
-var noopShutdown = func(_ context.Context) error { return nil }
+// noopShutdown is the no-op Shutdown used when tracing is disabled or on error paths.
+func noopShutdown(_ context.Context) error { return nil }
 
 // shutdownHandle bundles a sync.Once with its cached error and the underlying
 // shutdown function. newShutdownHandle heap-allocates the handle; the returned
@@ -73,7 +71,13 @@ type Components struct {
 // On error, the returned Components always has a non-nil no-op Shutdown.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		return tracing.NewProvider(endpoint, insecure, sampleRatio)
+		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
+		if tp == nil {
+			// Return untyped nil so assemble's tp==nil guard sees a nil interface,
+			// not a non-nil interface wrapping a typed nil *sdktrace.TracerProvider.
+			return nil, shutdown, err
+		}
+		return tp, shutdown, err
 	})
 }
 
