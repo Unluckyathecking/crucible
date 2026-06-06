@@ -23,27 +23,19 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// shutdown runs in a goroutine so the tracerCleanupTimeout is enforced even when
-// the shutdown function ignores its context; a timeout is reported as a distinct error.
+// Cleanup is called synchronously: the context carries a tracerCleanupTimeout deadline
+// so well-behaved implementations (including the OTel SDK BatchSpanProcessor) return
+// promptly; the caller blocks for at most tracerCleanupTimeout.
 func cleanupTracer(shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
 	defer cancel()
-
-	done := make(chan error, 1)
-	go func() { done <- shutdown(ctx) }()
-
-	select {
-	case shutdownErr := <-done:
-		if shutdownErr != nil {
-			return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
-		}
-		return baseErr
-	case <-ctx.Done():
-		return errors.Join(baseErr, fmt.Errorf("runtime: tracer provider cleanup timed out after %v", tracerCleanupTimeout))
+	if shutdownErr := shutdown(ctx); shutdownErr != nil {
+		return errors.Join(baseErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 	}
+	return baseErr
 }
 
 // shutdownHandle wraps sync.Once to call h.fn at most once and cache the result.
@@ -72,7 +64,6 @@ func (h *shutdownHandle) shutdown(ctx context.Context) error {
 		}()
 		h.err = h.fn(ctx)
 	})
-	// once.Do's happens-before guarantee makes this read race-free.
 	return h.err
 }
 
