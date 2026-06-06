@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -541,8 +542,13 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			if !strings.Contains(e.Error(), "panicked") {
 				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
 			}
-			if i > 0 && e.Error() != errs[0].Error() {
-				t.Errorf("goroutine %d: want same cached error (sync.Once), got %q vs %q", i, e.Error(), errs[0].Error())
+			if i > 0 {
+				if errs[0] == nil {
+					t.Fatalf("errs[0] is nil but goroutine %d has non-nil error; impossible state", i)
+				}
+				if e.Error() != errs[0].Error() {
+					t.Errorf("goroutine %d: want same cached error (sync.Once), got %q vs %q", i, e.Error(), errs[0].Error())
+				}
 			}
 		}
 	})
@@ -645,45 +651,50 @@ func TestAssemble_AllEnabled(t *testing.T) {
 func TestAssemble_InvalidSampleRatio(t *testing.T) {
 	// OtelSampleRatio must be in [0.0, 1.0]. Values outside that range —
 	// including NaN and ±Inf — are rejected before the constructor is called.
-	// NaN requires the !(>= 0 && <= 1) form since NaN comparisons are always false.
 	for _, ratio := range []float64{-0.1, -1.0, 1.1, 2.0, math.NaN(), math.Inf(1), math.Inf(-1)} {
-		cfg := &config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      ratio,
-		}
-		c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
-		if err == nil {
-			t.Errorf("ratio %v: want error for out-of-range ratio, got nil", ratio)
-		}
-		if c.Shutdown == nil {
-			t.Errorf("ratio %v: want non-nil Shutdown on error", ratio)
-		}
+		ratio := ratio
+		t.Run(fmt.Sprintf("invalid/%v", ratio), func(t *testing.T) {
+			cfg := &config.Config{
+				OtelTracingEnabled:   true,
+				OtelExporterEndpoint: "otel.example.com:4317",
+				OtelSampleRatio:      ratio,
+			}
+			c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
+			if err == nil {
+				t.Fatalf("want error for out-of-range ratio %v, got nil", ratio)
+			}
+			if c.Shutdown == nil {
+				t.Fatal("want non-nil Shutdown on error")
+			}
+		})
 	}
 
 	// Boundary values 0.0 and 1.0 are valid and must reach the constructor with the correct ratio.
 	for _, ratio := range []float64{0.0, 1.0} {
-		var ctorCalled bool
-		var gotRatio float64
-		mockCtor := func(_ string, _ bool, r float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			ctorCalled = true
-			gotRatio = r
-			return noop.NewTracerProvider(), noopShutdown, nil
-		}
-		cfg := &config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-			OtelSampleRatio:      ratio,
-		}
-		if _, err := assemble(context.Background(), cfg, mockCtor); err != nil {
-			t.Errorf("ratio %v: want accepted, got error %v", ratio, err)
-		}
-		if !ctorCalled {
-			t.Errorf("ratio %v: ctor should be called for boundary-valid ratio", ratio)
-		}
-		if gotRatio != ratio {
-			t.Errorf("ratio %v: ctor received wrong sample ratio %v", ratio, gotRatio)
-		}
+		ratio := ratio
+		t.Run(fmt.Sprintf("valid/%v", ratio), func(t *testing.T) {
+			var ctorCalled bool
+			var gotRatio float64
+			mockCtor := func(_ string, _ bool, r float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+				ctorCalled = true
+				gotRatio = r
+				return noop.NewTracerProvider(), noopShutdown, nil
+			}
+			cfg := &config.Config{
+				OtelTracingEnabled:   true,
+				OtelExporterEndpoint: "otel.example.com:4317",
+				OtelSampleRatio:      ratio,
+			}
+			if _, err := assemble(context.Background(), cfg, mockCtor); err != nil {
+				t.Fatalf("want ratio %v accepted, got error %v", ratio, err)
+			}
+			if !ctorCalled {
+				t.Fatal("ctor should be called for boundary-valid ratio")
+			}
+			if gotRatio != ratio {
+				t.Errorf("ctor received wrong sample ratio: want %v, got %v", ratio, gotRatio)
+			}
+		})
 	}
 }
 
@@ -825,10 +836,9 @@ func TestCleanupTracer(t *testing.T) {
 	})
 
 	t.Run("timeout-preserves-shutdown-error", func(t *testing.T) {
-		// Pass a context whose deadline is already in the past so that the child
-		// context created by cleanupTracer inherits context.DeadlineExceeded immediately.
-		// This exercises the errors.Join path that preserves both the timeout error
-		// and the original shutdown error.
+		// Pass a context whose deadline is already in the past so that timeoutCtx.Err()
+		// is non-nil immediately after shutdown returns, exercising the errors.Join path
+		// that preserves both the timeout wrapper and the original shutdown error.
 		expiredCtx, expCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer expCancel()
 

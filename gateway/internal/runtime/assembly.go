@@ -49,7 +49,7 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 		shutdownErr = shutdown(timeoutCtx)
 	}()
 	if shutdownErr != nil {
-		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		if timeoutCtx.Err() != nil {
 			// Preserve both the timeout cause and the original shutdown error.
 			shutdownErr = errors.Join(
 				fmt.Errorf("runtime: tracer cleanup timed out: %w", timeoutCtx.Err()),
@@ -65,14 +65,12 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 }
 
 // Components holds the assembled runtime dependencies ready for injection into
-// proxy.New and server.Deps. Always obtain Components through Assemble — the
-// zero value has a nil Shutdown and is unsafe to use.
+// proxy.New and server.Deps. Call Assemble to obtain a correctly initialised
+// Components; Assemble always sets Shutdown to a non-nil no-op at minimum.
 //
-// Values returned by Assemble are always safe: a zero ResiliencePolicy means
-// single-shot (no retry, no breaker); a nil TracerProvider means no-op tracing;
-// Shutdown is always non-nil (it is the no-op on any error return from Assemble).
-//
-// The unexported _ field prevents positional struct literals outside this package.
+// A zero ResiliencePolicy means single-shot (no retry, no breaker); a nil
+// TracerProvider means no-op tracing. The unexported _ field prevents
+// positional struct literals outside this package.
 type Components struct {
 	Policy         proxy.ResiliencePolicy
 	TracerProvider oteltrace.TracerProvider
