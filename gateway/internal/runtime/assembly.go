@@ -28,15 +28,7 @@ type Components struct {
 // shutdown — preserving today's exact single-shot behaviour.
 func Assemble(cfg *config.Config) (Components, error) {
 	return assemble(cfg, func(endpoint string, insecure bool, sampleRatio float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-		// tracing.NewProvider returns *sdktrace.TracerProvider (a concrete type).
-		// Assigning a nil concrete pointer to an interface produces a non-nil interface
-		// value, defeating the nil guard in assemble. We check the concrete pointer
-		// before the implicit conversion to preserve nil-interface semantics.
-		tp, shutdown, err := tracing.NewProvider(endpoint, insecure, sampleRatio)
-		if tp == nil {
-			return nil, shutdown, err
-		}
-		return tp, shutdown, err
+		return tracing.NewProvider(endpoint, insecure, sampleRatio)
 	})
 }
 
@@ -79,12 +71,11 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		c.TracerProvider = tp
 		// sync.Once guarantees the provider's shutdown runs exactly once;
 		// the result is cached and returned on all subsequent calls.
-		shutdownFn := shutdown // explicit copy; avoids any ambiguity about closure capture
 		var once sync.Once
 		var shutdownErr error
 		c.Shutdown = func(ctx context.Context) error {
 			once.Do(func() {
-				shutdownErr = shutdownFn(ctx)
+				shutdownErr = shutdown(ctx)
 			})
 			return shutdownErr
 		}

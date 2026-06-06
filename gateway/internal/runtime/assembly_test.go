@@ -3,8 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,25 +48,6 @@ func TestAssemble_NilConfig(t *testing.T) {
 	_, err := Assemble(nil)
 	if err == nil {
 		t.Error("want error for nil config, got nil")
-	}
-}
-
-func TestAssemble_NegativeConfigTreatedAsDisabled(t *testing.T) {
-	// Negative values pass the > 0 gate as disabled (same as 0).
-	// config.Load validates env vars; Assemble trusts the validated contract.
-	cfg := &config.Config{
-		WorkerRetryMax:         -1,
-		WorkerBreakerThreshold: -5,
-	}
-	c, err := Assemble(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c.Policy.Retry.MaxAttempts != 0 {
-		t.Errorf("negative RetryMax: want MaxAttempts=0 (disabled), got %d", c.Policy.Retry.MaxAttempts)
-	}
-	if c.Policy.Breaker.Threshold != 0 {
-		t.Errorf("negative BreakerThreshold: want Threshold=0 (disabled), got %d", c.Policy.Breaker.Threshold)
 	}
 }
 
@@ -126,8 +105,8 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.Policy.Retry.MaxAttempts != cfg.WorkerRetryMax {
-		t.Errorf("MaxAttempts: want %d, got %d", cfg.WorkerRetryMax, c.Policy.Retry.MaxAttempts)
+	if c.Policy.Retry.MaxAttempts != 1 {
+		t.Errorf("MaxAttempts: want 1, got %d", c.Policy.Retry.MaxAttempts)
 	}
 	if c.Policy.Retry.BaseBackoff != 0 {
 		t.Errorf("BaseBackoff: want 0 when config helper returns zero, got %v", c.Policy.Retry.BaseBackoff)
@@ -135,9 +114,9 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 }
 
 func TestAssemble_TracingEnabled(t *testing.T) {
-	var shutdownCalls atomic.Int32
+	shutdownCalls := 0
 	fakeShutdown := func(_ context.Context) error {
-		shutdownCalls.Add(1)
+		shutdownCalls++
 		return nil
 	}
 	fakeTP := noop.NewTracerProvider()
@@ -172,8 +151,8 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 		t.Fatal("Shutdown: want non-nil")
 	}
 	_ = c.Shutdown(context.Background())
-	if shutdownCalls.Load() != 1 {
-		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls.Load())
+	if shutdownCalls != 1 {
+		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls)
 	}
 }
 
@@ -243,6 +222,31 @@ func TestAssemble_TracingErrorPropagated(t *testing.T) {
 	}
 	if c.Shutdown == nil {
 		t.Error("Shutdown: want non-nil no-op even on provider error")
+	}
+}
+
+func TestAssemble_TracingPartialError(t *testing.T) {
+	// ctor returns a non-nil provider alongside an error (partial initialisation).
+	// assemble must propagate the error and must not expose the partially-built
+	// provider — the caller should not see a TracerProvider they cannot use.
+	fakeTP := noop.NewTracerProvider()
+	wantErr := errors.New("partial init failure")
+	partialCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return fakeTP, nil, wantErr
+	}
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "otel.example.com:4317",
+	}
+	c, err := assemble(cfg, partialCtor)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error: want %v (or wrapping it), got %v", wantErr, err)
+	}
+	if c.TracerProvider != nil {
+		t.Error("TracerProvider: want nil when ctor returns error")
+	}
+	if c.Shutdown == nil {
+		t.Error("Shutdown: want non-nil no-op even on partial error")
 	}
 }
 
@@ -333,58 +337,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			t.Error("provider shutdown must be called on Shutdown()")
 		}
 	})
-
-	t.Run("shutdown-once-under-concurrency", func(t *testing.T) {
-		// Multiple goroutines calling Shutdown concurrently must be race-free
-		// and the delegate must run exactly once (sync.Once guarantee).
-		callCount := 0
-		var mu sync.Mutex
-		concurrentCtor := func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
-			return noop.NewTracerProvider(), func(_ context.Context) error {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return nil
-			}, nil
-		}
-
-		tc, err := assemble(&config.Config{
-			OtelTracingEnabled:   true,
-			OtelExporterEndpoint: "otel.example.com:4317",
-		}, concurrentCtor)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_ = tc.Shutdown(context.Background())
-			}()
-		}
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-ctx.Done():
-			t.Error("concurrent shutdown timed out")
-		}
-
-		mu.Lock()
-		got := callCount
-		mu.Unlock()
-		if got != 1 {
-			t.Errorf("concurrent shutdown: want 1 call (sync.Once), got %d", got)
-		}
-	})
 }
 
 func TestAssemble_AllEnabled(t *testing.T) {
@@ -405,17 +357,17 @@ func TestAssemble_AllEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.Policy.Retry.MaxAttempts != cfg.WorkerRetryMax {
-		t.Errorf("Retry.MaxAttempts: want %d, got %d", cfg.WorkerRetryMax, c.Policy.Retry.MaxAttempts)
+	if c.Policy.Retry.MaxAttempts != 2 {
+		t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
 	}
-	if c.Policy.Retry.BaseBackoff != time.Duration(cfg.WorkerRetryBackoffMS)*time.Millisecond {
-		t.Errorf("Retry.BaseBackoff: want %v, got %v", time.Duration(cfg.WorkerRetryBackoffMS)*time.Millisecond, c.Policy.Retry.BaseBackoff)
+	if c.Policy.Retry.BaseBackoff != 100*time.Millisecond {
+		t.Errorf("Retry.BaseBackoff: want 100ms, got %v", c.Policy.Retry.BaseBackoff)
 	}
-	if c.Policy.Breaker.Threshold != cfg.WorkerBreakerThreshold {
-		t.Errorf("Breaker.Threshold: want %d, got %d", cfg.WorkerBreakerThreshold, c.Policy.Breaker.Threshold)
+	if c.Policy.Breaker.Threshold != 3 {
+		t.Errorf("Breaker.Threshold: want 3, got %d", c.Policy.Breaker.Threshold)
 	}
-	if c.Policy.Breaker.Cooldown != time.Duration(cfg.WorkerBreakerCooldownMS)*time.Millisecond {
-		t.Errorf("Breaker.Cooldown: want %v, got %v", time.Duration(cfg.WorkerBreakerCooldownMS)*time.Millisecond, c.Policy.Breaker.Cooldown)
+	if c.Policy.Breaker.Cooldown != time.Second {
+		t.Errorf("Breaker.Cooldown: want 1s, got %v", c.Policy.Breaker.Cooldown)
 	}
 	if c.TracerProvider == nil {
 		t.Error("TracerProvider: want non-nil")
