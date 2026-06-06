@@ -116,7 +116,7 @@ func TestAssemble_BreakerEnabled(t *testing.T) {
 
 func TestAssemble_TracingEnabled(t *testing.T) {
 	orig := tracerProviderConstructor
-	t.Cleanup(func() { tracerProviderConstructor = orig })
+	defer func() { tracerProviderConstructor = orig }()
 
 	shutdownCalls := 0
 	fakeShutdown := func(_ context.Context) error {
@@ -160,9 +160,58 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 	}
 }
 
+func TestAssemble_TracingNilProvider(t *testing.T) {
+	// If the constructor returns (nil, nil, nil) Assemble must error rather than
+	// silently delivering a nil TracerProvider to callers who expect a real one.
+	orig := tracerProviderConstructor
+	defer func() { tracerProviderConstructor = orig }()
+
+	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return nil, nil, nil
+	}
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "otel.example.com:4317",
+	}
+	_, err := Assemble(cfg)
+	if err == nil {
+		t.Error("want error when constructor returns nil provider, got nil")
+	}
+}
+
+func TestAssemble_TracingNilShutdown(t *testing.T) {
+	// If the constructor returns a non-nil provider with nil shutdown (contract
+	// violation), the nil-shutdown guard substitutes a no-op so Shutdown() is
+	// always safe to call.
+	orig := tracerProviderConstructor
+	defer func() { tracerProviderConstructor = orig }()
+
+	fakeTP := noop.NewTracerProvider()
+	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
+		return fakeTP, nil, nil
+	}
+	cfg := &config.Config{
+		OtelTracingEnabled:   true,
+		OtelExporterEndpoint: "otel.example.com:4317",
+	}
+	c, err := Assemble(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.TracerProvider != fakeTP {
+		t.Error("TracerProvider: want fakeTP")
+	}
+	if c.Shutdown == nil {
+		t.Fatal("Shutdown: want non-nil")
+	}
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Errorf("shutdown: unexpected error %v", err)
+	}
+}
+
 func TestAssemble_TracingErrorPropagated(t *testing.T) {
 	orig := tracerProviderConstructor
-	t.Cleanup(func() { tracerProviderConstructor = orig })
+	defer func() { tracerProviderConstructor = orig }()
 
 	wantErr := errors.New("mock exporter failure")
 	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
@@ -204,6 +253,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 
 	t.Run("tracing-once-counted", func(t *testing.T) {
 		// sync.Once ensures the provider delegate runs exactly once.
+		orig := tracerProviderConstructor
+		defer func() { tracerProviderConstructor = orig }()
+
 		callCount := 0
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -211,7 +263,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				return nil
 			}, nil
 		}
-		t.Cleanup(func() { tracerProviderConstructor = orig })
 
 		tc, err := Assemble(&config.Config{
 			OtelTracingEnabled:   true,
@@ -230,13 +281,15 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 	t.Run("shutdown-error-cached", func(t *testing.T) {
 		// When the provider shutdown returns an error, sync.Once caches it;
 		// subsequent calls return the same error without re-invoking shutdown.
+		orig := tracerProviderConstructor
+		defer func() { tracerProviderConstructor = orig }()
+
 		wantErr := errors.New("provider shutdown failed")
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
 				return wantErr
 			}, nil
 		}
-		t.Cleanup(func() { tracerProviderConstructor = orig })
 
 		tc, err := Assemble(&config.Config{
 			OtelTracingEnabled:   true,
@@ -255,10 +308,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
-	t.Run("provider-shutdown-called", func(t *testing.T) {
-		// Verifies that the provider shutdown function is invoked on Shutdown().
-		// Note: prevShutdown is always the no-op at assembly time; the errors.Join
-		// path where both fail is not exercisable through the public API.
+	t.Run("tracing-shutdown-calls-provider-delegate", func(t *testing.T) {
+		orig := tracerProviderConstructor
+		defer func() { tracerProviderConstructor = orig }()
+
 		providerShutdownRan := false
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 			return noop.NewTracerProvider(), func(_ context.Context) error {
@@ -266,7 +319,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				return nil
 			}, nil
 		}
-		t.Cleanup(func() { tracerProviderConstructor = orig })
 
 		tc, err := Assemble(&config.Config{
 			OtelTracingEnabled:   true,
@@ -283,9 +335,12 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		}
 	})
 
-	t.Run("concurrent-idempotent", func(t *testing.T) {
+	t.Run("shutdown-once-under-concurrency", func(t *testing.T) {
 		// Multiple goroutines calling Shutdown concurrently must be race-free
 		// and the delegate must run exactly once (sync.Once guarantee).
+		orig := tracerProviderConstructor
+		defer func() { tracerProviderConstructor = orig }()
+
 		callCount := 0
 		var mu sync.Mutex
 		tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
@@ -296,7 +351,6 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 				return nil
 			}, nil
 		}
-		t.Cleanup(func() { tracerProviderConstructor = orig })
 
 		tc, err := Assemble(&config.Config{
 			OtelTracingEnabled:   true,
@@ -327,7 +381,7 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 
 func TestAssemble_AllEnabled(t *testing.T) {
 	orig := tracerProviderConstructor
-	t.Cleanup(func() { tracerProviderConstructor = orig })
+	defer func() { tracerProviderConstructor = orig }()
 
 	tracerProviderConstructor = func(_ string, _ bool, _ float64) (oteltrace.TracerProvider, func(context.Context) error, error) {
 		return noop.NewTracerProvider(), func(_ context.Context) error { return nil }, nil

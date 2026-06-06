@@ -64,10 +64,13 @@ func Assemble(cfg *config.Config) (Components, error) {
 		if shutdown == nil {
 			shutdown = func(_ context.Context) error { return nil }
 		}
+		if tp == nil {
+			return c, fmt.Errorf("runtime: tracer provider constructor returned nil provider")
+		}
 		c.TracerProvider = tp
-		// Chain prev shutdown before the provider's shutdown so future resilience
-		// subsystems that register their own shutdown are not silently dropped.
-		// errors.Join ensures both always run even when one fails.
+		// Chain the provider shutdown after any previous shutdown. sync.Once
+		// guarantees the delegate runs exactly once; the result is cached and
+		// returned on all subsequent calls regardless of the context passed.
 		prevShutdown := c.Shutdown
 		var once sync.Once
 		var shutdownErr error
