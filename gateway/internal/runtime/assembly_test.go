@@ -436,11 +436,11 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if callCount.Load() != 1 {
 			t.Errorf("shutdown delegate calls: want 1 (sync.Once), got %d", callCount.Load())
 		}
-		if err1 != wantErr {
-			t.Errorf("first shutdown: want %v, got %v", wantErr, err1)
+		if !errors.Is(err1, wantErr) {
+			t.Errorf("first shutdown: want %v (via errors.Is), got %v", wantErr, err1)
 		}
-		if err2 != wantErr {
-			t.Errorf("second shutdown: want same cached error %v, got %v", wantErr, err2)
+		if !errors.Is(err2, wantErr) {
+			t.Errorf("second shutdown: want %v (via errors.Is), got %v", wantErr, err2)
 		}
 		if err1 != err2 {
 			t.Errorf("cached error: want identical error value, got %v vs %v", err1, err2)
