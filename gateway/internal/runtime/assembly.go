@@ -43,16 +43,17 @@ func newShutdownHandle(fn func(context.Context) error) *shutdownHandle {
 
 func (h *shutdownHandle) shutdown(ctx context.Context) error {
 	h.once.Do(func() {
-		var panicked bool
 		defer func() {
 			if r := recover(); r != nil {
-				panicked = true
-				h.err = fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+				panicErr := fmt.Errorf("runtime: tracer shutdown panicked: %v", r)
+				if h.err != nil {
+					h.err = errors.Join(h.err, panicErr)
+				} else {
+					h.err = panicErr
+				}
 			}
 		}()
-		if err := h.fn(ctx); !panicked {
-			h.err = err
-		}
+		h.err = h.fn(ctx)
 	})
 	// once.Do guarantees a happens-before edge between the body and any
 	// subsequent caller that observes completion, so this read of h.err is
@@ -97,6 +98,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 
 	// Build resilience policy. Fields are set directly to avoid importing the
 	// resilience package; the types are already carried by proxy.ResiliencePolicy.
+	if cfg.WorkerRetryMax < 0 {
+		return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryMax must be >= 0, got %d", cfg.WorkerRetryMax)
+	}
 	if cfg.WorkerRetryMax > 0 {
 		if cfg.WorkerRetryBackoffMS < 0 {
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: WorkerRetryBackoffMS must be >= 0 when retry is enabled, got %d", cfg.WorkerRetryBackoffMS)
@@ -135,10 +139,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			// server startup indefinitely. Join any cleanup error so both surface.
 			if shutdown != nil {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
+				defer cleanupCancel()
 				if shutdownErr := shutdown(cleanupCtx); shutdownErr != nil {
 					ctorErr = errors.Join(ctorErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr))
 				}
-				cleanupCancel()
 			}
 			return Components{Shutdown: noopShutdown}, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr)
 		}
@@ -150,10 +154,10 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 			nilErr := fmt.Errorf("runtime: tracer provider constructor returned nil provider for endpoint %q", cfg.OtelExporterEndpoint)
 			if shutdown != nil {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tracerCleanupTimeout)
+				defer cleanupCancel()
 				if cleanupErr := shutdown(cleanupCtx); cleanupErr != nil {
 					nilErr = errors.Join(nilErr, fmt.Errorf("runtime: cleaning up partial tracer provider: %w", cleanupErr))
 				}
-				cleanupCancel()
 			}
 			return Components{Shutdown: noopShutdown}, nilErr
 		}

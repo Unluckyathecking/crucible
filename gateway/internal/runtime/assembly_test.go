@@ -137,9 +137,9 @@ func TestAssemble_ZeroDurations(t *testing.T) {
 }
 
 func TestAssemble_TracingEnabled(t *testing.T) {
-	shutdownCalls := 0
+	var shutdownCalls atomic.Int32
 	fakeShutdown := func(_ context.Context) error {
-		shutdownCalls++
+		shutdownCalls.Add(1)
 		return nil
 	}
 	fakeTP := noop.NewTracerProvider()
@@ -178,8 +178,8 @@ func TestAssemble_TracingEnabled(t *testing.T) {
 		t.Fatal("Shutdown: want non-nil")
 	}
 	_ = c.Shutdown(context.Background())
-	if shutdownCalls != 1 {
-		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls)
+	if shutdownCalls.Load() != 1 {
+		t.Errorf("shutdown delegate calls: want 1, got %d", shutdownCalls.Load())
 	}
 }
 
@@ -658,31 +658,65 @@ func TestAssemble_PublicDelegation(t *testing.T) {
 	// Verifies the public Assemble function correctly delegates to assemble by
 	// exercising the no-tracing path, which requires no real OTLP server.
 	// The delegation path for tracing is covered by the assemble+mock tests above.
-	c, err := Assemble(&config.Config{
-		WorkerRetryMax:       2,
-		WorkerRetryBackoffMS: 50,
+	t.Run("no-tracing", func(t *testing.T) {
+		c, err := Assemble(&config.Config{
+			WorkerRetryMax:       2,
+			WorkerRetryBackoffMS: 50,
+		})
+		if err != nil {
+			t.Fatalf("Assemble: unexpected error: %v", err)
+		}
+		if c.Policy.Retry.MaxAttempts != 2 {
+			t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
+		}
+		if c.TracerProvider != nil {
+			t.Error("TracerProvider: want nil when tracing disabled")
+		}
+		if c.Shutdown == nil {
+			t.Fatal("Shutdown: want non-nil no-op")
+		}
+		if err := c.Shutdown(context.Background()); err != nil {
+			t.Errorf("no-op shutdown: unexpected error %v", err)
+		}
 	})
-	if err != nil {
-		t.Fatalf("Assemble: unexpected error: %v", err)
-	}
-	if c.Policy.Retry.MaxAttempts != 2 {
-		t.Errorf("Retry.MaxAttempts: want 2, got %d", c.Policy.Retry.MaxAttempts)
-	}
-	if c.TracerProvider != nil {
-		t.Error("TracerProvider: want nil when tracing disabled")
-	}
-	if c.Shutdown == nil {
-		t.Fatal("Shutdown: want non-nil no-op")
-	}
-	if err := c.Shutdown(context.Background()); err != nil {
-		t.Errorf("no-op shutdown: unexpected error %v", err)
-	}
+
+	// Exercise the public Assemble tracing validation path without a real OTLP
+	// server: an invalid sample ratio is rejected before any exporter is dialled,
+	// confirming that the validation wiring is intact in the public entry point.
+	t.Run("tracing-invalid-sample-ratio", func(t *testing.T) {
+		c, err := Assemble(&config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      math.NaN(),
+		})
+		if err == nil {
+			t.Fatal("Assemble: want error for NaN sample ratio, got nil")
+		}
+		if !strings.Contains(err.Error(), "OtelSampleRatio") {
+			t.Errorf("Assemble: error should mention OtelSampleRatio, got %v", err)
+		}
+		if c.Shutdown == nil {
+			t.Error("Assemble: Shutdown must be non-nil no-op even on validation error")
+		}
+	})
 }
 
 func TestAssemble_NegativeBackoffCooldownRejected(t *testing.T) {
 	// Negative millisecond values for backoff/cooldown produce negative time.Duration
 	// values that can break downstream components. assemble rejects them defensively.
 	noopCtor := mustNotCallCtor(t)
+
+	t.Run("negative-retry-max", func(t *testing.T) {
+		c, err := assemble(&config.Config{WorkerRetryMax: -1}, noopCtor)
+		if err == nil {
+			t.Error("want error for negative WorkerRetryMax, got nil")
+		} else if !strings.Contains(err.Error(), "WorkerRetryMax") {
+			t.Errorf("error message: want mention of WorkerRetryMax, got %v", err)
+		}
+		if c.Shutdown == nil {
+			t.Error("Shutdown: want non-nil no-op even on validation error")
+		}
+	})
 
 	t.Run("negative-retry-backoff", func(t *testing.T) {
 		c, err := assemble(&config.Config{WorkerRetryMax: 2, WorkerRetryBackoffMS: -1}, noopCtor)
