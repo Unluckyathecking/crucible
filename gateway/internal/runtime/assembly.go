@@ -41,7 +41,10 @@ func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, ba
 			if rec := recover(); rec != nil {
 				r.err = fmt.Errorf("runtime: tracer shutdown panicked during cleanup: %v", rec)
 			}
-			ch <- r
+			select {
+			case ch <- r:
+			case <-timeoutCtx.Done():
+			}
 		}()
 		r.err = shutdown(timeoutCtx)
 	}()
@@ -117,6 +120,9 @@ func assemble(ctx context.Context, cfg *config.Config, ctor func(string, bool, f
 	}
 
 	if cfg.OtelTracingEnabled {
+		if cfg.OtelSampleRatio < 0 || cfg.OtelSampleRatio > 1 {
+			return c, fmt.Errorf("runtime: OtelSampleRatio must be in [0.0, 1.0], got %v", cfg.OtelSampleRatio)
+		}
 		tp, shutdown, ctorErr := ctor(cfg.OtelExporterEndpoint, cfg.OtelExporterInsecure, cfg.OtelSampleRatio)
 		if ctorErr != nil {
 			return c, cleanupTracer(ctx, shutdown, fmt.Errorf("runtime: constructing tracer provider: %w", ctorErr))

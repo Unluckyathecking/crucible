@@ -509,7 +509,9 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 		if panicCount.Load() != 1 {
 			t.Errorf("panic delegate calls: want 1 (sync.Once), got %d", panicCount.Load())
 		}
-		var ref string
+		// sync.Once caches shutdownErr; all callers must receive the exact same
+		// error value (pointer equality), not merely the same string.
+		var refErr error
 		for i, e := range errs {
 			if e == nil {
 				t.Errorf("goroutine %d: want non-nil error after panic, got nil", i)
@@ -518,10 +520,10 @@ func TestAssemble_ShutdownIdempotency(t *testing.T) {
 			if !strings.Contains(e.Error(), "panicked") {
 				t.Errorf("goroutine %d: want error mentioning 'panicked', got %v", i, e)
 			}
-			if ref == "" {
-				ref = e.Error()
-			} else if e.Error() != ref {
-				t.Errorf("want same cached error message, got %q vs %q", e.Error(), ref)
+			if refErr == nil {
+				refErr = e
+			} else if e != refErr {
+				t.Errorf("goroutine %d: want same cached error (sync.Once), got different values", i)
 			}
 		}
 	})
@@ -618,6 +620,25 @@ func TestAssemble_AllEnabled(t *testing.T) {
 	}
 	if !shutdownCalled.Load() {
 		t.Error("shutdown delegate was not called")
+	}
+}
+
+func TestAssemble_InvalidSampleRatio(t *testing.T) {
+	// OtelSampleRatio must be in [0.0, 1.0]; values outside that range are
+	// rejected before the constructor is called.
+	for _, ratio := range []float64{-0.1, -1.0, 1.1, 2.0} {
+		cfg := &config.Config{
+			OtelTracingEnabled:   true,
+			OtelExporterEndpoint: "otel.example.com:4317",
+			OtelSampleRatio:      ratio,
+		}
+		c, err := assemble(context.Background(), cfg, mustNotCallCtor(t))
+		if err == nil {
+			t.Errorf("ratio %v: want error for out-of-range ratio, got nil", ratio)
+		}
+		if c.Shutdown == nil {
+			t.Errorf("ratio %v: want non-nil Shutdown on error", ratio)
+		}
 	}
 }
 
