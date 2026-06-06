@@ -24,20 +24,15 @@ const tracerCleanupTimeout = 10 * time.Second
 
 // cleanupTracer shuts down the provider and joins any cleanup error with baseErr.
 // A nil shutdown is a no-op; callers need not guard against it.
-// ctx is the parent for the cleanup timeout; a nil ctx falls back to
-// context.Background(). Cleanup always adds a tracerCleanupTimeout deadline on
-// top of the parent so callers block for at most tracerCleanupTimeout.
+// Cleanup adds a tracerCleanupTimeout deadline to ctx; callers block for at
+// most tracerCleanupTimeout (or the remaining deadline of ctx, whichever is shorter).
 func cleanupTracer(ctx context.Context, shutdown func(context.Context) error, baseErr error) error {
 	if shutdown == nil {
 		return baseErr
 	}
-	parent := ctx
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, tracerCleanupTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, tracerCleanupTimeout)
 	defer cancel()
-	if shutdownErr := shutdown(ctx); shutdownErr != nil {
+	if shutdownErr := shutdown(timeoutCtx); shutdownErr != nil {
 		if baseErr == nil {
 			return fmt.Errorf("runtime: cleaning up partial tracer provider: %w", shutdownErr)
 		}
@@ -79,9 +74,9 @@ func assemble(cfg *config.Config, ctor func(string, bool, float64) (oteltrace.Tr
 		return c, errors.New("runtime: config is nil")
 	}
 
-	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative
-	// and OtelSampleRatio as [0.0, 1.0], so >0 is the sole activation gate here;
-	// zero means disabled and no invalid values reach assemble.
+	// config.Load validates WorkerRetryMax and WorkerBreakerThreshold as non-negative.
+	// >0 is the activation gate for retry/breaker; zero means disabled.
+	// Tracing is gated separately by OtelTracingEnabled.
 	if cfg.WorkerRetryMax > 0 {
 		c.Policy.Retry.MaxAttempts = cfg.WorkerRetryMax
 		c.Policy.Retry.BaseBackoff = cfg.RetryBaseBackoff()
