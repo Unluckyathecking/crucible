@@ -2,9 +2,8 @@
 // No server-only imports — this file is bundled for both client and server.
 
 export const MAX_USAGE_RANGE_DAYS = 90;
-// MS_PER_DAY is intentionally re-declared here rather than imported from lib/db.ts.
-// lib/db.ts pulls in server-only pg/pool dependencies that cannot be bundled
-// for the client. Both definitions are identical; a lint check would catch drift.
+// Authoritative definition — lib/db.ts re-exports from here to avoid duplication.
+// Kept in this client-safe file so client bundles don't pull in db.ts's pg dependencies.
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.
 export const MIN_YEAR = 1970;

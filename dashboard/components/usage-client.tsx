@@ -170,16 +170,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }
 
-  // fromMax: allow 'from' up to displayTo when it is a valid date not after today.
-  // toISODateString(new Date()) recomputes on each render so the upper bound stays
-  // correct when the page is open across a UTC midnight boundary.
+  const liveToday = useMemo(() => toISODateString(new Date()), []);
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    const liveToday = toISODateString(new Date());
     if (isNaN(td.getTime())) return liveToday;
     const todayDate = parseDateParam(liveToday);
     return td <= todayDate ? displayTo : liveToday;
-  }, [displayTo]);
+  }, [displayTo, liveToday]);
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
@@ -233,7 +230,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayTo}
               min={toMin}
-              max={toISODateString(new Date())}
+              max={liveToday}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
                 setRangeError(null);
@@ -345,7 +342,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={e.id}
+                                                key={`${row.operation}-${e.id}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

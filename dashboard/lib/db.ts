@@ -22,7 +22,10 @@ const MAX_USAGE_EVENTS_LIMIT = 1000;
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 export const MAX_OPERATION_LENGTH = 128;
 export const MAX_USAGE_RANGE_DAYS = 90;
-export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// Single source of truth is in usage-format.ts (client-safe); re-exported here
+// so existing server imports remain unchanged.
+import { MS_PER_DAY } from "./usage-format";
+export { MS_PER_DAY };
 const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * MS_PER_DAY;
 
 export interface Customer {

@@ -9,6 +9,7 @@ import type { RawEvent } from "./usage-format";
 // like "expected < 10" or "use <foo> syntax".
 export const MAX_ERROR_LENGTH = 200;
 
+// Only truncates; escaping is not needed because React encodes JSX text nodes automatically.
 export function sanitizeError(s: string): string {
   return s.slice(0, MAX_ERROR_LENGTH);
 }
