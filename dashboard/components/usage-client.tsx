@@ -118,7 +118,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       return;
     }
     if (fromDate.getTime() > toDate.getTime()) {
-      setRangeError("'From' must not be after 'to'");
+      setRangeError("'From' must not be after 'To'");
       setData({ status: "idle" });
       return;
     }
