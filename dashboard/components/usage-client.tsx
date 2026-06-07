@@ -140,7 +140,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
 
   // from/to are passed by the click handler so they are captured from the current
   // render's state values rather than read from refs, eliminating any stale-ref window.
-  async function handleDrillDown(operation: string, from: string, to: string) {
+  const handleDrillDown = useCallback(async (operation: string, from: string, to: string) => {
     // Read drill state from the ref for the toggle check so rapid clicks see the latest
     // value rather than a potentially stale render-closure snapshot.
     // Toggle off from any non-idle state (ok, loading, or error) for consistent UX.
@@ -173,7 +173,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       if (drillSeqRef.current !== seq) return;
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
-  }
+  }, []);
 
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
@@ -342,7 +342,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${row.operation}-${e.id}`}
+                                                key={e.id}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
