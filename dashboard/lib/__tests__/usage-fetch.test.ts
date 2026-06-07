@@ -93,6 +93,23 @@ describe("fetchUsage", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null when the abort signal fires after fetch starts", async () => {
+    vi.mocked(fetch).mockImplementation((_, options) => {
+      return new Promise<Response>((_, reject) => {
+        (options as RequestInit)?.signal?.addEventListener("abort", () => {
+          const err = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    });
+    const ctrl = new AbortController();
+    const promise = fetchUsage("2024-01-01", "2024-02-01", undefined, ctrl.signal);
+    ctrl.abort();
+    const result = await promise;
+    expect(result).toBeNull();
+  });
+
   it("appends operation query param when provided", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
     await fetchUsage("2024-01-01", "2024-02-01", "search");

@@ -4,8 +4,9 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// Strip complete tags (`<script>`) and unclosed angle brackets (`<script`) so
-// error strings are safe in any rendering context, not only React text nodes.
+// Strip complete tags and unclosed angle brackets so error strings are safe
+// in React text-node contexts. Not a general HTML sanitizer — do not use in
+// attribute positions or dangerouslySetInnerHTML.
 export function sanitizeError(s: string): string {
   return s.replace(/<[^>]*>/g, "").replace(/</g, "");
 }

@@ -28,6 +28,7 @@ function utcTodayStr(): string {
 }
 
 // Converts the user-visible inclusive end date to the API's exclusive upper bound.
+// NaN propagates for invalid input; all call sites validate displayTo first.
 function toApiTo(displayTo: string): string {
   return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
 }
@@ -313,7 +314,7 @@ export function UsageClient() {
                                         <tbody>
                                           {drill.events.map((e, i) => (
                                             <tr
-                                              key={`${i}-${e.created_at}-${e.billable_units}`}
+                                              key={i}
                                               className="border-b border-zinc-100"
                                             >
                                               <td className="py-1 pr-4 font-mono">
