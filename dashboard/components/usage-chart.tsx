@@ -11,12 +11,13 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
   const chartW = W - PAD_L;
   const chartH = H - PAD_B;
 
-  const { maxUnits, barSlot, barW } = useMemo(() => {
+  const { maxUnits, barSlot, barW, descText } = useMemo(() => {
     // Use reduce instead of spread to avoid call-stack limits on large arrays.
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
     const barSlot = chartW / Math.max(1, buckets.length);
     const barW = Math.max(1, barSlot - 1);
-    return { maxUnits, barSlot, barW };
+    const descText = buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ");
+    return { maxUnits, barSlot, barW, descText };
   }, [buckets]);
 
   if (buckets.length === 0) {
@@ -33,7 +34,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
       role="img"
       aria-label="Units over time bar chart"
     >
-      <desc>{buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ")}</desc>
+      <desc>{descText}</desc>
       {/* Y axis */}
       <line x1={PAD_L} y1={0} x2={PAD_L} y2={chartH} stroke="#e4e4e7" strokeWidth="1" />
       {/* X axis */}
