@@ -61,19 +61,19 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
-  // mainSeqRef: monotonically increasing, incremented on each loadMain call.
-  // A stale fetch completing after a newer one has started is discarded: seq !== mainSeqRef.current.
-  const mainSeqRef = useRef(0);
+  // generationRef: monotonically increasing, incremented on each loadMain call.
+  // A stale fetch completing after a newer one has started is discarded: gen !== generationRef.current.
+  const generationRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
-    const seq = ++mainSeqRef.current;
+    const gen = ++generationRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       // null: fetch was aborted (including component unmount — cleanup aborts the signal).
-      // seq guard: discard responses from superseded fetches.
-      if (result === null || seq !== mainSeqRef.current) return;
+      // gen guard: discard responses from superseded fetches.
+      if (result === null || gen !== generationRef.current) return;
       if ("error" in result) {
         setData({ status: "error", message: result.error });
         return;
@@ -84,7 +84,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
         buckets: bucketByDay(result.data),
       });
     } catch (err) {
-      if (seq !== mainSeqRef.current) return;
+      if (gen !== generationRef.current) return;
       setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
@@ -110,7 +110,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const fromDate = parseDateParam(displayFrom);
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-      setRangeError("Invalid date format");
+      setRangeError("Invalid date");
       return;
     }
     const apiFrom = toISODateString(fromDate);
@@ -333,7 +333,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e, i) => {
+                                          {drill.events.map((e) => {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr

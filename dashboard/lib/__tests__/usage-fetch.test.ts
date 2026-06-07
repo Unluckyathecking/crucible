@@ -148,7 +148,14 @@ describe("fetchUsage", () => {
   it("returns null when the abort signal fires after fetch starts", async () => {
     vi.mocked(fetch).mockImplementation((_, options) => {
       return new Promise<Response>((_, reject) => {
-        (options as RequestInit)?.signal?.addEventListener("abort", () => {
+        const signal = (options as RequestInit)?.signal;
+        if (signal?.aborted) {
+          const err = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+          return;
+        }
+        signal?.addEventListener("abort", () => {
           const err = new Error("Aborted");
           err.name = "AbortError";
           reject(err);

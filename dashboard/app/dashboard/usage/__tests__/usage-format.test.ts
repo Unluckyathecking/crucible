@@ -7,7 +7,6 @@ import {
   toISODateString,
   MAX_USAGE_RANGE_DAYS,
   MS_PER_DAY,
-  MAX_YEAR,
 } from "@/lib/usage-format";
 
 // ---------------------------------------------------------------------------
@@ -380,14 +379,14 @@ describe("parseDateParam", () => {
     expect(isNaN(parseDateParam("1970-01-01").getTime())).toBe(false);
   });
 
-  it("returns Invalid Date for year exceeding MAX_YEAR", () => {
-    const overYear = String(MAX_YEAR + 1).padStart(4, "0");
-    expect(isNaN(parseDateParam(`${overYear}-01-01`).getTime())).toBe(true);
+  it("returns Invalid Date for year two years ahead (exceeds currentYear+1 upper bound)", () => {
+    const twoAhead = String(new Date().getUTCFullYear() + 2).padStart(4, "0");
+    expect(isNaN(parseDateParam(`${twoAhead}-01-01`).getTime())).toBe(true);
   });
 
-  it("accepts MAX_YEAR itself as a valid year", () => {
-    const maxYearStr = String(MAX_YEAR).padStart(4, "0");
-    expect(isNaN(parseDateParam(`${maxYearStr}-01-01`).getTime())).toBe(false);
+  it("accepts year one year ahead (equals currentYear+1 upper bound)", () => {
+    const oneAhead = String(new Date().getUTCFullYear() + 1).padStart(4, "0");
+    expect(isNaN(parseDateParam(`${oneAhead}-01-01`).getTime())).toBe(false);
   });
 });
 
