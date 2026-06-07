@@ -75,11 +75,14 @@ describe("fetchUsage", () => {
 
   it("returns network error message and logs when fetch throws a non-abort error", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toEqual({ error: "Network error — please check your connection." });
-    expect(consoleSpy).toHaveBeenCalledWith("fetchUsage failed:", expect.any(TypeError));
-    consoleSpy.mockRestore();
+    try {
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const result = await fetchUsage("2024-01-01", "2024-02-01");
+      expect(result).toEqual({ error: "Network error — please check your connection." });
+      expect(consoleSpy).toHaveBeenCalledWith("fetchUsage failed:", expect.any(TypeError));
+    } finally {
+      consoleSpy.mockRestore();
+    }
   });
 
   it("returns null when fetch throws an AbortError", async () => {

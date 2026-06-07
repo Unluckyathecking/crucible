@@ -2,12 +2,7 @@
 // Extracted so it can be unit-tested without the full React component tree.
 
 import type { RawEvent } from "./usage-format";
-
-// Strip HTML tags (both closed `<x>` and unclosed `<x`) so error strings are safe
-// in any rendering context, not just React text nodes.
-function sanitizeError(s: string): string {
-  return s.replace(/<[^>]*>/g, "").replace(/</g, "");
-}
+import { sanitizeError } from "./usage-format";
 
 export async function fetchUsage(
   from: string,

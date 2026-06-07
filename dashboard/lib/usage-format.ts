@@ -4,6 +4,12 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// Strip complete tags (`<script>`) and unclosed angle brackets (`<script`) so
+// error strings are safe in any rendering context, not only React text nodes.
+export function sanitizeError(s: string): string {
+  return s.replace(/<[^>]*>/g, "").replace(/</g, "");
+}
+
 export interface RawEvent {
   operation: string;
   billable_units: number;

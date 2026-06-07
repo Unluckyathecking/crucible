@@ -5,6 +5,7 @@ import {
   validateDateRange,
   parseDateParam,
   toISODateString,
+  sanitizeError,
   bucketByDay,
   aggregateByOperation,
   MAX_USAGE_RANGE_DAYS,
@@ -26,11 +27,12 @@ function utcTodayStr(): string {
   );
 }
 
-// displayTo is the user-visible inclusive end date.
-// The API's 'to' is exclusive, so add 1 day.
-// Callers must validate displayTo with parseDateParam before calling.
+// Converts the user-visible inclusive end date to the API's exclusive upper bound.
+// Throws if displayTo is not a valid YYYY-MM-DD date (callers must validate first).
 function toApiTo(displayTo: string): string {
-  return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
+  const d = parseDateParam(displayTo);
+  if (isNaN(d.getTime())) throw new Error(`Invalid date for toApiTo: ${displayTo}`);
+  return toISODateString(new Date(d.getTime() + MS_PER_DAY));
 }
 
 function initRange(): { from: string; to: string } {
@@ -86,9 +88,11 @@ export function UsageClient() {
     if (mainSeqRef.current !== seq) return;
     if (signal?.aborted || result === null) return;
     if ("error" in result) {
+      if (mainSeqRef.current !== seq) return;
       setData({ status: "error", message: result.error });
       return;
     }
+    if (mainSeqRef.current !== seq) return;
     setData({
       status: "ok",
       ops: aggregateByOperation(result.data),
@@ -156,9 +160,8 @@ export function UsageClient() {
         return;
       }
       setDrill({ status: "ok", operation, events: result.data });
-    } catch (err) {
+    } catch {
       if (drillSeqRef.current !== seq) return;
-      console.error("handleDrillDown failed:", err);
       setDrill({ status: "error", operation, message: "Failed to load events" });
     }
   }
@@ -229,7 +232,7 @@ export function UsageClient() {
 
       {data.status === "error" && (
         <p className="text-sm text-red-600" role="alert">
-          {data.message}
+          {sanitizeError(data.message)}
         </p>
       )}
 
@@ -292,7 +295,7 @@ export function UsageClient() {
                             <tr key={`${row.operation}-detail`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
-                                  <p className="text-sm text-red-600">{drill.message}</p>
+                                  <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
                                 )}
                                 {isOpen && drill.status === "ok" && (
                                   drill.events.length === 0 ? (
