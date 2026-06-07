@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { emitAuditEvent } from "@/lib/audit";
 import { getRedis } from "@/lib/redis";
 import { UUID_RE } from "@/lib/validation";
+import { MS_PER_DAY } from "./constants";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -22,10 +23,7 @@ const MAX_USAGE_EVENTS_LIMIT = 1000;
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 export const MAX_OPERATION_LENGTH = 128;
 export const MAX_USAGE_RANGE_DAYS = 90;
-// Single source of truth is in usage-format.ts (client-safe); re-exported here
-// so existing server imports remain unchanged.
-import { MS_PER_DAY } from "./usage-format";
-export { MS_PER_DAY };
+export { MS_PER_DAY } from "./constants";
 const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * MS_PER_DAY;
 
 export interface Customer {
@@ -336,7 +334,7 @@ export async function usageByOperation(
 }
 
 export interface UsageEventRow {
-  id: string; // BIGSERIAL returned as text (id::text in SQL); required by isRawEvent validation
+  id: string; // BIGSERIAL (bigint) explicitly cast to text via id::text in SQL; required by isRawEvent validation
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;

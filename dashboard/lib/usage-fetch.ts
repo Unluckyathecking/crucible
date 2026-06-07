@@ -3,14 +3,12 @@
 
 import type { RawEvent } from "./usage-format";
 
-// Caps the length of server error strings before rendering.
-// React JSX text-node children are automatically HTML-encoded (& → &amp;, < → &lt;, etc.)
-// so no manual stripping is needed — stripping < or > would corrupt legitimate messages
-// like "expected < 10" or "use <foo> syntax".
 export const MAX_ERROR_LENGTH = 200;
 
-// Only truncates; escaping is not needed because React encodes JSX text nodes automatically.
-export function sanitizeError(s: string): string {
+// Truncates to MAX_ERROR_LENGTH only; no HTML escaping needed because React
+// encodes JSX text nodes automatically (stripping < / > would corrupt messages
+// like "expected < 10" or "use <foo> syntax").
+export function truncateError(s: string): string {
   return s.slice(0, MAX_ERROR_LENGTH);
 }
 
@@ -65,7 +63,7 @@ export async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? sanitizeError(err) : `Server error (${res.status})` };
+    return { error: typeof err === "string" ? truncateError(err) : `Server error (${res.status})` };
   }
   let json: unknown;
   try {

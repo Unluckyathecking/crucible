@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchUsage, MAX_ERROR_LENGTH } from "@/lib/usage-fetch";
+import { fetchUsage, truncateError, MAX_ERROR_LENGTH } from "@/lib/usage-fetch";
 
 function mockResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -139,7 +139,7 @@ describe("fetchUsage", () => {
       mockResponse(500, { error: "<script>alert('xss')</script>" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    // React JSX auto-encodes < and > in text nodes; sanitizeError intentionally
+    // React JSX auto-encodes < and > in text nodes; truncateError intentionally
     // does NOT strip them to avoid corrupting legitimate messages like "expected < 10".
     expect(result).toEqual({ error: "<script>alert('xss')</script>" });
   });

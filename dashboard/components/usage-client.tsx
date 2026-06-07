@@ -13,11 +13,13 @@ import {
   type OperationRow,
   type RawEvent,
 } from "@/lib/usage-format";
-import { fetchUsage, sanitizeError } from "@/lib/usage-fetch";
+import { fetchUsage, truncateError } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
 // Earliest date accepted by the date inputs and by parseDateParam.
 const MIN_DATE_PARAM = "1970-01-01";
+// Evaluated at module load (browser page load for "use client" components).
+const MODULE_TODAY = toISODateString(new Date());
 
 // BigInt sentinel reused by the totals memo; kept module-level so it is stable.
 const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
@@ -71,7 +73,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       // null: fetch was aborted (including component unmount — cleanup aborts the signal).
       // gen guard: discard responses from superseded fetches.
-      if (result === null || gen !== generationRef.current) return;
+      if (result === null || gen < generationRef.current) return;
       if ("error" in result) {
         setData({ status: "error", message: result.error });
         return;
@@ -82,7 +84,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
         buckets: bucketByDay(result.data),
       });
     } catch (err) {
-      if (gen !== generationRef.current) return;
+      if (gen < generationRef.current) return;
       setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
@@ -109,6 +111,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
       setRangeError("Invalid date");
+      setData({ status: "idle" });
+      return;
+    }
+    if (fromDate.getTime() > toDate.getTime()) {
+      setRangeError("'From' must not be after 'to'");
       setData({ status: "idle" });
       return;
     }
@@ -157,7 +164,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       // Stale-response guard: discard this result if a newer drill request superseded it
       // while the fetch was in-flight. Must be checked immediately after the await,
       // before any state mutation — mirrors the generationRef pattern in loadMain.
-      if (drillSeqRef.current !== seq) return;
+      if (drillSeqRef.current > seq) return;
       if (result === null) return;
       if ("error" in result) {
         setDrill({ status: "error", operation, message: result.error });
@@ -165,18 +172,17 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       }
       setDrill({ status: "ok", operation, events: result.data });
     } catch (err) {
-      if (drillSeqRef.current !== seq) return;
+      if (drillSeqRef.current > seq) return;
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
   }
 
-  const liveToday = useMemo(() => toISODateString(new Date()), []);
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    if (isNaN(td.getTime())) return liveToday;
-    const todayDate = parseDateParam(liveToday);
-    return td <= todayDate ? displayTo : liveToday;
-  }, [displayTo, liveToday]);
+    if (isNaN(td.getTime())) return MODULE_TODAY;
+    const todayDate = parseDateParam(MODULE_TODAY);
+    return td <= todayDate ? displayTo : MODULE_TODAY;
+  }, [displayTo]);
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
@@ -230,7 +236,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayTo}
               min={toMin}
-              max={liveToday}
+              max={MODULE_TODAY}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
                 setRangeError(null);
@@ -256,7 +262,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
 
       {data.status === "error" && (
         <p className="text-sm text-red-600" role="alert">
-          {sanitizeError(data.message)}
+          {truncateError(data.message)}
         </p>
       )}
 
@@ -319,7 +325,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
-                                  <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
+                                  <p className="text-sm text-red-600">{truncateError(drill.message)}</p>
                                 )}
                                 {isOpen && drill.status === "ok" && (
                                   drill.events.length === 0 ? (

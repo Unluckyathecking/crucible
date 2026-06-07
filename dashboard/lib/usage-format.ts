@@ -2,9 +2,10 @@
 // No server-only imports — this file is bundled for both client and server.
 
 export const MAX_USAGE_RANGE_DAYS = 90;
-// Authoritative definition — lib/db.ts re-exports from here to avoid duplication.
-// Kept in this client-safe file so client bundles don't pull in db.ts's pg dependencies.
-export const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// Imported from the shared lib/constants.ts so neither this client-safe file
+// nor lib/db.ts needs to define it independently.
+import { MS_PER_DAY } from "./constants";
+export { MS_PER_DAY };
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.
 export const MIN_YEAR = 1970;
 
@@ -110,7 +111,7 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
   }
   return Array.from(map.entries())
     .map(([date, units]) => ({ date, units }))
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // Aggregates events by operation, sorted by total_billable_units descending.
