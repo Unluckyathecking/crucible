@@ -2,7 +2,6 @@
 // Extracted so it can be unit-tested without the full React component tree.
 
 import type { RawEvent } from "./usage-format";
-import { sanitizeError } from "./usage-format";
 
 export async function fetchUsage(
   from: string,
@@ -41,7 +40,7 @@ export async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? sanitizeError(err) : `Server error (${res.status})` };
+    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
   }
   let json: unknown;
   try {

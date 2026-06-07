@@ -5,7 +5,6 @@ import {
   validateDateRange,
   parseDateParam,
   toISODateString,
-  sanitizeError,
   bucketByDay,
   aggregateByOperation,
   MAX_USAGE_RANGE_DAYS,
@@ -209,6 +208,7 @@ export function UsageClient() {
               type="date"
               value={displayFrom}
               min="1970-01-01"
+              // YYYY-MM-DD lexicographic order equals chronological order.
               max={displayTo && displayFrom <= displayTo ? displayTo : todayStr}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
@@ -249,7 +249,7 @@ export function UsageClient() {
 
       {data.status === "error" && (
         <p className="text-sm text-red-600" role="alert">
-          {sanitizeError(data.message)}
+          {data.message}
         </p>
       )}
 
@@ -312,7 +312,7 @@ export function UsageClient() {
                             <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
-                                  <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
+                                  <p className="text-sm text-red-600">{drill.message}</p>
                                 )}
                                 {isOpen && drill.status === "ok" && (
                                   drill.events.length === 0 ? (

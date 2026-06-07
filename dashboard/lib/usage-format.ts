@@ -4,13 +4,6 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// React JSX auto-escapes text content, so no stripping is needed for XSS prevention.
-// This function is a pass-through kept so callers compile without change.
-// Do not use in dangerouslySetInnerHTML — React JSX escaping is the correct defence there.
-export function sanitizeError(s: string): string {
-  return s;
-}
-
 export interface RawEvent {
   operation: string;
   billable_units: number;
@@ -33,6 +26,10 @@ export interface OperationRow {
 // Uses Date.UTC with numeric components so JS overflow-normalisation (e.g. Feb 30 → Mar 1)
 // is detectable: if any UTC component doesn't round-trip, the input date is impossible.
 export function parseDateParam(s: string): Date {
+  // The day pattern `3[01]` intentionally accepts 01-31 for all months.
+  // Calendar-impossible days (Feb 30, Apr 31, etc.) are caught by the round-trip
+  // check below: Date.UTC normalises them (Feb 30 → Mar 1) and the component
+  // comparison detects the mismatch, returning Invalid Date.
   if (!/^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s)) {
     return new Date(NaN);
   }
