@@ -195,11 +195,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
       (a, r) => a + BigInt(r.total_billable_units),
-      0n,
+      BigInt(0),
     );
     const totalCallsBig = data.ops.reduce(
       (a, r) => a + BigInt(r.event_count),
-      0n,
+      BigInt(0),
     );
     return {
       totalUnitsDisplay: totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString("en-US"),

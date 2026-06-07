@@ -40,8 +40,8 @@ export default async function DashboardPage() {
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
   // total_billable_units and event_count come from saturateBigIntString which always
   // returns an integer, so BigInt() is safe without a Math.trunc guard.
-  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), 0n);
-  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), 0n);
+  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
+  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
   const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
   const totalCalls = rawCalls > cap ? Number.MAX_SAFE_INTEGER : Number(rawCalls);
 

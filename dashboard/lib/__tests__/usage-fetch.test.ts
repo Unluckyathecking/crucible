@@ -126,20 +126,22 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("strips HTML-significant characters from server error messages", async () => {
+  it("passes server error message through unmodified when under length limit", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(500, { error: "<script>alert('xss')</script>" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toEqual({ error: "scriptalert('xss')/script" });
+    // React JSX auto-encodes < and > in text nodes; sanitizeError intentionally
+    // does NOT strip them to avoid corrupting legitimate messages like "expected < 10".
+    expect(result).toEqual({ error: "<script>alert('xss')</script>" });
   });
 
-  it("strips unclosed angle brackets from server error messages", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      mockResponse(500, { error: "<img onerror='alert(1)'" }),
-    );
+  it("truncates server error message to MAX_ERROR_LENGTH characters", async () => {
+    const longMsg = "x".repeat(300);
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(500, { error: longMsg }));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toEqual({ error: "img onerror='alert(1)'" });
+    if (!result || !("error" in result)) throw new Error("expected error result");
+    expect(result.error).toHaveLength(200);
   });
 
   it("returns network error message when fetch throws a non-abort error", async () => {
