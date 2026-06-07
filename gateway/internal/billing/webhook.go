@@ -260,7 +260,7 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 	// skipped when no cache deleter is configured to keep the DB hot path minimal.
 	if h.cache != nil {
 		var customerID string
-		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1`, obj.Customer).Scan(&customerID); err == nil {
+		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			h.invalidateCustomerCache(ctx, customerID)
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription upsert")
@@ -298,7 +298,7 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 	// cache deleter is configured (CLAUDE.md invariant #7, cache-invalidation path).
 	if h.cache != nil {
 		var customerID string
-		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1`, obj.Customer).Scan(&customerID); err == nil {
+		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			h.invalidateCustomerCache(ctx, customerID)
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription deletion")

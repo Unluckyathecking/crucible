@@ -17,7 +17,7 @@ import (
 
 // stripePriceIDRE validates the format of a Stripe price ID fetched from the DB
 // before passing it to Stripe's API, matching the format Stripe assigns.
-var stripePriceIDRE = regexp.MustCompile(`^price_[a-zA-Z0-9_]+$`)
+var stripePriceIDRE = regexp.MustCompile(`^price_[a-zA-Z0-9]+$`)
 
 // ErrPlanNotFound is returned by CreateCheckoutSession when the requested plan
 // does not exist in the plans table or has no stripe_price_id configured.

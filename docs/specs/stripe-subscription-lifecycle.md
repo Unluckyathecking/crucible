@@ -73,7 +73,7 @@ Adds a partial index on `customers(email) WHERE stripe_customer_id IS NULL` to s
 |----------|----------|---------|
 | `STRIPE_SECRET_KEY` | gateway, dashboard | Authenticates Stripe API calls |
 | `STRIPE_WEBHOOK_SECRET` | gateway | Verifies webhook HMAC signatures |
-| `STRIPE_PRICE_<PLAN_ID_UPPER>` | dashboard checkout route | Maps plan ID to Stripe price ID. Plan ID is uppercased and hyphens replaced with underscores: `pro` → `STRIPE_PRICE_PRO`, `basic-annual` → `STRIPE_PRICE_BASIC_ANNUAL`. Value must match `price_[a-zA-Z0-9_]+`. |
+| `STRIPE_PRICE_<PLAN_ID_UPPER>` | dashboard checkout route | Maps plan ID to Stripe price ID. Plan ID is uppercased and hyphens replaced with underscores: `pro` → `STRIPE_PRICE_PRO`, `basic-annual` → `STRIPE_PRICE_BASIC_ANNUAL`. Value must match `price_[a-zA-Z0-9]+`. |
 | `NEXTAUTH_URL` / `DASHBOARD_ORIGIN` | dashboard | Constructs success/cancel/return URLs |
 
 ## Gateway billing routes

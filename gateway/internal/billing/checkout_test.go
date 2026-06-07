@@ -19,8 +19,8 @@ func TestCreateCheckoutSession(t *testing.T) {
 	const (
 		secret     = "sk_test_checkout"
 		customerID = "550e8400-e29b-41d4-a716-446655440000"
-		planID     = "pro"
-		priceID    = "price_pro_monthly"
+		planID  = "pro"
+		priceID = "price_pro"
 		wantURL    = "https://checkout.stripe.com/pay/cs_test_abc123"
 	)
 
