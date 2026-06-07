@@ -54,7 +54,7 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("returns server error string as-is (React JSX escaping handles XSS at render time)", async () => {
+  it("returns server error string unsanitized (safe only because usage-client renders in React text nodes, which auto-escape HTML)", async () => {
     const rawError = "<script>alert('xss')</script>";
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(500, { error: rawError }));
     const result = await fetchUsage("2024-01-01", "2024-02-01");

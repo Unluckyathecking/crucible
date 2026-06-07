@@ -209,19 +209,20 @@ describe("bucketByDay — edge cases", () => {
     expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
   });
 
-  it("correctly aggregates MAX_USAGE_RANGE_DAYS days of events (boundary volume)", () => {
-    const events = Array.from({ length: MAX_USAGE_RANGE_DAYS }, (_, i) => ({
+  it("aggregates multiple events per day at MAX_USAGE_RANGE_DAYS boundary volume", () => {
+    // Two events per day across 90 days — verifies both aggregation and boundary volume.
+    const events = Array.from({ length: MAX_USAGE_RANGE_DAYS * 2 }, (_, i) => ({
       operation: "op",
       billable_units: 1,
       created_at: new Date(
-        Date.UTC(2024, 0, 1) + i * MS_PER_DAY,
+        Date.UTC(2024, 0, 1) + Math.floor(i / 2) * MS_PER_DAY,
       ).toISOString(),
     }));
     const buckets = bucketByDay(events);
     expect(buckets).toHaveLength(MAX_USAGE_RANGE_DAYS);
     expect(buckets[0].date).toBe("2024-01-01");
     expect(buckets[MAX_USAGE_RANGE_DAYS - 1].date).toBe("2024-03-30");
-    expect(buckets.every((b) => b.units === 1)).toBe(true);
+    expect(buckets.every((b) => b.units === 2)).toBe(true);
   });
 });
 
@@ -264,6 +265,24 @@ describe("parseDateParam", () => {
 
   it("returns Invalid Date for out-of-range day (2024-01-32)", () => {
     expect(isNaN(parseDateParam("2024-01-32").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for zero month (2024-00-01)", () => {
+    expect(isNaN(parseDateParam("2024-00-01").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for zero day (2024-01-00)", () => {
+    expect(isNaN(parseDateParam("2024-01-00").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for Feb 29 in a non-leap year (2023-02-29 overflows to Mar 1)", () => {
+    expect(isNaN(parseDateParam("2023-02-29").getTime())).toBe(true);
+  });
+
+  it("accepts Feb 29 in a leap year (2024-02-29 is valid)", () => {
+    const d = parseDateParam("2024-02-29");
+    expect(isNaN(d.getTime())).toBe(false);
+    expect(d.toISOString()).toBe("2024-02-29T00:00:00.000Z");
   });
 });
 

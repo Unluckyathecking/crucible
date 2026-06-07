@@ -28,12 +28,9 @@ function utcTodayStr(): string {
 
 // displayTo is the user-visible inclusive end date.
 // The API's 'to' is exclusive, so add 1 day.
+// Callers must validate displayTo with parseDateParam before calling.
 function toApiTo(displayTo: string): string {
-  const parsed = parseDateParam(displayTo);
-  if (isNaN(parsed.getTime())) {
-    throw new Error(`Invalid displayTo: ${displayTo}`);
-  }
-  return toISODateString(new Date(parsed.getTime() + MS_PER_DAY));
+  return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
 }
 
 function initRange(): { from: string; to: string } {
@@ -76,12 +73,13 @@ export function UsageClient() {
 
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
+  const drillSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
     setData({ status: "loading" });
     setDrill({ status: "none" });
     const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-    if (result === null) return;
+    if (signal?.aborted || result === null) return;
     if ("error" in result) {
       setData({ status: "error", message: result.error });
       return;
@@ -137,10 +135,11 @@ export function UsageClient() {
     drillAbortRef.current?.abort();
     const ctrl = new AbortController();
     drillAbortRef.current = ctrl;
+    // Increment sequence so any concurrent in-flight response for a prior seq is discarded.
+    const seq = ++drillSeqRef.current;
     setDrill({ status: "loading", operation });
     const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
-    // Discard stale results if a newer drill-down request has already started.
-    if (drillAbortRef.current !== ctrl) return;
+    if (drillSeqRef.current !== seq) return;
     if (result === null) return;
     if ("error" in result) {
       setDrill({ status: "error", operation, message: result.error });
@@ -294,9 +293,9 @@ export function UsageClient() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e) => (
+                                          {drill.events.map((e, i) => (
                                             <tr
-                                              key={`drill-${row.operation}-${e.created_at}-${e.billable_units}`}
+                                              key={`drill-${row.operation}-${i}`}
                                               className="border-b border-zinc-100"
                                             >
                                               <td className="py-1 pr-4 font-mono">
