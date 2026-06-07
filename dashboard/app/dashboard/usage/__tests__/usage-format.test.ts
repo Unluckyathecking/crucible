@@ -362,6 +362,10 @@ describe("parseDateParam", () => {
   it("returns Invalid Date for Feb 30 in a leap year (caught by UTC round-trip)", () => {
     expect(isNaN(parseDateParam("2024-02-30").getTime())).toBe(true);
   });
+
+  it("returns Invalid Date for year 0000 (Date.UTC maps year 0 to 1900, round-trip fails)", () => {
+    expect(isNaN(parseDateParam("0000-01-01").getTime())).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

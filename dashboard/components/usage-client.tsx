@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { Fragment, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   validateDateRange,
   parseDateParam,
@@ -16,39 +16,11 @@ import {
 import { fetchUsage } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
-// Matches USAGE_WINDOW_DAYS in app/dashboard/page.tsx (30 days).
-// Kept as a local constant to avoid bundling server-only code on the client.
-const DEFAULT_USAGE_WINDOW_DAYS = 30;
-
 // Earliest date accepted by the date inputs and by parseDateParam.
 const MIN_DATE_PARAM = "1970-01-01";
 
 // BigInt sentinel reused by the totals memo; kept module-level so it is stable.
 const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
-
-function utcTodayStr(): string {
-  const d = new Date();
-  return toISODateString(
-    new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())),
-  );
-}
-
-function initRange(): { from: string; to: string; apiTo: string } {
-  const today = new Date();
-  const todayUTC = new Date(
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
-  );
-  // Exclusive upper bound. Mirrors page.tsx: thirtyDaysAgo = tomorrowMidnight - N * MS_PER_DAY.
-  // [tomorrowUTC - N*MS_PER_DAY, tomorrowUTC) = N full days; display range [from, today] = N dates.
-  const tomorrowUTC = new Date(todayUTC.getTime() + MS_PER_DAY);
-  return {
-    from: toISODateString(
-      new Date(tomorrowUTC.getTime() - DEFAULT_USAGE_WINDOW_DAYS * MS_PER_DAY),
-    ),
-    to: toISODateString(todayUTC),
-    apiTo: toISODateString(tomorrowUTC),
-  };
-}
 
 type DataState =
   | { status: "idle" }
@@ -62,16 +34,19 @@ type DrillState =
   | { status: "error"; operation: string; message: string }
   | { status: "ok"; operation: string; events: RawEvent[] };
 
-export function UsageClient() {
-  // useState initializer ensures initRange() is called exactly once,
-  // avoiding midnight-crossing inconsistency between renders and effects.
-  const [init] = useState(initRange);
-  const [displayFrom, setDisplayFrom] = useState(init.from);
-  const [displayTo, setDisplayTo] = useState(init.to);
+interface UsageClientProps {
+  initialFrom: string;
+  initialTo: string;    // display-to (today inclusive, YYYY-MM-DD)
+  initialApiTo: string; // exclusive upper bound for API (tomorrow, YYYY-MM-DD)
+}
+
+export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClientProps) {
+  const [displayFrom, setDisplayFrom] = useState(initialFrom);
+  const [displayTo, setDisplayTo] = useState(initialTo);
   const [rangeError, setRangeError] = useState<string | null>(null);
   // Track the API params used for the active query so drill-down is consistent.
-  const [queryFrom, setQueryFrom] = useState(init.from);
-  const [queryTo, setQueryTo] = useState(init.apiTo);
+  const [queryFrom, setQueryFrom] = useState(initialFrom);
+  const [queryTo, setQueryTo] = useState(initialApiTo);
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
   // Refs mirror state values at render time so handleDrillDown reads the
@@ -107,16 +82,17 @@ export function UsageClient() {
         ops: aggregateByOperation(result.data),
         buckets: bucketByDay(result.data),
       });
-    } catch {
+    } catch (err) {
       if (seq !== mainSeqRef.current) return;
-      setData({ status: "error", message: "Failed to load usage data" });
+      console.error("loadMain failed:", err);
+      setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
 
   useEffect(() => {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    void loadMain(init.from, init.apiTo, ctrl.signal);
+    void loadMain(initialFrom, initialApiTo, ctrl.signal);
     return () => {
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
@@ -179,16 +155,15 @@ export function UsageClient() {
         return;
       }
       setDrill({ status: "ok", operation, events: result.data });
-    } catch {
+    } catch (err) {
       if (drillSeqRef.current !== seq) return;
-      setDrill({ status: "error", operation, message: "Failed to load events" });
+      console.error("handleDrillDown failed:", err);
+      setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
   }
 
-  // Lazy-initialised once with utcTodayStr(). UTC arithmetic means server and
-  // client produce the same string for the same UTC calendar day, so no hydration
-  // mismatch. Stable for the session; midnight-crossing is an acceptable edge case.
-  const [todayStr] = useState(utcTodayStr);
+  // todayStr comes from the server component (initialTo) — same value, no state needed.
+  const todayStr = initialTo;
 
   // fromMax: use displayTo as the upper bound for from only when displayTo is valid
   // and does not exceed today, preventing from being set to a future date.
@@ -313,7 +288,7 @@ export function UsageClient() {
                       const hasError =
                         drill.status === "error" && drill.operation === row.operation;
                       return (
-                        <React.Fragment key={row.operation}>
+                        <Fragment key={row.operation}>
                           <tr className="border-b border-zinc-100">
                             <td className="py-2 pr-4 font-mono">{row.operation}</td>
                             <td className="py-2 pr-4 text-right tabular-nums">
@@ -361,7 +336,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={i}
+                                                key={e.id ?? `${e.created_at}-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
@@ -381,7 +356,7 @@ export function UsageClient() {
                               </td>
                             </tr>
                           )}
-                        </React.Fragment>
+                        </Fragment>
                       );
                     })}
                   </tbody>

@@ -5,6 +5,7 @@ export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface RawEvent {
+  id?: string;
   operation: string;
   billable_units: number;
   created_at: string;

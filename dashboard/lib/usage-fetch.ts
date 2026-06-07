@@ -8,8 +8,10 @@ import type { RawEvent } from "./usage-format";
 // from server errors, regardless of how it renders them.
 // Strip angle brackets only: React auto-escapes text content, so &"' are not
 // dangerous here. < and > are stripped as defence-in-depth against non-React renderers.
+const MAX_ERROR_LENGTH = 200;
+
 function sanitizeError(s: string): string {
-  return s.replace(/[<>]/g, "").slice(0, 200);
+  return s.replace(/[<>]/g, "").slice(0, MAX_ERROR_LENGTH);
 }
 
 function isRawEvent(item: unknown): item is RawEvent {

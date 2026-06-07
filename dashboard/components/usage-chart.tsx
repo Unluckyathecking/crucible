@@ -1,25 +1,30 @@
 "use client";
 
+import { useMemo } from "react";
 import type { DayBucket } from "@/lib/usage-format";
 
 export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
-  if (buckets.length === 0) {
-    return <p className="text-sm text-zinc-500">No data to visualize.</p>;
-  }
-
   const W = 600;
   const H = 120;
   const PAD_L = 48;
   const PAD_B = 20;
   const chartW = W - PAD_L;
   const chartH = H - PAD_B;
-  // Use reduce instead of spread to avoid call-stack limits on large arrays.
-  const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
+
+  const { maxUnits, barSlot, barW } = useMemo(() => {
+    // Use reduce instead of spread to avoid call-stack limits on large arrays.
+    const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
+    const barSlot = chartW / buckets.length;
+    const barW = Math.max(1, barSlot - 1);
+    return { maxUnits, barSlot, barW };
+  }, [buckets, chartW]);
+
+  if (buckets.length === 0) {
+    return <p className="text-sm text-zinc-500">No data to visualize.</p>;
+  }
   if (maxUnits === 0) {
     return <p className="text-sm text-zinc-500">No units recorded in this period.</p>;
   }
-  const barSlot = chartW / buckets.length;
-  const barW = Math.max(1, barSlot - 1);
 
   return (
     <svg
