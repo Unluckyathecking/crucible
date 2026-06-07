@@ -454,6 +454,7 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 	results := make([]int, n)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var finished int32 // count of goroutines that have recorded a result (see barrier below)
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
@@ -467,15 +468,31 @@ func TestMiddleware_ConcurrentSameKey_Conflict(t *testing.T) {
 			mu.Lock()
 			results[idx] = w.Code
 			mu.Unlock()
+			atomic.AddInt32(&finished, 1)
 		}(i)
 	}
 
 	close(start) // unblock all goroutines simultaneously
-	// Wait for the winner to enter the handler (key claimed), then unblock it.
+	// Wait for the winner to enter the handler (key claimed).
 	select {
 	case <-handlerEntered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for handler to be entered")
+	}
+	// Hold the winner in-flight until all n-1 losers have recorded their result.
+	// The winner blocks on <-ready inside the handler, so its own finished++ cannot
+	// fire until closeReady below; before then `finished` counts only losers. Without
+	// this barrier the winner could Finalize before a slow loser ran its Load, letting
+	// that loser replay the stored 200 instead of seeing the pending row and getting
+	// 409 — a benign-but-nondeterministic outcome that flaked the success/conflict count.
+	deadline := time.After(5 * time.Second)
+	for atomic.LoadInt32(&finished) < n-1 {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for %d losers to finish; finished=%d", n-1, atomic.LoadInt32(&finished))
+		default:
+			time.Sleep(time.Millisecond)
+		}
 	}
 	closeReady()
 	wg.Wait()
