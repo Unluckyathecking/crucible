@@ -53,6 +53,15 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const drillRef = useRef(drill);
   useEffect(() => { drillRef.current = drill; }, [drill]);
 
+  // Sync display inputs when the server-computed initial range changes — e.g. a midnight
+  // crossing on client-side navigation back to this page without a full component unmount.
+  // Without this effect, useState(initialFrom/To) only applies on the first mount, so the
+  // date pickers would show stale values while the chart already reflects the new range.
+  useEffect(() => {
+    setDisplayFrom(initialFrom);
+    setDisplayTo(initialTo);
+  }, [initialFrom, initialTo]);
+
   // queryRef holds the API date range used by the active main query.
   // Updated synchronously in handleApply so handleDrillDown always reads the
   // correct range even if clicked before the next React render commits.
@@ -330,7 +339,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr className="bg-zinc-50">
+                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{truncateError(drill.message)}</p>
