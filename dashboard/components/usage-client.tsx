@@ -172,12 +172,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const todayStr = initialTo;
 
   // fromMax: allow 'from' up to displayTo when it is a valid date not after today.
-  // ISO 8601 strings are lexicographically ordered, so string comparison is exact
-  // and avoids an extra parseDateParam(todayStr) call on every displayTo change.
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
     if (isNaN(td.getTime())) return todayStr;
-    return displayTo <= todayStr ? displayTo : todayStr;
+    const todayDate = parseDateParam(todayStr);
+    return td <= todayDate ? displayTo : todayStr;
   }, [displayTo, todayStr]);
 
   const toMin = useMemo(() => {
