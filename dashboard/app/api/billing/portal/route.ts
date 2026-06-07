@@ -3,9 +3,30 @@ import { ensureCustomer, getStripeCustomerId } from "@/lib/db";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 
+function allowedOriginBase(): string {
+  const raw = process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw;
+  }
+}
+
 export async function POST(request: Request): Promise<Response> {
   try {
-    // Lightweight CSRF signal: custom headers require CORS preflight on cross-origin requests.
+    // Two-layer CSRF defense (OWASP "Verifying Origin" pattern):
+    // 1. Origin header check: browsers always include Origin on same-origin fetch POSTs;
+    //    cross-origin requests from unrelated domains are rejected here.
+    // 2. X-Requested-With: requires CORS preflight for cross-origin requests with custom headers,
+    //    providing defense-in-depth when Origin is absent (e.g. server-to-server callers).
+    const expectedOrigin = allowedOriginBase();
+    const origin = request.headers.get("Origin");
+    if (origin !== null) {
+      if (origin !== expectedOrigin) {
+        console.warn("CSRF: Origin mismatch for POST /api/billing/portal", { origin, expected: expectedOrigin });
+        return new Response("Forbidden", { status: 403 });
+      }
+    }
     const xrw = request.headers.get("X-Requested-With");
     if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
       const safeHeader = xrw ? xrw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20) : "missing";
@@ -53,8 +74,7 @@ export async function POST(request: Request): Promise<Response> {
     const stripeBody = (await stripeResp.json()) as StripePortalResp;
 
     if (!stripeResp.ok || !stripeBody.url) {
-      const msg = stripeBody.error?.message ?? `stripe status ${stripeResp.status}`;
-      console.error("POST /api/billing/portal: stripe error", { status: stripeResp.status, msg });
+      console.error("POST /api/billing/portal: stripe error", { status: stripeResp.status });
       return new Response(JSON.stringify({ error: { code: "STRIPE_ERROR", message: "billing unavailable" } }), {
         status: 502,
         headers: { "content-type": "application/json" },
