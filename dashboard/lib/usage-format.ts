@@ -111,11 +111,18 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
   // appear in a valid query window (from-inclusive, to-exclusive, up to 90 days).
   // Capping here prevents unbounded Map growth if callers ever pass unvalidated input.
   const MAX_BUCKETS = MAX_USAGE_RANGE_DAYS + 1;
+  let warnedTruncation = false;
   for (const e of events) {
     const d = new Date(e.created_at);
     if (isNaN(d.getTime())) continue;
     const key = formatUTCDate(d);
-    if (!map.has(key) && map.size >= MAX_BUCKETS) continue;
+    if (!map.has(key) && map.size >= MAX_BUCKETS) {
+      if (!warnedTruncation) {
+        console.warn(`bucketByDay: more than ${MAX_BUCKETS} distinct dates; extra events dropped. Check server-side date filtering.`);
+        warnedTruncation = true;
+      }
+      continue;
+    }
     map.set(key, (map.get(key) ?? 0) + Math.max(0, e.billable_units));
   }
   return Array.from(map.entries())

@@ -333,7 +333,8 @@ export async function usageByOperation(
 }
 
 export interface UsageEventRow {
-  id: string; // id::text cast in SQL; isRawEvent validator requires string type
+  /** id::text cast in SQL; BIGSERIAL pk so always a non-empty decimal string. isRawEvent validates id.length > 0. */
+  id: string;
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;

@@ -202,7 +202,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const fromMax = useMemo(() => {
     const toDate = parseDateParam(displayTo);
     const today = parseDateParam(todayUTCStr);
-    // Invalid displayTo: fall back to today.
+    // Invalid displayTo (empty or unparseable): cap From at today so the picker
+    // does not allow future dates. handleApply re-validates and shows "Invalid date".
     if (isNaN(toDate.getTime())) return todayUTCStr;
     // Future displayTo: cap From at today so the user cannot select a future From date.
     if (toDate.getTime() > today.getTime()) return todayUTCStr;
@@ -346,7 +347,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`detail-${row.operation}`} className="bg-zinc-50">
+                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{truncateError(drill.message)}</p>
