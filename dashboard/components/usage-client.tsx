@@ -28,11 +28,8 @@ function utcTodayStr(): string {
 }
 
 // Converts the user-visible inclusive end date to the API's exclusive upper bound.
-// Throws if displayTo is not a valid YYYY-MM-DD date (callers must validate first).
 function toApiTo(displayTo: string): string {
-  const d = parseDateParam(displayTo);
-  if (isNaN(d.getTime())) throw new Error(`Invalid date for toApiTo: ${displayTo}`);
-  return toISODateString(new Date(d.getTime() + MS_PER_DAY));
+  return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
 }
 
 function initRange(): { from: string; to: string } {
@@ -292,7 +289,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
+                            <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
