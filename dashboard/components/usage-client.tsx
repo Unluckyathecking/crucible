@@ -176,11 +176,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }, [queryFrom, queryTo]);
 
-  // UTC midnight of today; getUTCFullYear/Month/Date strip the time component.
-  const todayUTCStr = useMemo(() => {
-    const now = new Date();
-    return toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
-  }, []);
+  // UTC midnight of today; recomputed on every render so it stays current if the
+  // component is mounted across a UTC midnight boundary without navigation.
+  const now = new Date();
+  const todayUTCStr = toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
 
   const fromMax = useMemo(() => {
     const toDate = parseDateParam(displayTo);
