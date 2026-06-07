@@ -261,6 +261,48 @@ func TestHandleSubscriptionDeleted_WithCacheInvalidation(t *testing.T) {
 	}
 }
 
+// TestHandleSubscriptionDeleted_CacheLookupError verifies that when the customer lookup
+// after a successful UPDATE fails with a non-ErrNoRows DB error, the handler returns nil
+// (no webhook retry) rather than propagating the error. Cache staleness is preferred
+// over causing Stripe to retry the event.
+func TestHandleSubscriptionDeleted_CacheLookupError(t *testing.T) {
+	const customer = "cus_lookup_err_001"
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`plan_id = 'free'`).
+		WithArgs(customer).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	mock.ExpectQuery(`SELECT id FROM customers WHERE stripe_customer_id`).
+		WithArgs(customer).
+		WillReturnError(fmt.Errorf("connection lost"))
+
+	spy := &spyCacheDeleter{}
+	h := &Webhook{db: mock, now: time.Now, cache: spy}
+
+	obj := json.RawMessage(fmt.Sprintf(`{"customer":%q,"status":"canceled"}`, customer))
+	event := &stripeEvent{
+		ID:   "evt_lookup_err_001",
+		Type: "customer.subscription.deleted",
+		Data: stripeEventData{Object: obj},
+	}
+
+	if err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
+		t.Fatalf("expected nil (best-effort cache), got: %v", err)
+	}
+	if len(spy.calls) != 0 {
+		t.Errorf("expected no cache invalidation when lookup fails, got %d calls", len(spy.calls))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations not met: %v", err)
+	}
+}
+
 // TestHandle_InvoicePaymentSucceeded_DispatchIgnored verifies that invoice.payment_succeeded
 // events are acknowledged (HTTP 200) and recorded for dedup, but do NOT touch subscription
 // state — this event type has no handler in the dispatch switch.

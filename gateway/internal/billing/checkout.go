@@ -52,12 +52,19 @@ func NewCheckoutClient(secretKey, successURL, cancelURL, returnURL string, datab
 	}
 }
 
+// stripeError captures the error object Stripe includes on non-2xx responses.
+// Fields beyond Message are included for richer log context.
+type stripeError struct {
+	Type        string `json:"type"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	DeclineCode string `json:"decline_code,omitempty"`
+}
+
 // stripeSessionResponse captures the Stripe Checkout Session or Portal Session response.
 type stripeSessionResponse struct {
-	URL   string `json:"url"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	URL   string       `json:"url"`
+	Error *stripeError `json:"error"`
 }
 
 // CreateCheckoutSession creates a Stripe Checkout session for a customer upgrading to
@@ -149,8 +156,16 @@ func (c *CheckoutClient) postSession(ctx context.Context, endpoint string, form 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := fmt.Sprintf("status %d", resp.StatusCode)
-		if sr.Error != nil && sr.Error.Message != "" {
-			msg += ": " + sr.Error.Message
+		if sr.Error != nil {
+			if sr.Error.Message != "" {
+				msg += ": " + sr.Error.Message
+			}
+			if sr.Error.Code != "" {
+				msg += " (code: " + sr.Error.Code + ")"
+			}
+			if sr.Error.Type != "" {
+				msg += " (type: " + sr.Error.Type + ")"
+			}
 		}
 		return "", fmt.Errorf("stripe session error: %s", msg)
 	}

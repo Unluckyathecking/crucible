@@ -14,7 +14,11 @@ function getCsrfToken(): string {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
-function UpgradeButton() {
+interface UpgradeButtonProps {
+  targetPlanId?: string;
+}
+
+function UpgradeButton({ targetPlanId = "pro" }: UpgradeButtonProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,7 +32,7 @@ function UpgradeButton() {
           "Content-Type": "application/json",
           "X-CSRF-Token": getCsrfToken(),
         },
-        body: JSON.stringify({ plan_id: "pro" }),
+        body: JSON.stringify({ plan_id: targetPlanId }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

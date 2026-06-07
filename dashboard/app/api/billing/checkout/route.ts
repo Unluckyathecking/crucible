@@ -34,8 +34,8 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-    if (!stripeSecretKey) {
-      console.error("POST /api/billing/checkout: STRIPE_SECRET_KEY not configured");
+    if (!stripeSecretKey || !stripeSecretKey.startsWith("sk_")) {
+      console.error("POST /api/billing/checkout: STRIPE_SECRET_KEY not configured or invalid (must start with sk_)");
       return new Response("Internal server error", { status: 500 });
     }
 

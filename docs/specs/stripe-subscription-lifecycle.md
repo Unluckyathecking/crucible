@@ -65,7 +65,11 @@ Both dashboard API routes use the **double-submit cookie** pattern. The middlewa
 
 ### Migration 0008
 
-Adds a partial index on `customers(email) WHERE stripe_customer_id IS NULL` to speed up the `customer.created` webhook handler's `WHERE email = $2 AND stripe_customer_id IS NULL` query. Migrations are idempotent (`IF NOT EXISTS`) per CLAUDE.md invariant #8.
+Adds a partial index on `customers(email) WHERE stripe_customer_id IS NULL` to speed up queries that scan for customers not yet linked to Stripe (e.g. reconciliation, admin dashboards). The `customer.created` webhook handler uses `LOWER(email)` and is served by migration 0009's functional index, not this one. Migrations are idempotent (`IF NOT EXISTS`) per CLAUDE.md invariant #8.
+
+### Migration 0009
+
+Adds a functional index on `LOWER(email)` to speed up the `customer.created` webhook handler's case-insensitive email lookup: `SELECT id FROM customers WHERE LOWER(email) = LOWER($1)`.
 
 ## Environment variables
 

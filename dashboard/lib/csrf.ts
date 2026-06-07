@@ -13,12 +13,14 @@ export function verifyCsrfToken(header: string | null, cookie: string | null): b
     return false;
   }
   const maxLen = MAX_CSRF_TOKEN_LENGTH;
-  let result = h.length ^ c.length;
+  let result = 0;
   for (let i = 0; i < maxLen; i++) {
     const hv = i < h.length ? h.charCodeAt(i) : 0;
     const cv = i < c.length ? c.charCodeAt(i) : 0;
     result |= hv ^ cv;
   }
+  // Include length difference after the loop so the character scan always completes.
+  result |= h.length ^ c.length;
   return result === 0;
 }
 

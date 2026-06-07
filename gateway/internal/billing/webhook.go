@@ -398,6 +398,9 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 // Keys are flushed in batches of 100 to bound Redis command payload size.
 // Result set is bounded at 1000 rows; customers with more active keys will have the
 // remainder flushed by TTL expiry within 60 s (same as before this feature existed).
+// This runs synchronously in the webhook handler. The webhook HTTP server timeout
+// bounds total latency; the Stripe retry window (5 min) means a slow cache flush
+// that delays the 200 response will simply cause a harmless retry.
 // Best-effort: errors are logged but not returned.
 func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string) {
 	if h.cache == nil {
