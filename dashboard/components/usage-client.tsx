@@ -351,11 +351,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e, idx) => {
+                                          {drill.events.map((e) => {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${e.id}-${idx}`}
+                                                key={e.id}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

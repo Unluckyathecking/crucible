@@ -334,7 +334,7 @@ export async function usageByOperation(
 }
 
 export interface UsageEventRow {
-  id: string; // BIGSERIAL (bigint) explicitly cast to text via id::text in SQL; required by isRawEvent validation
+  id: string; // id::text cast in SQL; isRawEvent validator requires string type
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;
