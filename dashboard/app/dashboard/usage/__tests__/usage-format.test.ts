@@ -105,6 +105,15 @@ describe("bucketByDay", () => {
     const buckets = bucketByDay(events);
     expect(buckets[0].date).toBe("2024-06-15");
   });
+
+  it("buckets by UTC date even when local date differs (23:00 UTC = next day in +1 or later timezone)", () => {
+    const events = [
+      { operation: "a", billable_units: 1, created_at: "2024-01-15T23:00:00.000Z" },
+    ];
+    const buckets = bucketByDay(events);
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0].date).toBe("2024-01-15");
+  });
 });
 
 // ---------------------------------------------------------------------------

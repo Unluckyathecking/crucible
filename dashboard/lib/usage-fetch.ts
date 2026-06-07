@@ -37,7 +37,7 @@ export async function fetchUsage(
   }
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}));
-    if (typeof body !== "object" || body === null) {
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;

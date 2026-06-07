@@ -284,7 +284,7 @@ export function UsageClient() {
                         drill.status === "error" && drill.operation === row.operation;
                       return (
                         <React.Fragment key={row.operation}>
-                          <tr key={`${row.operation}-main`} className="border-b border-zinc-100">
+                          <tr className="border-b border-zinc-100">
                             <td className="py-2 pr-4 font-mono">{row.operation}</td>
                             <td className="py-2 pr-4 text-right tabular-nums">
                               {row.total_billable_units.toLocaleString()}
@@ -305,7 +305,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`${row.operation}-drill`} className="bg-zinc-50">
+                            <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
