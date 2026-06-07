@@ -16,14 +16,14 @@ const ALLOWED_ORIGIN = (() => {
 export async function POST(request: Request): Promise<Response> {
   try {
     // Two-layer CSRF defense (OWASP "Verifying Origin" pattern):
-    // 1. Origin header check: browsers always include Origin on same-origin fetch POSTs;
-    //    cross-origin requests from unrelated domains are rejected here.
-    // 2. X-Requested-With: requires CORS preflight for cross-origin requests with custom headers,
-    //    providing defense-in-depth when Origin is absent (e.g. server-to-server callers).
+    // 1. Origin header check: if Origin is present it must match. Cross-origin browsers always
+    //    send Origin; same-origin browsers (e.g. Safari) may omit it — allowed to fall through.
+    // 2. X-Requested-With: custom header requires CORS preflight for cross-origin requests,
+    //    providing the primary defense when Origin is absent.
     const origin = request.headers.get("Origin");
-    if (!origin || origin !== ALLOWED_ORIGIN) {
-      const safeOrigin = origin ? origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60) : "missing";
-      console.warn("CSRF: invalid or missing Origin for POST /api/billing/portal", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
+    if (origin && origin !== ALLOWED_ORIGIN) {
+      const safeOrigin = origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60);
+      console.warn("CSRF: invalid Origin for POST /api/billing/portal", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
       return new Response("Forbidden", { status: 403 });
     }
     const xrw = request.headers.get("X-Requested-With");

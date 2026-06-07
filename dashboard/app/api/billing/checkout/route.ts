@@ -16,14 +16,14 @@ const ALLOWED_ORIGIN = (() => {
 export async function POST(request: Request): Promise<Response> {
   try {
     // Two-layer CSRF defense (OWASP "Verifying Origin" pattern):
-    // 1. Origin header check: browsers always include Origin on same-origin fetch POSTs;
-    //    cross-origin requests from unrelated domains are rejected here.
-    // 2. X-Requested-With: requires CORS preflight for cross-origin requests with custom headers,
-    //    providing defense-in-depth when Origin is absent (e.g. server-to-server callers).
+    // 1. Origin header check: if Origin is present it must match. Cross-origin browsers always
+    //    send Origin; same-origin browsers (e.g. Safari) may omit it — allowed to fall through.
+    // 2. X-Requested-With: custom header requires CORS preflight for cross-origin requests,
+    //    providing the primary defense when Origin is absent.
     const origin = request.headers.get("Origin");
-    if (!origin || origin !== ALLOWED_ORIGIN) {
-      const safeOrigin = origin ? origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60) : "missing";
-      console.warn("CSRF: invalid or missing Origin for POST /api/billing/checkout", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
+    if (origin && origin !== ALLOWED_ORIGIN) {
+      const safeOrigin = origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60);
+      console.warn("CSRF: invalid Origin for POST /api/billing/checkout", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
       return new Response("Forbidden", { status: 403 });
     }
     const xrw = request.headers.get("X-Requested-With");
@@ -117,6 +117,10 @@ export async function POST(request: Request): Promise<Response> {
 // that maps to an arbitrary variable like PATH or HOME.
 const PLAN_ID_RE = /^[a-z0-9-]{1,32}$/;
 
+// STRIPE_PRICE_ID_RE validates that a resolved price ID looks like a real Stripe price ID.
+// Rejects misconfigured env vars before they reach the Stripe API.
+const STRIPE_PRICE_ID_RE = /^price_[a-zA-Z0-9_]+$/;
+
 // resolveStripePriceId fetches the stripe_price_id for a plan from the environment
 // or a static mapping. In production this should query the gateway's plans table via a
 // shared DB connection or a gateway API call. For the dashboard tier, we use a simple
@@ -127,5 +131,8 @@ async function resolveStripePriceId(planId: string): Promise<string | null> {
   }
   const envKey = `STRIPE_PRICE_${planId.toUpperCase().replace(/-/g, "_")}`;
   const priceId = process.env[envKey];
-  return priceId ?? null;
+  if (!priceId || !STRIPE_PRICE_ID_RE.test(priceId)) {
+    return null;
+  }
+  return priceId;
 }

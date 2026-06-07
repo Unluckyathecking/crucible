@@ -30,7 +30,9 @@ func TestCreateCheckoutSession(t *testing.T) {
 		}
 		capturedForm = r.Form
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": wantURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": wantURL}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -76,9 +78,11 @@ func TestCreateCheckoutSession(t *testing.T) {
 func TestCreateCheckoutSession_NonOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]string{"message": "invalid price"},
-		})
+		}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -120,7 +124,9 @@ func TestCreatePortalSession(t *testing.T) {
 			t.Fatalf("parse form: %v", err)
 		}
 		capturedForm = r.Form
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": wantURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": wantURL}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

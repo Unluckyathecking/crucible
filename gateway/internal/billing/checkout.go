@@ -82,8 +82,8 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 	// customer_creation=always ensures a Stripe customer is created so customer.created
 	// fires and we can link stripe_customer_id even before checkout.session.completed.
 	form.Set("customer_creation", "always")
-	// Embed our UUID in subscription metadata so the subscription.created webhook
-	// can correlate if client_reference_id is absent (belt-and-suspenders).
+	// Embed our UUID in subscription metadata so that customer.subscription.created/updated
+	// webhooks can correlate back to our customer if client_reference_id is absent.
 	form.Set("subscription_data[metadata][crucible_customer_id]", customerID)
 
 	return c.postSession(ctx, c.baseURL+"/checkout/sessions", form)
