@@ -27,7 +27,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
       ? buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ")
       : `From ${buckets[0].date} (${buckets[0].units.toLocaleString("en-US")} units) to ${last.date} (${last.units.toLocaleString("en-US")} units), ${buckets.length} days total`;
     return { maxUnits, barSlot, barW, descText };
-  }, [buckets]);
+  }, [buckets, chartW]);
 
   if (buckets.length === 0) {
     return <p className="text-sm text-zinc-500">No data to visualize.</p>;

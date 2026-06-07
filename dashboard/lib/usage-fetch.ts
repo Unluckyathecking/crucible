@@ -33,6 +33,9 @@ export async function fetchUsage(
   operation?: string,
   signal?: AbortSignal,
 ): Promise<{ data: RawEvent[] } | { error: string } | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return { error: "Invalid date parameters" };
+  }
   const params = new URLSearchParams({ from, to });
   // Skip empty string: server rejects operation= with 400 "must not be empty".
   if (operation !== undefined && operation !== "") params.set("operation", operation);

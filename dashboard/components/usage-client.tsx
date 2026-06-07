@@ -44,9 +44,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const [displayFrom, setDisplayFrom] = useState(initialFrom);
   const [displayTo, setDisplayTo] = useState(initialTo);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  // Track the API params used for the active query so drill-down is consistent.
-  const [queryFrom, setQueryFrom] = useState(initialFrom);
-  const [queryTo, setQueryTo] = useState(initialApiTo);
   // Initialize to "loading" so the first render shows a loading indicator
   // immediately, without a flash of empty state before the useEffect fires.
   const [data, setData] = useState<DataState>({ status: "loading" });
@@ -56,6 +53,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const drillRef = useRef(drill);
   useEffect(() => { drillRef.current = drill; }, [drill]);
 
+  // queryRef holds the API date range used by the active main query.
+  // Updated synchronously in handleApply so handleDrillDown always reads the
+  // correct range even if clicked before the next React render commits.
+  const queryRef = useRef({ from: initialFrom, to: initialApiTo });
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
@@ -133,15 +134,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       return;
     }
     setRangeError(null);
-    setQueryFrom(apiFrom);
-    setQueryTo(apiTo);
+    queryRef.current = { from: apiFrom, to: apiTo };
     abortRef.current?.abort();
     void loadMain(apiFrom, apiTo);
   }, [displayFrom, displayTo, loadMain]);
 
   const handleDrillDown = useCallback(async (operation: string) => {
-    const from = queryFrom;
-    const to = queryTo;
+    const { from, to } = queryRef.current;
     // Read drill state from the ref for the toggle check so rapid clicks see the latest
     // value rather than a potentially stale render-closure snapshot.
     // Toggle off from any non-idle state (ok, loading, or error) for consistent UX.
@@ -174,7 +173,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       if (drillSeqRef.current !== seq || !mountedRef.current) return;
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
-  }, [queryFrom, queryTo]);
+  }, []);
 
   // UTC midnight of today; getUTCFullYear/Month/Date strip the time component.
   const todayUTCStr = useMemo(() => {

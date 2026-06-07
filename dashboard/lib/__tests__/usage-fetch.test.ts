@@ -243,4 +243,23 @@ describe("fetchUsage", () => {
     const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect(options.signal).toBe(ctrl.signal);
   });
+
+  it("sets cache: no-store on fetch requests", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
+    await fetchUsage("2024-01-01", "2024-02-01");
+    const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect(options.cache).toBe("no-store");
+  });
+
+  it("returns error for malformed from date without calling fetch", async () => {
+    const result = await fetchUsage("not-a-date", "2024-02-01");
+    expect(result).toEqual({ error: "Invalid date parameters" });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("returns error for malformed to date without calling fetch", async () => {
+    const result = await fetchUsage("2024-01-01", "not-a-date");
+    expect(result).toEqual({ error: "Invalid date parameters" });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
 });
