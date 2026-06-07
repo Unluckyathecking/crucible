@@ -64,6 +64,15 @@ describe("fetchUsage", () => {
     expect(result.error).not.toContain("</script>");
   });
 
+  it("strips unclosed HTML angle brackets from server error messages", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(500, { error: "<img onerror='alert(1)'" }),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    if (!result || !("error" in result)) throw new Error("expected error result");
+    expect(result.error).not.toContain("<");
+  });
+
   it("returns network error message and logs when fetch throws a non-abort error", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
@@ -93,6 +102,13 @@ describe("fetchUsage", () => {
     await fetchUsage("2024-01-01", "2024-02-01");
     const url = (vi.mocked(fetch).mock.calls[0][0] as string);
     expect(url).not.toContain("operation");
+  });
+
+  it("appends operation query param for empty-string operation (not silently dropped)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
+    await fetchUsage("2024-01-01", "2024-02-01", "");
+    const url = (vi.mocked(fetch).mock.calls[0][0] as string);
+    expect(url).toContain("operation=");
   });
 
   it("sends X-Requested-With: XMLHttpRequest header", async () => {

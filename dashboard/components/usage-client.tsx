@@ -74,11 +74,16 @@ export function UsageClient() {
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
+  // Monotonic counter so a stale in-flight loadMain response is discarded even if
+  // the AbortSignal fires after fetch() has already returned (browser race window).
+  const mainSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
+    const seq = ++mainSeqRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
+    if (mainSeqRef.current !== seq) return;
     if (signal?.aborted || result === null) return;
     if ("error" in result) {
       setData({ status: "error", message: result.error });
@@ -102,6 +107,10 @@ export function UsageClient() {
 
   function handleApply() {
     setDrill({ status: "none" });
+    // Abort any in-flight drill-down and invalidate its sequence so a stale response
+    // cannot overwrite the "none" state set above with events from the old date range.
+    drillAbortRef.current?.abort();
+    drillSeqRef.current++;
     const fromDate = parseDateParam(displayFrom);
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
@@ -156,7 +165,6 @@ export function UsageClient() {
 
   const todayStr = utcTodayStr();
 
-  // aggregateByOperation already returns plain number; no BigInt needed.
   const totalUnits =
     data.status === "ok"
       ? data.ops.reduce((a, r) => a + r.total_billable_units, 0)
@@ -165,6 +173,10 @@ export function UsageClient() {
     data.status === "ok"
       ? data.ops.reduce((a, r) => a + r.event_count, 0)
       : 0;
+  const totalUnitsDisplay =
+    totalUnits > Number.MAX_SAFE_INTEGER ? "∞" : totalUnits.toLocaleString();
+  const totalCallsDisplay =
+    totalCalls > Number.MAX_SAFE_INTEGER ? "∞" : totalCalls.toLocaleString();
 
   return (
     <div className="space-y-5">
@@ -299,9 +311,9 @@ export function UsageClient() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e) => (
+                                          {drill.events.map((e, i) => (
                                             <tr
-                                              key={`${e.created_at}-${e.billable_units}-${e.operation}`}
+                                              key={`${i}-${e.created_at}-${e.billable_units}`}
                                               className="border-b border-zinc-100"
                                             >
                                               <td className="py-1 pr-4 font-mono">
@@ -328,10 +340,10 @@ export function UsageClient() {
                     <tr className="text-zinc-600 font-medium border-t border-zinc-200">
                       <td className="pt-2 pr-4">Total</td>
                       <td className="pt-2 pr-4 text-right tabular-nums">
-                        {totalUnits.toLocaleString()}
+                        {totalUnitsDisplay}
                       </td>
                       <td className="pt-2 pr-4 text-right tabular-nums text-zinc-500">
-                        {totalCalls.toLocaleString()}
+                        {totalCallsDisplay}
                       </td>
                       <td />
                     </tr>

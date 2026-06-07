@@ -3,9 +3,10 @@
 
 import type { RawEvent } from "./usage-format";
 
-// Strip HTML tags so server error strings are safe in any rendering context.
+// Strip HTML tags (both closed `<x>` and unclosed `<x`) so error strings are safe
+// in any rendering context, not just React text nodes.
 function sanitizeError(s: string): string {
-  return s.replace(/<[^>]*>/g, "");
+  return s.replace(/<[^>]*>/g, "").replace(/</g, "");
 }
 
 export async function fetchUsage(
@@ -15,7 +16,7 @@ export async function fetchUsage(
   signal?: AbortSignal,
 ): Promise<{ data: RawEvent[] } | { error: string } | null> {
   const params = new URLSearchParams({ from, to });
-  if (operation) params.set("operation", operation);
+  if (operation !== undefined) params.set("operation", operation);
   let res: Response;
   try {
     res = await fetch(`/api/usage?${params}`, {
