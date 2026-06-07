@@ -68,10 +68,6 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 		}
 		return "", fmt.Errorf("resolve plan %q: %w", planID, err)
 	}
-	if priceID == "" {
-		return "", fmt.Errorf("resolve plan %q: empty price ID", planID)
-	}
-
 	form := url.Values{}
 	form.Set("mode", "subscription")
 	form.Set("client_reference_id", customerID)

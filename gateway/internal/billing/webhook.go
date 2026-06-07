@@ -262,6 +262,8 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		var customerID string
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1`, obj.Customer).Scan(&customerID); err == nil {
 			h.invalidateCustomerCache(ctx, customerID)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription upsert")
 		}
 	}
 	return nil
