@@ -279,6 +279,10 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 	}
 	// Only downgrade if the subscription is actually canceled. A retried deleted
 	// event for a customer who has since re-subscribed will have a different active subscription.
+	if obj.Customer == "" {
+		log.Info().Msg("customer.subscription.deleted: missing customer field; skipping")
+		return nil
+	}
 	if obj.Status != "canceled" {
 		return nil
 	}
@@ -386,13 +390,15 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 // belonging to customerID. This ensures plan or stripe_customer_id changes take effect
 // immediately rather than waiting for the 60 s TTL (CLAUDE.md invariant #7).
 // Keys are flushed in batches of 100 to bound Redis command payload size.
-// Best-effort: errors are logged but not returned — a missed DEL results in a 60 s stale
-// window, which is the same as before this feature existed.
+// Result set is bounded at 1000 rows; customers with more active keys will have the
+// remainder flushed by TTL expiry within 60 s (same as before this feature existed).
+// Best-effort: errors are logged but not returned.
 func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string) {
 	if h.cache == nil {
 		return
 	}
-	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL`, customerID)
+	const maxPrefixes = 1000
+	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL LIMIT $2`, customerID, maxPrefixes)
 	if err != nil {
 		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix query failed")
 		return

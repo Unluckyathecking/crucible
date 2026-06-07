@@ -55,14 +55,22 @@ export async function POST(request: Request): Promise<Response> {
     form.set("customer", stripeCustomerId);
     form.set("return_url", `${dashboardOrigin}/dashboard/billing`);
 
-    const stripeResp = await fetch(`${STRIPE_API_BASE}/billing/portal/sessions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${stripeSecretKey}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: form.toString(),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let stripeResp: Response;
+    try {
+      stripeResp = await fetch(`${STRIPE_API_BASE}/billing/portal/sessions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${stripeSecretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form.toString(),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     type StripePortalResp = { url?: string; error?: { message?: string } };
     const stripeBody = (await stripeResp.json()) as StripePortalResp;

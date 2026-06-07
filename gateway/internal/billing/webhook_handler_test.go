@@ -160,7 +160,7 @@ func TestHandleSubscriptionUpsert_WithCacheInvalidation(t *testing.T) {
 
 	// invalidateCustomerCache queries prefixes.
 	mock.ExpectQuery(`SELECT prefix FROM api_keys WHERE customer_id`).
-		WithArgs(customerID).
+		WithArgs(customerID, 1000).
 		WillReturnRows(mock.NewRows([]string{"prefix"}).AddRow(prefix))
 
 	spy := &spyCacheDeleter{}
@@ -222,7 +222,7 @@ func TestHandleSubscriptionDeleted_WithCacheInvalidation(t *testing.T) {
 		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(customerID))
 
 	mock.ExpectQuery(`SELECT prefix FROM api_keys WHERE customer_id`).
-		WithArgs(customerID).
+		WithArgs(customerID, 1000).
 		WillReturnRows(mock.NewRows([]string{"prefix"}).AddRow(prefix))
 
 	spy := &spyCacheDeleter{}
@@ -356,7 +356,7 @@ func TestHandleCheckoutSessionCompleted(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	mock.ExpectQuery(`SELECT prefix FROM api_keys WHERE customer_id`).
-		WithArgs(customerID).
+		WithArgs(customerID, 1000).
 		WillReturnRows(mock.NewRows([]string{"prefix"}).AddRow(prefix))
 
 	spy := &spyCacheDeleter{}
@@ -480,7 +480,7 @@ func TestHandleCustomerCreated(t *testing.T) {
 
 	// Query for cache invalidation prefixes.
 	mock.ExpectQuery(`SELECT prefix FROM api_keys WHERE customer_id`).
-		WithArgs(customerID).
+		WithArgs(customerID, 1000).
 		WillReturnRows(mock.NewRows([]string{"prefix"}).AddRow(prefix))
 
 	spy := &spyCacheDeleter{}
