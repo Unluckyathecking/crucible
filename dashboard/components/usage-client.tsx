@@ -123,9 +123,15 @@ export function UsageClient() {
   }, []);
 
   function handleApply() {
+    const fromDate = parseDateParam(displayFrom);
+    const toDate = parseDateParam(displayTo);
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      setRangeError("Invalid date format");
+      return;
+    }
     const apiFrom = displayFrom;
     const apiTo = toApiTo(displayTo);
-    const check = validateDateRange(parseDateParam(apiFrom), parseDateParam(apiTo));
+    const check = validateDateRange(fromDate, new Date(toDate.getTime() + MS_PER_DAY));
     if (!check.valid) {
       setRangeError(check.error ?? "Invalid date range");
       return;
@@ -144,28 +150,26 @@ export function UsageClient() {
     }
     setDrill({ status: "loading", operation });
     const result = await fetchUsage(queryFrom, queryTo, operation);
-    if ("error" in result) {
-      setDrill({ status: "error", operation, message: result.error });
-    } else {
-      setDrill({ status: "ok", operation, events: result.data });
-    }
+    // Use functional update to discard stale responses if the user toggled
+    // the panel closed (or started another fetch) while this one was in flight.
+    setDrill((prev) => {
+      if (prev.status !== "loading" || prev.operation !== operation) return prev;
+      if ("error" in result) return { status: "error", operation, message: result.error };
+      return { status: "ok", operation, events: result.data };
+    });
   }
 
   const todayStr = utcTodayStr();
 
-  // Mirror the BigInt saturation pattern from app/dashboard/page.tsx to guard against
-  // Number.MAX_SAFE_INTEGER overflow when a customer has many operations.
-  const _cap = BigInt(Number.MAX_SAFE_INTEGER);
-  const _rawUnits =
+  // aggregateByOperation already returns plain number; no BigInt needed.
+  const totalUnits =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => a + BigInt(r.total_billable_units), BigInt(0))
-      : BigInt(0);
-  const _rawCalls =
+      ? data.ops.reduce((a, r) => a + r.total_billable_units, 0)
+      : 0;
+  const totalCalls =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => a + BigInt(r.event_count), BigInt(0))
-      : BigInt(0);
-  const totalUnits = _rawUnits > _cap ? Number.MAX_SAFE_INTEGER : Number(_rawUnits);
-  const totalCalls = _rawCalls > _cap ? Number.MAX_SAFE_INTEGER : Number(_rawCalls);
+      ? data.ops.reduce((a, r) => a + r.event_count, 0)
+      : 0;
 
   return (
     <div className="space-y-5">
@@ -278,7 +282,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr className="bg-zinc-50">
+                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{drill.message}</p>
@@ -301,7 +305,7 @@ export function UsageClient() {
                                         </thead>
                                         <tbody>
                                           {drill.events.map((e, i) => (
-                                            <tr key={`${e.created_at}-${e.billable_units}-${e.operation}-${i}`} className="border-b border-zinc-100">
+                                            <tr key={`drill-${row.operation}-${i}`} className="border-b border-zinc-100">
                                               <td className="py-1 pr-4 font-mono">
                                                 {new Date(e.created_at).toISOString()}
                                               </td>
