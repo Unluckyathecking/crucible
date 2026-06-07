@@ -8,11 +8,11 @@ import {
   bucketByDay,
   aggregateByOperation,
   MAX_USAGE_RANGE_DAYS,
-  MS_PER_DAY,
   type DayBucket,
   type OperationRow,
   type RawEvent,
 } from "@/lib/usage-format";
+import { MS_PER_DAY } from "@/lib/constants";
 import { fetchUsage, truncateError } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
@@ -203,11 +203,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(r.total_billable_units),
+      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
       BigInt(0),
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(r.event_count),
+      (a, r) => a + BigInt(Math.trunc(r.event_count)),
       BigInt(0),
     );
     return {

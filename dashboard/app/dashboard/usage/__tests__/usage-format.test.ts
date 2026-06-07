@@ -6,8 +6,8 @@ import {
   parseDateParam,
   toISODateString,
   MAX_USAGE_RANGE_DAYS,
-  MS_PER_DAY,
 } from "@/lib/usage-format";
+import { MS_PER_DAY } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
 // validateDateRange — mirrors the server-side checks in /api/usage/route.ts

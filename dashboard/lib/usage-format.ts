@@ -4,7 +4,6 @@
 // Imported from the shared lib/constants.ts so neither this client-safe file
 // nor lib/db.ts needs to define it independently.
 import { MS_PER_DAY } from "./constants";
-export { MS_PER_DAY };
 
 export const MAX_USAGE_RANGE_DAYS = 90;
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.

@@ -2,7 +2,8 @@ import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { UsageClient } from "@/components/usage-client";
-import { toISODateString, MS_PER_DAY } from "@/lib/usage-format";
+import { toISODateString } from "@/lib/usage-format";
+import { MS_PER_DAY } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
