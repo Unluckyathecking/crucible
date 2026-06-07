@@ -67,6 +67,8 @@ func TestCreateCheckoutSession(t *testing.T) {
 	assertField(t, capturedForm, "client_reference_id", customerID)
 	assertField(t, capturedForm, "line_items[0][price]", priceID)
 	assertField(t, capturedForm, "line_items[0][quantity]", "1")
+	assertField(t, capturedForm, "customer_creation", "always")
+	assertField(t, capturedForm, "subscription_data[metadata][crucible_customer_id]", customerID)
 	assertField(t, capturedForm, "success_url", "https://example.com/success")
 	assertField(t, capturedForm, "cancel_url", "https://example.com/cancel")
 

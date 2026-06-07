@@ -1,11 +1,15 @@
 // verifyCsrfToken compares a CSRF header value against the __csrf cookie using
-// constant-time comparison to prevent timing side-channels.
+// constant-time comparison to prevent timing side-channels. We XOR the lengths
+// into `result` and loop to max(header, cookie) length — early-exit on length
+// mismatch would leak timing information about which byte first differs.
 export function verifyCsrfToken(header: string | null, cookie: string | null): boolean {
   if (!header || !cookie) return false;
-  if (header.length !== cookie.length) return false;
-  let result = 0;
-  for (let i = 0; i < header.length; i++) {
-    result |= header.charCodeAt(i) ^ cookie.charCodeAt(i);
+  const maxLen = Math.max(header.length, cookie.length);
+  let result = header.length ^ cookie.length;
+  for (let i = 0; i < maxLen; i++) {
+    const h = i < header.length ? header.charCodeAt(i) : 0;
+    const c = i < cookie.length ? cookie.charCodeAt(i) : 0;
+    result |= h ^ c;
   }
   return result === 0;
 }

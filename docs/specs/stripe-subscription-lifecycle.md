@@ -61,7 +61,7 @@ After any `stripe_customer_id` write, the handler queries `api_keys` for all act
 
 ### CSRF defense
 
-Both dashboard API routes check `X-Requested-With: XMLHttpRequest`. This requires CORS preflight on cross-origin requests, making simple form-based CSRF impractical. Consistent with the pattern already used in `app/api/keys/route.ts`.
+Both dashboard API routes use the **double-submit cookie** pattern. The middleware sets a `__csrf` cookie (`SameSite=Strict`, not `HttpOnly`) on every dashboard page load. Client components read this cookie via `document.cookie` and echo it as the `X-CSRF-Token` request header. The route handlers compare the header against the cookie value using a constant-time function (`verifyCsrfToken` in `lib/csrf.ts`) to prevent timing side-channels. An attacker on a different origin cannot read the `SameSite=Strict` cookie, so they cannot forge the matching header. An explicit `Origin` check is retained as defense-in-depth: a present-but-wrong `Origin` is rejected (Safari omits `Origin` on same-origin POSTs, so a null/absent `Origin` is allowed through to the CSRF cookie check).
 
 ### Migration 0008
 
