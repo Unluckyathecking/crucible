@@ -14,9 +14,9 @@ export default async function UsagePage() {
     redirect("/login");
   }
 
-  // Compute initial date range server-side so the client component receives
-  // stable string props. This eliminates any risk of SSR/hydration mismatch
-  // from calling new Date() independently on server and client.
+  // Compute initial date range server-side for the SSR → hydrate path.
+  // With force-dynamic this runs per-request on the server; client-side
+  // navigation re-renders UsageClient with cached props until a full reload.
   const now = new Date();
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const tomorrowUTC = new Date(todayUTC.getTime() + MS_PER_DAY);

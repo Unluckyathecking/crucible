@@ -53,9 +53,6 @@ export async function fetchUsage(
   if (res.status === 401) {
     return { error: "Session expired — please reload the page." };
   }
-  if (res.status === 403) {
-    return { error: "Forbidden — request rejected (403)." };
-  }
   if (!res.ok) {
     const ct = res.headers.get("content-type") ?? "";
     if (!ct.includes("application/json")) {

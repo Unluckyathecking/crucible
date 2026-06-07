@@ -102,10 +102,16 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Session expired — please reload the page." });
   });
 
-  it("returns error for 403 Forbidden", async () => {
+  it("returns generic error for 403 Forbidden with no error body", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(403, {}));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toEqual({ error: "Forbidden — request rejected (403)." });
+    expect(result).toEqual({ error: "Server error (403)" });
+  });
+
+  it("returns server error body for 403 Forbidden with error message", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(403, { error: "Plan limit exceeded" }));
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Plan limit exceeded" });
   });
 
   it("returns generic server error for non-string error body", async () => {
@@ -125,9 +131,7 @@ describe("fetchUsage", () => {
       mockResponse(500, { error: "<script>alert('xss')</script>" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).not.toContain("<");
-    expect(result.error).not.toContain(">");
+    expect(result).toEqual({ error: "scriptalert('xss')/script" });
   });
 
   it("strips unclosed angle brackets from server error messages", async () => {
@@ -135,8 +139,7 @@ describe("fetchUsage", () => {
       mockResponse(500, { error: "<img onerror='alert(1)'" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).not.toContain("<");
+    expect(result).toEqual({ error: "img onerror='alert(1)'" });
   });
 
   it("returns network error message when fetch throws a non-abort error", async () => {

@@ -21,10 +21,10 @@ describe("validateDateRange", () => {
   });
 
   it("accepts exclusive diff of exactly MAX_USAGE_RANGE_DAYS days", () => {
-    // Jan 1 → Feb 1 = 31 days, Feb 1 → Mar 1 = 29 days (2024 is a leap year),
-    // Mar 1 → Mar 31 = 30 days; total = 90 days exactly.
-    // validateDateRange uses strict-greater-than (>) so exactly MAX_USAGE_RANGE_DAYS
-    // days is the boundary that must still be accepted (not rejected).
+    // 2024 is a leap year; 2024-01-01 to 2024-03-31 is exactly 90 days:
+    // Jan contributes 31 days (Jan 1 to Feb 1), Feb contributes 29 days (Feb 1 to Mar 1),
+    // Mar contributes 30 days (Mar 1 to Mar 31), total = 90.
+    // validateDateRange uses strict > so this exact boundary is accepted, not rejected.
     const from = parseDateParam("2024-01-01");
     const to = parseDateParam("2024-03-31");
     expect(validateDateRange(from, to).valid).toBe(true);

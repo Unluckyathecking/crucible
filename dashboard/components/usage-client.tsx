@@ -136,6 +136,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   async function handleDrillDown(operation: string) {
     // Use drill state from the render closure (not a ref) for the toggle check:
     // handleDrillDown is recreated on each render, so drill is always current here.
+    // Error state is intentionally excluded: clicking "Details" on an errored row retries
+    // rather than toggles, which is the expected UX for transient network failures.
     if ((drill.status === "ok" || drill.status === "loading") && drill.operation === operation) {
       // Invalidate before clearing state so any resolving fetch is discarded.
       drillSeqRef.current++;
@@ -166,12 +168,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // todayStr comes from the server component (initialTo) — same value, no state needed.
   const todayStr = initialTo;
 
-  // fromMax: use displayTo as the upper bound for from only when displayTo is valid
-  // and does not exceed today, preventing from being set to a future date.
+  // fromMax: allow 'from' up to displayTo when it is a valid date not after today.
+  // ISO 8601 strings are lexicographically ordered, so string comparison is exact
+  // and avoids an extra parseDateParam(todayStr) call on every displayTo change.
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    return !isNaN(td.getTime()) && td.getTime() <= parseDateParam(todayStr).getTime()
-      ? displayTo : todayStr;
+    if (isNaN(td.getTime())) return todayStr;
+    return displayTo <= todayStr ? displayTo : todayStr;
   }, [displayTo, todayStr]);
 
   const toMin = useMemo(() => {
@@ -183,14 +186,12 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
-  // aggregateByOperation sums billable_units with Math.max(0, …), so the value may exceed
-  // Number.MAX_SAFE_INTEGER across many events. Math.trunc guards the BigInt conversion
-  // against any fractional accumulation; isRawEvent enforces integer inputs, but the
-  // intermediate sum from floating-point addition can drift slightly.
+  // isRawEvent validates billable_units as a finite integer; Math.max(0, integer) stays
+  // integer; so aggregateByOperation totals are exact integers and BigInt() is safe.
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
+      (a, r) => a + BigInt(r.total_billable_units),
       0n,
     );
     const totalCallsBig = data.ops.reduce(
