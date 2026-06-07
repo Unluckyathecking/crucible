@@ -41,6 +41,21 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
+  it("returns data when id field is a string (valid optional field)", async () => {
+    const event = { id: "abc", operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" };
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, [event]));
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ data: [event] });
+  });
+
+  it("returns error when id field is a number (must be string or absent)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ id: 123, operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
   it("returns error for array containing a null element", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(200, [{ operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }, null]),

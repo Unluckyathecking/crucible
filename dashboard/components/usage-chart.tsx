@@ -14,10 +14,12 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
   const { maxUnits, barSlot, barW } = useMemo(() => {
     // Use reduce instead of spread to avoid call-stack limits on large arrays.
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
+    // chartW is a constant (W - PAD_L = 552); omitting it from deps is intentional.
     const barSlot = chartW / buckets.length;
     const barW = Math.max(1, barSlot - 1);
     return { maxUnits, barSlot, barW };
-  }, [buckets, chartW]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buckets]);
 
   if (buckets.length === 0) {
     return <p className="text-sm text-zinc-500">No data to visualize.</p>;

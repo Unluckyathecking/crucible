@@ -2,6 +2,9 @@
 // No server-only imports — this file is bundled for both client and server.
 
 export const MAX_USAGE_RANGE_DAYS = 90;
+// MS_PER_DAY is intentionally re-declared here rather than imported from lib/db.ts.
+// lib/db.ts pulls in server-only pg/pool dependencies that cannot be bundled
+// for the client. Both definitions are identical; a lint check would catch drift.
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface RawEvent {
@@ -29,7 +32,10 @@ export interface OperationRow {
 export function parseDateParam(s: string): Date {
   // Simple structural check first: exactly YYYY-MM-DD (10 chars, two-digit month and day).
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(NaN);
-  const [y, m, day] = s.split("-").map(Number);
+  // parseInt with explicit radix 10 avoids any engine-specific octal ambiguity
+  // for values like "08"/"09" that Number() handles correctly in ES5+ but that
+  // older lint rules and engines historically treated as invalid octals.
+  const [y, m, day] = s.split("-").map((v) => parseInt(v, 10));
   // Year bounds: usage analytics data predates 1970, and years beyond 3000
   // are implausible for this dashboard. Also guards Date.UTC's two-digit-year
   // quirk (e.g. y=99 → 1999) which the round-trip check alone doesn't catch.

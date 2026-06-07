@@ -3,11 +3,10 @@
 
 import type { RawEvent } from "./usage-format";
 
-// Strips characters that are meaningful in HTML contexts from server error strings.
-// This is a data-layer contract: no downstream renderer should receive raw angle brackets
-// from server errors, regardless of how it renders them.
-// Strip angle brackets only: React auto-escapes text content, so &"' are not
-// dangerous here. < and > are stripped as defence-in-depth against non-React renderers.
+// Strips angle brackets from server error strings and caps their length.
+// Scope: these strings are rendered as React text content, which auto-escapes
+// &, ", and '. Stripping & would corrupt readable messages like "query & limit exceeded".
+// < and > are stripped as defence-in-depth for any hypothetical non-React consumer.
 const MAX_ERROR_LENGTH = 200;
 
 function sanitizeError(s: string): string {

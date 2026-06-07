@@ -47,7 +47,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // Track the API params used for the active query so drill-down is consistent.
   const [queryFrom, setQueryFrom] = useState(initialFrom);
   const [queryTo, setQueryTo] = useState(initialApiTo);
-  const [data, setData] = useState<DataState>({ status: "idle" });
+  // Initialize to "loading" so the first render shows a loading indicator
+  // immediately, without a flash of empty state before the useEffect fires.
+  const [data, setData] = useState<DataState>({ status: "loading" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
   // mounted: false until the first client-side effect fires. Used to defer
   // dynamic min/max bounds on date inputs so SSR and initial render agree.
