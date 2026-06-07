@@ -54,19 +54,21 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("strips HTML-injection characters from server error message", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      mockResponse(500, { error: "<script>alert('xss')</script>&amp;" }),
-    );
+  it("returns server error string as-is (React JSX escaping handles XSS at render time)", async () => {
+    const rawError = "<script>alert('xss')</script>";
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(500, { error: rawError }));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).not.toMatch(/[<>&"']/);
+    expect(result.error).toBe(rawError);
   });
 
-  it("returns network error message when fetch throws a non-abort error", async () => {
+  it("returns network error message and logs when fetch throws a non-abort error", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     expect(result).toEqual({ error: "Network error — please check your connection." });
+    expect(consoleSpy).toHaveBeenCalledWith("fetchUsage failed:", expect.any(TypeError));
+    consoleSpy.mockRestore();
   });
 
   it("returns null when fetch throws an AbortError", async () => {

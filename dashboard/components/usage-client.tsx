@@ -29,7 +29,11 @@ function utcTodayStr(): string {
 // displayTo is the user-visible inclusive end date.
 // The API's 'to' is exclusive, so add 1 day.
 function toApiTo(displayTo: string): string {
-  return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
+  const parsed = parseDateParam(displayTo);
+  if (isNaN(parsed.getTime())) {
+    throw new Error(`Invalid displayTo: ${displayTo}`);
+  }
+  return toISODateString(new Date(parsed.getTime() + MS_PER_DAY));
 }
 
 function initRange(): { from: string; to: string } {
@@ -58,7 +62,9 @@ type DrillState =
   | { status: "ok"; operation: string; events: RawEvent[] };
 
 export function UsageClient() {
-  const init = initRange();
+  // useState initializer ensures initRange() is called exactly once,
+  // avoiding midnight-crossing inconsistency between renders and effects.
+  const [init] = useState(initRange);
   const [displayFrom, setDisplayFrom] = useState(init.from);
   const [displayTo, setDisplayTo] = useState(init.to);
   const [rangeError, setRangeError] = useState<string | null>(null);
@@ -68,23 +74,13 @@ export function UsageClient() {
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
 
-  const mountedRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
-    if (!mountedRef.current) return;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-    if (!mountedRef.current) return;
     if (result === null) return;
     if ("error" in result) {
       setData({ status: "error", message: result.error });
@@ -98,10 +94,9 @@ export function UsageClient() {
   }, []);
 
   useEffect(() => {
-    const { from, to } = initRange();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    void loadMain(from, toApiTo(to), ctrl.signal);
+    void loadMain(init.from, toApiTo(init.to), ctrl.signal);
     return () => ctrl.abort();
     // Intentionally run once on mount; loadMain is stable (useCallback with no deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,6 +131,7 @@ export function UsageClient() {
   async function handleDrillDown(operation: string) {
     if (drill.status === "ok" && drill.operation === operation) {
       setDrill({ status: "none" });
+      drillAbortRef.current?.abort();
       return;
     }
     drillAbortRef.current?.abort();
@@ -143,7 +139,8 @@ export function UsageClient() {
     drillAbortRef.current = ctrl;
     setDrill({ status: "loading", operation });
     const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
-    if (ctrl.signal.aborted) return;
+    // Discard stale results if a newer drill-down request has already started.
+    if (drillAbortRef.current !== ctrl) return;
     if (result === null) return;
     if ("error" in result) {
       setDrill({ status: "error", operation, message: result.error });
@@ -199,7 +196,7 @@ export function UsageClient() {
           </label>
           <button
             onClick={handleApply}
-            disabled={data.status === "loading"}
+            disabled={data.status === "loading" || drill.status === "loading"}
             className="px-3 py-1.5 bg-zinc-900 text-white text-sm rounded hover:bg-zinc-700 disabled:opacity-50"
           >
             {data.status === "loading" ? "Loading…" : "Apply"}
@@ -297,8 +294,11 @@ export function UsageClient() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e, i) => (
-                                            <tr key={`drill-${row.operation}-${i}`} className="border-b border-zinc-100">
+                                          {drill.events.map((e) => (
+                                            <tr
+                                              key={`drill-${row.operation}-${e.created_at}-${e.billable_units}`}
+                                              className="border-b border-zinc-100"
+                                            >
                                               <td className="py-1 pr-4 font-mono">
                                                 {new Date(e.created_at).toISOString()}
                                               </td>

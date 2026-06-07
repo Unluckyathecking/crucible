@@ -208,6 +208,21 @@ describe("bucketByDay — edge cases", () => {
     const buckets = bucketByDay(events);
     expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
   });
+
+  it("correctly aggregates MAX_USAGE_RANGE_DAYS days of events (boundary volume)", () => {
+    const events = Array.from({ length: MAX_USAGE_RANGE_DAYS }, (_, i) => ({
+      operation: "op",
+      billable_units: 1,
+      created_at: new Date(
+        Date.UTC(2024, 0, 1) + i * MS_PER_DAY,
+      ).toISOString(),
+    }));
+    const buckets = bucketByDay(events);
+    expect(buckets).toHaveLength(MAX_USAGE_RANGE_DAYS);
+    expect(buckets[0].date).toBe("2024-01-01");
+    expect(buckets[MAX_USAGE_RANGE_DAYS - 1].date).toBe("2024-03-30");
+    expect(buckets.every((b) => b.units === 1)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

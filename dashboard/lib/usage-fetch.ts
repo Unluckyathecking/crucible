@@ -20,6 +20,7 @@ export async function fetchUsage(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return null;
+    console.error("fetchUsage failed:", err);
     return { error: "Network error — please check your connection." };
   }
   if (res.status === 403) {
@@ -35,7 +36,8 @@ export async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? err.replace(/[<>&"']/g, "") : `Server error (${res.status})` };
+    // Return the server's error string as-is; React JSX escaping prevents XSS at render time.
+    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
   }
   const json: unknown = await res.json();
   if (!Array.isArray(json)) {
