@@ -4,12 +4,10 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// Strips HTML-like tags from error strings for safe rendering in text nodes.
-// WARNING: also removes all remaining '<' characters, which may alter non-HTML
-// text. Not a general HTML sanitizer — do not use in attribute positions or
-// dangerouslySetInnerHTML.
+// Strips HTML-like tags from error strings, including unclosed tags (>? makes > optional).
+// Not a general HTML sanitizer — do not use in attribute positions or dangerouslySetInnerHTML.
 export function sanitizeError(s: string): string {
-  return s.replace(/<[^>]*>?/g, "").replace(/</g, "");
+  return s.replace(/<[^>]*>?/g, "");
 }
 
 export interface RawEvent {

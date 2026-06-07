@@ -66,10 +66,14 @@ export function UsageClient() {
   const [queryTo, setQueryTo] = useState(init.apiTo);
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // Mirror of drill state kept in sync at render time so handleDrillDown
-  // always reads the latest value without a stale closure.
+  // Refs mirror state values at render time so handleDrillDown reads the
+  // latest values even if called within the same event-loop tick as state updates.
   const drillRef = useRef<DrillState>(drill);
   drillRef.current = drill;
+  const queryFromRef = useRef(queryFrom);
+  queryFromRef.current = queryFrom;
+  const queryToRef = useRef(queryTo);
+  queryToRef.current = queryTo;
 
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
@@ -159,7 +163,7 @@ export function UsageClient() {
     const seq = ++drillSeqRef.current;
     setDrill({ status: "loading", operation });
     try {
-      const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
+      const result = await fetchUsage(queryFromRef.current, queryToRef.current, operation, ctrl.signal);
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
