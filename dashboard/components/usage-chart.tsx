@@ -33,6 +33,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
       role="img"
       aria-label="Units over time bar chart"
     >
+      <desc>{buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ")}</desc>
       {/* Y axis */}
       <line x1={PAD_L} y1={0} x2={PAD_L} y2={chartH} stroke="#e4e4e7" strokeWidth="1" />
       {/* X axis */}

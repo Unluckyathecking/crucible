@@ -51,12 +51,15 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // immediately, without a flash of empty state before the useEffect fires.
   const [data, setData] = useState<DataState>({ status: "loading" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // Refs for queryFrom/queryTo: captured inside async fetchUsage calls so they
-  // must reflect the latest committed values, not a closure-stale snapshot.
+  // Refs used by async callbacks so they always read the latest committed value
+  // without capturing a stale closure. Synced via useEffect (not render body) to
+  // be safe with React concurrent rendering.
   const queryFromRef = useRef(queryFrom);
-  queryFromRef.current = queryFrom;
   const queryToRef = useRef(queryTo);
-  queryToRef.current = queryTo;
+  const drillRef = useRef(drill);
+  useEffect(() => { queryFromRef.current = queryFrom; }, [queryFrom]);
+  useEffect(() => { queryToRef.current = queryTo; }, [queryTo]);
+  useEffect(() => { drillRef.current = drill; }, [drill]);
 
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
@@ -64,10 +67,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // generationRef: monotonically increasing, incremented on each loadMain call.
   // A stale fetch completing after a newer one has started is discarded: gen !== generationRef.current.
   const generationRef = useRef(0);
-  // drillRef: mirrors drill state so handleDrillDown reads the latest value even if
-  // the closure captured a render-stale snapshot (consistent with queryFromRef/queryToRef).
-  const drillRef = useRef(drill);
-  drillRef.current = drill;
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
     const gen = ++generationRef.current;
@@ -140,10 +139,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   async function handleDrillDown(operation: string) {
     // Read drill state from the ref for the toggle check so rapid clicks see the latest
     // value rather than a potentially stale render-closure snapshot.
-    // Error state is intentionally excluded: clicking "Details" on an errored row retries
-    // rather than toggles, which is the expected UX for transient network failures.
+    // Toggle off from any non-idle state (ok, loading, or error) for consistent UX.
     const currentDrill = drillRef.current;
-    if ((currentDrill.status === "ok" || currentDrill.status === "loading") && currentDrill.operation === operation) {
+    if (currentDrill.status !== "none" && currentDrill.operation === operation) {
       // Invalidate before clearing state so any resolving fetch is discarded.
       drillSeqRef.current++;
       setDrill({ status: "none" });
