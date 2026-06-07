@@ -181,7 +181,7 @@ export function UsageClient() {
   const totalUnitsBig =
     data.status === "ok"
       ? data.ops.reduce(
-          (a, r) => a + BigInt(Math.round(r.total_billable_units)),
+          (a, r) => a + BigInt(r.total_billable_units),
           0n,
         )
       : 0n;
@@ -331,7 +331,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${e.created_at}-${e.operation}-${i}`}
+                                                key={`drill-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

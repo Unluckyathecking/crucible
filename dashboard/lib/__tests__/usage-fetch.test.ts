@@ -36,6 +36,14 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
+  it("returns error for array containing a null element", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }, null]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
   it("returns error for array with NaN billable_units (Number.isFinite rejects NaN)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(200, [{ operation: "search", billable_units: NaN, created_at: "2024-01-01T00:00:00.000Z" }]),
