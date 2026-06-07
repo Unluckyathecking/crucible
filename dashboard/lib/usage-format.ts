@@ -8,9 +8,6 @@ export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.
 export const MIN_YEAR = 1970;
-// Computed once at module load so the upper-year bound is stable for the lifetime of the page.
-// A dynamic call inside parseDateParam would create a TOCTOU race at year rollover.
-const MAX_YEAR = new Date().getUTCFullYear() + 1;
 
 export interface RawEvent {
   id: string;
@@ -44,8 +41,9 @@ export function parseDateParam(s: string): Date {
   // Lower bound: analytics data does not predate the Unix epoch, and years
   // 0–99 trigger Date.UTC's two-digit-year quirk (y=99 → 1999) which the
   // round-trip check alone cannot detect.
-  // Upper bound: MAX_YEAR is stable for the page session (module-level constant).
-  if (y < MIN_YEAR || y > MAX_YEAR) return new Date(NaN);
+  // Upper bound: computed per-call so long-lived server processes and open
+  // browser tabs stay correct across year boundaries without a restart.
+  if (y < MIN_YEAR || y > new Date().getUTCFullYear() + 1) return new Date(NaN);
   // Explicit bounds: month 1–12, day 1–31. Narrower calendar constraints
   // (Feb 30, Apr 31, etc.) are caught by the round-trip check below:
   // Date.UTC normalises overflow (Feb 30 → Mar 1), and the UTC component

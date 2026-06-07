@@ -132,6 +132,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setRangeError(null);
     setQueryFrom(apiFrom);
     setQueryTo(apiTo);
+    // Sync refs immediately so handleDrillDown sees the new range right away.
+    // The useEffect syncs happen asynchronously (after render); without this, a
+    // drill-down click that arrives before the next effect run would read stale values.
+    queryFromRef.current = apiFrom;
+    queryToRef.current = apiTo;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -173,12 +178,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }
 
-  // todayStr comes from the server component (initialTo) — same value, no state needed.
-  const todayStr = initialTo;
-
   // fromMax: allow 'from' up to displayTo when it is a valid date not after today.
-  // toISODateString(new Date()) recomputes the current date on each render so the
-  // upper bound stays correct if the page is open across a UTC midnight boundary.
+  // toISODateString(new Date()) recomputes on each render so the upper bound stays
+  // correct when the page is open across a UTC midnight boundary.
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
     const liveToday = toISODateString(new Date());
