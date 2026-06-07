@@ -138,9 +138,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     void loadMain(apiFrom, apiTo, ctrl.signal);
   }
 
-  // from/to are passed by the click handler so they are captured from the current
-  // render's state values rather than read from refs, eliminating any stale-ref window.
-  const handleDrillDown = useCallback(async (operation: string, from: string, to: string) => {
+  const handleDrillDown = useCallback(async (operation: string) => {
+    const from = queryFrom;
+    const to = queryTo;
     // Read drill state from the ref for the toggle check so rapid clicks see the latest
     // value rather than a potentially stale render-closure snapshot.
     // Toggle off from any non-idle state (ok, loading, or error) for consistent UX.
@@ -173,7 +173,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       if (drillSeqRef.current !== seq) return;
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
-  }, []);
+  }, [queryFrom, queryTo]);
 
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
@@ -184,7 +184,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     return displayTo;
   }, [displayTo]);
 
-  const toMin = !isNaN(parseDateParam(displayFrom).getTime()) ? displayFrom : MIN_DATE_PARAM;
+  const toMin = useMemo(() => {
+    const fd = parseDateParam(displayFrom);
+    return !isNaN(fd.getTime()) ? displayFrom : MIN_DATE_PARAM;
+  }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
   // isRawEvent validates billable_units as a finite integer; Math.max(0, integer) stays
@@ -305,7 +308,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                             <td className="py-2 text-right">
                               <button
-                                onClick={() => void handleDrillDown(row.operation, queryFrom, queryTo)}
+                                onClick={() => void handleDrillDown(row.operation)}
                                 disabled={isLoadingDrill}
                                 aria-expanded={isOpen}
                                 aria-label={`${isOpen ? "Hide" : "Show"} events for ${row.operation}`}

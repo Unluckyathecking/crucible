@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   validateDateRange,
   bucketByDay,
@@ -293,6 +293,14 @@ describe("bucketByDay — edge cases", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseDateParam", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-06-15T00:00:00.000Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("parses a valid YYYY-MM-DD string as UTC midnight", () => {
     const d = parseDateParam("2024-06-15");
     expect(d.getTime()).toBe(new Date("2024-06-15T00:00:00.000Z").getTime());

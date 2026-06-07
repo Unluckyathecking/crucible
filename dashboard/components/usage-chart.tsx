@@ -16,7 +16,10 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
     const barSlot = chartW / Math.max(1, buckets.length);
     const barW = Math.max(1, barSlot - 1);
-    const descText = buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ");
+    const last = buckets[buckets.length - 1];
+    const descText = buckets.length <= 5
+      ? buckets.map((b) => `${b.date}: ${b.units.toLocaleString("en-US")} units`).join(", ")
+      : `From ${buckets[0].date} (${buckets[0].units.toLocaleString("en-US")} units) to ${last.date} (${last.units.toLocaleString("en-US")} units), ${buckets.length} days total`;
     return { maxUnits, barSlot, barW, descText };
   }, [buckets]);
 
