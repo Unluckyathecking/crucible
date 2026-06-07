@@ -142,13 +142,13 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("passes server error message through unmodified when under length limit", async () => {
+  it("does not HTML-escape error strings: truncateError is truncation-only (React text-node encoding is the XSS defense)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(500, { error: "<script>alert('xss')</script>" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    // React JSX auto-encodes < and > in text nodes; truncateError intentionally
-    // does NOT strip them to avoid corrupting legitimate messages like "expected < 10".
+    // truncateError deliberately omits HTML escaping. React JSX text nodes auto-encode
+    // < and > at render time. Escaping here would corrupt messages like "expected < 10".
     expect(result).toEqual({ error: "<script>alert('xss')</script>" });
   });
 

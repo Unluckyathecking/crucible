@@ -10,8 +10,10 @@ export const MAX_USAGE_RANGE_DAYS = 90;
 const MIN_YEAR = 1970;
 
 export interface RawEvent {
+  /** BIGSERIAL primary key from usage_events, cast to text in SQL (::text). Unique per row. */
   id: string;
   operation: string;
+  /** Validated as a finite integer by isRawEvent; safe for BigInt() conversion. */
   billable_units: number;
   created_at: string;
 }
