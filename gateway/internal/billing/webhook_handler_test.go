@@ -321,6 +321,13 @@ func TestHandle_HMACMismatch_NoDB(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
+	// Verify the 400 body indicates a signature problem, not a business logic error.
+	var respBody map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&respBody); err == nil {
+		if _, ok := respBody["error"]; !ok {
+			t.Errorf("response body missing error field: %v", respBody)
+		}
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected mock calls: %v", err)
 	}
@@ -514,6 +521,52 @@ func TestHandleCustomerCreated(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("mock expectations not met: %v", err)
+	}
+}
+
+// TestInvalidateCustomerCache_Batching verifies that more than batchSize (100) prefixes
+// are flushed in multiple Redis DEL calls rather than a single unbounded command.
+func TestInvalidateCustomerCache_Batching(t *testing.T) {
+	const (
+		customerID = "550e8400-e29b-41d4-a716-446655440099"
+		nPrefixes  = 101 // just over batchSize=100
+	)
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	rows := mock.NewRows([]string{"prefix"})
+	for i := range nPrefixes {
+		rows.AddRow(fmt.Sprintf("prefix%03d", i))
+	}
+	mock.ExpectQuery(`SELECT prefix FROM api_keys WHERE customer_id`).
+		WithArgs(customerID, 1000).
+		WillReturnRows(rows)
+
+	spy := &spyCacheDeleter{}
+	h := &Webhook{db: mock, cache: spy, now: time.Now}
+	h.invalidateCustomerCache(context.Background(), customerID)
+
+	if len(spy.calls) != 2 {
+		t.Fatalf("expected 2 DEL batches for %d prefixes, got %d", nPrefixes, len(spy.calls))
+	}
+	if len(spy.calls[0]) != 100 {
+		t.Errorf("first batch: got %d keys, want 100", len(spy.calls[0]))
+	}
+	if len(spy.calls[1]) != 1 {
+		t.Errorf("second batch: got %d keys, want 1", len(spy.calls[1]))
+	}
+	// Spot-check key format.
+	wantKey := "auth:prefix000"
+	if spy.calls[0][0] != wantKey {
+		t.Errorf("first key = %q, want %q", spy.calls[0][0], wantKey)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations: %v", err)
 	}
 }
 

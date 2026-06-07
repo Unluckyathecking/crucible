@@ -23,7 +23,7 @@ export async function POST(request: Request): Promise<Response> {
     // Safari omits Origin on same-origin POSTs; the CSRF cookie above is the primary guard.
     const origin = request.headers.get("Origin");
     if (origin !== null && origin !== ALLOWED_ORIGIN) {
-      const safeOrigin = origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60);
+      const safeOrigin = JSON.stringify(origin.slice(0, 60));
       console.warn("CSRF: invalid Origin for POST /api/billing/checkout", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
       return new Response("Forbidden", { status: 403 });
     }
@@ -92,7 +92,16 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     type StripeSessionResp = { url?: string; error?: { message?: string } };
-    const stripeBody = (await stripeResp.json()) as StripeSessionResp;
+    let stripeBody: StripeSessionResp;
+    try {
+      stripeBody = (await stripeResp.json()) as StripeSessionResp;
+    } catch {
+      console.error("POST /api/billing/checkout: non-JSON response from Stripe", { status: stripeResp.status });
+      return new Response(JSON.stringify({ error: { code: "STRIPE_ERROR", message: "billing unavailable" } }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }
 
     if (!stripeResp.ok || !stripeBody.url) {
       console.error("POST /api/billing/checkout: stripe error", { status: stripeResp.status });
