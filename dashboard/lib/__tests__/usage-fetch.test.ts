@@ -2,11 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fetchUsage } from "@/lib/usage-fetch";
 
 function mockResponse(status: number, body: unknown): Response {
-  return {
+  return new Response(JSON.stringify(body), {
     status,
-    ok: status >= 200 && status < 300,
-    json: () => Promise.resolve(body),
-  } as unknown as Response;
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 describe("fetchUsage", () => {

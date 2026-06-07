@@ -20,6 +20,9 @@ import { UsageChart } from "./usage-chart";
 // Kept as a local constant to avoid bundling server-only code on the client.
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
 
+// Earliest date accepted by the date inputs and by parseDateParam.
+const MIN_DATE_PARAM = "1970-01-01";
+
 function utcTodayStr(): string {
   const d = new Date();
   return toISODateString(
@@ -181,7 +184,9 @@ export function UsageClient() {
     }
   }
 
-  const todayStr = utcTodayStr();
+  // Computed once on mount via useState initializer; midnight-crossing during a
+  // session is an acceptable edge case for a dashboard page.
+  const [todayStr] = useState(utcTodayStr);
 
   // Memoized so parseDateParam isn't re-invoked on every render just for the
   // min/max attributes; deps are the two display values and todayStr.
@@ -196,7 +201,7 @@ export function UsageClient() {
     const fd = parseDateParam(displayFrom);
     const td = parseDateParam(displayTo);
     return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
-      ? displayFrom : "1970-01-01";
+      ? displayFrom : MIN_DATE_PARAM;
   }, [displayFrom, displayTo]);
 
   // BigInt accumulation matches the pattern in app/dashboard/page.tsx and avoids
@@ -230,7 +235,7 @@ export function UsageClient() {
             <input
               type="date"
               value={displayFrom}
-              min="1970-01-01"
+              min={MIN_DATE_PARAM}
               max={fromMax}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
