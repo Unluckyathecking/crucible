@@ -333,6 +333,7 @@ export async function usageByOperation(
 }
 
 export interface UsageEventRow {
+  id: string;
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;
@@ -352,8 +353,9 @@ export async function listUsageEvents(
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
   // the server's DateStyle setting; no ::text cast or to_char conversion needed.
-  type Row = { operation: string; billable_units: string; created_at: Date };
+  type Row = { id: string; operation: string; billable_units: string; created_at: Date };
   const mapRow = (row: Row): UsageEventRow => ({
+    id: row.id,
     operation: row.operation,
     billable_units: saturateBigIntString(row.billable_units),
     created_at: row.created_at,
@@ -361,7 +363,7 @@ export async function listUsageEvents(
   if (effectiveOp) {
     // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
-      `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+      `SELECT id::text AS id, operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -371,7 +373,7 @@ export async function listUsageEvents(
   }
   // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
   const r = await pool.query<Row>(
-    `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+    `SELECT id::text AS id, operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,

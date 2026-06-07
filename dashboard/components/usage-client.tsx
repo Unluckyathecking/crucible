@@ -51,9 +51,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // immediately, without a flash of empty state before the useEffect fires.
   const [data, setData] = useState<DataState>({ status: "loading" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // mounted: false until the first client-side effect fires. Used to defer
-  // dynamic min/max bounds on date inputs so SSR and initial render agree.
-  const [mounted, setMounted] = useState(false);
   // Refs for queryFrom/queryTo: captured inside async fetchUsage calls so they
   // must reflect the latest committed values, not a closure-stale snapshot.
   const queryFromRef = useRef(queryFrom);
@@ -93,7 +90,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, []);
 
   useEffect(() => {
-    setMounted(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     void loadMain(initialFrom, initialApiTo, ctrl.signal);
@@ -215,7 +211,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayFrom}
               min={MIN_DATE_PARAM}
-              max={mounted ? fromMax : todayStr}
+              max={fromMax}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -228,7 +224,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
             <input
               type="date"
               value={displayTo}
-              min={mounted ? toMin : MIN_DATE_PARAM}
+              min={toMin}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
@@ -341,7 +337,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={e.id!}
+                                                key={e.id}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

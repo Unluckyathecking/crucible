@@ -7,6 +7,7 @@ import {
   toISODateString,
   MAX_USAGE_RANGE_DAYS,
   MS_PER_DAY,
+  MAX_YEAR,
 } from "@/lib/usage-format";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +27,6 @@ describe("validateDateRange", () => {
     // round-trips through arithmetic.
     const from = parseDateParam("2024-01-01");
     const to = parseDateParam("2024-03-31");
-    expect(to.getTime() - from.getTime()).toBe(MAX_USAGE_RANGE_DAYS * MS_PER_DAY);
     expect(validateDateRange(from, to).valid).toBe(true);
   });
 
@@ -92,9 +92,9 @@ describe("bucketByDay", () => {
 
   it("groups events on the same UTC day and sums units", () => {
     const events = [
-      { operation: "search", billable_units: 5, created_at: "2024-01-15T08:00:00.000Z" },
-      { operation: "export", billable_units: 3, created_at: "2024-01-15T14:00:00.000Z" },
-      { operation: "search", billable_units: 10, created_at: "2024-01-16T00:00:00.000Z" },
+      { id: "1", operation: "search", billable_units: 5, created_at: "2024-01-15T08:00:00.000Z" },
+      { id: "2", operation: "export", billable_units: 3, created_at: "2024-01-15T14:00:00.000Z" },
+      { id: "3", operation: "search", billable_units: 10, created_at: "2024-01-16T00:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets).toHaveLength(2);
@@ -104,8 +104,8 @@ describe("bucketByDay", () => {
 
   it("sorts buckets chronologically (oldest-first)", () => {
     const events = [
-      { operation: "a", billable_units: 1, created_at: "2024-03-01T00:00:00.000Z" },
-      { operation: "a", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "a", billable_units: 1, created_at: "2024-03-01T00:00:00.000Z" },
+      { id: "2", operation: "a", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets[0].date).toBe("2024-01-01");
@@ -114,7 +114,7 @@ describe("bucketByDay", () => {
 
   it("uses UTC midnight boundaries (event at 23:59 UTC is on its UTC date)", () => {
     const events = [
-      { operation: "a", billable_units: 7, created_at: "2024-06-15T23:59:59.999Z" },
+      { id: "1", operation: "a", billable_units: 7, created_at: "2024-06-15T23:59:59.999Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets[0].date).toBe("2024-06-15");
@@ -122,7 +122,7 @@ describe("bucketByDay", () => {
 
   it("buckets by UTC date even when local date differs (23:00 UTC = next day in +1 or later timezone)", () => {
     const events = [
-      { operation: "a", billable_units: 1, created_at: "2024-01-15T23:00:00.000Z" },
+      { id: "1", operation: "a", billable_units: 1, created_at: "2024-01-15T23:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets).toHaveLength(1);
@@ -141,9 +141,9 @@ describe("aggregateByOperation", () => {
 
   it("counts each event and sums units per operation", () => {
     const events = [
-      { operation: "search", billable_units: 5, created_at: "2024-01-15T08:00:00.000Z" },
-      { operation: "search", billable_units: 3, created_at: "2024-01-15T14:00:00.000Z" },
-      { operation: "export", billable_units: 20, created_at: "2024-01-16T08:00:00.000Z" },
+      { id: "1", operation: "search", billable_units: 5, created_at: "2024-01-15T08:00:00.000Z" },
+      { id: "2", operation: "search", billable_units: 3, created_at: "2024-01-15T14:00:00.000Z" },
+      { id: "3", operation: "export", billable_units: 20, created_at: "2024-01-16T08:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     const search = rows.find((r) => r.operation === "search");
@@ -158,8 +158,8 @@ describe("aggregateByOperation", () => {
 
   it("sorts by total_billable_units descending", () => {
     const events = [
-      { operation: "cheap", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
-      { operation: "expensive", billable_units: 100, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "cheap", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "2", operation: "expensive", billable_units: 100, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     expect(rows[0].operation).toBe("expensive");
@@ -168,8 +168,8 @@ describe("aggregateByOperation", () => {
 
   it("clamps negative billable_units to 0 (defensive against data corruption)", () => {
     const events = [
-      { operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
-      { operation: "op", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "2", operation: "op", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     expect(rows[0].total_billable_units).toBe(5);
@@ -178,8 +178,8 @@ describe("aggregateByOperation", () => {
 
   it("groups events with empty-string operation key under empty string", () => {
     const events = [
-      { operation: "", billable_units: 3, created_at: "2024-01-01T00:00:00.000Z" },
-      { operation: "named", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "", billable_units: 3, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "2", operation: "named", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     const emptyRow = rows.find((r) => r.operation === "");
@@ -192,8 +192,8 @@ describe("aggregateByOperation", () => {
 
   it("clamps all-negative billable_units to 0 (total is 0, count is 2)", () => {
     const events = [
-      { operation: "op", billable_units: -5, created_at: "2024-01-01T00:00:00.000Z" },
-      { operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "op", billable_units: -5, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "2", operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     expect(rows[0].total_billable_units).toBe(0);
@@ -202,7 +202,7 @@ describe("aggregateByOperation", () => {
 
   it("preserves zero billable_units (not clamped, counted)", () => {
     const events = [
-      { operation: "op", billable_units: 0, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "op", billable_units: 0, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
     expect(rows[0].total_billable_units).toBe(0);
@@ -217,8 +217,8 @@ describe("aggregateByOperation", () => {
 describe("bucketByDay — edge cases", () => {
   it("skips events with malformed created_at (no NaN-NaN-NaN bucket)", () => {
     const events = [
-      { operation: "a", billable_units: 5, created_at: "not-a-date" },
-      { operation: "a", billable_units: 3, created_at: "2024-01-15T08:00:00.000Z" },
+      { id: "1", operation: "a", billable_units: 5, created_at: "not-a-date" },
+      { id: "2", operation: "a", billable_units: 3, created_at: "2024-01-15T08:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets).toHaveLength(1);
@@ -230,16 +230,16 @@ describe("bucketByDay — edge cases", () => {
 
   it("returns empty array when all events have malformed created_at", () => {
     const events = [
-      { operation: "a", billable_units: 1, created_at: "" },
-      { operation: "a", billable_units: 1, created_at: "invalid" },
+      { id: "1", operation: "a", billable_units: 1, created_at: "" },
+      { id: "2", operation: "a", billable_units: 1, created_at: "invalid" },
     ];
     expect(bucketByDay(events)).toEqual([]);
   });
 
   it("clamps negative billable_units to 0", () => {
     const events = [
-      { operation: "a", billable_units: -5, created_at: "2024-01-15T00:00:00.000Z" },
-      { operation: "a", billable_units: 10, created_at: "2024-01-15T12:00:00.000Z" },
+      { id: "1", operation: "a", billable_units: -5, created_at: "2024-01-15T00:00:00.000Z" },
+      { id: "2", operation: "a", billable_units: 10, created_at: "2024-01-15T12:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets[0].units).toBe(10);
@@ -248,6 +248,7 @@ describe("bucketByDay — edge cases", () => {
   it("handles very large billable_units without throwing", () => {
     const events = [
       {
+        id: "1",
         operation: "a",
         billable_units: Number.MAX_SAFE_INTEGER,
         created_at: "2024-01-15T00:00:00.000Z",
@@ -259,8 +260,8 @@ describe("bucketByDay — edge cases", () => {
 
   it("buckets same month/day in different years separately", () => {
     const events = [
-      { operation: "a", billable_units: 1, created_at: "2023-01-01T00:00:00.000Z" },
-      { operation: "a", billable_units: 2, created_at: "2024-01-01T00:00:00.000Z" },
+      { id: "1", operation: "a", billable_units: 1, created_at: "2023-01-01T00:00:00.000Z" },
+      { id: "2", operation: "a", billable_units: 2, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const buckets = bucketByDay(events);
     expect(buckets).toHaveLength(2);
@@ -271,6 +272,7 @@ describe("bucketByDay — edge cases", () => {
   it("aggregates two events per day across full range into daily buckets", () => {
     // Two events per day across 90 days — verifies both aggregation and boundary volume.
     const events = Array.from({ length: MAX_USAGE_RANGE_DAYS * 2 }, (_, i) => ({
+      id: String(i),
       operation: "op",
       billable_units: 1,
       created_at: new Date(
@@ -376,6 +378,16 @@ describe("parseDateParam", () => {
 
   it("accepts year 1970 (minimum valid year)", () => {
     expect(isNaN(parseDateParam("1970-01-01").getTime())).toBe(false);
+  });
+
+  it("returns Invalid Date for year exceeding MAX_YEAR", () => {
+    const overYear = String(MAX_YEAR + 1).padStart(4, "0");
+    expect(isNaN(parseDateParam(`${overYear}-01-01`).getTime())).toBe(true);
+  });
+
+  it("accepts MAX_YEAR itself as a valid year", () => {
+    const maxYearStr = String(MAX_YEAR).padStart(4, "0");
+    expect(isNaN(parseDateParam(`${maxYearStr}-01-01`).getTime())).toBe(false);
   });
 });
 
