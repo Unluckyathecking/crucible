@@ -65,7 +65,12 @@ export default async function DashboardPage() {
           <div className="text-sm text-zinc-500">Signed in as</div>
           <div className="text-base sm:text-lg break-all">{session.user.email}</div>
           <div className="mt-3 text-sm text-zinc-500">Plan</div>
-          <div className="text-base sm:text-lg font-medium uppercase">{customer.plan_id}</div>
+          <div className="flex items-center justify-between">
+            <div className="text-base sm:text-lg font-medium uppercase">{customer.plan_id}</div>
+            <Link href="/dashboard/billing" className="text-sm text-zinc-500 hover:text-zinc-900 underline">
+              Billing →
+            </Link>
+          </div>
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="API keys">

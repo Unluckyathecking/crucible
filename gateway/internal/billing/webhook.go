@@ -27,16 +27,41 @@ type db interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
+// CacheDeleter abstracts the Redis DEL operation. Extracting it as an interface
+// lets webhook tests inject a spy without importing the redis client.
+type CacheDeleter interface {
+	Del(ctx context.Context, keys ...string) error
+}
+
+// WebhookOption is a functional option for NewWebhook.
+type WebhookOption func(*Webhook)
+
+// WithCacheDeleter wires a Redis DEL client so that handlers can immediately
+// invalidate auth:<prefix> cache entries after a customer-link or plan change
+// (CLAUDE.md invariant #7). Without this option, cache entries expire naturally
+// after the 60 s TTL — acceptable for existing deployments but not for upgrades.
+func WithCacheDeleter(d CacheDeleter) WebhookOption {
+	return func(w *Webhook) { w.cache = d }
+}
+
 // Webhook receives Stripe events, verifies HMAC, dedupes via webhook_events,
 // and updates the customer's plan_id on subscription lifecycle events.
 type Webhook struct {
 	secret string
 	db     db
+	cache  CacheDeleter // optional; nil → no immediate cache invalidation
 	now    func() time.Time // injectable for tests
 }
 
-func NewWebhook(secret string, pool *pgxpool.Pool) *Webhook {
-	return &Webhook{secret: secret, db: pool, now: time.Now}
+// NewWebhook constructs a Webhook. opts allows injecting optional dependencies
+// (e.g. WithCacheDeleter) without breaking callers that pass only the two required
+// args — critical because cmd/gateway/main.go must not be touched (PR #48 disjoint).
+func NewWebhook(secret string, pool *pgxpool.Pool, opts ...WebhookOption) *Webhook {
+	w := &Webhook{secret: secret, db: pool, now: time.Now}
+	for _, o := range opts {
+		o(w)
+	}
+	return w
 }
 
 func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
@@ -178,9 +203,9 @@ func (h *Webhook) recordEvent(ctx context.Context, id, eventType string, payload
 	return tag.RowsAffected() == 1, nil
 }
 
-// Note: dispatch handlers (handleSubscriptionUpsert, handleSubscriptionDeleted) are idempotent on
-// subscription state — running them twice on the same event yields the same result. The dispatch-then-record
-// ordering above accepts a low-probability double-dispatch (record race) in exchange for never losing an event.
+// Note: dispatch handlers are idempotent on subscription/customer state — running them
+// twice on the same event yields the same result. The dispatch-then-record ordering above
+// accepts a low-probability double-dispatch (record race) in exchange for never losing an event.
 
 func (h *Webhook) dispatch(ctx context.Context, event *stripeEvent) error {
 	switch event.Type {
@@ -188,6 +213,10 @@ func (h *Webhook) dispatch(ctx context.Context, event *stripeEvent) error {
 		return h.handleSubscriptionUpsert(ctx, event)
 	case "customer.subscription.deleted":
 		return h.handleSubscriptionDeleted(ctx, event)
+	case "checkout.session.completed":
+		return h.handleCheckoutSessionCompleted(ctx, event)
+	case "customer.created":
+		return h.handleCustomerCreated(ctx, event)
 	default:
 		log.Info().Str("event_type", event.Type).Msg("webhook event ignored (no handler)")
 		return nil
@@ -218,11 +247,26 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		return err
 	}
 
-	_, err := h.db.Exec(ctx, `
+	if _, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = $1, updated_at = NOW()
 		WHERE stripe_customer_id = $2
-	`, planID, obj.Customer)
-	return err
+	`, planID, obj.Customer); err != nil {
+		return err
+	}
+
+	// Invalidate cached auth entries so the upgraded plan applies immediately
+	// (CLAUDE.md invariant #7: plan changes bypass the revocation path, so the
+	// cache must be flushed explicitly). The SELECT for the customer UUID is
+	// skipped when no cache deleter is configured to keep the DB hot path minimal.
+	if h.cache != nil {
+		var customerID string
+		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
+			h.invalidateCustomerCache(ctx, customerID)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription upsert")
+		}
+	}
+	return nil
 }
 
 func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) error {
@@ -235,12 +279,174 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 	}
 	// Only downgrade if the subscription is actually canceled. A retried deleted
 	// event for a customer who has since re-subscribed will have a different active subscription.
+	if obj.Customer == "" {
+		log.Info().Msg("customer.subscription.deleted: missing customer field; skipping")
+		return nil
+	}
 	if obj.Status != "canceled" {
 		return nil
 	}
-	_, err := h.db.Exec(ctx, `
+
+	if _, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = 'free', updated_at = NOW()
 		WHERE stripe_customer_id = $1
-	`, obj.Customer)
-	return err
+	`, obj.Customer); err != nil {
+		return err
+	}
+
+	// Same nil-guard as handleSubscriptionUpsert: skip the extra SELECT when no
+	// cache deleter is configured (CLAUDE.md invariant #7, cache-invalidation path).
+	if h.cache != nil {
+		var customerID string
+		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
+			h.invalidateCustomerCache(ctx, customerID)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription deletion")
+		}
+	}
+	return nil
+}
+
+// handleCheckoutSessionCompleted links the Stripe customer to our customer row via
+// client_reference_id (which was set to the customer UUID at session creation time).
+func (h *Webhook) handleCheckoutSessionCompleted(ctx context.Context, event *stripeEvent) error {
+	var obj struct {
+		ClientReferenceID string `json:"client_reference_id"`
+		Customer          string `json:"customer"`
+	}
+	if err := json.Unmarshal(event.Data.Object, &obj); err != nil {
+		return err
+	}
+	if obj.ClientReferenceID == "" || obj.Customer == "" {
+		log.Info().Msg("checkout.session.completed: missing client_reference_id or customer; skipping link")
+		return nil
+	}
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE customers SET stripe_customer_id = $1, updated_at = NOW()
+		WHERE id = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
+	`, obj.Customer, obj.ClientReferenceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Already linked to a different customer or id unknown; safe to skip.
+		log.Info().Str("customer_id", obj.ClientReferenceID).Msg("checkout.session.completed: no customer row updated; skipping cache invalidation")
+		return nil
+	}
+
+	// Flush the auth cache so the customer's new stripe_customer_id is seen immediately
+	// by the flusher (which filters on stripe_customer_id IS NOT NULL).
+	if h.cache != nil {
+		h.invalidateCustomerCache(ctx, obj.ClientReferenceID)
+	}
+	return nil
+}
+
+// handleCustomerCreated links the Stripe customer to our customer row via email.
+// This event fires before checkout.session.completed so it provides an early link;
+// both handlers are idempotent (the WHERE guard prevents overwriting with a different ID).
+// Note: customer.created fires even when checkout is abandoned. An abandoned customer
+// will have stripe_customer_id set but remain on the free plan and hold no subscription.
+// The billing portal guard (LookupStripeCustomerID) checks for the ID but NOT for an
+// active subscription, so such customers CAN open the portal — this is intentional:
+// the portal lets them complete setup or view an empty subscription list.
+func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent) error {
+	var obj struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(event.Data.Object, &obj); err != nil {
+		return err
+	}
+	if obj.ID == "" || obj.Email == "" {
+		log.Info().Msg("customer.created: missing id or email; skipping link")
+		return nil
+	}
+
+	// LOWER() on both sides guards against case-variation between the email stored
+	// in our DB (from the OAuth provider) and the email Stripe recorded at checkout.
+	var customerID string
+	if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE LOWER(email) = LOWER($1)`, obj.Email).Scan(&customerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Customer not in our DB yet (e.g. Stripe test event for unknown email). Safe to skip.
+			log.Info().Str("email", obj.Email).Msg("customer.created: no matching customer row; skipping link")
+			return nil
+		}
+		return err
+	}
+
+	// Use the UUID fetched above rather than email in the WHERE clause: avoids a
+	// TOCTOU window where the email could change between the SELECT and the UPDATE.
+	tag, err := h.db.Exec(ctx, `
+		UPDATE customers SET stripe_customer_id = $1, updated_at = NOW()
+		WHERE id = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
+	`, obj.ID, customerID)
+	if err != nil {
+		return err
+	}
+	// Only invalidate when the row actually changed, consistent with handleCheckoutSessionCompleted.
+	if tag.RowsAffected() > 0 && h.cache != nil {
+		h.invalidateCustomerCache(ctx, customerID)
+	}
+	return nil
+}
+
+// invalidateCustomerCache deletes auth:<prefix> Redis entries for all active API keys
+// belonging to customerID. This ensures plan or stripe_customer_id changes take effect
+// immediately rather than waiting for the 60 s TTL (CLAUDE.md invariant #7).
+// Keys are flushed in batches of 100 to bound Redis command payload size.
+// Result set is bounded at 1000 rows; customers with more active keys will have the
+// remainder flushed by TTL expiry within 60 s (same as before this feature existed).
+// This runs synchronously in the webhook handler. The webhook HTTP server timeout
+// bounds total latency; the Stripe retry window (5 min) means a slow cache flush
+// that delays the 200 response will simply cause a harmless retry.
+// Best-effort: errors are logged but not returned.
+func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string) {
+	if h.cache == nil {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: context already canceled, skipping")
+		return
+	}
+	// maxCacheInvalidationPrefixes caps how many Redis keys are evicted per webhook
+	// event. Customers with more active keys have the remainder flushed by TTL (≤60s).
+	const maxCacheInvalidationPrefixes = 1000
+	// ORDER BY prefix gives a deterministic subset when LIMIT is hit,
+	// so repeated invalidations cover the same keys rather than an arbitrary shard.
+	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL ORDER BY prefix LIMIT $2`, customerID, maxCacheInvalidationPrefixes)
+	if err != nil {
+		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix query failed")
+		return
+	}
+	defer rows.Close()
+
+	const batchSize = 100
+	batch := make([]string, 0, batchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := h.cache.Del(ctx, batch...); err != nil {
+			log.Warn().Err(err).Strs("keys", batch).Msg("cache invalidation: redis DEL failed")
+		}
+		batch = batch[:0]
+	}
+
+	for rows.Next() {
+		var prefix string
+		if err := rows.Scan(&prefix); err != nil {
+			log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix scan failed for row")
+			continue
+		}
+		batch = append(batch, "auth:"+prefix)
+		if len(batch) >= batchSize {
+			flush()
+		}
+	}
+	if rows.Err() != nil {
+		log.Warn().Err(rows.Err()).Str("customer_id", customerID).Msg("cache invalidation: prefix scan error")
+	}
+	flush()
 }

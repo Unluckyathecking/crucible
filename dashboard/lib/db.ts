@@ -387,6 +387,14 @@ export async function listUsageEvents(
   return r.rows.map(mapRow);
 }
 
+export async function getStripeCustomerId(customerId: string): Promise<string | null> {
+  const r = await pool.query<{ stripe_customer_id: string | null }>(
+    "SELECT stripe_customer_id FROM customers WHERE id = $1",
+    [customerId],
+  );
+  return r.rows[0]?.stripe_customer_id ?? null;
+}
+
 export async function sumUsage(customerId: string, days: number): Promise<number> {
   const r = await pool.query<{ units: string }>(
     `SELECT COALESCE(SUM(billable_units), 0)::text AS units
