@@ -36,6 +36,22 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
+  it("returns error for array with NaN billable_units (Number.isFinite rejects NaN)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ operation: "search", billable_units: NaN, created_at: "2024-01-01T00:00:00.000Z" }]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
+  it("returns error for array with Infinity billable_units (Number.isFinite rejects Infinity)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ operation: "search", billable_units: Infinity, created_at: "2024-01-01T00:00:00.000Z" }]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
   it("returns error for 401 Unauthorized", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(401, {}));
     const result = await fetchUsage("2024-01-01", "2024-02-01");

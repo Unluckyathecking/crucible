@@ -66,6 +66,10 @@ export function UsageClient() {
   const [queryTo, setQueryTo] = useState(init.apiTo);
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
+  // Mirror of drill state kept in sync at render time so handleDrillDown
+  // always reads the latest value without a stale closure.
+  const drillRef = useRef<DrillState>(drill);
+  drillRef.current = drill;
 
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
@@ -103,8 +107,6 @@ export function UsageClient() {
     abortRef.current = ctrl;
     void loadMain(init.from, init.apiTo, ctrl.signal);
     return () => {
-      mainSeqRef.current++;
-      drillSeqRef.current++;
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
     };
@@ -144,7 +146,8 @@ export function UsageClient() {
   }
 
   async function handleDrillDown(operation: string) {
-    if (drill.status === "ok" && drill.operation === operation) {
+    const latestDrill = drillRef.current;
+    if (latestDrill.status === "ok" && latestDrill.operation === operation) {
       setDrill({ status: "none" });
       drillAbortRef.current?.abort();
       return;
@@ -275,7 +278,7 @@ export function UsageClient() {
                         drill.status === "error" && drill.operation === row.operation;
                       return (
                         <React.Fragment key={row.operation}>
-                          <tr className="border-b border-zinc-100">
+                          <tr key={`${row.operation}-main`} className="border-b border-zinc-100">
                             <td className="py-2 pr-4 font-mono">{row.operation}</td>
                             <td className="py-2 pr-4 text-right tabular-nums">
                               {row.total_billable_units.toLocaleString()}

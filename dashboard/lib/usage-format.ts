@@ -4,11 +4,12 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// Strip complete tags and unclosed angle brackets so error strings are safe
-// in React text-node contexts. Not a general HTML sanitizer — do not use in
-// attribute positions or dangerouslySetInnerHTML.
+// Strips HTML-like tags from error strings for safe rendering in text nodes.
+// WARNING: also removes all remaining '<' characters, which may alter non-HTML
+// text. Not a general HTML sanitizer — do not use in attribute positions or
+// dangerouslySetInnerHTML.
 export function sanitizeError(s: string): string {
-  return s.replace(/<[^>]*>/g, "").replace(/</g, "");
+  return s.replace(/<[^>]*>?/g, "").replace(/</g, "");
 }
 
 export interface RawEvent {
@@ -56,7 +57,7 @@ export function validateDateRange(
   from: Date,
   to: Date,
 ): { valid: boolean; error?: string } {
-  if (!(from instanceof Date) || !(to instanceof Date) || isNaN(from.getTime()) || isNaN(to.getTime())) {
+  if (typeof from?.getTime !== "function" || typeof to?.getTime !== "function" || isNaN(from.getTime()) || isNaN(to.getTime())) {
     return { valid: false, error: "Invalid date" };
   }
   if (from.getTime() > to.getTime()) {
