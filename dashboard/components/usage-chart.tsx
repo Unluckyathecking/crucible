@@ -50,7 +50,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
 
       {/* Bars */}
       {buckets.map((b, i) => {
-        const barH = Math.max(1, (b.units / maxUnits) * chartH);
+        const barH = b.units > 0 ? Math.max(1, (b.units / maxUnits) * chartH) : 0;
         const x = PAD_L + i * barSlot;
         const y = chartH - barH;
         return (

@@ -19,7 +19,7 @@ function isRawEvent(item: unknown): item is RawEvent {
     typeof r.id !== "string" ||
     typeof r.operation !== "string" ||
     typeof r.created_at !== "string" ||
-    r.created_at.length < 10 ||
+    !/^\d{4}-\d{2}-\d{2}/.test(r.created_at) ||
     typeof r.billable_units !== "number" ||
     !Number.isFinite(r.billable_units) ||
     !Number.isInteger(r.billable_units)

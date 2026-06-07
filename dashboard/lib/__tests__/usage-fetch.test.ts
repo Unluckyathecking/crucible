@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchUsage, truncateError, MAX_ERROR_LENGTH } from "@/lib/usage-fetch";
+import { fetchUsage, MAX_ERROR_LENGTH } from "@/lib/usage-fetch";
 
 function mockResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -64,7 +64,7 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
-  it("returns error when created_at is shorter than 10 characters (minimum YYYY-MM-DD)", async () => {
+  it("returns error when created_at does not match YYYY-MM-DD prefix (isRawEvent regex rejects)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(200, [{ id: "1", operation: "search", billable_units: 5, created_at: "2024-1-1" }]),
     );
