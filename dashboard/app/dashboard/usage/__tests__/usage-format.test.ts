@@ -20,7 +20,7 @@ describe("validateDateRange", () => {
     expect(validateDateRange(from, to).valid).toBe(true);
   });
 
-  it("accepts exactly 90 days (diff === 90 days is allowed, diff > 90 days is rejected)", () => {
+  it("accepts exclusive diff of exactly MAX_USAGE_RANGE_DAYS (90 inclusive calendar days)", () => {
     const from = parseDateParam("2024-01-01");
     const to = new Date(from.getTime() + MAX_USAGE_RANGE_DAYS * MS_PER_DAY);
     const result = validateDateRange(from, to);

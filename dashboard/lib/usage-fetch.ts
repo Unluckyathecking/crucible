@@ -10,6 +10,17 @@ function sanitizeError(s: string): string {
   return s.replace(/[<>&"]/g, "").slice(0, 200);
 }
 
+function isRawEvent(item: unknown): item is RawEvent {
+  if (item === null || typeof item !== "object") return false;
+  const r = item as Record<string, unknown>;
+  return (
+    typeof r.operation === "string" &&
+    typeof r.billable_units === "number" &&
+    Number.isFinite(r.billable_units) &&
+    typeof r.created_at === "string"
+  );
+}
+
 export async function fetchUsage(
   from: string,
   to: string,
@@ -58,17 +69,8 @@ export async function fetchUsage(
   if (!Array.isArray(json)) {
     return { error: "Unexpected response format from server" };
   }
-  if (!json.every((item): boolean => {
-    if (item === null || typeof item !== "object") return false;
-    const r = item as Record<string, unknown>;
-    return (
-      typeof r.operation === "string" &&
-      typeof r.billable_units === "number" &&
-      Number.isFinite(r.billable_units) &&
-      typeof r.created_at === "string"
-    );
-  })) {
+  if (!json.every(isRawEvent)) {
     return { error: "Unexpected response format from server" };
   }
-  return { data: json as RawEvent[] };
+  return { data: json };
 }

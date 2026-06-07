@@ -47,7 +47,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
         const x = PAD_L + i * barSlot;
         const y = chartH - barH;
         return (
-          <rect key={`bar-${i}`} x={x + 0.5} y={y} width={barW} height={barH} fill="#18181b" rx="1">
+          <rect key={b.date} x={x + 0.5} y={y} width={barW} height={barH} fill="#18181b" rx="1">
             <title>{`${b.date}: ${b.units.toLocaleString()} units`}</title>
           </rect>
         );

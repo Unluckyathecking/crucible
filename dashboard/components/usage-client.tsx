@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   validateDateRange,
   parseDateParam,
@@ -82,9 +82,10 @@ export function UsageClient() {
   const mainSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
-    const seq = ++mainSeqRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
+    // Increment AFTER synchronous state updates so the seq captures the post-update epoch.
+    const seq = ++mainSeqRef.current;
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       if (signal?.aborted) return;
@@ -182,6 +183,22 @@ export function UsageClient() {
 
   const todayStr = utcTodayStr();
 
+  // Memoized so parseDateParam isn't re-invoked on every render just for the
+  // min/max attributes; deps are the two display values and todayStr.
+  const fromMax = useMemo(() => {
+    const fd = parseDateParam(displayFrom);
+    const td = parseDateParam(displayTo);
+    return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
+      ? displayTo : todayStr;
+  }, [displayFrom, displayTo, todayStr]);
+
+  const toMin = useMemo(() => {
+    const fd = parseDateParam(displayFrom);
+    const td = parseDateParam(displayTo);
+    return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
+      ? displayFrom : "1970-01-01";
+  }, [displayFrom, displayTo]);
+
   // BigInt accumulation matches the pattern in app/dashboard/page.tsx and avoids
   // IEEE 754 precision loss before the MAX_SAFE_INTEGER overflow check.
   const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
@@ -212,12 +229,7 @@ export function UsageClient() {
               type="date"
               value={displayFrom}
               min="1970-01-01"
-              max={(() => {
-                const fd = parseDateParam(displayFrom);
-                const td = parseDateParam(displayTo);
-                return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
-                  ? displayTo : todayStr;
-              })()}
+              max={fromMax}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -230,12 +242,7 @@ export function UsageClient() {
             <input
               type="date"
               value={displayTo}
-              min={(() => {
-                const fd = parseDateParam(displayFrom);
-                const td = parseDateParam(displayTo);
-                return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
-                  ? displayFrom : "1970-01-01";
-              })()}
+              min={toMin}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
