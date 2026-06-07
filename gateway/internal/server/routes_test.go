@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
@@ -588,6 +591,135 @@ func searchSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- Billing route tests ---
+
+// mockBillingService is a stub BillingService for billing route tests.
+type mockBillingService struct {
+	checkoutURL      string
+	checkoutErr      error
+	portalURL        string
+	portalErr        error
+	stripeCustomerID string
+	lookupErr        error
+}
+
+func (m *mockBillingService) CreateCheckoutSession(_ context.Context, _, _ string) (string, error) {
+	return m.checkoutURL, m.checkoutErr
+}
+func (m *mockBillingService) CreatePortalSession(_ context.Context, _ string) (string, error) {
+	return m.portalURL, m.portalErr
+}
+func (m *mockBillingService) LookupStripeCustomerID(_ context.Context, _ string) (string, error) {
+	return m.stripeCustomerID, m.lookupErr
+}
+
+// testKey returns an auth.Key with a stable UUID so billing handler tests can inject auth context.
+func testKey() *auth.Key {
+	id, _ := uuid.Parse("550e8400-e29b-41d4-a716-446655440000")
+	cid, _ := uuid.Parse("660e8400-e29b-41d4-a716-446655440001")
+	return &auth.Key{ID: id, Customer: auth.Customer{ID: cid, Email: "test@example.com", Plan: "free"}}
+}
+
+func TestBillingCheckout_Unauthorized(t *testing.T) {
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:   &config.Config{BodyLimitBytes: 1048576},
+		Redis: healthy,
+		PG:    healthy,
+	}
+	router := NewRouter(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(`{"plan_id":"pro"}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestBillingPortal_Unauthorized(t *testing.T) {
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:   &config.Config{BodyLimitBytes: 1048576},
+		Redis: healthy,
+		PG:    healthy,
+	}
+	router := NewRouter(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/portal", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestBillingCheckout_WithKey(t *testing.T) {
+	const wantURL = "https://checkout.stripe.com/pay/cs_test_abc"
+
+	d := &Deps{Checkout: &mockBillingService{checkoutURL: wantURL}}
+	h := billingCheckoutHandler(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(`{"plan_id":"pro"}`))
+	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["url"] != wantURL {
+		t.Errorf("url = %q, want %q", resp["url"], wantURL)
+	}
+}
+
+func TestBillingPortal_WithKey(t *testing.T) {
+	const wantURL = "https://billing.stripe.com/session/test_xyz"
+
+	d := &Deps{Checkout: &mockBillingService{
+		stripeCustomerID: "cus_test",
+		portalURL:        wantURL,
+	}}
+	h := billingPortalHandler(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/portal", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["url"] != wantURL {
+		t.Errorf("url = %q, want %q", resp["url"], wantURL)
+	}
+}
+
+func TestBillingCheckout_NotConfigured(t *testing.T) {
+	// Checkout == nil → 503 (main.go default when not wired up).
+	d := &Deps{Checkout: nil}
+	h := billingCheckoutHandler(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(`{"plan_id":"pro"}`))
+	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
 }
 
 func TestWriteJSONError(t *testing.T) {

@@ -38,6 +38,15 @@ type HealthChecker interface {
 	Ping(ctx context.Context) error
 }
 
+// BillingService is the subset of billing.CheckoutClient used by the billing
+// route handlers. Extracted as an interface so tests can inject stubs without
+// requiring a live Stripe API or database.
+type BillingService interface {
+	CreateCheckoutSession(ctx context.Context, customerID, planID string) (string, error)
+	CreatePortalSession(ctx context.Context, stripeCustomerID string) (string, error)
+	LookupStripeCustomerID(ctx context.Context, customerID string) (string, error)
+}
+
 // readyzResponse is the JSON envelope for the readiness endpoint.
 type readyzResponse struct {
 	Status string            `json:"status"`
@@ -59,6 +68,10 @@ type Deps struct {
 	// DB is optional. When set, the idempotency middleware is active on /v1 routes.
 	// When nil (default when main.go is unmodified), the middleware is a pass-through.
 	DB *pgxpool.Pool
+	// Checkout is optional. When set, POST /v1/billing/checkout and
+	// POST /v1/billing/portal are active. When nil (default when main.go is
+	// unmodified), both endpoints return 503 so the rest of the gateway is unaffected.
+	Checkout BillingService
 	// TracerProvider is optional. When nil, a noop tracer is used (default-off).
 	TracerProvider oteltrace.TracerProvider
 }
@@ -108,6 +121,16 @@ func NewRouter(d *Deps) http.Handler {
 		})
 	}
 	r.With(stripSpoofableIPHeaders, httprate.LimitByRealIP(60, time.Minute)).Post("/webhooks/stripe", d.Webhook.Handle)
+
+	// === Framework billing routes (auth gated, no quota/rate-limit) ===
+	// Self-serve Stripe Checkout and Billing Portal redirect endpoints.
+	// Separated from the per-product block so per-product clones never need to
+	// edit this block — it is framework infrastructure every clone inherits.
+	r.Route("/v1/billing", func(r chi.Router) {
+		r.Use(auth.Middleware(d.Auth))
+		r.Post("/checkout", billingCheckoutHandler(d))
+		r.Post("/portal", billingPortalHandler(d))
+	})
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
@@ -236,6 +259,79 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// billingCheckoutHandler creates a Stripe Checkout session and returns the redirect URL.
+// POST /v1/billing/checkout body: {"plan_id":"pro"}
+// Response: {"url":"https://checkout.stripe.com/..."}
+func billingCheckoutHandler(d *Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Checkout == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			return
+		}
+
+		var body struct {
+			PlanID string `json:"plan_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PlanID == "" {
+			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "plan_id required", false)
+			return
+		}
+
+		redirectURL, err := d.Checkout.CreateCheckoutSession(r.Context(), key.Customer.ID.String(), body.PlanID)
+		if err != nil {
+			log.Error().Err(err).Msg("create checkout session failed")
+			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
+	}
+}
+
+// billingPortalHandler creates a Stripe Billing Portal session and returns the redirect URL.
+// POST /v1/billing/portal
+// Response: {"url":"https://billing.stripe.com/..."}
+func billingPortalHandler(d *Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Checkout == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			return
+		}
+
+		stripeCustomerID, err := d.Checkout.LookupStripeCustomerID(r.Context(), key.Customer.ID.String())
+		if err != nil {
+			log.Error().Err(err).Msg("lookup stripe customer id failed")
+			writeJSONError(w, http.StatusInternalServerError, "INTERNAL", "lookup failed", false)
+			return
+		}
+		if stripeCustomerID == "" {
+			writeJSONError(w, http.StatusPaymentRequired, "NO_STRIPE_CUSTOMER", "complete checkout first", false)
+			return
+		}
+
+		redirectURL, err := d.Checkout.CreatePortalSession(r.Context(), stripeCustomerID)
+		if err != nil {
+			log.Error().Err(err).Msg("create portal session failed")
+			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
 
