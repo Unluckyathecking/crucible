@@ -132,6 +132,11 @@ func NewRouter(d *Deps) http.Handler {
 	// Self-serve Stripe Checkout and Billing Portal redirect endpoints.
 	// Separated from the per-product block so per-product clones never need to
 	// edit this block — it is framework infrastructure every clone inherits.
+	//
+	// Idempotency middleware is intentionally omitted: Stripe Checkout sessions
+	// are one-shot redirect URLs (not repeatable POST operations), and the
+	// portal creates a session scoped to the authenticated customer — retries
+	// are harmless because Stripe's own session dedup prevents double-billing.
 	r.Route("/v1/billing", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		r.Post("/checkout", billingCheckoutHandler(d))

@@ -140,7 +140,7 @@ func (c *CheckoutClient) postSession(ctx context.Context, endpoint string, form 
 		return "", fmt.Errorf("stripe session error: %s", msg)
 	}
 	if sr.URL == "" {
-		return "", errors.New("stripe returned empty url")
+		return "", fmt.Errorf("stripe %s returned empty url", endpoint)
 	}
 	return sr.URL, nil
 }

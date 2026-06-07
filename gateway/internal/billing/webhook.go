@@ -346,6 +346,11 @@ func (h *Webhook) handleCheckoutSessionCompleted(ctx context.Context, event *str
 // handleCustomerCreated links the Stripe customer to our customer row via email.
 // This event fires before checkout.session.completed so it provides an early link;
 // both handlers are idempotent (the WHERE guard prevents overwriting with a different ID).
+// Note: customer.created fires even when checkout is abandoned. An abandoned customer
+// will have stripe_customer_id set but remain on the free plan and hold no subscription.
+// The billing portal guard (LookupStripeCustomerID) checks for the ID but NOT for an
+// active subscription, so such customers CAN open the portal — this is intentional:
+// the portal lets them complete setup or view an empty subscription list.
 func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent) error {
 	var obj struct {
 		ID    string `json:"id"`
@@ -398,7 +403,9 @@ func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string
 		return
 	}
 	const maxPrefixes = 1000
-	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL LIMIT $2`, customerID, maxPrefixes)
+	// ORDER BY prefix gives a deterministic subset when LIMIT is hit,
+	// so repeated invalidations cover the same keys rather than an arbitrary shard.
+	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL ORDER BY prefix LIMIT $2`, customerID, maxPrefixes)
 	if err != nil {
 		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix query failed")
 		return

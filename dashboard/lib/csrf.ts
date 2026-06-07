@@ -1,11 +1,11 @@
-// verifyCsrfToken compares CSRF tokens in constant time. We avoid an early
-// return on null/empty inputs (which would leak via timing) by coercing to
-// empty strings and looping to at least 32 iterations regardless of input
-// length. Lengths are XOR'd into result so unequal-length tokens fail.
+// verifyCsrfToken compares CSRF tokens using a constant-time loop of fixed
+// length (128) to prevent timing side-channels on both token content and
+// length. Inputs are coerced to empty strings (no early return on null)
+// so null/empty inputs take the same path as valid tokens.
 export function verifyCsrfToken(header: string | null, cookie: string | null): boolean {
   const h = header ?? "";
   const c = cookie ?? "";
-  const maxLen = Math.max(32, h.length, c.length);
+  const maxLen = 128;
   let result = h.length ^ c.length;
   for (let i = 0; i < maxLen; i++) {
     const hv = i < h.length ? h.charCodeAt(i) : 0;

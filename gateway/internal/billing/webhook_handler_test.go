@@ -149,7 +149,7 @@ func TestHandleSubscriptionUpsert_WithCacheInvalidation(t *testing.T) {
 		WithArgs(priceID).
 		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(planID))
 
-	mock.ExpectExec(`UPDATE customers`).
+	mock.ExpectExec(`UPDATE customers SET plan_id`).
 		WithArgs(planID, customer).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
