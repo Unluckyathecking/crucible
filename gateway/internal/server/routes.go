@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -32,6 +33,10 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
+
+// planIDRE mirrors the dashboard's PLAN_ID_RE: lowercase alphanumeric + hyphens, max 32 chars.
+// The gateway is the trust boundary; revalidating here prevents DB probing via arbitrary plan IDs.
+var planIDRE = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // HealthChecker wraps a dependency that can be pinged for connectivity verification.
 type HealthChecker interface {
@@ -282,6 +287,10 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PlanID == "" {
 			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "plan_id required", false)
+			return
+		}
+		if !planIDRE.MatchString(body.PlanID) {
+			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid plan_id", false)
 			return
 		}
 

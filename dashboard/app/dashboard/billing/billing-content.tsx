@@ -8,7 +8,7 @@ interface BillingPageContentProps {
   hasStripeCustomer: boolean;
 }
 
-function UpgradeButton({ planId }: { planId: string }) {
+function UpgradeButton() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,7 +22,7 @@ function UpgradeButton({ planId }: { planId: string }) {
           "Content-Type": "application/json",
           "X-Requested-With": "XMLHttpRequest",
         },
-        body: JSON.stringify({ plan_id: planId }),
+        body: JSON.stringify({ plan_id: "pro" }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
@@ -115,7 +115,7 @@ export default function BillingPageContent({ planId, hasStripeCustomer }: Billin
               <p className="text-sm text-zinc-600 mb-4">
                 You are on the free tier. Upgrade to unlock higher rate limits and usage caps.
               </p>
-              <UpgradeButton planId="pro" />
+              <UpgradeButton />
             </div>
           ) : (
             <div>

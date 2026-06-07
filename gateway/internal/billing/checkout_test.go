@@ -144,10 +144,22 @@ func TestCreatePortalSession(t *testing.T) {
 }
 
 func TestCreatePortalSession_EmptyCustomerID(t *testing.T) {
-	c := &CheckoutClient{http: http.DefaultClient, baseURL: stripeAPIBase}
+	// Canary server: if CreatePortalSession makes any HTTP call before validating,
+	// the test will catch it. The empty-ID guard should fire before any network I/O.
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := &CheckoutClient{http: srv.Client(), baseURL: srv.URL}
 	_, err := c.CreatePortalSession(context.Background(), "")
 	if err == nil {
 		t.Error("expected error for empty stripeCustomerID")
+	}
+	if called {
+		t.Error("CreatePortalSession must not make HTTP calls when stripeCustomerID is empty")
 	}
 }
 

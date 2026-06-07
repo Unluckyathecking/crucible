@@ -316,16 +316,24 @@ func (h *Webhook) handleCheckoutSessionCompleted(ctx context.Context, event *str
 		return nil
 	}
 
-	if _, err := h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE customers SET stripe_customer_id = $1, updated_at = NOW()
 		WHERE id = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
-	`, obj.Customer, obj.ClientReferenceID); err != nil {
+	`, obj.Customer, obj.ClientReferenceID)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Already linked to a different customer or id unknown; safe to skip.
+		log.Info().Str("customer_id", obj.ClientReferenceID).Msg("checkout.session.completed: no customer row updated; skipping cache invalidation")
+		return nil
 	}
 
 	// Flush the auth cache so the customer's new stripe_customer_id is seen immediately
 	// by the flusher (which filters on stripe_customer_id IS NOT NULL).
-	h.invalidateCustomerCache(ctx, obj.ClientReferenceID)
+	if h.cache != nil {
+		h.invalidateCustomerCache(ctx, obj.ClientReferenceID)
+	}
 	return nil
 }
 
@@ -366,7 +374,9 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 		return err
 	}
 
-	h.invalidateCustomerCache(ctx, customerID)
+	if h.cache != nil {
+		h.invalidateCustomerCache(ctx, customerID)
+	}
 	return nil
 }
 
