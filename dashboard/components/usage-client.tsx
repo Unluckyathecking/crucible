@@ -108,7 +108,7 @@ export function UsageClient() {
       setRangeError("Invalid date format");
       return;
     }
-    const apiFrom = displayFrom;
+    const apiFrom = toISODateString(fromDate);
     const apiTo = toApiTo(displayTo);
     // Validate with the exclusive upper bound to match the API contract;
     // the user-visible maximum is MAX_USAGE_RANGE_DAYS inclusive days.
@@ -138,14 +138,20 @@ export function UsageClient() {
     // Increment sequence so any concurrent in-flight response for a prior seq is discarded.
     const seq = ++drillSeqRef.current;
     setDrill({ status: "loading", operation });
-    const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
-    if (drillSeqRef.current !== seq) return;
-    if (result === null) return;
-    if ("error" in result) {
-      setDrill({ status: "error", operation, message: result.error });
-      return;
+    try {
+      const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
+      if (drillSeqRef.current !== seq) return;
+      if (result === null) return;
+      if ("error" in result) {
+        setDrill({ status: "error", operation, message: result.error });
+        return;
+      }
+      setDrill({ status: "ok", operation, events: result.data });
+    } catch (err) {
+      if (drillSeqRef.current !== seq) return;
+      console.error("handleDrillDown failed:", err);
+      setDrill({ status: "error", operation, message: "Failed to load events" });
     }
-    setDrill({ status: "ok", operation, events: result.data });
   }
 
   const todayStr = utcTodayStr();
@@ -271,7 +277,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr className="bg-zinc-50">
+                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{drill.message}</p>
@@ -293,9 +299,9 @@ export function UsageClient() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e, i) => (
+                                          {drill.events.map((e) => (
                                             <tr
-                                              key={`drill-${row.operation}-${i}`}
+                                              key={`${e.created_at}-${e.billable_units}-${e.operation}`}
                                               className="border-b border-zinc-100"
                                             >
                                               <td className="py-1 pr-4 font-mono">

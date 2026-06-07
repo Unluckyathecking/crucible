@@ -3,6 +3,11 @@
 
 import type { RawEvent } from "./usage-format";
 
+// Strip HTML tags so server error strings are safe in any rendering context.
+function sanitizeError(s: string): string {
+  return s.replace(/<[^>]*>/g, "");
+}
+
 export async function fetchUsage(
   from: string,
   to: string,
@@ -14,7 +19,10 @@ export async function fetchUsage(
   let res: Response;
   try {
     res = await fetch(`/api/usage?${params}`, {
-      headers: { "X-Requested-With": "XMLHttpRequest" },
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json",
+      },
       cache: "no-store",
       signal,
     });
@@ -36,10 +44,14 @@ export async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    // Return the server's error string as-is; React JSX escaping prevents XSS at render time.
-    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
+    return { error: typeof err === "string" ? sanitizeError(err) : `Server error (${res.status})` };
   }
-  const json: unknown = await res.json();
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    return { error: "Invalid response from server" };
+  }
   if (!Array.isArray(json)) {
     return { error: "Unexpected response format from server" };
   }

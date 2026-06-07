@@ -54,12 +54,14 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("returns server error string unsanitized (safe only because usage-client renders in React text nodes, which auto-escape HTML)", async () => {
-    const rawError = "<script>alert('xss')</script>";
-    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(500, { error: rawError }));
+  it("strips HTML tags from server error messages to prevent injection in any rendering context", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(500, { error: "<script>alert('xss')</script>" }),
+    );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).toBe(rawError);
+    expect(result.error).not.toContain("<script>");
+    expect(result.error).not.toContain("</script>");
   });
 
   it("returns network error message and logs when fetch throws a non-abort error", async () => {
@@ -98,6 +100,24 @@ describe("fetchUsage", () => {
     await fetchUsage("2024-01-01", "2024-02-01");
     const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
     expect((options.headers as Record<string, string>)["X-Requested-With"]).toBe("XMLHttpRequest");
+  });
+
+  it("sends Accept: application/json header", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
+    await fetchUsage("2024-01-01", "2024-02-01");
+    const options = vi.mocked(fetch).mock.calls[0][1] as RequestInit;
+    expect((options.headers as Record<string, string>)["Accept"]).toBe("application/json");
+  });
+
+  it("returns error when 200 response body is malformed JSON", async () => {
+    const badJson = {
+      status: 200,
+      ok: true,
+      json: () => Promise.reject(new SyntaxError("Unexpected token")),
+    } as unknown as Response;
+    vi.mocked(fetch).mockResolvedValueOnce(badJson);
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toHaveProperty("error");
   });
 
   it("forwards the AbortSignal to fetch", async () => {
