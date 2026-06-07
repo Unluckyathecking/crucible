@@ -406,10 +406,12 @@ func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string
 		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: context already canceled, skipping")
 		return
 	}
-	const maxPrefixes = 1000
+	// maxCacheInvalidationPrefixes caps how many Redis keys are evicted per webhook
+	// event. Customers with more active keys have the remainder flushed by TTL (≤60s).
+	const maxCacheInvalidationPrefixes = 1000
 	// ORDER BY prefix gives a deterministic subset when LIMIT is hit,
 	// so repeated invalidations cover the same keys rather than an arbitrary shard.
-	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL ORDER BY prefix LIMIT $2`, customerID, maxPrefixes)
+	rows, err := h.db.Query(ctx, `SELECT prefix FROM api_keys WHERE customer_id = $1 AND revoked_at IS NULL ORDER BY prefix LIMIT $2`, customerID, maxCacheInvalidationPrefixes)
 	if err != nil {
 		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix query failed")
 		return

@@ -87,8 +87,17 @@ export async function POST(request: Request): Promise<Response> {
         body: form.toString(),
         signal: controller.signal,
       });
-    } finally {
       clearTimeout(timer);
+    } catch (fetchErr) {
+      clearTimeout(timer);
+      if (fetchErr instanceof Error && fetchErr.name === "AbortError") {
+        console.error("POST /api/billing/checkout: Stripe request timed out");
+        return new Response(JSON.stringify({ error: { code: "STRIPE_TIMEOUT", message: "billing unavailable" } }), {
+          status: 504,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw fetchErr;
     }
 
     type StripeSessionResp = { url?: string; error?: { message?: string } };
