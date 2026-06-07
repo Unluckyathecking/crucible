@@ -331,8 +331,7 @@ describe("toISODateString", () => {
     expect(toISODateString(parseDateParam(original))).toBe(original);
   });
 
-  it("returns NaN-based string for Invalid Date input (documents behavior for callers)", () => {
-    // toApiTo callers always pre-validate; this test documents what happens if they don't.
-    expect(toISODateString(new Date(NaN))).toBe("NaN-NaN-NaN");
+  it("returns empty string for Invalid Date input", () => {
+    expect(toISODateString(new Date(NaN))).toBe("");
   });
 });

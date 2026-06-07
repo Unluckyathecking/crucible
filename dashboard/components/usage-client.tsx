@@ -147,7 +147,7 @@ export function UsageClient() {
 
   async function handleDrillDown(operation: string) {
     const latestDrill = drillRef.current;
-    if (latestDrill.status === "ok" && latestDrill.operation === operation) {
+    if ((latestDrill.status === "ok" || latestDrill.status === "loading") && latestDrill.operation === operation) {
       setDrill({ status: "none" });
       drillAbortRef.current?.abort();
       return;

@@ -45,9 +45,10 @@ export function parseDateParam(s: string): Date {
   return d;
 }
 
-// Returns YYYY-MM-DD from the UTC components of a Date.
+// Returns YYYY-MM-DD from the UTC components of a Date, or "" for Invalid Date.
 // Uses getUTCFullYear/Month/Date directly to avoid timezone-dependent toISOString() shifts.
 export function toISODateString(d: Date): string {
+  if (isNaN(d.getTime())) return "";
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
