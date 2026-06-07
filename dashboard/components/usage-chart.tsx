@@ -12,6 +12,9 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
   const chartH = H - PAD_B;
 
   const { maxUnits, barSlot, barW, descText } = useMemo(() => {
+    if (buckets.length === 0) {
+      return { maxUnits: 0, barSlot: 0, barW: 0, descText: "" };
+    }
     // Use reduce instead of spread to avoid call-stack limits on large arrays.
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
     const barSlot = chartW / Math.max(1, buckets.length);

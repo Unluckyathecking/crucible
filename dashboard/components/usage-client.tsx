@@ -73,7 +73,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       // null: fetch was aborted (including component unmount — cleanup aborts the signal).
       // gen guard: discard responses from superseded fetches.
-      if (result === null || gen !== generationRef.current) return;
+      // mounted guard: symmetric with catch block — skip setState if unmounted.
+      if (result === null || gen !== generationRef.current || !mountedRef.current) return;
       if ("error" in result) {
         setData({ status: "error", message: result.error });
         return;
@@ -185,7 +186,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
 
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    return isNaN(td.getTime()) ? todayUTCStr : displayTo;
+    const toStr = isNaN(td.getTime()) ? todayUTCStr : displayTo;
+    // Clamp to today so the From input cannot be set to a future date.
+    const toDate = parseDateParam(toStr);
+    const today = parseDateParam(todayUTCStr);
+    return toDate.getTime() > today.getTime() ? todayUTCStr : toStr;
   }, [displayTo, todayUTCStr]);
 
   const toMin = useMemo(() => {
