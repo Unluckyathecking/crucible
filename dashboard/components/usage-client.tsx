@@ -39,10 +39,12 @@ async function fetchUsage(
     return { error: "Session expired — please reload the page." };
   }
   if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-    return {
-      error: typeof body.error === "string" ? body.error : `Server error (${res.status})`,
-    };
+    const body: unknown = await res.json().catch(() => ({}));
+    if (typeof body !== "object" || body === null) {
+      return { error: `Server error (${res.status})` };
+    }
+    const err = (body as Record<string, unknown>).error;
+    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
   }
   const json: unknown = await res.json();
   if (!Array.isArray(json)) {
@@ -150,6 +152,20 @@ export function UsageClient() {
   }
 
   const todayStr = utcTodayStr();
+
+  // Mirror the BigInt saturation pattern from app/dashboard/page.tsx to guard against
+  // Number.MAX_SAFE_INTEGER overflow when a customer has many operations.
+  const _cap = BigInt(Number.MAX_SAFE_INTEGER);
+  const _rawUnits =
+    data.status === "ok"
+      ? data.ops.reduce((a, r) => a + BigInt(r.total_billable_units), BigInt(0))
+      : BigInt(0);
+  const _rawCalls =
+    data.status === "ok"
+      ? data.ops.reduce((a, r) => a + BigInt(r.event_count), BigInt(0))
+      : BigInt(0);
+  const totalUnits = _rawUnits > _cap ? Number.MAX_SAFE_INTEGER : Number(_rawUnits);
+  const totalCalls = _rawCalls > _cap ? Number.MAX_SAFE_INTEGER : Number(_rawCalls);
 
   return (
     <div className="space-y-5">
@@ -310,12 +326,10 @@ export function UsageClient() {
                     <tr className="text-zinc-600 font-medium border-t border-zinc-200">
                       <td className="pt-2 pr-4">Total</td>
                       <td className="pt-2 pr-4 text-right tabular-nums">
-                        {data.ops
-                          .reduce((a, r) => a + r.total_billable_units, 0)
-                          .toLocaleString()}
+                        {totalUnits.toLocaleString()}
                       </td>
                       <td className="pt-2 pr-4 text-right tabular-nums text-zinc-500">
-                        {data.ops.reduce((a, r) => a + r.event_count, 0).toLocaleString()}
+                        {totalCalls.toLocaleString()}
                       </td>
                       <td />
                     </tr>

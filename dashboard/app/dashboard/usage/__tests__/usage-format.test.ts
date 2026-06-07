@@ -4,6 +4,7 @@ import {
   bucketByDay,
   aggregateByOperation,
   parseDateParam,
+  toISODateString,
   MAX_USAGE_RANGE_DAYS,
   MS_PER_DAY,
 } from "@/lib/usage-format";
@@ -206,5 +207,66 @@ describe("bucketByDay — edge cases", () => {
     ];
     const buckets = bucketByDay(events);
     expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseDateParam — input validation and UTC parsing
+// ---------------------------------------------------------------------------
+
+describe("parseDateParam", () => {
+  it("parses a valid YYYY-MM-DD string as UTC midnight", () => {
+    const d = parseDateParam("2024-06-15");
+    expect(d.getTime()).toBe(new Date("2024-06-15T00:00:00.000Z").getTime());
+    expect(d.toISOString()).toBe("2024-06-15T00:00:00.000Z");
+  });
+
+  it("returns Invalid Date for empty string", () => {
+    expect(isNaN(parseDateParam("").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for non-ISO string", () => {
+    expect(isNaN(parseDateParam("not-a-date").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for partial ISO string (YYYY-MM)", () => {
+    expect(isNaN(parseDateParam("2024-01").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for string with time component already appended", () => {
+    // Prevents double-appending: '2024-01-01T00:00:00.000ZT00:00:00.000Z' is invalid.
+    expect(isNaN(parseDateParam("2024-01-01T00:00:00.000Z").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for string with leading/trailing space", () => {
+    expect(isNaN(parseDateParam(" 2024-01-01").getTime())).toBe(true);
+    expect(isNaN(parseDateParam("2024-01-01 ").getTime())).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toISODateString — UTC component extraction (no toISOString() timezone shift)
+// ---------------------------------------------------------------------------
+
+describe("toISODateString", () => {
+  it("returns YYYY-MM-DD from a UTC-midnight Date", () => {
+    const d = new Date("2024-06-15T00:00:00.000Z");
+    expect(toISODateString(d)).toBe("2024-06-15");
+  });
+
+  it("uses UTC components, not local time (no midnight-crossing shift)", () => {
+    // Date.UTC guarantees the value is UTC midnight regardless of local timezone.
+    const d = new Date(Date.UTC(2024, 0, 1)); // Jan 1 UTC midnight
+    expect(toISODateString(d)).toBe("2024-01-01");
+  });
+
+  it("pads single-digit months and days", () => {
+    const d = new Date(Date.UTC(2024, 0, 5)); // Jan 5
+    expect(toISODateString(d)).toBe("2024-01-05");
+  });
+
+  it("round-trips with parseDateParam", () => {
+    const original = "2024-11-30";
+    expect(toISODateString(parseDateParam(original))).toBe(original);
   });
 });

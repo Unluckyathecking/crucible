@@ -1,5 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, MS_PER_DAY } from "@/lib/db";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
@@ -92,9 +93,9 @@ export default async function DashboardPage() {
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
           <div className="flex justify-between items-center mb-3">
             <h2 className="text-lg sm:text-xl font-semibold">Usage (last {USAGE_WINDOW_DAYS} days)</h2>
-            <a href="/dashboard/usage" className="text-sm text-zinc-500 hover:text-zinc-900 underline">
+            <Link href="/dashboard/usage" className="text-sm text-zinc-500 hover:text-zinc-900 underline">
               Full analytics →
-            </a>
+            </Link>
           </div>
           {opBreakdown.length === 0 ? (
             <p className="text-sm text-zinc-500">No usage in this period.</p>

@@ -22,13 +22,19 @@ export interface OperationRow {
 }
 
 // Parses a YYYY-MM-DD string as UTC midnight.
+// Returns Invalid Date (NaN getTime) for any string that is not exactly YYYY-MM-DD,
+// preventing lenient JS engine parsing of partial strings or strings with appended time parts.
 export function parseDateParam(s: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return new Date(NaN);
+  }
   return new Date(s + "T00:00:00.000Z");
 }
 
-// Returns the YYYY-MM-DD portion of a UTC date.
+// Returns YYYY-MM-DD from the UTC components of a Date.
+// Uses getUTCFullYear/Month/Date directly to avoid timezone-dependent toISOString() shifts.
 export function toISODateString(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 // Validates a date range using the same rules as /api/usage route.ts:114-125.
