@@ -254,6 +254,17 @@ describe("bucketByDay — edge cases", () => {
     expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
   });
 
+  it("buckets same month/day in different years separately", () => {
+    const events = [
+      { operation: "a", billable_units: 1, created_at: "2023-01-01T00:00:00.000Z" },
+      { operation: "a", billable_units: 2, created_at: "2024-01-01T00:00:00.000Z" },
+    ];
+    const buckets = bucketByDay(events);
+    expect(buckets).toHaveLength(2);
+    expect(buckets[0]).toEqual({ date: "2023-01-01", units: 1 });
+    expect(buckets[1]).toEqual({ date: "2024-01-01", units: 2 });
+  });
+
   it("aggregates two events per day across full range into daily buckets", () => {
     // Two events per day across 90 days — verifies both aggregation and boundary volume.
     const events = Array.from({ length: MAX_USAGE_RANGE_DAYS * 2 }, (_, i) => ({

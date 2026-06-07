@@ -41,11 +41,16 @@ export function parseDateParam(s: string): Date {
   return d;
 }
 
+// Shared UTC date formatter used by toISODateString and bucketByDay.
+function formatUTCDate(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 // Returns YYYY-MM-DD from the UTC components of a Date, or "" for Invalid Date.
 // Uses getUTCFullYear/Month/Date directly to avoid timezone-dependent toISOString() shifts.
 export function toISODateString(d: Date): string {
   if (isNaN(d.getTime())) return "";
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  return formatUTCDate(d);
 }
 
 // Validates a date range using the same rules as the /api/usage server route:
@@ -83,7 +88,7 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
   for (const e of events) {
     const d = new Date(e.created_at);
     if (isNaN(d.getTime())) continue;
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+    const key = formatUTCDate(d);
     map.set(key, (map.get(key) ?? 0) + Math.max(0, e.billable_units));
   }
   return Array.from(map.entries())

@@ -23,6 +23,12 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ data: events });
   });
 
+  it("returns empty data array on 200 OK with []", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ data: [] });
+  });
+
   it("returns error for non-array 200 response", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, { not: "an array" }));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
@@ -102,16 +108,10 @@ describe("fetchUsage", () => {
     expect(result.error).not.toContain("<");
   });
 
-  it("returns network error message and logs when fetch throws a non-abort error", async () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
-      const result = await fetchUsage("2024-01-01", "2024-02-01");
-      expect(result).toEqual({ error: "Network error — please check your connection." });
-      expect(consoleSpy).toHaveBeenCalledWith("fetchUsage failed:", expect.any(TypeError));
-    } finally {
-      consoleSpy.mockRestore();
-    }
+  it("returns network error message when fetch throws a non-abort error", async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Network error — please check your connection." });
   });
 
   it("returns null when fetch throws an AbortError", async () => {

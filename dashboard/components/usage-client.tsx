@@ -153,7 +153,7 @@ export function UsageClient() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    void loadMain(apiFrom, apiTo, ctrl.signal);
+    loadMain(apiFrom, apiTo, ctrl.signal);
   }
 
   async function handleDrillDown(operation: string) {
@@ -185,19 +185,18 @@ export function UsageClient() {
     }
   }
 
-  // Initialised empty to avoid SSR/client hydration mismatch; populated in the
-  // first client-side effect. A UTC-based function avoids timezone skew.
-  const [todayStr, setTodayStr] = useState("");
-  useEffect(() => { setTodayStr(utcTodayStr()); }, []);
+  // Lazy-initialised once with utcTodayStr(). UTC arithmetic means server and
+  // client produce the same string for the same UTC calendar day, so no hydration
+  // mismatch. Stable for the session; midnight-crossing is an acceptable edge case.
+  const [todayStr] = useState(utcTodayStr);
 
-  // Memoized so parseDateParam isn't re-invoked on every render just for the
-  // min/max attributes; deps are the two display values and todayStr.
+  // fromMax: use displayTo as the upper bound for from only when displayTo is valid
+  // and does not exceed today, preventing from being set to a future date.
   const fromMax = useMemo(() => {
-    const fd = parseDateParam(displayFrom);
     const td = parseDateParam(displayTo);
-    return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
+    return !isNaN(td.getTime()) && td.getTime() <= parseDateParam(todayStr).getTime()
       ? displayTo : todayStr;
-  }, [displayFrom, displayTo, todayStr]);
+  }, [displayTo, todayStr]);
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
@@ -362,7 +361,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${e.created_at}-${e.billable_units}-${e.operation}-${i}`}
+                                                key={i}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
