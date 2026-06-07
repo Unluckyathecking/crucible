@@ -38,8 +38,9 @@ export default async function DashboardPage() {
     listAuditEvents(customer.id),
   ]);
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
-  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
-  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
+  // Math.trunc(Number(x) || 0) guards against non-integer or nullish values from schema drift.
+  const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(Math.trunc(Number(r.total_billable_units) || 0)), 0n);
+  const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(Math.trunc(Number(r.event_count) || 0)), 0n);
   const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
   const totalCalls = rawCalls > cap ? Number.MAX_SAFE_INTEGER : Number(rawCalls);
 

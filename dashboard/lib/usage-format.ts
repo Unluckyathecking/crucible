@@ -26,10 +26,10 @@ export interface OperationRow {
 // Uses Date.UTC with numeric components so JS overflow-normalisation (e.g. Feb 30 → Mar 1)
 // is detectable: if any UTC component doesn't round-trip, the input date is impossible.
 export function parseDateParam(s: string): Date {
-  // The day pattern `3[01]` intentionally accepts 01-31 for all months.
-  // Calendar-impossible days (Feb 30, Apr 31, etc.) are caught by the round-trip
-  // check below: Date.UTC normalises them (Feb 30 → Mar 1) and the component
-  // comparison detects the mismatch, returning Invalid Date.
+  // The regex accepts days 01-31 for all months (01-29 via `0[1-9]|[12]\d`,
+  // 30-31 via `3[01]`). Calendar-impossible days (Feb 30, Apr 31, etc.) are
+  // caught by the round-trip check below: Date.UTC normalises them and the
+  // UTC component comparison detects the mismatch, returning Invalid Date.
   if (!/^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s)) {
     return new Date(NaN);
   }

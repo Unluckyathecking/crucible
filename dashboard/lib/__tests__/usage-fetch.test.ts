@@ -183,7 +183,7 @@ describe("fetchUsage", () => {
     } as unknown as Response;
     vi.mocked(fetch).mockResolvedValueOnce(badJson);
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toHaveProperty("error");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
   it("forwards the AbortSignal to fetch", async () => {

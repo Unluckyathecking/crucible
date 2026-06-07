@@ -7,7 +7,7 @@ import type { RawEvent } from "./usage-format";
 // This is a data-layer contract: no downstream renderer should receive raw angle brackets
 // from server errors, regardless of how it renders them.
 function sanitizeError(s: string): string {
-  return s.replace(/[<>&"]/g, "").slice(0, 200);
+  return s.replace(/[<>&"']/g, "").slice(0, 200);
 }
 
 function isRawEvent(item: unknown): item is RawEvent {

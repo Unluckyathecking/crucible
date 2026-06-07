@@ -16,7 +16,8 @@ import {
 import { fetchUsage } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
-// Default window matches the 30-day aggregate shown on the main dashboard.
+// Matches USAGE_WINDOW_DAYS in app/dashboard/page.tsx (30 days).
+// Kept as a local constant to avoid bundling server-only code on the client.
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
 
 function utcTodayStr(): string {
@@ -352,12 +353,10 @@ export function UsageClient() {
                                         </thead>
                                         <tbody>
                                           {drill.events.map((e, i) => {
-                                            // Index key is acceptable: events are append-only per
-                                            // fetch and never reordered client-side.
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`drill-${i}`}
+                                                key={`${e.created_at}-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
