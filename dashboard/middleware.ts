@@ -1,6 +1,7 @@
 import NextAuth from "next-auth";
 import authConfig from "./auth.config";
 import { NextResponse } from "next/server";
+import { ALLOWED_ORIGIN } from "@/lib/env";
 
 const { auth } = NextAuth(authConfig);
 
@@ -27,12 +28,9 @@ export default auth((req) => {
     res.cookies.set("__csrf", token, {
       httpOnly: false,    // must be JS-readable for the double-submit pattern
       sameSite: "strict", // prevents cross-site cookie submission
-      // Also check NEXTAUTH_URL via URL parsing: handles TLS-terminating proxies
+      // Also set secure when ALLOWED_ORIGIN is https: handles TLS-terminating proxies
       // where NODE_ENV is not exactly "production" but the origin is HTTPS.
-      // URL parsing handles case-insensitive scheme and port variations correctly.
-      secure: process.env.NODE_ENV === "production" || (() => {
-        try { return new URL(process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "").protocol === "https:"; } catch { return false; }
-      })(),
+      secure: process.env.NODE_ENV === "production" || ALLOWED_ORIGIN.startsWith("https://"),
       path: "/",
       maxAge: 86400,      // 24 h; refreshed on next page load
     });
