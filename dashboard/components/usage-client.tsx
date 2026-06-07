@@ -100,9 +100,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
     };
-    // Intentionally run once on mount; loadMain is stable (useCallback with no deps).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialFrom, initialApiTo, loadMain]);
 
   const handleApply = useCallback(() => {
     // Invalidate any in-flight drill-down before clearing state so a resolving
@@ -203,11 +201,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
+      (a, r) => a + BigInt(r.total_billable_units),
       BigInt(0),
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.event_count)),
+      (a, r) => a + BigInt(r.event_count),
       BigInt(0),
     );
     return {

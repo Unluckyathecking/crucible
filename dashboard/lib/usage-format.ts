@@ -7,7 +7,7 @@ import { MS_PER_DAY } from "./constants";
 
 export const MAX_USAGE_RANGE_DAYS = 90;
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.
-export const MIN_YEAR = 1970;
+const MIN_YEAR = 1970;
 
 export interface RawEvent {
   id: string;

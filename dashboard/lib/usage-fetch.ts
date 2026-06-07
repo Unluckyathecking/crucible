@@ -69,7 +69,7 @@ export async function fetchUsage(
   try {
     json = await res.json();
   } catch {
-    return { error: "Unexpected response format from server" };
+    return { error: "Malformed JSON in server response" };
   }
   if (!Array.isArray(json)) {
     return { error: "Unexpected response format from server" };
