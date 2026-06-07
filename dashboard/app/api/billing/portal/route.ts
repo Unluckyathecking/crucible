@@ -1,26 +1,7 @@
 import { auth } from "@/auth";
-import { ensureCustomer } from "@/lib/db";
-import { Pool } from "pg";
+import { ensureCustomer, getStripeCustomerId } from "@/lib/db";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
-
-// Uses the same DATABASE_URL as lib/db.ts. A module-level singleton avoids
-// creating a new pool per request while staying self-contained within this route.
-declare global {
-  // eslint-disable-next-line no-var
-  var _billing_portal_pool: Pool | undefined;
-}
-const billingPool: Pool =
-  global._billing_portal_pool ?? new Pool({ connectionString: process.env.DATABASE_URL });
-if (process.env.NODE_ENV !== "production") global._billing_portal_pool = billingPool;
-
-async function getStripeCustomerId(customerId: string): Promise<string | null> {
-  const r = await billingPool.query<{ stripe_customer_id: string | null }>(
-    "SELECT stripe_customer_id FROM customers WHERE id = $1",
-    [customerId],
-  );
-  return r.rows[0]?.stripe_customer_id ?? null;
-}
 
 export async function POST(request: Request): Promise<Response> {
   try {

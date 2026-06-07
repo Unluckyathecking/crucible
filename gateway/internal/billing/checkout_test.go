@@ -51,11 +51,9 @@ func TestCreateCheckoutSession(t *testing.T) {
 		returnURL:  "https://example.com/billing",
 		http:       srv.Client(),
 		db:         mock,
+		baseURL:    srv.URL,
 	}
-	// Override the Stripe base to point at our test server.
-	origBase := stripeAPIBase
-	defer func() { _ = origBase }() // stripeAPIBase is a const; we patch via endpoint directly
-	got, err := createCheckoutSessionAt(c, context.Background(), srv.URL+"/checkout/sessions", customerID, planID)
+	got, err := c.CreateCheckoutSession(context.Background(), customerID, planID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +61,6 @@ func TestCreateCheckoutSession(t *testing.T) {
 		t.Errorf("url = %q, want %q", got, wantURL)
 	}
 
-	// Assert required Stripe form fields.
 	assertField(t, capturedForm, "mode", "subscription")
 	assertField(t, capturedForm, "client_reference_id", customerID)
 	assertField(t, capturedForm, "line_items[0][price]", priceID)
@@ -85,8 +82,12 @@ func TestCreateCheckoutSession_NonOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mock, _ := pgxmock.NewPool()
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
 	defer mock.Close()
+
 	mock.ExpectQuery(`SELECT stripe_price_id FROM plans WHERE id`).
 		WithArgs("pro").
 		WillReturnRows(mock.NewRows([]string{"stripe_price_id"}).AddRow("price_pro"))
@@ -95,10 +96,15 @@ func TestCreateCheckoutSession_NonOK(t *testing.T) {
 		secretKey: "sk_test",
 		http:      srv.Client(),
 		db:        mock,
+		baseURL:   srv.URL,
 	}
-	_, err := createCheckoutSessionAt(c, context.Background(), srv.URL+"/checkout/sessions", "uuid", "pro")
+	_, err = c.CreateCheckoutSession(context.Background(), "uuid", "pro")
 	if err == nil {
 		t.Error("expected error for non-2xx response")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations not met: %v", err)
 	}
 }
 
@@ -122,9 +128,10 @@ func TestCreatePortalSession(t *testing.T) {
 		secretKey: "sk_test",
 		returnURL: "https://example.com/billing",
 		http:      srv.Client(),
+		baseURL:   srv.URL,
 	}
 
-	got, err := createPortalSessionAt(c, context.Background(), srv.URL+"/billing/portal/sessions", stripeCustomerID)
+	got, err := c.CreatePortalSession(context.Background(), stripeCustomerID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,41 +144,11 @@ func TestCreatePortalSession(t *testing.T) {
 }
 
 func TestCreatePortalSession_EmptyCustomerID(t *testing.T) {
-	c := &CheckoutClient{http: http.DefaultClient}
+	c := &CheckoutClient{http: http.DefaultClient, baseURL: stripeAPIBase}
 	_, err := c.CreatePortalSession(context.Background(), "")
 	if err == nil {
 		t.Error("expected error for empty stripeCustomerID")
 	}
-}
-
-// createCheckoutSessionAt is a test helper that posts to an explicit endpoint URL
-// instead of the hard-coded Stripe base, so tests can use httptest.
-func createCheckoutSessionAt(c *CheckoutClient, ctx context.Context, endpoint, customerID, planID string) (string, error) {
-	var priceID string
-	if err := c.db.QueryRow(ctx,
-		`SELECT stripe_price_id FROM plans WHERE id = $1 AND stripe_price_id IS NOT NULL`,
-		planID,
-	).Scan(&priceID); err != nil {
-		return "", err
-	}
-	form := url.Values{}
-	form.Set("mode", "subscription")
-	form.Set("client_reference_id", customerID)
-	form.Set("line_items[0][price]", priceID)
-	form.Set("line_items[0][quantity]", "1")
-	form.Set("success_url", c.successURL)
-	form.Set("cancel_url", c.cancelURL)
-	form.Set("customer_creation", "always")
-	form.Set("subscription_data[metadata][crucible_customer_id]", customerID)
-	return c.postSession(ctx, endpoint, form)
-}
-
-// createPortalSessionAt is a test helper that posts to an explicit endpoint URL.
-func createPortalSessionAt(c *CheckoutClient, ctx context.Context, endpoint, stripeCustomerID string) (string, error) {
-	form := url.Values{}
-	form.Set("customer", stripeCustomerID)
-	form.Set("return_url", c.returnURL)
-	return c.postSession(ctx, endpoint, form)
 }
 
 func assertField(t *testing.T, form url.Values, key, want string) {

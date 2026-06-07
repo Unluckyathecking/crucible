@@ -473,9 +473,9 @@ func TestHandleCustomerCreated(t *testing.T) {
 		WithArgs(email).
 		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(customerID))
 
-	// Exec to write stripe_customer_id.
+	// Exec to write stripe_customer_id using the UUID (not email) as the WHERE key.
 	mock.ExpectExec(`UPDATE customers SET stripe_customer_id`).
-		WithArgs(stripeCustomerID, email).
+		WithArgs(stripeCustomerID, customerID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// Query for cache invalidation prefixes.

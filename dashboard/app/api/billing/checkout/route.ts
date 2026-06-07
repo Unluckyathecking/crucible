@@ -93,11 +93,19 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
+// PLAN_ID_RE restricts plan IDs to lowercase alphanumeric + hyphens, max 32 chars.
+// This prevents env-var probing: an attacker can't construct a STRIPE_PRICE_<X> key
+// that maps to an arbitrary variable like PATH or HOME.
+const PLAN_ID_RE = /^[a-z0-9-]{1,32}$/;
+
 // resolveStripePriceId fetches the stripe_price_id for a plan from the environment
 // or a static mapping. In production this should query the gateway's plans table via a
 // shared DB connection or a gateway API call. For the dashboard tier, we use a simple
 // env-var mapping: STRIPE_PRICE_<PLAN_ID_UPPER>=price_xxx.
 async function resolveStripePriceId(planId: string): Promise<string | null> {
+  if (!PLAN_ID_RE.test(planId)) {
+    return null;
+  }
   const envKey = `STRIPE_PRICE_${planId.toUpperCase().replace(/-/g, "_")}`;
   const priceId = process.env[envKey];
   return priceId ?? null;

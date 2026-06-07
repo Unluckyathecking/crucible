@@ -294,6 +294,8 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 		var customerID string
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1`, obj.Customer).Scan(&customerID); err == nil {
 			h.invalidateCustomerCache(ctx, customerID)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription deletion")
 		}
 	}
 	return nil
@@ -354,10 +356,12 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 		return err
 	}
 
+	// Use the UUID fetched above rather than email in the WHERE clause: avoids a
+	// TOCTOU window where the email could change between the SELECT and the UPDATE.
 	if _, err := h.db.Exec(ctx, `
 		UPDATE customers SET stripe_customer_id = $1, updated_at = NOW()
-		WHERE email = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
-	`, obj.ID, obj.Email); err != nil {
+		WHERE id = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
+	`, obj.ID, customerID); err != nil {
 		return err
 	}
 

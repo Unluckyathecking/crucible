@@ -20,6 +20,7 @@ type CheckoutClient struct {
 	returnURL  string
 	http       *http.Client
 	db         db
+	baseURL    string // overridden in tests to point at an httptest server
 }
 
 // NewCheckoutClient constructs a CheckoutClient. successURL and cancelURL are
@@ -34,6 +35,7 @@ func NewCheckoutClient(secretKey, successURL, cancelURL, returnURL string, datab
 		returnURL:  returnURL,
 		http:       &http.Client{Timeout: 15 * time.Second},
 		db:         database,
+		baseURL:    stripeAPIBase,
 	}
 }
 
@@ -56,6 +58,9 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 	).Scan(&priceID); err != nil {
 		return "", fmt.Errorf("resolve plan %q: %w", planID, err)
 	}
+	if priceID == "" {
+		return "", fmt.Errorf("resolve plan %q: empty price ID", planID)
+	}
 
 	form := url.Values{}
 	form.Set("mode", "subscription")
@@ -71,7 +76,7 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 	// can correlate if client_reference_id is absent (belt-and-suspenders).
 	form.Set("subscription_data[metadata][crucible_customer_id]", customerID)
 
-	return c.postSession(ctx, stripeAPIBase+"/checkout/sessions", form)
+	return c.postSession(ctx, c.baseURL+"/checkout/sessions", form)
 }
 
 // CreatePortalSession creates a Stripe Billing Portal session for an existing Stripe customer.
@@ -83,7 +88,7 @@ func (c *CheckoutClient) CreatePortalSession(ctx context.Context, stripeCustomer
 	form.Set("customer", stripeCustomerID)
 	form.Set("return_url", c.returnURL)
 
-	return c.postSession(ctx, stripeAPIBase+"/billing/portal/sessions", form)
+	return c.postSession(ctx, c.baseURL+"/billing/portal/sessions", form)
 }
 
 // LookupStripeCustomerID fetches the stripe_customer_id for the given internal
