@@ -130,7 +130,7 @@ const PLAN_ID_RE = /^[a-z0-9-]{1,32}$/;
 
 // STRIPE_PRICE_ID_RE validates that the resolved value is a real Stripe price ID.
 // Stripe price IDs are alphanumeric after the prefix — no underscores in the suffix.
-const STRIPE_PRICE_ID_RE = /^price_[a-zA-Z0-9]+$/;
+const STRIPE_PRICE_ID_RE = /^price_[a-zA-Z0-9_]+$/;
 
 // resolveStripePriceId looks up STRIPE_PRICE_<PLAN_ID_UPPER> and validates it.
 async function resolveStripePriceId(planId: string): Promise<string | null> {

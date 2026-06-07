@@ -19,10 +19,12 @@ export default auth((req) => {
     return Response.redirect(url);
   }
 
-  // Set CSRF double-submit cookie on dashboard page loads so client components
-  // can read it and echo it as X-CSRF-Token on state-changing POST requests.
-  // Not needed on API sub-routes — the cookie is already present from page load.
-  if (!req.nextUrl.pathname.startsWith("/api/") && !req.cookies.get("__csrf")) {
+  // Rotate CSRF double-submit cookie on every dashboard page load so client
+  // components can read it and echo it as X-CSRF-Token on state-changing POST requests.
+  // Rotating unconditionally (not just when absent) limits the reuse window of a stolen
+  // token to at most one page-load interval rather than the full 24 h maxAge.
+  // Not needed on API sub-routes — the cookie is set on the page load that precedes them.
+  if (!req.nextUrl.pathname.startsWith("/api/")) {
     const token = crypto.randomUUID().replace(/-/g, "");
     const res = NextResponse.next();
     res.cookies.set("__csrf", token, {
