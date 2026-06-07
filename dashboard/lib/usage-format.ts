@@ -44,9 +44,8 @@ export function parseDateParam(s: string): Date {
   // round-trip check alone cannot detect.
   // Upper bound: computed per-call so long-lived server processes and open
   // browser tabs stay correct across year boundaries without a restart.
-  // Date.now() is always UTC milliseconds since epoch; getUTCFullYear() extracts
-  // the UTC year unaffected by local timezone offset.
-  const nowYear = new Date(Date.now()).getUTCFullYear();
+  // getUTCFullYear() extracts the UTC year, unaffected by local timezone offset.
+  const nowYear = new Date().getUTCFullYear();
   if (y < MIN_YEAR || y > nowYear + 1) return new Date(NaN);
   // Explicit bounds: month 1–12, day 1–31. Narrower calendar constraints
   // (Feb 30, Apr 31, etc.) are caught by the round-trip check below:
@@ -115,7 +114,7 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
   }
   return Array.from(map.entries())
     .map(([date, units]) => ({ date, units }))
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    .sort((a, b) => a.date.localeCompare(b.date)); // YYYY-MM-DD lexicographic === chronological
 }
 
 // Aggregates events by operation, sorted by total_billable_units descending.

@@ -65,12 +65,14 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
+  const loadMain = useCallback(async (apiFrom: string, apiTo: string) => {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     const gen = ++generationRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     try {
-      const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
+      const result = await fetchUsage(apiFrom, apiTo, undefined, ctrl.signal);
       // null: fetch was aborted (including component unmount — cleanup aborts the signal).
       // gen guard: discard responses from superseded fetches.
       // mounted guard: symmetric with catch block — skip setState if unmounted.
@@ -91,9 +93,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, []);
 
   useEffect(() => {
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    void loadMain(initialFrom, initialApiTo, ctrl.signal);
+    void loadMain(initialFrom, initialApiTo);
     return () => {
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
@@ -136,9 +136,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setQueryFrom(apiFrom);
     setQueryTo(apiTo);
     abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    void loadMain(apiFrom, apiTo, ctrl.signal);
+    void loadMain(apiFrom, apiTo);
   }, [displayFrom, displayTo, loadMain]);
 
   const handleDrillDown = useCallback(async (operation: string) => {
@@ -178,19 +176,18 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }, [queryFrom, queryTo]);
 
-  // UTC midnight of today, derived from Date.now() so timezone offset doesn't shift the date.
+  // UTC midnight of today; getUTCFullYear/Month/Date strip the time component.
   const todayUTCStr = useMemo(() => {
-    const now = new Date(Date.now());
+    const now = new Date();
     return toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
   }, []);
 
   const fromMax = useMemo(() => {
-    const td = parseDateParam(displayTo);
-    const toStr = isNaN(td.getTime()) ? todayUTCStr : displayTo;
-    // Clamp to today so the From input cannot be set to a future date.
-    const toDate = parseDateParam(toStr);
+    const toDate = parseDateParam(displayTo);
     const today = parseDateParam(todayUTCStr);
-    return toDate.getTime() > today.getTime() ? todayUTCStr : toStr;
+    if (isNaN(toDate.getTime())) return todayUTCStr;
+    // Clamp to today so the From input cannot be set to a future date.
+    return toDate.getTime() > today.getTime() ? todayUTCStr : displayTo;
   }, [displayTo, todayUTCStr]);
 
   const toMin = useMemo(() => {
@@ -350,11 +347,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e) => {
+                                          {drill.events.map((e, idx) => {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={e.id}
+                                                key={`${e.id}-${idx}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
