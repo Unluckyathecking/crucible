@@ -56,6 +56,14 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
+  it("returns error when id field is empty string (isRawEvent rejects empty id)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ id: "", operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
   it("returns error when id field is absent (isRawEvent requires id as string)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(200, [{ operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }]),

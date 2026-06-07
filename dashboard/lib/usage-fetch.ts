@@ -16,7 +16,7 @@ function isRawEvent(item: unknown): item is RawEvent {
   if (item === null || typeof item !== "object") return false;
   const r = item as Record<string, unknown>;
   if (
-    typeof r.id !== "string" ||
+    typeof r.id !== "string" || r.id.length === 0 ||
     typeof r.operation !== "string" ||
     typeof r.created_at !== "string" ||
     !/^\d{4}-\d{2}-\d{2}/.test(r.created_at) ||

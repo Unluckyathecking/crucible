@@ -146,13 +146,9 @@ describe("aggregateByOperation", () => {
     ];
     const rows = aggregateByOperation(events);
     const search = rows.find((r) => r.operation === "search");
-    expect(search).toBeDefined();
-    expect(search!.total_billable_units).toBe(8);
-    expect(search!.event_count).toBe(2);
+    expect(search).toEqual(expect.objectContaining({ total_billable_units: 8, event_count: 2 }));
     const exp = rows.find((r) => r.operation === "export");
-    expect(exp).toBeDefined();
-    expect(exp!.total_billable_units).toBe(20);
-    expect(exp!.event_count).toBe(1);
+    expect(exp).toEqual(expect.objectContaining({ total_billable_units: 20, event_count: 1 }));
   });
 
   it("sorts by total_billable_units descending", () => {
@@ -280,9 +276,11 @@ describe("bucketByDay — edge cases", () => {
       ).toISOString(),
     }));
     const buckets = bucketByDay(events);
+    const lastDate = new Date(Date.UTC(2024, 0, 1) + (MAX_USAGE_RANGE_DAYS - 1) * MS_PER_DAY)
+      .toISOString().slice(0, 10);
     expect(buckets).toHaveLength(MAX_USAGE_RANGE_DAYS);
     expect(buckets[0].date).toBe("2024-01-01");
-    expect(buckets[MAX_USAGE_RANGE_DAYS - 1].date).toBe("2024-03-30");
+    expect(buckets[MAX_USAGE_RANGE_DAYS - 1].date).toBe(lastDate);
     expect(buckets.every((b) => b.units === 2)).toBe(true);
   });
 });
