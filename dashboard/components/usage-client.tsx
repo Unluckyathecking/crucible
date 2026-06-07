@@ -200,15 +200,16 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
   // isRawEvent validates billable_units as a finite integer; Math.max(0, integer) stays
-  // integer; so aggregateByOperation totals are exact integers and BigInt() is safe.
+  // integer; so aggregateByOperation totals are exact integers. Math.trunc is a
+  // defensive no-op that prevents BigInt() RangeError if the value is ever non-integer.
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(r.total_billable_units),
+      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
       BigInt(0),
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(r.event_count),
+      (a, r) => a + BigInt(Math.trunc(r.event_count)),
       BigInt(0),
     );
     return {
