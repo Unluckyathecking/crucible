@@ -36,10 +36,11 @@ export function parseDateParam(s: string): Date {
   // for values like "08"/"09" that Number() handles correctly in ES5+ but that
   // older lint rules and engines historically treated as invalid octals.
   const [y, m, day] = s.split("-").map((v) => parseInt(v, 10));
-  // Year bounds: usage analytics data predates 1970, and years beyond 3000
-  // are implausible for this dashboard. Also guards Date.UTC's two-digit-year
-  // quirk (e.g. y=99 → 1999) which the round-trip check alone doesn't catch.
-  if (y < 1970 || y > 3000) return new Date(NaN);
+  // Lower bound: analytics data does not predate 1970 (Unix epoch), and years
+  // 0–99 trigger Date.UTC's two-digit-year quirk (y=99 → 1999) which the
+  // round-trip check alone cannot detect. No upper bound is imposed: the
+  // round-trip check already rejects invalid future dates unambiguously.
+  if (y < 1970) return new Date(NaN);
   // Explicit bounds: month 1–12, day 1–31. Narrower calendar constraints
   // (Feb 30, Apr 31, etc.) are caught by the round-trip check below:
   // Date.UTC normalises overflow (Feb 30 → Mar 1), and the UTC component
@@ -94,6 +95,9 @@ export function validateDateRange(
 // Groups events by UTC calendar date and sums billable_units, sorted oldest-first.
 // Skips events with malformed created_at. Clamps negative billable_units to 0
 // (gateway enforces >= 1, but defensive against data corruption / future refund rows).
+// Precision: billable_units values are integers (gateway enforces ≥ 1). JavaScript's
+// number type is exact for integer arithmetic up to Number.MAX_SAFE_INTEGER, so
+// per-day sums are lossless as long as no single day exceeds ~9 × 10^15 units.
 export function bucketByDay(events: RawEvent[]): DayBucket[] {
   const map = new Map<string, number>();
   for (const e of events) {

@@ -331,7 +331,7 @@ describe("parseDateParam", () => {
     expect(isNaN(parseDateParam("2024-01-00").getTime())).toBe(true);
   });
 
-  it("returns Invalid Date for Feb 29 in a non-leap year (rejected by overflow check, not rolled to Mar 1)", () => {
+  it("returns Invalid Date for Feb 29 in a non-leap year (rejected by UTC round-trip check, not rolled to Mar 1)", () => {
     expect(isNaN(parseDateParam("2023-02-29").getTime())).toBe(true);
   });
 
