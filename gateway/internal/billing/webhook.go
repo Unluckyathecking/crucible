@@ -378,14 +378,15 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 
 	// Use the UUID fetched above rather than email in the WHERE clause: avoids a
 	// TOCTOU window where the email could change between the SELECT and the UPDATE.
-	if _, err := h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE customers SET stripe_customer_id = $1, updated_at = NOW()
 		WHERE id = $2 AND (stripe_customer_id IS NULL OR stripe_customer_id = $1)
-	`, obj.ID, customerID); err != nil {
+	`, obj.ID, customerID)
+	if err != nil {
 		return err
 	}
-
-	if h.cache != nil {
+	// Only invalidate when the row actually changed, consistent with handleCheckoutSessionCompleted.
+	if tag.RowsAffected() > 0 && h.cache != nil {
 		h.invalidateCustomerCache(ctx, customerID)
 	}
 	return nil
