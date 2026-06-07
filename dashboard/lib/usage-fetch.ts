@@ -4,9 +4,12 @@
 import type { RawEvent } from "./usage-format";
 
 // Strips angle brackets from server error strings and caps their length.
-// Scope: these strings are rendered as React text content, which auto-escapes
-// &, ", and '. Stripping & would corrupt readable messages like "query & limit exceeded".
-// < and > are stripped as defence-in-depth for any hypothetical non-React consumer.
+// Scope: these strings are passed as React text-node children (JSX), which automatically
+// HTML-encodes every character including &, ", and '. Manually encoding & here would
+// cause double-encoding (& → &amp; in sanitizeError → &amp;amp; in React output),
+// corrupting readable messages like "query & limit exceeded". Only < and > need explicit
+// stripping because they are the characters that break out of HTML text context; the
+// stripping is defence-in-depth for any future non-React use of this helper.
 const MAX_ERROR_LENGTH = 200;
 
 export function sanitizeError(s: string): string {

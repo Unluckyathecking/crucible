@@ -20,7 +20,9 @@ export default async function UsagePage() {
   const now = new Date();
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const tomorrowUTC = new Date(todayUTC.getTime() + MS_PER_DAY);
-  const initialFrom = toISODateString(new Date(tomorrowUTC.getTime() - USAGE_WINDOW_DAYS * MS_PER_DAY));
+  // today − (USAGE_WINDOW_DAYS − 1) gives an inclusive window of exactly
+  // USAGE_WINDOW_DAYS days: [today−29, today] = 30 calendar days inclusive.
+  const initialFrom = toISODateString(new Date(todayUTC.getTime() - (USAGE_WINDOW_DAYS - 1) * MS_PER_DAY));
   const initialTo = toISODateString(todayUTC);
   const initialApiTo = toISODateString(tomorrowUTC);
 

@@ -21,10 +21,10 @@ describe("validateDateRange", () => {
   });
 
   it("accepts exclusive diff of exactly MAX_USAGE_RANGE_DAYS days", () => {
-    // 2024 is a leap year; 2024-01-01 to 2024-03-31 is exactly 90 days:
-    // Jan contributes 31 days (Jan 1 to Feb 1), Feb contributes 29 days (Feb 1 to Mar 1),
-    // Mar contributes 30 days (Mar 1 to Mar 31), total = 90.
-    // validateDateRange uses strict > so this exact boundary is accepted, not rejected.
+    // 2024-01-01 to 2024-03-31 is an exclusive diff of exactly 90 days (not 91 inclusive
+    // calendar days). 2024 is a leap year: Jan 1→Feb 1 = 31 days, Feb 1→Mar 1 = 29 days,
+    // Mar 1→Mar 31 = 30 days, total exclusive diff = 90.
+    // validateDateRange uses strict > so a diff of exactly MAX_USAGE_RANGE_DAYS is accepted.
     const from = parseDateParam("2024-01-01");
     const to = parseDateParam("2024-03-31");
     expect(validateDateRange(from, to).valid).toBe(true);
@@ -270,7 +270,8 @@ describe("bucketByDay — edge cases", () => {
   });
 
   it("aggregates two events per day across full range into daily buckets", () => {
-    // Two events per day across 90 days — verifies both aggregation and boundary volume.
+    // Two events per day across MAX_USAGE_RANGE_DAYS days — verifies that each unique
+    // UTC date gets its own bucket and that multiple events per day are summed.
     const events = Array.from({ length: MAX_USAGE_RANGE_DAYS * 2 }, (_, i) => ({
       id: String(i),
       operation: "op",

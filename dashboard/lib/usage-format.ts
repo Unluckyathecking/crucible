@@ -41,9 +41,10 @@ export function parseDateParam(s: string): Date {
   // Lower bound: analytics data does not predate the Unix epoch, and years
   // 0–99 trigger Date.UTC's two-digit-year quirk (y=99 → 1999) which the
   // round-trip check alone cannot detect.
-  // Upper bound: no data exists more than one year in the future. Computed at
-  // call time (not module load) so a long-running process stays correct across
-  // year boundaries without a restart.
+  // Upper bound: no data exists more than one year in the future. getUTCFullYear()
+  // extracts the UTC year regardless of the server's local timezone, so the bound
+  // transitions at UTC midnight. Computed at call time so a long-running process
+  // stays correct across year boundaries without a restart.
   if (y < MIN_YEAR || y > new Date().getUTCFullYear() + 1) return new Date(NaN);
   // Explicit bounds: month 1–12, day 1–31. Narrower calendar constraints
   // (Feb 30, Apr 31, etc.) are caught by the round-trip check below:
