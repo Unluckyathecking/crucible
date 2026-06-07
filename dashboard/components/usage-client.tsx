@@ -209,7 +209,7 @@ export function UsageClient() {
               type="date"
               value={displayFrom}
               min="1970-01-01"
-              max={displayTo || todayStr}
+              max={displayTo && displayFrom <= displayTo ? displayTo : todayStr}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -222,7 +222,7 @@ export function UsageClient() {
             <input
               type="date"
               value={displayTo}
-              min={displayFrom || "1970-01-01"}
+              min={displayFrom && displayFrom <= displayTo ? displayFrom : "1970-01-01"}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
@@ -332,6 +332,8 @@ export function UsageClient() {
                                         </thead>
                                         <tbody>
                                           {drill.events.map((e, i) => {
+                                            // Index key is acceptable: events are append-only per
+                                            // fetch and never reordered client-side.
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr

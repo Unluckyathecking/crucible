@@ -84,23 +84,23 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Server error (500)" });
   });
 
-  it("strips HTML tags from server error messages to prevent injection in any rendering context", async () => {
+  it("passes server error message through unchanged (React JSX handles escaping at render)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(500, { error: "<script>alert('xss')</script>" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).not.toContain("<script>");
-    expect(result.error).not.toContain("</script>");
+    // sanitizeError is a pass-through; JSX auto-escapes text content at render time.
+    expect(result.error).toBe("<script>alert('xss')</script>");
   });
 
-  it("strips unclosed HTML angle brackets from server error messages", async () => {
+  it("passes server error with unclosed angle bracket through unchanged", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(500, { error: "<img onerror='alert(1)'" }),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).not.toContain("<");
+    expect(result.error).toBe("<img onerror='alert(1)'");
   });
 
   it("returns network error message and logs when fetch throws a non-abort error", async () => {

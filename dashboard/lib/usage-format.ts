@@ -4,10 +4,11 @@
 export const MAX_USAGE_RANGE_DAYS = 90;
 export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-// Strips HTML-like tags from error strings, including unclosed tags (>? makes > optional).
-// Not a general HTML sanitizer — do not use in attribute positions or dangerouslySetInnerHTML.
+// React JSX auto-escapes text content, so no stripping is needed for XSS prevention.
+// This function is a pass-through kept so callers compile without change.
+// Do not use in dangerouslySetInnerHTML — React JSX escaping is the correct defence there.
 export function sanitizeError(s: string): string {
-  return s.replace(/<[^>]*>?/g, "");
+  return s;
 }
 
 export interface RawEvent {
