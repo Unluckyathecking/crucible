@@ -56,7 +56,7 @@ export function validateDateRange(
   from: Date,
   to: Date,
 ): { valid: boolean; error?: string } {
-  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+  if (!(from instanceof Date) || !(to instanceof Date) || isNaN(from.getTime()) || isNaN(to.getTime())) {
     return { valid: false, error: "Invalid date" };
   }
   if (from.getTime() > to.getTime()) {
