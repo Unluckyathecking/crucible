@@ -40,7 +40,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
 
       {/* Y-axis labels */}
       <text aria-hidden="true" x={PAD_L - 4} y={10} textAnchor="end" fontSize="9" fill="#a1a1aa">
-        {maxUnits.toLocaleString()}
+        {maxUnits.toLocaleString("en-US")}
       </text>
       <text aria-hidden="true" x={PAD_L - 4} y={chartH} textAnchor="end" fontSize="9" fill="#a1a1aa">
         0
@@ -53,7 +53,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
         const y = chartH - barH;
         return (
           <rect key={`${b.date}-${i}`} x={x + 0.5} y={y} width={barW} height={barH} fill="#18181b" rx="1">
-            <title>{`${b.date}: ${b.units.toLocaleString()} units`}</title>
+            <title>{`${b.date}: ${b.units.toLocaleString("en-US")} units`}</title>
           </rect>
         );
       })}

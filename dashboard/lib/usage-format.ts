@@ -112,7 +112,7 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
   }
   return Array.from(map.entries())
     .map(([date, units]) => ({ date, units }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 // Aggregates events by operation, sorted by total_billable_units descending.

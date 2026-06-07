@@ -183,12 +183,14 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
-  // isRawEvent in usage-fetch.ts validates billable_units as a finite integer, so
-  // BigInt() is safe without additional guards.
+  // aggregateByOperation sums billable_units with Math.max(0, …), so the value may exceed
+  // Number.MAX_SAFE_INTEGER across many events. Math.trunc guards the BigInt conversion
+  // against any fractional accumulation; isRawEvent enforces integer inputs, but the
+  // intermediate sum from floating-point addition can drift slightly.
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(r.total_billable_units),
+      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
       0n,
     );
     const totalCallsBig = data.ops.reduce(
@@ -196,8 +198,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       0n,
     );
     return {
-      totalUnitsDisplay: totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString(),
-      totalCallsDisplay: totalCallsBig > MAX_SAFE_BI ? "∞" : Number(totalCallsBig).toLocaleString(),
+      totalUnitsDisplay: totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString("en-US"),
+      totalCallsDisplay: totalCallsBig > MAX_SAFE_BI ? "∞" : Number(totalCallsBig).toLocaleString("en-US"),
     };
   }, [data]);
 
@@ -294,10 +296,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                           <tr className="border-b border-zinc-100">
                             <td className="py-2 pr-4 font-mono">{row.operation}</td>
                             <td className="py-2 pr-4 text-right tabular-nums">
-                              {row.total_billable_units.toLocaleString()}
+                              {row.total_billable_units.toLocaleString("en-US")}
                             </td>
                             <td className="py-2 pr-4 text-right tabular-nums text-zinc-500">
-                              {row.event_count.toLocaleString()}
+                              {row.event_count.toLocaleString("en-US")}
                             </td>
                             <td className="py-2 text-right">
                               <button
@@ -312,7 +314,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`${row.operation}-drill`} className="bg-zinc-50">
+                            <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
@@ -345,7 +347,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                                   {isNaN(ts.getTime()) ? e.created_at : ts.toISOString()}
                                                 </td>
                                                 <td className="py-1 text-right tabular-nums">
-                                                  {(e.billable_units ?? 0).toLocaleString()}
+                                                  {(e.billable_units ?? 0).toLocaleString("en-US")}
                                                 </td>
                                               </tr>
                                             );
