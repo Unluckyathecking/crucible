@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   validateDateRange,
   parseDateParam,
@@ -19,7 +19,8 @@ async function fetchUsage(
   from: string,
   to: string,
   operation?: string,
-): Promise<{ data: RawEvent[] } | { error: string }> {
+  signal?: AbortSignal,
+): Promise<{ data: RawEvent[] } | { error: string } | null> {
   const params = new URLSearchParams({ from, to });
   if (operation) params.set("operation", operation);
   let res: Response;
@@ -27,8 +28,10 @@ async function fetchUsage(
     res = await fetch(`/api/usage?${params}`, {
       headers: { "X-Requested-With": "XMLHttpRequest" },
       cache: "no-store",
+      signal,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return null;
     return { error: "Network error — please check your connection." };
   }
   if (res.status === 403) {
@@ -44,7 +47,7 @@ async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
+    return { error: typeof err === "string" ? err.replace(/[<>&]/g, "") : `Server error (${res.status})` };
   }
   const json: unknown = await res.json();
   if (!Array.isArray(json)) {
@@ -99,11 +102,13 @@ export function UsageClient() {
   const [queryTo, setQueryTo] = useState(() => toApiTo(init.to));
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
+  const abortRef = useRef<AbortController | null>(null);
 
-  const loadMain = useCallback(async (apiFrom: string, apiTo: string) => {
+  const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
     setData({ status: "loading" });
     setDrill({ status: "none" });
-    const result = await fetchUsage(apiFrom, apiTo);
+    const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
+    if (result === null) return;
     if ("error" in result) {
       setData({ status: "error", message: result.error });
       return;
@@ -117,7 +122,10 @@ export function UsageClient() {
 
   useEffect(() => {
     const { from, to } = initRange();
-    loadMain(from, toApiTo(to));
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    void loadMain(from, toApiTo(to), ctrl.signal);
+    return () => ctrl.abort();
     // Intentionally run once on mount; loadMain is stable (useCallback with no deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -131,6 +139,8 @@ export function UsageClient() {
     }
     const apiFrom = displayFrom;
     const apiTo = toApiTo(displayTo);
+    // Validate with the exclusive upper bound to match the API contract;
+    // the user-visible maximum is MAX_USAGE_RANGE_DAYS inclusive days.
     const check = validateDateRange(fromDate, new Date(toDate.getTime() + MS_PER_DAY));
     if (!check.valid) {
       setRangeError(check.error ?? "Invalid date range");
@@ -139,7 +149,10 @@ export function UsageClient() {
     setRangeError(null);
     setQueryFrom(apiFrom);
     setQueryTo(apiTo);
-    loadMain(apiFrom, apiTo);
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    void loadMain(apiFrom, apiTo, ctrl.signal);
   }
 
   async function handleDrillDown(operation: string) {
@@ -150,13 +163,12 @@ export function UsageClient() {
     }
     setDrill({ status: "loading", operation });
     const result = await fetchUsage(queryFrom, queryTo, operation);
-    // Use functional update to discard stale responses if the user toggled
-    // the panel closed (or started another fetch) while this one was in flight.
-    setDrill((prev) => {
-      if (prev.status !== "loading" || prev.operation !== operation) return prev;
-      if ("error" in result) return { status: "error", operation, message: result.error };
-      return { status: "ok", operation, events: result.data };
-    });
+    if (result === null) return;
+    if ("error" in result) {
+      setDrill({ status: "error", operation, message: result.error });
+      return;
+    }
+    setDrill({ status: "ok", operation, events: result.data });
   }
 
   const todayStr = utcTodayStr();
@@ -282,7 +294,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`${row.operation}-detail`} className="bg-zinc-50">
+                            <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{drill.message}</p>

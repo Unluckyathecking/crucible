@@ -20,7 +20,7 @@ describe("validateDateRange", () => {
     expect(validateDateRange(from, to).valid).toBe(true);
   });
 
-  it("accepts exactly 90 days (boundary: strictly greater-than rejects, equal allows)", () => {
+  it("accepts exactly 90 days (diff === 90 days is allowed, diff > 90 days is rejected)", () => {
     const from = parseDateParam("2024-01-01");
     const to = new Date(from.getTime() + MAX_USAGE_RANGE_DAYS * MS_PER_DAY);
     const result = validateDateRange(from, to);
@@ -241,6 +241,14 @@ describe("parseDateParam", () => {
   it("returns Invalid Date for string with leading/trailing space", () => {
     expect(isNaN(parseDateParam(" 2024-01-01").getTime())).toBe(true);
     expect(isNaN(parseDateParam("2024-01-01 ").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for out-of-range month (2024-13-01)", () => {
+    expect(isNaN(parseDateParam("2024-13-01").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for out-of-range day (2024-01-32)", () => {
+    expect(isNaN(parseDateParam("2024-01-32").getTime())).toBe(true);
   });
 });
 
