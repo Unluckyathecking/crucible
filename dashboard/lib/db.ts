@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import { emitAuditEvent } from "@/lib/audit";
 import { getRedis } from "@/lib/redis";
 import { UUID_RE } from "@/lib/validation";
+import { MS_PER_DAY, MAX_USAGE_RANGE_DAYS } from "./constants";
+export { MAX_USAGE_RANGE_DAYS };
 
 declare global {
   // eslint-disable-next-line no-var
@@ -21,8 +23,6 @@ const MAX_USAGE_EVENTS_LIMIT = 1000;
 // Separate cap for per-operation aggregate rows (distinct operations per customer window).
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 export const MAX_OPERATION_LENGTH = 128;
-export const MAX_USAGE_RANGE_DAYS = 90;
-export const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * MS_PER_DAY;
 
 export interface Customer {
@@ -281,6 +281,8 @@ function saturateBigIntString(value: string): number {
   return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
 }
 
+// Aggregate row returned by usageByOperation. No id field — this groups across
+// many rows, unlike UsageEventRow which maps 1-to-1 with usage_events pk.
 export interface UsageOperationRow {
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true sum exceeds it. */
@@ -333,6 +335,8 @@ export async function usageByOperation(
 }
 
 export interface UsageEventRow {
+  /** id::text cast in SQL; BIGSERIAL pk so always a non-empty decimal string. isRawEvent validates id.length > 0. */
+  id: string;
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true value exceeds it. */
   billable_units: number;
@@ -352,8 +356,11 @@ export async function listUsageEvents(
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
   // the server's DateStyle setting; no ::text cast or to_char conversion needed.
-  type Row = { operation: string; billable_units: string; created_at: Date };
+  // id::text: usage_events.id is BIGSERIAL (bigint). Without ::text the value
+  // serialises as a JSON number, which fails isRawEvent's typeof r.id !== "string" check.
+  type Row = { id: string; operation: string; billable_units: string; created_at: Date };
   const mapRow = (row: Row): UsageEventRow => ({
+    id: row.id,
     operation: row.operation,
     billable_units: saturateBigIntString(row.billable_units),
     created_at: row.created_at,
@@ -361,7 +368,7 @@ export async function listUsageEvents(
   if (effectiveOp) {
     // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
     const r = await pool.query<Row>(
-      `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+      `SELECT id::text AS id, operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
        FROM usage_events
        WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3 AND operation = $4
        ORDER BY created_at DESC LIMIT $5`,
@@ -371,7 +378,7 @@ export async function listUsageEvents(
   }
   // created_at >= $2 (from inclusive) AND created_at < $3 (to exclusive): half-open [from, to).
   const r = await pool.query<Row>(
-    `SELECT operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
+    `SELECT id::text AS id, operation, COALESCE(billable_units, 0)::text AS billable_units, created_at
      FROM usage_events
      WHERE customer_id = $1 AND created_at >= $2 AND created_at < $3
      ORDER BY created_at DESC LIMIT $4`,

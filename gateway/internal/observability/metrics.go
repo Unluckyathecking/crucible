@@ -2,15 +2,20 @@
 //
 // Metrics exposed on /metrics (separate listener on METRICS_PORT, off the public API surface):
 //
-//	crucible_requests_total{method,path,status}
-//	crucible_request_duration_seconds{method,path}
-//	crucible_worker_call_duration_seconds
-//	crucible_worker_errors_total{code}
+//	crucible_requests_total{method,path,status}     — per-request counter (Middleware)
+//	crucible_request_duration_seconds{method,path}  — end-to-end latency (Middleware)
+//	crucible_worker_call_duration_seconds           — per-attempt worker latency (proxy.Client)
+//	crucible_worker_errors_total{code}              — structured worker error codes (route handler)
+//	crucible_worker_retries_total                   — retry attempts past breaker gate (proxy.Client)
+//	crucible_worker_breaker_state                   — circuit-breaker state 0/1/2 (proxy.Client)
 //	crucible_usage_records_total
 //	crucible_billing_flush_total{outcome}
 //	crucible_rate_limited_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
+//
+// Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
+// Middleware — they are worker-call-scoped, not HTTP-request-scoped.
 package observability
 
 import (
@@ -40,7 +45,7 @@ var (
 
 	WorkerCallDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "crucible_worker_call_duration_seconds",
-		Help:    "Latency of gateway → worker HTTP calls.",
+		Help:    "Per-attempt latency of gateway→worker HTTP calls (one observation per attempt, including retries).",
 		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	})
 
@@ -51,6 +56,19 @@ var (
 		Name: "crucible_worker_errors_total",
 		Help: "Number of worker error responses, by structured error code.",
 	}, []string{"code"})
+
+	// WorkerRetriesTotal counts retry attempts dispatched past the breaker gate and ctx check.
+	WorkerRetriesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_worker_retries_total",
+		Help: "Number of worker call retry attempts dispatched past the breaker gate (attempt > 0).",
+	})
+
+	// WorkerBreakerState tracks the current circuit-breaker state:
+	// 0 = closed (healthy), 1 = open (fast-failing), 2 = half-open (probing).
+	WorkerBreakerState = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_worker_breaker_state",
+		Help: "Current circuit-breaker state: 0=closed 1=open 2=half-open.",
+	})
 
 	UsageRecordsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_usage_records_total",
@@ -83,11 +101,14 @@ var (
 
 // Metrics is a test-friendly holder for all observability counters.
 // Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
+// Pass the result to the proxy client's metrics injection method for worker-call metrics in tests.
 type Metrics struct {
 	RequestsTotal      *prometheus.CounterVec
 	RequestDuration    *prometheus.HistogramVec
 	WorkerCallDuration prometheus.Histogram
 	WorkerErrorsTotal  *prometheus.CounterVec
+	WorkerRetriesTotal prometheus.Counter
+	WorkerBreakerState prometheus.Gauge
 	UsageRecordsTotal  prometheus.Counter
 	BillingFlushTotal  *prometheus.CounterVec
 	RateLimitedTotal   prometheus.Counter
@@ -111,13 +132,21 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		}, []string{"method", "path"}),
 		WorkerCallDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "crucible_worker_call_duration_seconds",
-			Help:    "Latency of gateway → worker HTTP calls.",
+			Help:    "Per-attempt latency of gateway→worker HTTP calls (one observation per attempt, including retries).",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		}),
 		WorkerErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "crucible_worker_errors_total",
 			Help: "Number of worker error responses, by structured error code.",
 		}, []string{"code"}),
+		WorkerRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_worker_retries_total",
+			Help: "Number of worker call retry attempts dispatched past the breaker gate (attempt > 0).",
+		}),
+		WorkerBreakerState: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_worker_breaker_state",
+			Help: "Current circuit-breaker state: 0=closed 1=open 2=half-open.",
+		}),
 		UsageRecordsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_usage_records_total",
 			Help: "Number of usage_events rows recorded.",
@@ -144,6 +173,8 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RequestDuration,
 		m.WorkerCallDuration,
 		m.WorkerErrorsTotal,
+		m.WorkerRetriesTotal,
+		m.WorkerBreakerState,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.RateLimitedTotal,

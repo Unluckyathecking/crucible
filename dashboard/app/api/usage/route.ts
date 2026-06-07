@@ -5,7 +5,8 @@
 // exposes the raw event stream for programmatic clients who need per-event granularity.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH, MS_PER_DAY } from "@/lib/db";
+import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
+import { MS_PER_DAY } from "@/lib/constants";
 
 const DEFAULT_DAYS = 30;
 const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
