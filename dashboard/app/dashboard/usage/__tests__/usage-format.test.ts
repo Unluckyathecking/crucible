@@ -322,6 +322,28 @@ describe("parseDateParam", () => {
     expect(isNaN(d.getTime())).toBe(false);
     expect(d.toISOString()).toBe("2024-02-29T00:00:00.000Z");
   });
+
+  // 30-day months: day=31 is in the 1–31 bounds check but must be caught by the
+  // UTC round-trip (Date.UTC normalises Apr 31 → May 1, month component mismatches).
+  it("returns Invalid Date for Apr 31 (30-day month, caught by UTC round-trip)", () => {
+    expect(isNaN(parseDateParam("2024-04-31").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for Jun 31 (30-day month, caught by UTC round-trip)", () => {
+    expect(isNaN(parseDateParam("2024-06-31").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for Sep 31 (30-day month, caught by UTC round-trip)", () => {
+    expect(isNaN(parseDateParam("2024-09-31").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for Nov 31 (30-day month, caught by UTC round-trip)", () => {
+    expect(isNaN(parseDateParam("2024-11-31").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for Feb 30 in a leap year (caught by UTC round-trip)", () => {
+    expect(isNaN(parseDateParam("2024-02-30").getTime())).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
