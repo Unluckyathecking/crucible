@@ -56,6 +56,10 @@ export async function fetchUsage(
     return { error: "Forbidden — request rejected (403)." };
   }
   if (!res.ok) {
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      return { error: `Server error (${res.status})` };
+    }
     const body: unknown = await res.json().catch(() => ({}));
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return { error: `Server error (${res.status})` };

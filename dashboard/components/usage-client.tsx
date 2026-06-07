@@ -183,15 +183,16 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
-  // Math.trunc guards against fractional billable_units — BigInt() throws on non-integers.
+  // Math.trunc + Math.min guard: BigInt() throws on non-integers and on values above
+  // MAX_SAFE_INTEGER (which can't be represented exactly as an integer).
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
+      (a, r) => a + BigInt(Math.trunc(Math.min(r.total_billable_units, Number.MAX_SAFE_INTEGER))),
       0n,
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.event_count)),
+      (a, r) => a + BigInt(Math.trunc(Math.min(r.event_count, Number.MAX_SAFE_INTEGER))),
       0n,
     );
     return {
@@ -311,7 +312,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr className="bg-zinc-50">
+                            <tr key={`${row.operation}-drill`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
