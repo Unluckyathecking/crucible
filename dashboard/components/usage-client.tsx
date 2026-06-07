@@ -87,9 +87,11 @@ export function UsageClient() {
       if (mainSeqRef.current !== seq) return;
       if (signal?.aborted || result === null) return;
       if ("error" in result) {
+        if (mainSeqRef.current !== seq) return;
         setData({ status: "error", message: result.error });
         return;
       }
+      if (mainSeqRef.current !== seq) return;
       setData({
         status: "ok",
         ops: aggregateByOperation(result.data),
@@ -106,7 +108,10 @@ export function UsageClient() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     void loadMain(init.from, toApiTo(init.to), ctrl.signal);
-    return () => ctrl.abort();
+    return () => {
+      abortRef.current?.abort();
+      drillAbortRef.current?.abort();
+    };
     // Intentionally run once on mount; loadMain is stable (useCallback with no deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -159,9 +164,11 @@ export function UsageClient() {
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
+        if (drillSeqRef.current !== seq) return;
         setDrill({ status: "error", operation, message: result.error });
         return;
       }
+      if (drillSeqRef.current !== seq) return;
       setDrill({ status: "ok", operation, events: result.data });
     } catch {
       if (drillSeqRef.current !== seq) return;
