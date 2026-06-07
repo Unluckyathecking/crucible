@@ -62,7 +62,10 @@ export function validateDateRange(
   if (from.getTime() > to.getTime()) {
     return { valid: false, error: "'From' must not be after 'to'" };
   }
-  // Strictly greater than, so exactly MAX_USAGE_RANGE_DAYS is allowed; one day over is rejected.
+  // `>` not `>=`: an exclusive diff of exactly MAX_USAGE_RANGE_DAYS days is allowed.
+  // With handleApply's apiTo = userTo + 1 day, this corresponds to exactly
+  // MAX_USAGE_RANGE_DAYS inclusive user-visible calendar days — consistent with
+  // the server check in route.ts:120 which uses the same operator and constant.
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * MS_PER_DAY) {
     return {
       valid: false,

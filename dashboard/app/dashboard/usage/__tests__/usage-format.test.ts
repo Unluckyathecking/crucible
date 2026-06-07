@@ -237,7 +237,7 @@ describe("bucketByDay — edge cases", () => {
     expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
   });
 
-  it("aggregates multiple events per day at MAX_USAGE_RANGE_DAYS boundary volume", () => {
+  it("aggregates two events per day across full range into daily buckets", () => {
     // Two events per day across 90 days — verifies both aggregation and boundary volume.
     const events = Array.from({ length: MAX_USAGE_RANGE_DAYS * 2 }, (_, i) => ({
       operation: "op",
