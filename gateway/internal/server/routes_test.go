@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -730,6 +731,37 @@ func TestBillingPortal_NoStripeCustomer(t *testing.T) {
 	}
 	if errObj["code"] != "NO_STRIPE_CUSTOMER" {
 		t.Errorf("error.code = %q, want NO_STRIPE_CUSTOMER", errObj["code"])
+	}
+}
+
+func TestBillingCheckout_InvalidPlanID(t *testing.T) {
+	// planIDRE rejects IDs with uppercase letters, special characters, or > 32 chars.
+	// The handler must return 400 without consulting the BillingService.
+	cases := []struct {
+		name   string
+		planID string
+	}{
+		{"uppercase", "PRO"},
+		{"special_chars", "INVALID!!!"},
+		{"spaces", "pro plan"},
+		{"too_long", strings.Repeat("a", 33)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Deps{Checkout: &mockBillingService{}}
+			h := billingCheckoutHandler(d)
+
+			body := fmt.Sprintf(`{"plan_id":%q}`, tc.planID)
+			req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(body))
+			req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+			w := httptest.NewRecorder()
+			h(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("plan_id=%q: status = %d, want 400", tc.planID, w.Code)
+			}
+		})
 	}
 }
 

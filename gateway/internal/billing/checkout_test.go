@@ -105,6 +105,47 @@ func TestCreateCheckoutSession_PlanNotFound(t *testing.T) {
 	}
 }
 
+func TestCreateCheckoutSession_InvalidPriceIDFormat(t *testing.T) {
+	// DB returns a value that doesn't match stripePriceIDRE (e.g. contains underscores
+	// in the suffix or uses a forbidden prefix). The client must reject it before
+	// making any Stripe API call.
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT stripe_price_id FROM plans WHERE id`).
+		WithArgs("pro").
+		WillReturnRows(mock.NewRows([]string{"stripe_price_id"}).AddRow("invalid_price_id"))
+
+	c := &CheckoutClient{
+		http:    srv.Client(),
+		db:      mock,
+		baseURL: srv.URL,
+	}
+	_, err = c.CreateCheckoutSession(context.Background(), "uuid", "pro")
+	if err == nil {
+		t.Fatal("expected error for invalid price ID format")
+	}
+	if !strings.Contains(err.Error(), "invalid stripe_price_id format") {
+		t.Errorf("expected invalid stripe_price_id format error, got: %v", err)
+	}
+	if called {
+		t.Error("CreateCheckoutSession must not call Stripe when price ID format is invalid")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations: %v", err)
+	}
+}
+
 func TestCreateCheckoutSession_NonOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
