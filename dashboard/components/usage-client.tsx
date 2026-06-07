@@ -48,10 +48,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // immediately, without a flash of empty state before the useEffect fires.
   const [data, setData] = useState<DataState>({ status: "loading" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // drillRef: synced via useEffect so toggle-off check in handleDrillDown sees the
-  // latest committed drill state without a stale render-closure snapshot.
+  // drillRef: updated synchronously alongside every setDrill call so the toggle-off
+  // check in handleDrillDown always sees the latest value without waiting for a
+  // render-commit (eliminates the one-render delay of useEffect-based syncing).
   const drillRef = useRef(drill);
-  useEffect(() => { drillRef.current = drill; }, [drill]);
 
   // Sync display inputs when the server-computed initial range changes — e.g. a midnight
   // crossing on client-side navigation back to this page without a full component unmount.
@@ -82,6 +82,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     abortRef.current = ctrl;
     const gen = ++generationRef.current;
     setData({ status: "loading" });
+    drillRef.current = { status: "none" };
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, ctrl.signal);
@@ -117,6 +118,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     // Invalidate any in-flight drill-down before clearing state so a resolving
     // fetch cannot overwrite the "none" state with stale events.
     drillSeqRef.current++;
+    drillRef.current = { status: "none" };
     setDrill({ status: "none" });
     drillAbortRef.current?.abort();
     const fromDate = parseDateParam(displayFrom);
@@ -158,6 +160,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     if (currentDrill.status !== "none" && currentDrill.operation === operation) {
       // Invalidate before clearing state so any resolving fetch is discarded.
       drillSeqRef.current++;
+      drillRef.current = { status: "none" };
       setDrill({ status: "none" });
       drillAbortRef.current?.abort();
       return;
@@ -166,6 +169,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const ctrl = new AbortController();
     drillAbortRef.current = ctrl;
     const seq = ++drillSeqRef.current;
+    drillRef.current = { status: "loading", operation };
     setDrill({ status: "loading", operation });
     try {
       const result = await fetchUsage(from, to, operation, ctrl.signal);
@@ -175,13 +179,17 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       // or if the component unmounted while the fetch was in-flight.
       if (drillSeqRef.current !== seq || !mountedRef.current) return;
       if ("error" in result) {
+        drillRef.current = { status: "error", operation, message: result.error };
         setDrill({ status: "error", operation, message: result.error });
         return;
       }
+      drillRef.current = { status: "ok", operation, events: result.data };
       setDrill({ status: "ok", operation, events: result.data });
     } catch (err) {
       if (drillSeqRef.current !== seq || !mountedRef.current) return;
-      setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
+      const msg = err instanceof Error ? err.message : "Failed to load events";
+      drillRef.current = { status: "error", operation, message: msg };
+      setDrill({ status: "error", operation, message: msg });
     }
   }, []);
 
@@ -208,17 +216,16 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
-  // isRawEvent validates billable_units as a finite integer; Math.max(0, integer) stays
-  // integer; so aggregateByOperation totals are exact integers. Math.trunc is a
-  // defensive no-op that prevents BigInt() RangeError if the value is ever non-integer.
+  // isRawEvent validates billable_units as a finite integer and Math.max(0, integer)
+  // stays integer, so aggregateByOperation totals are exact integers safe for BigInt().
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
+      (a, r) => a + BigInt(r.total_billable_units),
       BigInt(0),
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(r.event_count)),
+      (a, r) => a + BigInt(r.event_count),
       BigInt(0),
     );
     return {

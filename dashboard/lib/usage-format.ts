@@ -40,8 +40,9 @@ export function parseDateParam(s: string): Date {
   // older lint rules and engines historically treated as invalid octals.
   const [y, m, day] = s.split("-").map((v) => parseInt(v, 10));
   // Lower bound: analytics data does not predate the Unix epoch, and years
-  // 0–99 trigger Date.UTC's two-digit-year quirk (y=99 → 1999) which the
-  // round-trip check alone cannot detect.
+  // 0–99 trigger Date.UTC's two-digit-year quirk (y=99 → 1999). The round-trip
+  // check catches this (getUTCFullYear() returns 1999 ≠ 99), but the MIN_YEAR
+  // guard rejects them first for clarity.
   // Upper bound: computed per-call so long-lived server processes and open
   // browser tabs stay correct across year boundaries without a restart.
   // getUTCFullYear() extracts the UTC year, unaffected by local timezone offset.

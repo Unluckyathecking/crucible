@@ -382,7 +382,7 @@ describe("parseDateParam", () => {
     expect(isNaN(parseDateParam("0000-01-01").getTime())).toBe(true);
   });
 
-  it("returns Invalid Date for year 0099 (Date.UTC two-digit-year quirk: treated as 1999, but MIN_YEAR check catches it)", () => {
+  it("returns Invalid Date for year 0099 (MIN_YEAR rejects before Date.UTC two-digit-year quirk applies; round-trip would also catch it)", () => {
     expect(isNaN(parseDateParam("0099-01-01").getTime())).toBe(true);
   });
 

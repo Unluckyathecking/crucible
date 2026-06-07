@@ -51,6 +51,7 @@ export async function fetchUsage(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return null;
+    console.error("fetchUsage failed:", err);
     return { error: "Network error — please check your connection." };
   }
   if (res.status === 401) {
