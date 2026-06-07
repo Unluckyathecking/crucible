@@ -1,6 +1,8 @@
 import { auth, signOut } from "@/auth";
+import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow, MS_PER_DAY } from "@/lib/db";
+import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow } from "@/lib/db";
+import { MS_PER_DAY } from "@/lib/constants";
 import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -37,6 +39,8 @@ export default async function DashboardPage() {
     listAuditEvents(customer.id),
   ]);
   const cap = BigInt(Number.MAX_SAFE_INTEGER);
+  // total_billable_units and event_count come from saturateBigIntString which always
+  // returns an integer, so BigInt() is safe without a Math.trunc guard.
   const rawUnits = opBreakdown.reduce((acc, r) => acc + BigInt(r.total_billable_units), BigInt(0));
   const rawCalls = opBreakdown.reduce((acc, r) => acc + BigInt(r.event_count), BigInt(0));
   const totalUnits = rawUnits > cap ? Number.MAX_SAFE_INTEGER : Number(rawUnits);
@@ -90,7 +94,12 @@ export default async function DashboardPage() {
         </section>
 
         <section className="border border-zinc-200 rounded-lg p-4 sm:p-5 mb-5 sm:mb-6" aria-label="Usage stats">
-          <h2 className="text-lg sm:text-xl font-semibold mb-3">Usage (last {USAGE_WINDOW_DAYS} days)</h2>
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-lg sm:text-xl font-semibold">Usage (last {USAGE_WINDOW_DAYS} days)</h2>
+            <Link href="/dashboard/usage" className="text-sm text-zinc-500 hover:text-zinc-900 underline">
+              Full analytics →
+            </Link>
+          </div>
           {opBreakdown.length === 0 ? (
             <p className="text-sm text-zinc-500">No usage in this period.</p>
           ) : (
