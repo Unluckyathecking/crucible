@@ -130,7 +130,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    loadMain(apiFrom, apiTo, ctrl.signal);
+    void loadMain(apiFrom, apiTo, ctrl.signal);
   }
 
   async function handleDrillDown(operation: string) {
@@ -183,16 +183,16 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
-  // Math.trunc + Math.min guard: BigInt() throws on non-integers and on values above
-  // MAX_SAFE_INTEGER (which can't be represented exactly as an integer).
+  // isRawEvent in usage-fetch.ts validates billable_units as a finite integer, so
+  // BigInt() is safe without additional guards.
   const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
     if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
     const totalUnitsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(Math.min(r.total_billable_units, Number.MAX_SAFE_INTEGER))),
+      (a, r) => a + BigInt(r.total_billable_units),
       0n,
     );
     const totalCallsBig = data.ops.reduce(
-      (a, r) => a + BigInt(Math.trunc(Math.min(r.event_count, Number.MAX_SAFE_INTEGER))),
+      (a, r) => a + BigInt(r.event_count),
       0n,
     );
     return {

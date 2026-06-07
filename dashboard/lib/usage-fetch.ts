@@ -21,7 +21,8 @@ function isRawEvent(item: unknown): item is RawEvent {
     typeof r.operation !== "string" ||
     typeof r.created_at !== "string" ||
     typeof r.billable_units !== "number" ||
-    !Number.isFinite(r.billable_units)
+    !Number.isFinite(r.billable_units) ||
+    !Number.isInteger(r.billable_units)
   ) return false;
   return true;
 }

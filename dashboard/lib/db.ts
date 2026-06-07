@@ -353,6 +353,8 @@ export async function listUsageEvents(
   const { effectiveOp } = validateUsageQueryParams(customerId, from, to, operation);
   // pg's OID-1184 (timestamptz) parser always returns a JS Date in UTC regardless of
   // the server's DateStyle setting; no ::text cast or to_char conversion needed.
+  // id::text: usage_events.id is BIGSERIAL (bigint). Without ::text the value
+  // serialises as a JSON number, which fails isRawEvent's typeof r.id !== "string" check.
   type Row = { id: string; operation: string; billable_units: string; created_at: Date };
   const mapRow = (row: Row): UsageEventRow => ({
     id: row.id,
