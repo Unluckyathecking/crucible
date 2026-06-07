@@ -290,6 +290,10 @@ describe("bucketByDay — edge cases", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseDateParam", () => {
+  // parseDateParam calls new Date().getUTCFullYear() to compute its per-call upper year
+  // bound (keeps long-lived server processes and open tabs correct across year rollovers).
+  // Fake timers pin that call to 2024-06-15 so tests asserting the nowYear+2 rejection
+  // and nowYear+1 acceptance boundaries are deterministic regardless of when the suite runs.
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-06-15T00:00:00.000Z"));
