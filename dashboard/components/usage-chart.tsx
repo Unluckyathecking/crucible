@@ -17,6 +17,9 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
     }
     // Use reduce instead of spread to avoid call-stack limits on large arrays.
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
+    if (maxUnits === 0) {
+      return { maxUnits: 0, barSlot: 0, barW: 0, descText: "" };
+    }
     const barSlot = chartW / Math.max(1, buckets.length);
     const barW = Math.max(1, barSlot - 1);
     const last = buckets[buckets.length - 1];

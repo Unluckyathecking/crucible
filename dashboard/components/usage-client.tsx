@@ -66,6 +66,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string) => {
+    // Invalidate any in-flight drill-down so its response cannot overwrite cleared state.
+    drillSeqRef.current++;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     const gen = ++generationRef.current;
@@ -160,18 +162,18 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setDrill({ status: "loading", operation });
     try {
       const result = await fetchUsage(from, to, operation, ctrl.signal);
-      // Stale-response guard: discard this result if a newer drill request superseded it
-      // while the fetch was in-flight. Must be checked immediately after the await,
-      // before any state mutation — mirrors the generationRef pattern in loadMain.
-      if (drillSeqRef.current !== seq) return;
+      // null: fetch was aborted — return before stale-response guard since seq may be valid.
       if (result === null) return;
+      // Stale-response guard: discard if a newer drill request superseded this one,
+      // or if the component unmounted while the fetch was in-flight.
+      if (drillSeqRef.current !== seq || !mountedRef.current) return;
       if ("error" in result) {
         setDrill({ status: "error", operation, message: result.error });
         return;
       }
       setDrill({ status: "ok", operation, events: result.data });
     } catch (err) {
-      if (drillSeqRef.current !== seq) return;
+      if (drillSeqRef.current !== seq || !mountedRef.current) return;
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
   }, [queryFrom, queryTo]);
@@ -250,6 +252,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
           <button
             onClick={handleApply}
             disabled={data.status === "loading"}
+            aria-busy={data.status === "loading"}
             className="px-3 py-1.5 bg-zinc-900 text-white text-sm rounded hover:bg-zinc-700 disabled:opacity-50"
           >
             {data.status === "loading" ? "Loading…" : "Apply"}
@@ -338,10 +341,10 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                       <table className="w-full text-xs">
                                         <thead className="sticky top-0 bg-zinc-50">
                                           <tr className="text-left text-zinc-400 border-b border-zinc-200">
-                                            <th className="pb-1 pr-4 font-medium">
+                                            <th scope="col" className="pb-1 pr-4 font-medium">
                                               Timestamp (UTC)
                                             </th>
-                                            <th className="pb-1 font-medium text-right">
+                                            <th scope="col" className="pb-1 font-medium text-right">
                                               Units
                                             </th>
                                           </tr>
