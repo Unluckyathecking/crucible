@@ -48,8 +48,7 @@ export async function fetchUsage(
     return { error: "Network error — please check your connection." };
   }
   if (res.status === 403) {
-    // The header should always be sent; 403 means something stripped it (proxy, extension).
-    return { error: "Forbidden (403) — the X-Requested-With header was stripped by your environment." };
+    return { error: "Forbidden — request rejected (403)." };
   }
   if (res.status === 401) {
     return { error: "Session expired — please reload the page." };

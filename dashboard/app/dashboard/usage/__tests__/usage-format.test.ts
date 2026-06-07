@@ -143,12 +143,14 @@ describe("aggregateByOperation", () => {
       { operation: "export", billable_units: 20, created_at: "2024-01-16T08:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
-    const search = rows.find((r) => r.operation === "search")!;
-    expect(search.total_billable_units).toBe(8);
-    expect(search.event_count).toBe(2);
-    const exp = rows.find((r) => r.operation === "export")!;
-    expect(exp.total_billable_units).toBe(20);
-    expect(exp.event_count).toBe(1);
+    const search = rows.find((r) => r.operation === "search");
+    expect(search).toBeDefined();
+    expect(search!.total_billable_units).toBe(8);
+    expect(search!.event_count).toBe(2);
+    const exp = rows.find((r) => r.operation === "export");
+    expect(exp).toBeDefined();
+    expect(exp!.total_billable_units).toBe(20);
+    expect(exp!.event_count).toBe(1);
   });
 
   it("sorts by total_billable_units descending", () => {

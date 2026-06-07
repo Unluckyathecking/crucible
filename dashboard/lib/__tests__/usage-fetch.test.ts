@@ -69,7 +69,7 @@ describe("fetchUsage", () => {
   it("returns error for 403 Forbidden", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(403, {}));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
-    expect(result).toEqual({ error: "Forbidden (403) — the X-Requested-With header was stripped by your environment." });
+    expect(result).toEqual({ error: "Forbidden — request rejected (403)." });
   });
 
   it("returns generic server error for non-string error body", async () => {

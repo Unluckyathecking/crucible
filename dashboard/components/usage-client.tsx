@@ -80,18 +80,17 @@ export function UsageClient() {
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
-  // Monotonic counter so a stale in-flight loadMain response is discarded even if
-  // the AbortSignal fires after fetch() has already returned (browser race window).
+  // Monotonic counter — seq is captured per-call; responses whose seq doesn't match
+  // the current value are discarded, preventing stale results from overwriting state.
   const mainSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
+    // Increment first so any concurrent in-flight response is discarded.
+    const seq = ++mainSeqRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
-    // Increment AFTER synchronous state updates so the seq captures the post-update epoch.
-    const seq = ++mainSeqRef.current;
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-      if (signal?.aborted) return;
       if (mainSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
@@ -104,7 +103,6 @@ export function UsageClient() {
         buckets: bucketByDay(result.data),
       });
     } catch {
-      if (signal?.aborted) return;
       if (mainSeqRef.current === seq) {
         setData({ status: "error", message: "Failed to load usage data" });
       }
@@ -124,11 +122,11 @@ export function UsageClient() {
   }, []);
 
   function handleApply() {
-    setDrill({ status: "none" });
-    // Abort any in-flight drill-down and invalidate its sequence so a stale response
-    // cannot overwrite the "none" state set above with events from the old date range.
-    drillAbortRef.current?.abort();
+    // Invalidate any in-flight drill-down before clearing state so a resolving
+    // fetch cannot overwrite the "none" state with stale events.
     drillSeqRef.current++;
+    setDrill({ status: "none" });
+    drillAbortRef.current?.abort();
     const fromDate = parseDateParam(displayFrom);
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
@@ -157,6 +155,8 @@ export function UsageClient() {
   async function handleDrillDown(operation: string) {
     const latestDrill = drillRef.current;
     if ((latestDrill.status === "ok" || latestDrill.status === "loading") && latestDrill.operation === operation) {
+      // Invalidate before clearing state so any resolving fetch is discarded.
+      drillSeqRef.current++;
       setDrill({ status: "none" });
       drillAbortRef.current?.abort();
       return;
@@ -164,12 +164,10 @@ export function UsageClient() {
     drillAbortRef.current?.abort();
     const ctrl = new AbortController();
     drillAbortRef.current = ctrl;
-    // Increment sequence so any concurrent in-flight response for a prior seq is discarded.
     const seq = ++drillSeqRef.current;
     setDrill({ status: "loading", operation });
     try {
       const result = await fetchUsage(queryFromRef.current, queryToRef.current, operation, ctrl.signal);
-      if (ctrl.signal.aborted) return;
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
@@ -178,7 +176,6 @@ export function UsageClient() {
       }
       setDrill({ status: "ok", operation, events: result.data });
     } catch {
-      if (ctrl.signal.aborted) return;
       if (drillSeqRef.current !== seq) return;
       setDrill({ status: "error", operation, message: "Failed to load events" });
     }
