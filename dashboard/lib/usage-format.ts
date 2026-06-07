@@ -54,12 +54,15 @@ export function validateDateRange(
 }
 
 // Groups events by UTC calendar date and sums billable_units, sorted oldest-first.
+// Skips events with malformed created_at. Clamps negative billable_units to 0
+// (gateway enforces >= 1, but defensive against data corruption / future refund rows).
 export function bucketByDay(events: RawEvent[]): DayBucket[] {
   const map = new Map<string, number>();
   for (const e of events) {
     const d = new Date(e.created_at);
+    if (isNaN(d.getTime())) continue;
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-    map.set(key, (map.get(key) ?? 0) + e.billable_units);
+    map.set(key, (map.get(key) ?? 0) + Math.max(0, e.billable_units));
   }
   return Array.from(map.entries())
     .map(([date, units]) => ({ date, units }))
@@ -67,11 +70,15 @@ export function bucketByDay(events: RawEvent[]): DayBucket[] {
 }
 
 // Aggregates events by operation, sorted by total_billable_units descending.
+// Clamps negative billable_units to 0 (same rationale as bucketByDay).
 export function aggregateByOperation(events: RawEvent[]): OperationRow[] {
   const map = new Map<string, { units: number; count: number }>();
   for (const e of events) {
     const cur = map.get(e.operation) ?? { units: 0, count: 0 };
-    map.set(e.operation, { units: cur.units + e.billable_units, count: cur.count + 1 });
+    map.set(e.operation, {
+      units: cur.units + Math.max(0, e.billable_units),
+      count: cur.count + 1,
+    });
   }
   return Array.from(map.entries())
     .map(([operation, { units, count }]) => ({

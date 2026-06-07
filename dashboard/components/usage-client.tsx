@@ -44,7 +44,11 @@ async function fetchUsage(
       error: typeof body.error === "string" ? body.error : `Server error (${res.status})`,
     };
   }
-  return { data: (await res.json()) as RawEvent[] };
+  const json: unknown = await res.json();
+  if (!Array.isArray(json)) {
+    return { error: "Unexpected response format from server" };
+  }
+  return { data: json as RawEvent[] };
 }
 
 function utcTodayStr(): string {
@@ -112,6 +116,7 @@ export function UsageClient() {
   useEffect(() => {
     const { from, to } = initRange();
     loadMain(from, toApiTo(to));
+    // Intentionally run once on mount; loadMain is stable (useCallback with no deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -156,7 +161,8 @@ export function UsageClient() {
             <input
               type="date"
               value={displayFrom}
-              max={todayStr}
+              min="1970-01-01"
+              max={displayTo || todayStr}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -169,6 +175,7 @@ export function UsageClient() {
             <input
               type="date"
               value={displayTo}
+              min={displayFrom || "1970-01-01"}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
@@ -278,7 +285,7 @@ export function UsageClient() {
                                         </thead>
                                         <tbody>
                                           {drill.events.map((e, i) => (
-                                            <tr key={i} className="border-b border-zinc-100">
+                                            <tr key={`${e.created_at}-${e.billable_units}-${e.operation}-${i}`} className="border-b border-zinc-100">
                                               <td className="py-1 pr-4 font-mono">
                                                 {new Date(e.created_at).toISOString()}
                                               </td>

@@ -13,7 +13,11 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
   const PAD_B = 20;
   const chartW = W - PAD_L;
   const chartH = H - PAD_B;
-  const maxUnits = Math.max(...buckets.map((b) => b.units), 1);
+  // Use reduce instead of spread to avoid call-stack limits on large arrays.
+  const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
+  if (maxUnits === 0) {
+    return <p className="text-sm text-zinc-500">No units recorded in this period.</p>;
+  }
   const barSlot = chartW / buckets.length;
   const barW = Math.max(1, barSlot - 1);
 

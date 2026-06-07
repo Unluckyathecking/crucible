@@ -139,4 +139,72 @@ describe("aggregateByOperation", () => {
     expect(rows[0].operation).toBe("expensive");
     expect(rows[1].operation).toBe("cheap");
   });
+
+  it("clamps negative billable_units to 0 (defensive against data corruption)", () => {
+    const events = [
+      { operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
+      { operation: "op", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" },
+    ];
+    const rows = aggregateByOperation(events);
+    expect(rows[0].total_billable_units).toBe(5);
+    expect(rows[0].event_count).toBe(2);
+  });
+
+  it("groups events with empty-string operation key under empty string", () => {
+    const events = [
+      { operation: "", billable_units: 3, created_at: "2024-01-01T00:00:00.000Z" },
+      { operation: "named", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
+    ];
+    const rows = aggregateByOperation(events);
+    expect(rows.find((r) => r.operation === "")).toBeDefined();
+    expect(rows.find((r) => r.operation === "named")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge cases: malformed / adversarial API responses
+// ---------------------------------------------------------------------------
+
+describe("bucketByDay — edge cases", () => {
+  it("skips events with malformed created_at (no NaN-NaN-NaN bucket)", () => {
+    const events = [
+      { operation: "a", billable_units: 5, created_at: "not-a-date" },
+      { operation: "a", billable_units: 3, created_at: "2024-01-15T08:00:00.000Z" },
+    ];
+    const buckets = bucketByDay(events);
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0].date).toBe("2024-01-15");
+    expect(buckets[0].units).toBe(3);
+    const nanBucket = buckets.find((b) => b.date.includes("NaN"));
+    expect(nanBucket).toBeUndefined();
+  });
+
+  it("returns empty array when all events have malformed created_at", () => {
+    const events = [
+      { operation: "a", billable_units: 1, created_at: "" },
+      { operation: "a", billable_units: 1, created_at: "invalid" },
+    ];
+    expect(bucketByDay(events)).toEqual([]);
+  });
+
+  it("clamps negative billable_units to 0", () => {
+    const events = [
+      { operation: "a", billable_units: -5, created_at: "2024-01-15T00:00:00.000Z" },
+      { operation: "a", billable_units: 10, created_at: "2024-01-15T12:00:00.000Z" },
+    ];
+    const buckets = bucketByDay(events);
+    expect(buckets[0].units).toBe(10);
+  });
+
+  it("handles very large billable_units without throwing", () => {
+    const events = [
+      {
+        operation: "a",
+        billable_units: Number.MAX_SAFE_INTEGER,
+        created_at: "2024-01-15T00:00:00.000Z",
+      },
+    ];
+    const buckets = bucketByDay(events);
+    expect(buckets[0].units).toBe(Number.MAX_SAFE_INTEGER);
+  });
 });
