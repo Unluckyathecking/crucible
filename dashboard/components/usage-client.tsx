@@ -114,6 +114,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
       setRangeError("Invalid date");
+      setData({ status: "idle" });
       return;
     }
     const apiFrom = toISODateString(fromDate);
@@ -125,6 +126,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const check = validateDateRange(fromDate, apiToDate);
     if (!check.valid) {
       setRangeError(check.error ?? "Invalid date range");
+      setData({ status: "idle" });
       return;
     }
     setRangeError(null);
