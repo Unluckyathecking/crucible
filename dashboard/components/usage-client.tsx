@@ -176,17 +176,21 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }, [queryFrom, queryTo]);
 
-  // UTC midnight of today; recomputed on every render so it stays current if the
-  // component is mounted across a UTC midnight boundary without navigation.
-  const now = new Date();
-  const todayUTCStr = toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+  // UTC midnight of today; getUTCFullYear/Month/Date strip the time component.
+  const todayUTCStr = useMemo(() => {
+    const now = new Date();
+    return toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+  }, []);
 
   const fromMax = useMemo(() => {
     const toDate = parseDateParam(displayTo);
     const today = parseDateParam(todayUTCStr);
+    // Invalid displayTo: fall back to today.
     if (isNaN(toDate.getTime())) return todayUTCStr;
-    // Clamp to today so the From input cannot be set to a future date.
-    return toDate.getTime() > today.getTime() ? todayUTCStr : displayTo;
+    // Future displayTo: cap From at today so the user cannot select a future From date.
+    if (toDate.getTime() > today.getTime()) return todayUTCStr;
+    // Past/present displayTo: cap From at displayTo.
+    return displayTo;
   }, [displayTo, todayUTCStr]);
 
   const toMin = useMemo(() => {

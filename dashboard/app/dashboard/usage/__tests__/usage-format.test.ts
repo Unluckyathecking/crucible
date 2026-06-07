@@ -115,7 +115,6 @@ describe("bucketByDay", () => {
     const events = [
       { id: "1", operation: "a", billable_units: 7, created_at: "2024-06-15T23:59:59.999Z" },
     ];
-    expect(events[0].created_at).toContain("T23:");
     const buckets = bucketByDay(events);
     expect(buckets[0].date).toBe("2024-06-15");
   });
@@ -379,6 +378,10 @@ describe("parseDateParam", () => {
 
   it("returns Invalid Date for year 0000 (below minimum year 1970)", () => {
     expect(isNaN(parseDateParam("0000-01-01").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for year 0099 (Date.UTC two-digit-year quirk: treated as 1999, but MIN_YEAR check catches it)", () => {
+    expect(isNaN(parseDateParam("0099-01-01").getTime())).toBe(true);
   });
 
   it("returns Invalid Date for year 1969 (below minimum year 1970)", () => {
