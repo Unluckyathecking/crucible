@@ -7,7 +7,7 @@ import type { RawEvent } from "./usage-format";
 // React JSX text-node children are automatically HTML-encoded (& → &amp;, < → &lt;, etc.)
 // so no manual stripping is needed — stripping < or > would corrupt legitimate messages
 // like "expected < 10" or "use <foo> syntax".
-const MAX_ERROR_LENGTH = 200;
+export const MAX_ERROR_LENGTH = 200;
 
 export function sanitizeError(s: string): string {
   return s.slice(0, MAX_ERROR_LENGTH);

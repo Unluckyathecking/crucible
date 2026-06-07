@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchUsage } from "@/lib/usage-fetch";
+import { fetchUsage, MAX_ERROR_LENGTH } from "@/lib/usage-fetch";
 
 function mockResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -149,7 +149,7 @@ describe("fetchUsage", () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(500, { error: longMsg }));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     if (!result || !("error" in result)) throw new Error("expected error result");
-    expect(result.error).toHaveLength(200);
+    expect(result.error).toHaveLength(MAX_ERROR_LENGTH);
   });
 
   it("returns network error message when fetch throws a non-abort error", async () => {

@@ -157,6 +157,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setDrill({ status: "loading", operation });
     try {
       const result = await fetchUsage(queryFromRef.current, queryToRef.current, operation, ctrl.signal);
+      // Stale-response guard: discard this result if a newer drill request superseded it
+      // while the fetch was in-flight. Must be checked immediately after the await,
+      // before any state mutation — mirrors the generationRef pattern in loadMain.
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
@@ -174,12 +177,15 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const todayStr = initialTo;
 
   // fromMax: allow 'from' up to displayTo when it is a valid date not after today.
+  // toISODateString(new Date()) recomputes the current date on each render so the
+  // upper bound stays correct if the page is open across a UTC midnight boundary.
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    if (isNaN(td.getTime())) return todayStr;
-    const todayDate = parseDateParam(todayStr);
-    return td <= todayDate ? displayTo : todayStr;
-  }, [displayTo, todayStr]);
+    const liveToday = toISODateString(new Date());
+    if (isNaN(td.getTime())) return liveToday;
+    const todayDate = parseDateParam(liveToday);
+    return td <= todayDate ? displayTo : liveToday;
+  }, [displayTo]);
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
@@ -233,7 +239,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayTo}
               min={toMin}
-              max={todayStr}
+              max={toISODateString(new Date())}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
                 setRangeError(null);
