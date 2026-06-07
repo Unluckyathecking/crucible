@@ -9,7 +9,14 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// ErrPlanNotFound is returned by CreateCheckoutSession when the requested plan
+// does not exist in the plans table or has no stripe_price_id configured.
+// Callers can distinguish this client error from Stripe API failures using errors.Is.
+var ErrPlanNotFound = errors.New("plan not found")
 
 // CheckoutClient creates Stripe Checkout and Billing Portal sessions using the
 // same plain net/http form-encoded idiom as the rest of this package.
@@ -56,6 +63,9 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 		`SELECT stripe_price_id FROM plans WHERE id = $1 AND stripe_price_id IS NOT NULL`,
 		planID,
 	).Scan(&priceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("%w: %q", ErrPlanNotFound, planID)
+		}
 		return "", fmt.Errorf("resolve plan %q: %w", planID, err)
 	}
 	if priceID == "" {

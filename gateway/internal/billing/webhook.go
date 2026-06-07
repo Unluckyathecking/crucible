@@ -399,13 +399,15 @@ func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string
 	var keys []string
 	for rows.Next() {
 		var prefix string
-		if err := rows.Scan(&prefix); err == nil {
-			keys = append(keys, "auth:"+prefix)
+		if err := rows.Scan(&prefix); err != nil {
+			log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: prefix scan failed for row")
+			continue
 		}
+		keys = append(keys, "auth:"+prefix)
 	}
 	if rows.Err() != nil {
 		log.Warn().Err(rows.Err()).Str("customer_id", customerID).Msg("cache invalidation: prefix scan error")
-		return
+		// Continue to invalidate what we successfully scanned rather than dropping all progress.
 	}
 
 	if len(keys) == 0 {

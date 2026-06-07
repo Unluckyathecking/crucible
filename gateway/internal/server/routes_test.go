@@ -617,8 +617,8 @@ func (m *mockBillingService) LookupStripeCustomerID(_ context.Context, _ string)
 
 // testKey returns an auth.Key with a stable UUID so billing handler tests can inject auth context.
 func testKey() *auth.Key {
-	id, _ := uuid.Parse("550e8400-e29b-41d4-a716-446655440000")
-	cid, _ := uuid.Parse("660e8400-e29b-41d4-a716-446655440001")
+	id := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
+	cid := uuid.MustParse("660e8400-e29b-41d4-a716-446655440001")
 	return &auth.Key{ID: id, Customer: auth.Customer{ID: cid, Email: "test@example.com", Plan: "free"}}
 }
 
@@ -704,6 +704,32 @@ func TestBillingPortal_WithKey(t *testing.T) {
 	}
 	if resp["url"] != wantURL {
 		t.Errorf("url = %q, want %q", resp["url"], wantURL)
+	}
+}
+
+func TestBillingPortal_NoStripeCustomer(t *testing.T) {
+	// When stripeCustomerID is empty, the handler must return 402 NO_STRIPE_CUSTOMER.
+	d := &Deps{Checkout: &mockBillingService{stripeCustomerID: ""}}
+	h := billingPortalHandler(d)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/portal", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Errorf("status = %d, want 402", w.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", resp["error"])
+	}
+	if errObj["code"] != "NO_STRIPE_CUSTOMER" {
+		t.Errorf("error.code = %q, want NO_STRIPE_CUSTOMER", errObj["code"])
 	}
 }
 

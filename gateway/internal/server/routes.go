@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -296,6 +297,10 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 
 		redirectURL, err := d.Checkout.CreateCheckoutSession(r.Context(), key.Customer.ID.String(), body.PlanID)
 		if err != nil {
+			if errors.Is(err, billing.ErrPlanNotFound) {
+				writeJSONError(w, http.StatusUnprocessableEntity, "PLAN_NOT_FOUND", "plan not found or not upgradeable", false)
+				return
+			}
 			log.Error().Err(err).Msg("create checkout session failed")
 			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
 			return

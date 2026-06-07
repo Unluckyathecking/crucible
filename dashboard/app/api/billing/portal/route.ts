@@ -3,14 +3,15 @@ import { ensureCustomer, getStripeCustomerId } from "@/lib/db";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 
-function allowedOriginBase(): string {
+// Parsed once at module load to avoid re-parsing env vars on every request.
+const ALLOWED_ORIGIN = (() => {
   const raw = process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
   try {
     return new URL(raw).origin;
   } catch {
     return raw;
   }
-}
+})();
 
 export async function POST(request: Request): Promise<Response> {
   try {
@@ -19,13 +20,11 @@ export async function POST(request: Request): Promise<Response> {
     //    cross-origin requests from unrelated domains are rejected here.
     // 2. X-Requested-With: requires CORS preflight for cross-origin requests with custom headers,
     //    providing defense-in-depth when Origin is absent (e.g. server-to-server callers).
-    const expectedOrigin = allowedOriginBase();
     const origin = request.headers.get("Origin");
-    if (origin !== null) {
-      if (origin !== expectedOrigin) {
-        console.warn("CSRF: Origin mismatch for POST /api/billing/portal", { origin, expected: expectedOrigin });
-        return new Response("Forbidden", { status: 403 });
-      }
+    if (!origin || origin !== ALLOWED_ORIGIN) {
+      const safeOrigin = origin ? origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60) : "missing";
+      console.warn("CSRF: invalid or missing Origin for POST /api/billing/portal", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
+      return new Response("Forbidden", { status: 403 });
     }
     const xrw = request.headers.get("X-Requested-With");
     if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
