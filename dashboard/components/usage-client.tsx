@@ -27,13 +27,7 @@ function utcTodayStr(): string {
   );
 }
 
-// Converts the user-visible inclusive end date to the API's exclusive upper bound.
-// NaN propagates for invalid input; all call sites validate displayTo first.
-function toApiTo(displayTo: string): string {
-  return toISODateString(new Date(parseDateParam(displayTo).getTime() + MS_PER_DAY));
-}
-
-function initRange(): { from: string; to: string } {
+function initRange(): { from: string; to: string; apiTo: string } {
   const today = new Date();
   const todayUTC = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
@@ -43,6 +37,8 @@ function initRange(): { from: string; to: string } {
       new Date(todayUTC.getTime() - (DEFAULT_USAGE_WINDOW_DAYS - 1) * MS_PER_DAY),
     ),
     to: toISODateString(todayUTC),
+    // Exclusive upper bound for the API's half-open interval [from, apiTo).
+    apiTo: toISODateString(new Date(todayUTC.getTime() + MS_PER_DAY)),
   };
 }
 
@@ -67,7 +63,7 @@ export function UsageClient() {
   const [rangeError, setRangeError] = useState<string | null>(null);
   // Track the API params used for the active query so drill-down is consistent.
   const [queryFrom, setQueryFrom] = useState(init.from);
-  const [queryTo, setQueryTo] = useState(() => toApiTo(init.to));
+  const [queryTo, setQueryTo] = useState(init.apiTo);
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
 
@@ -107,7 +103,7 @@ export function UsageClient() {
   useEffect(() => {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    void loadMain(init.from, toApiTo(init.to), ctrl.signal);
+    void loadMain(init.from, init.apiTo, ctrl.signal);
     return () => {
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
@@ -129,7 +125,7 @@ export function UsageClient() {
       return;
     }
     const apiFrom = toISODateString(fromDate);
-    // Use the pre-validated toDate object — never call toApiTo with raw user input.
+    // Use the pre-validated toDate object to compute the exclusive upper bound.
     const apiTo = toISODateString(new Date(toDate.getTime() + MS_PER_DAY));
     // Validate with the exclusive upper bound to match the API contract;
     // the user-visible maximum is MAX_USAGE_RANGE_DAYS inclusive days.
@@ -324,19 +320,22 @@ export function UsageClient() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {drill.events.map((e, i) => (
-                                            <tr
-                                              key={i}
-                                              className="border-b border-zinc-100"
-                                            >
-                                              <td className="py-1 pr-4 font-mono">
-                                                {new Date(e.created_at).toISOString()}
-                                              </td>
-                                              <td className="py-1 text-right tabular-nums">
-                                                {e.billable_units.toLocaleString()}
-                                              </td>
-                                            </tr>
-                                          ))}
+                                          {drill.events.map((e, i) => {
+                                            const ts = new Date(e.created_at);
+                                            return (
+                                              <tr
+                                                key={i}
+                                                className="border-b border-zinc-100"
+                                              >
+                                                <td className="py-1 pr-4 font-mono">
+                                                  {isNaN(ts.getTime()) ? e.created_at : ts.toISOString()}
+                                                </td>
+                                                <td className="py-1 text-right tabular-nums">
+                                                  {(e.billable_units ?? 0).toLocaleString()}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
                                         </tbody>
                                       </table>
                                     </div>
