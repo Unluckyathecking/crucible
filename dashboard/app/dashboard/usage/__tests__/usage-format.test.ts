@@ -21,8 +21,8 @@ describe("validateDateRange", () => {
   });
 
   it("accepts exclusive diff of exactly MAX_USAGE_RANGE_DAYS days", () => {
-    // 2024-01-01 to 2024-03-31 is an exclusive diff of exactly 90 days.
-    // Jan 1→Feb 1 = 31, Feb 1→Mar 1 = 29 (2024 leap), Mar 1→Mar 31 = 30. Total = 90.
+    // 2024-01-01 to 2024-03-31 is an exclusive diff of exactly 90 days:
+    // Jan 1–31 = 31 days, Feb 1–29 = 29 days (2024 is a leap year), Mar 1–30 = 30 days. Total = 90.
     // validateDateRange uses strict > so a diff of exactly MAX_USAGE_RANGE_DAYS is accepted.
     const from = parseDateParam("2024-01-01");
     const to = parseDateParam("2024-03-31");

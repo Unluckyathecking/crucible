@@ -2,7 +2,8 @@ import { Pool } from "pg";
 import { emitAuditEvent } from "@/lib/audit";
 import { getRedis } from "@/lib/redis";
 import { UUID_RE } from "@/lib/validation";
-import { MS_PER_DAY } from "./constants";
+import { MS_PER_DAY, MAX_USAGE_RANGE_DAYS } from "./constants";
+export { MAX_USAGE_RANGE_DAYS };
 
 declare global {
   // eslint-disable-next-line no-var
@@ -22,7 +23,6 @@ const MAX_USAGE_EVENTS_LIMIT = 1000;
 // Separate cap for per-operation aggregate rows (distinct operations per customer window).
 const MAX_USAGE_OPERATIONS_LIMIT = 1000;
 export const MAX_OPERATION_LENGTH = 128;
-export const MAX_USAGE_RANGE_DAYS = 90;
 const MAX_USAGE_RANGE_MS = MAX_USAGE_RANGE_DAYS * MS_PER_DAY;
 
 export interface Customer {

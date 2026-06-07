@@ -309,7 +309,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                     </tr>
                   </thead>
                   <tbody>
-                    {data.ops.map((row, i) => {
+                    {data.ops.map((row) => {
                       const isOpen =
                         drill.status === "ok" && drill.operation === row.operation;
                       const isLoadingDrill =
@@ -339,7 +339,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr key={`detail-${i}-${row.operation}`} className="bg-zinc-50">
+                            <tr key={`detail-${row.operation}`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{truncateError(drill.message)}</p>

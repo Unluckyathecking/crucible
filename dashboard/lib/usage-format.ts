@@ -1,11 +1,10 @@
 // Client-safe helpers for the usage analytics page.
 // No server-only imports — this file is bundled for both client and server.
 
-// Imported from the shared lib/constants.ts so neither this client-safe file
-// nor lib/db.ts needs to define it independently.
-import { MS_PER_DAY } from "./constants";
-
-export const MAX_USAGE_RANGE_DAYS = 90;
+// MS_PER_DAY and MAX_USAGE_RANGE_DAYS are the authoritative values shared between
+// this client-safe file and lib/db.ts — neither defines them independently.
+import { MS_PER_DAY, MAX_USAGE_RANGE_DAYS } from "./constants";
+export { MAX_USAGE_RANGE_DAYS };
 // Earliest year accepted by parseDateParam. Analytics data does not predate the Unix epoch.
 const MIN_YEAR = 1970;
 
