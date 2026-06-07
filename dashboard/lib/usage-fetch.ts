@@ -3,6 +3,13 @@
 
 import type { RawEvent } from "./usage-format";
 
+// Strips characters that are meaningful in HTML contexts from server error strings.
+// This is a data-layer contract: no downstream renderer should receive raw angle brackets
+// from server errors, regardless of how it renders them.
+function sanitizeError(s: string): string {
+  return s.replace(/[<>&"]/g, "").slice(0, 200);
+}
+
 export async function fetchUsage(
   from: string,
   to: string,
@@ -40,13 +47,13 @@ export async function fetchUsage(
       return { error: `Server error (${res.status})` };
     }
     const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? err : `Server error (${res.status})` };
+    return { error: typeof err === "string" ? sanitizeError(err) : `Server error (${res.status})` };
   }
   let json: unknown;
   try {
     json = await res.json();
   } catch {
-    return { error: "Invalid response from server" };
+    return { error: "Unexpected response format from server" };
   }
   if (!Array.isArray(json)) {
     return { error: "Unexpected response format from server" };

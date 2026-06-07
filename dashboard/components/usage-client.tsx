@@ -87,6 +87,7 @@ export function UsageClient() {
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
+      if (signal?.aborted) return;
       if (mainSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
@@ -99,6 +100,7 @@ export function UsageClient() {
         buckets: bucketByDay(result.data),
       });
     } catch {
+      if (signal?.aborted) return;
       if (mainSeqRef.current === seq) {
         setData({ status: "error", message: "Failed to load usage data" });
       }
@@ -163,6 +165,7 @@ export function UsageClient() {
     setDrill({ status: "loading", operation });
     try {
       const result = await fetchUsage(queryFromRef.current, queryToRef.current, operation, ctrl.signal);
+      if (ctrl.signal.aborted) return;
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
@@ -171,6 +174,7 @@ export function UsageClient() {
       }
       setDrill({ status: "ok", operation, events: result.data });
     } catch {
+      if (ctrl.signal.aborted) return;
       if (drillSeqRef.current !== seq) return;
       setDrill({ status: "error", operation, message: "Failed to load events" });
     }
@@ -208,8 +212,12 @@ export function UsageClient() {
               type="date"
               value={displayFrom}
               min="1970-01-01"
-              // YYYY-MM-DD lexicographic order equals chronological order.
-              max={displayTo && displayFrom <= displayTo ? displayTo : todayStr}
+              max={(() => {
+                const fd = parseDateParam(displayFrom);
+                const td = parseDateParam(displayTo);
+                return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
+                  ? displayTo : todayStr;
+              })()}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -222,7 +230,12 @@ export function UsageClient() {
             <input
               type="date"
               value={displayTo}
-              min={displayFrom && displayFrom <= displayTo ? displayFrom : "1970-01-01"}
+              min={(() => {
+                const fd = parseDateParam(displayFrom);
+                const td = parseDateParam(displayTo);
+                return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
+                  ? displayFrom : "1970-01-01";
+              })()}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);

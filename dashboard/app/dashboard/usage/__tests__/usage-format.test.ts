@@ -65,6 +65,16 @@ describe("validateDateRange", () => {
     const result = validateDateRange(parseDateParam("2024-01-01"), new Date("bad"));
     expect(result.valid).toBe(false);
   });
+
+  it("rejects null 'from' date", () => {
+    const result = validateDateRange(null as unknown as Date, parseDateParam("2024-01-01"));
+    expect(result.valid).toBe(false);
+  });
+
+  it("rejects undefined 'to' date", () => {
+    const result = validateDateRange(parseDateParam("2024-01-01"), undefined as unknown as Date);
+    expect(result.valid).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
