@@ -82,20 +82,24 @@ export function UsageClient() {
     const seq = ++mainSeqRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
-    const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-    if (mainSeqRef.current !== seq) return;
-    if (signal?.aborted || result === null) return;
-    if ("error" in result) {
+    try {
+      const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       if (mainSeqRef.current !== seq) return;
-      setData({ status: "error", message: result.error });
-      return;
+      if (signal?.aborted || result === null) return;
+      if ("error" in result) {
+        setData({ status: "error", message: result.error });
+        return;
+      }
+      setData({
+        status: "ok",
+        ops: aggregateByOperation(result.data),
+        buckets: bucketByDay(result.data),
+      });
+    } catch {
+      if (mainSeqRef.current === seq) {
+        setData({ status: "error", message: "Failed to load usage data" });
+      }
     }
-    if (mainSeqRef.current !== seq) return;
-    setData({
-      status: "ok",
-      ops: aggregateByOperation(result.data),
-      buckets: bucketByDay(result.data),
-    });
   }, []);
 
   useEffect(() => {
@@ -120,7 +124,8 @@ export function UsageClient() {
       return;
     }
     const apiFrom = toISODateString(fromDate);
-    const apiTo = toApiTo(displayTo);
+    // Use the pre-validated toDate object — never call toApiTo with raw user input.
+    const apiTo = toISODateString(new Date(toDate.getTime() + MS_PER_DAY));
     // Validate with the exclusive upper bound to match the API contract;
     // the user-visible maximum is MAX_USAGE_RANGE_DAYS inclusive days.
     const check = validateDateRange(fromDate, new Date(toDate.getTime() + MS_PER_DAY));

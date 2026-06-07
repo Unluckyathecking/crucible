@@ -51,5 +51,8 @@ export async function fetchUsage(
   if (!Array.isArray(json)) {
     return { error: "Unexpected response format from server" };
   }
+  if (json.length > 0 && typeof (json[0] as Record<string, unknown>)?.operation !== "string") {
+    return { error: "Unexpected response format from server" };
+  }
   return { data: json as RawEvent[] };
 }
