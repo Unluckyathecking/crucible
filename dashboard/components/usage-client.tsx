@@ -87,10 +87,8 @@ export function UsageClient() {
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
   // mainSeqRef: monotonically increasing, incremented on each loadMain call.
-  // mainCompletedSeqRef: highest seq that has written to state; prevents an
-  // earlier out-of-order response from overwriting a newer completed response.
+  // A stale fetch completing after a newer one has started is discarded: seq !== mainSeqRef.current.
   const mainSeqRef = useRef(0);
-  const mainCompletedSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
     const seq = ++mainSeqRef.current;
@@ -98,8 +96,7 @@ export function UsageClient() {
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-      if (seq < mainCompletedSeqRef.current) return;
-      mainCompletedSeqRef.current = seq;
+      if (seq !== mainSeqRef.current) return;
       if (result === null) return;
       if ("error" in result) {
         setData({ status: "error", message: result.error });
@@ -111,8 +108,7 @@ export function UsageClient() {
         buckets: bucketByDay(result.data),
       });
     } catch {
-      if (seq < mainCompletedSeqRef.current) return;
-      mainCompletedSeqRef.current = seq;
+      if (seq !== mainSeqRef.current) return;
       setData({ status: "error", message: "Failed to load usage data" });
     }
   }, []);
@@ -189,9 +185,10 @@ export function UsageClient() {
     }
   }
 
-  // Computed once on mount via useState initializer; midnight-crossing during a
-  // session is an acceptable edge case for a dashboard page.
-  const [todayStr] = useState(utcTodayStr);
+  // Initialised empty to avoid SSR/client hydration mismatch; populated in the
+  // first client-side effect. A UTC-based function avoids timezone skew.
+  const [todayStr, setTodayStr] = useState("");
+  useEffect(() => { setTodayStr(utcTodayStr()); }, []);
 
   // Memoized so parseDateParam isn't re-invoked on every render just for the
   // min/max attributes; deps are the two display values and todayStr.
@@ -204,11 +201,11 @@ export function UsageClient() {
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
-    const td = parseDateParam(displayTo);
-    return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
-      ? displayFrom : MIN_DATE_PARAM;
-    // MIN_DATE_PARAM is a stable module-level constant; safe to omit from deps.
-  }, [displayFrom, displayTo]);
+    // Use displayFrom as the minimum whenever it is a valid date, even if the
+    // overall range is currently invalid. This prevents picking a to-date before from.
+    if (!isNaN(fd.getTime())) return displayFrom;
+    return MIN_DATE_PARAM;
+  }, [displayFrom]);
 
   // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
   // Math.trunc guards against fractional billable_units — BigInt() throws on non-integers.

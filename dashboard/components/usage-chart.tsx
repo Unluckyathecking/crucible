@@ -34,10 +34,10 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
       <line x1={PAD_L} y1={chartH} x2={W} y2={chartH} stroke="#e4e4e7" strokeWidth="1" />
 
       {/* Y-axis labels */}
-      <text x={PAD_L - 4} y={10} textAnchor="end" fontSize="9" fill="#a1a1aa">
+      <text aria-hidden="true" x={PAD_L - 4} y={10} textAnchor="end" fontSize="9" fill="#a1a1aa">
         {maxUnits.toLocaleString()}
       </text>
-      <text x={PAD_L - 4} y={chartH} textAnchor="end" fontSize="9" fill="#a1a1aa">
+      <text aria-hidden="true" x={PAD_L - 4} y={chartH} textAnchor="end" fontSize="9" fill="#a1a1aa">
         0
       </text>
 
@@ -54,11 +54,11 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
       })}
 
       {/* X-axis labels: first and last date */}
-      <text x={PAD_L + 1} y={H - 4} fontSize="9" fill="#a1a1aa">
+      <text aria-hidden="true" x={PAD_L + 1} y={H - 4} fontSize="9" fill="#a1a1aa">
         {buckets[0].date}
       </text>
       {buckets.length > 1 && (
-        <text x={W - 1} y={H - 4} textAnchor="end" fontSize="9" fill="#a1a1aa">
+        <text aria-hidden="true" x={W - 1} y={H - 4} textAnchor="end" fontSize="9" fill="#a1a1aa">
           {buckets[buckets.length - 1].date}
         </text>
       )}

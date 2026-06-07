@@ -47,11 +47,11 @@ export async function fetchUsage(
     console.error("fetchUsage failed:", err);
     return { error: "Network error — please check your connection." };
   }
-  if (res.status === 403) {
-    return { error: "Forbidden — request rejected (403)." };
-  }
   if (res.status === 401) {
     return { error: "Session expired — please reload the page." };
+  }
+  if (res.status === 403) {
+    return { error: "Forbidden — request rejected (403)." };
   }
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}));
