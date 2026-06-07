@@ -23,6 +23,9 @@ const DEFAULT_USAGE_WINDOW_DAYS = 30;
 // Earliest date accepted by the date inputs and by parseDateParam.
 const MIN_DATE_PARAM = "1970-01-01";
 
+// BigInt sentinel reused by the totals memo; kept module-level so it is stable.
+const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
+
 function utcTodayStr(): string {
   const d = new Date();
   return toISODateString(
@@ -83,18 +86,20 @@ export function UsageClient() {
   const abortRef = useRef<AbortController | null>(null);
   const drillAbortRef = useRef<AbortController | null>(null);
   const drillSeqRef = useRef(0);
-  // Monotonic counter — seq is captured per-call; responses whose seq doesn't match
-  // the current value are discarded, preventing stale results from overwriting state.
+  // mainSeqRef: monotonically increasing, incremented on each loadMain call.
+  // mainCompletedSeqRef: highest seq that has written to state; prevents an
+  // earlier out-of-order response from overwriting a newer completed response.
   const mainSeqRef = useRef(0);
+  const mainCompletedSeqRef = useRef(0);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
-    // Increment first so any concurrent in-flight response is discarded.
     const seq = ++mainSeqRef.current;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-      if (mainSeqRef.current !== seq) return;
+      if (seq < mainCompletedSeqRef.current) return;
+      mainCompletedSeqRef.current = seq;
       if (result === null) return;
       if ("error" in result) {
         setData({ status: "error", message: result.error });
@@ -106,9 +111,9 @@ export function UsageClient() {
         buckets: bucketByDay(result.data),
       });
     } catch {
-      if (mainSeqRef.current === seq) {
-        setData({ status: "error", message: "Failed to load usage data" });
-      }
+      if (seq < mainCompletedSeqRef.current) return;
+      mainCompletedSeqRef.current = seq;
+      setData({ status: "error", message: "Failed to load usage data" });
     }
   }, []);
 
@@ -202,28 +207,26 @@ export function UsageClient() {
     const td = parseDateParam(displayTo);
     return !isNaN(fd.getTime()) && !isNaN(td.getTime()) && fd.getTime() <= td.getTime()
       ? displayFrom : MIN_DATE_PARAM;
+    // MIN_DATE_PARAM is a stable module-level constant; safe to omit from deps.
   }, [displayFrom, displayTo]);
 
-  // BigInt accumulation matches the pattern in app/dashboard/page.tsx and avoids
-  // IEEE 754 precision loss before the MAX_SAFE_INTEGER overflow check.
-  const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
-  // Math.trunc guards against fractional billable_units (JSON numbers allow floats;
-  // BigInt() throws RangeError on non-integers).
-  const totalUnitsBig =
-    data.status === "ok"
-      ? data.ops.reduce(
-          (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
-          0n,
-        )
-      : 0n;
-  const totalCallsBig =
-    data.status === "ok"
-      ? data.ops.reduce((a, r) => a + BigInt(Math.trunc(r.event_count)), 0n)
-      : 0n;
-  const totalUnitsDisplay =
-    totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString();
-  const totalCallsDisplay =
-    totalCallsBig > MAX_SAFE_BI ? "∞" : Number(totalCallsBig).toLocaleString();
+  // Memoized so BigInt reduce doesn't run on unrelated re-renders (drill toggle, etc).
+  // Math.trunc guards against fractional billable_units — BigInt() throws on non-integers.
+  const { totalUnitsDisplay, totalCallsDisplay } = useMemo(() => {
+    if (data.status !== "ok") return { totalUnitsDisplay: "0", totalCallsDisplay: "0" };
+    const totalUnitsBig = data.ops.reduce(
+      (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
+      0n,
+    );
+    const totalCallsBig = data.ops.reduce(
+      (a, r) => a + BigInt(Math.trunc(r.event_count)),
+      0n,
+    );
+    return {
+      totalUnitsDisplay: totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString(),
+      totalCallsDisplay: totalCallsBig > MAX_SAFE_BI ? "∞" : Number(totalCallsBig).toLocaleString(),
+    };
+  }, [data]);
 
   return (
     <div className="space-y-5">
@@ -260,7 +263,7 @@ export function UsageClient() {
           </label>
           <button
             onClick={handleApply}
-            disabled={data.status === "loading" || drill.status === "loading"}
+            disabled={data.status === "loading"}
             className="px-3 py-1.5 bg-zinc-900 text-white text-sm rounded hover:bg-zinc-700 disabled:opacity-50"
           >
             {data.status === "loading" ? "Loading…" : "Apply"}

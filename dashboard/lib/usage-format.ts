@@ -64,8 +64,8 @@ export function validateDateRange(
   }
   // `>` not `>=`: an exclusive diff of exactly MAX_USAGE_RANGE_DAYS days is allowed.
   // With handleApply's apiTo = userTo + 1 day, this corresponds to exactly
-  // MAX_USAGE_RANGE_DAYS inclusive user-visible calendar days — consistent with
-  // the server check in route.ts:120 which uses the same operator and constant.
+  // MAX_USAGE_RANGE_DAYS inclusive user-visible calendar days — matching the
+  // server-side validation in the /api/usage route.
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * MS_PER_DAY) {
     return {
       valid: false,
