@@ -175,18 +175,26 @@ export function UsageClient() {
 
   const todayStr = utcTodayStr();
 
+  // Clamp to Infinity at each step so precision loss from float addition
+  // cannot corrupt the overflow sentinel before the display check below.
   const totalUnits =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => a + r.total_billable_units, 0)
+      ? data.ops.reduce((a, r) => {
+          const s = a + r.total_billable_units;
+          return s > Number.MAX_SAFE_INTEGER ? Infinity : s;
+        }, 0)
       : 0;
   const totalCalls =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => a + r.event_count, 0)
+      ? data.ops.reduce((a, r) => {
+          const s = a + r.event_count;
+          return s > Number.MAX_SAFE_INTEGER ? Infinity : s;
+        }, 0)
       : 0;
   const totalUnitsDisplay =
-    totalUnits > Number.MAX_SAFE_INTEGER ? "∞" : totalUnits.toLocaleString();
+    !Number.isFinite(totalUnits) ? "∞" : totalUnits.toLocaleString();
   const totalCallsDisplay =
-    totalCalls > Number.MAX_SAFE_INTEGER ? "∞" : totalCalls.toLocaleString();
+    !Number.isFinite(totalCalls) ? "∞" : totalCalls.toLocaleString();
 
   return (
     <div className="space-y-5">
