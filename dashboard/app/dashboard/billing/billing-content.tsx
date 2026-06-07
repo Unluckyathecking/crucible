@@ -8,6 +8,12 @@ interface BillingPageContentProps {
   hasStripeCustomer: boolean;
 }
 
+// Reads the __csrf double-submit cookie set by middleware on page load.
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)__csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
 function UpgradeButton() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +26,7 @@ function UpgradeButton() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRF-Token": getCsrfToken(),
         },
         body: JSON.stringify({ plan_id: "pro" }),
       });
@@ -62,7 +68,7 @@ function ManageBillingButton() {
     try {
       const res = await fetch("/api/billing/portal", {
         method: "POST",
-        headers: { "X-Requested-With": "XMLHttpRequest" },
+        headers: { "X-CSRF-Token": getCsrfToken() },
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

@@ -1,30 +1,31 @@
 import { auth } from "@/auth";
 import { ensureCustomer, getStripeCustomerId } from "@/lib/db";
 import { ALLOWED_ORIGIN } from "@/lib/env";
+import { getCsrfFromRequest, verifyCsrfToken } from "@/lib/csrf";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 
 export async function POST(request: Request): Promise<Response> {
   try {
-    // Two-layer CSRF defense (OWASP "Verifying Origin" pattern):
-    // 1. If Origin is present, it MUST match. Rejects cross-origin and file:// / sandboxed-iframe
-    //    requests which send a non-matching (or "null") origin string.
-    // 2. If Origin is absent (Safari same-origin POST omits it), fall back to X-Requested-With.
-    //    Custom headers require a CORS preflight for cross-origin requests, so presence of this
-    //    header implies the request passed the browser's same-origin check.
+    // CSRF double-submit cookie: the middleware sets __csrf on every dashboard page load;
+    // the client reads it from document.cookie and echoes it as X-CSRF-Token.
+    // Constant-time compare prevents timing side-channels.
+    // An attacker on a different origin cannot read the SameSite=Strict cookie,
+    // so they cannot forge the matching header.
+    const csrfCookie = getCsrfFromRequest(request);
+    const csrfHeader = request.headers.get("X-CSRF-Token");
+    if (!verifyCsrfToken(csrfHeader, csrfCookie)) {
+      console.warn("CSRF token mismatch for POST /api/billing/portal");
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    // Retain Origin check as defense-in-depth: a present-but-wrong Origin is rejected.
+    // Safari omits Origin on same-origin POSTs; the CSRF cookie above is the primary guard.
     const origin = request.headers.get("Origin");
     if (origin !== null && origin !== ALLOWED_ORIGIN) {
       const safeOrigin = origin.replace(/[^a-zA-Z0-9/:._-]/g, "").slice(0, 60);
       console.warn("CSRF: invalid Origin for POST /api/billing/portal", { origin: safeOrigin, expected: ALLOWED_ORIGIN });
       return new Response("Forbidden", { status: 403 });
-    }
-    if (origin === null) {
-      const xrw = request.headers.get("X-Requested-With");
-      if (!xrw || xrw.toLowerCase() !== "xmlhttprequest") {
-        const safeHeader = xrw ? xrw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20) : "missing";
-        console.warn("CSRF check failed for POST /api/billing/portal", { header: safeHeader });
-        return new Response("Forbidden", { status: 403 });
-      }
     }
 
     const session = await auth();
