@@ -281,6 +281,8 @@ function saturateBigIntString(value: string): number {
   return n > cap ? Number.MAX_SAFE_INTEGER : Number(n);
 }
 
+// Aggregate row returned by usageByOperation. No id field — this groups across
+// many rows, unlike UsageEventRow which maps 1-to-1 with usage_events pk.
 export interface UsageOperationRow {
   operation: string;
   /** Saturated at Number.MAX_SAFE_INTEGER if the true sum exceeds it. */

@@ -16,6 +16,16 @@ import { MS_PER_DAY } from "@/lib/constants";
 import { fetchUsage, truncateError } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
+// Converts a raw created_at string to a display timestamp.
+// toISOString() can throw RangeError for extreme-but-valid timestamps (outside
+// ±8.64×10^15 ms). The try-catch ensures rendering never throws regardless of
+// what the server returns.
+function formatTimestamp(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  try { return d.toISOString(); } catch { return s; }
+}
+
 // Earliest date accepted by the date inputs and by parseDateParam.
 const MIN_DATE_PARAM = "1970-01-01";
 
@@ -370,14 +380,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                         </thead>
                                         <tbody>
                                           {drill.events.map((e) => {
-                                            const ts = new Date(e.created_at);
                                             return (
                                               <tr
                                                 key={e.id}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
-                                                  {isNaN(ts.getTime()) ? e.created_at : ts.toISOString()}
+                                                  {formatTimestamp(e.created_at)}
                                                 </td>
                                                 <td className="py-1 text-right tabular-nums">
                                                   {(e.billable_units ?? 0).toLocaleString("en-US")}
