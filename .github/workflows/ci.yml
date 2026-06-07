@@ -17,6 +17,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_DB: crucible
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -29,9 +42,18 @@ jobs:
             workers/stubs/go/go.sum
       - name: go.work sync
         run: go work sync
+      - name: Apply gateway migrations
+        run: |
+          for f in gateway/migrations/*.sql; do
+            echo "applying $f";
+            psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f "$f";
+          done
+        env:
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
       - name: gateway test
         env:
           REDIS_URL: redis://localhost:6379
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
         run: cd gateway && go vet ./... && go test -race ./...
       - name: sdk-go test
         run: cd workers/sdk-go && go vet ./... && go test -race ./...
