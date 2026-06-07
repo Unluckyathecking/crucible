@@ -3,11 +3,14 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 )
 
@@ -106,7 +109,10 @@ func TestCreateCheckoutSession_NonOK(t *testing.T) {
 	}
 	_, err = c.CreateCheckoutSession(context.Background(), "uuid", "pro")
 	if err == nil {
-		t.Error("expected error for non-2xx response")
+		t.Fatal("expected error for non-2xx response")
+	}
+	if !strings.Contains(err.Error(), "stripe session error") {
+		t.Errorf("expected stripe session error, got: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -169,6 +175,90 @@ func TestCreatePortalSession_EmptyCustomerID(t *testing.T) {
 	if called {
 		t.Error("CreatePortalSession must not make HTTP calls when stripeCustomerID is empty")
 	}
+}
+
+func TestLookupStripeCustomerID(t *testing.T) {
+	const customerID = "550e8400-e29b-41d4-a716-446655440000"
+
+	t.Run("has stripe customer", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock: %v", err)
+		}
+		defer mock.Close()
+		want := "cus_test123"
+		mock.ExpectQuery(`SELECT stripe_customer_id FROM customers WHERE id`).
+			WithArgs(customerID).
+			WillReturnRows(mock.NewRows([]string{"stripe_customer_id"}).AddRow(&want))
+		c := &CheckoutClient{db: mock}
+		got, err := c.LookupStripeCustomerID(context.Background(), customerID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("mock expectations: %v", err)
+		}
+	})
+
+	t.Run("null stripe customer id", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock: %v", err)
+		}
+		defer mock.Close()
+		mock.ExpectQuery(`SELECT stripe_customer_id FROM customers WHERE id`).
+			WithArgs(customerID).
+			WillReturnRows(mock.NewRows([]string{"stripe_customer_id"}).AddRow(nil))
+		c := &CheckoutClient{db: mock}
+		got, err := c.LookupStripeCustomerID(context.Background(), customerID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("got %q, want empty string", got)
+		}
+	})
+
+	t.Run("customer not found", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock: %v", err)
+		}
+		defer mock.Close()
+		mock.ExpectQuery(`SELECT stripe_customer_id FROM customers WHERE id`).
+			WithArgs(customerID).
+			WillReturnError(pgx.ErrNoRows)
+		c := &CheckoutClient{db: mock}
+		got, err := c.LookupStripeCustomerID(context.Background(), customerID)
+		if err != nil {
+			t.Fatalf("pgx.ErrNoRows should return nil error, got: %v", err)
+		}
+		if got != "" {
+			t.Errorf("got %q, want empty string for missing customer", got)
+		}
+	})
+
+	t.Run("db error", func(t *testing.T) {
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock: %v", err)
+		}
+		defer mock.Close()
+		mock.ExpectQuery(`SELECT stripe_customer_id FROM customers WHERE id`).
+			WithArgs(customerID).
+			WillReturnError(fmt.Errorf("connection lost"))
+		c := &CheckoutClient{db: mock}
+		_, err = c.LookupStripeCustomerID(context.Background(), customerID)
+		if err == nil {
+			t.Fatal("expected error for db failure")
+		}
+		if !strings.Contains(err.Error(), "lookup stripe customer") {
+			t.Errorf("expected wrapped error, got: %v", err)
+		}
+	})
 }
 
 func assertField(t *testing.T, form url.Values, key, want string) {

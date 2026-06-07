@@ -1,11 +1,15 @@
+// MAX_CSRF_TOKEN_LENGTH is the fixed loop bound for constant-time comparison.
+// Must be >= the actual token length (32 hex chars from UUID-without-dashes).
+const MAX_CSRF_TOKEN_LENGTH = 128;
+
 // verifyCsrfToken compares CSRF tokens using a constant-time loop of fixed
-// length (128) to prevent timing side-channels on both token content and
-// length. Inputs are coerced to empty strings (no early return on null)
-// so null/empty inputs take the same path as valid tokens.
+// length to prevent timing side-channels on both token content and length.
+// Inputs are coerced to empty strings (no early return on null) so null/empty
+// inputs take the same path as valid tokens.
 export function verifyCsrfToken(header: string | null, cookie: string | null): boolean {
   const h = header ?? "";
   const c = cookie ?? "";
-  const maxLen = 128;
+  const maxLen = MAX_CSRF_TOKEN_LENGTH;
   let result = h.length ^ c.length;
   for (let i = 0; i < maxLen; i++) {
     const hv = i < h.length ? h.charCodeAt(i) : 0;

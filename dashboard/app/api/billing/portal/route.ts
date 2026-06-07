@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { ensureCustomer, getStripeCustomerId } from "@/lib/db";
-import { ALLOWED_ORIGIN } from "@/lib/env";
+import { ALLOWED_ORIGIN, DASHBOARD_BASE_URL } from "@/lib/env";
 import { getCsrfFromRequest, verifyCsrfToken } from "@/lib/csrf";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
@@ -39,7 +39,7 @@ export async function POST(request: Request): Promise<Response> {
       return new Response("Internal server error", { status: 500 });
     }
 
-    const dashboardOrigin = process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
+    const dashboardOrigin = DASHBOARD_BASE_URL;
 
     const customer = await ensureCustomer(session.user.email);
     const stripeCustomerId = await getStripeCustomerId(customer.id);

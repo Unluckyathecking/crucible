@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { ensureCustomer } from "@/lib/db";
-import { ALLOWED_ORIGIN } from "@/lib/env";
+import { ALLOWED_ORIGIN, DASHBOARD_BASE_URL } from "@/lib/env";
 import { getCsrfFromRequest, verifyCsrfToken } from "@/lib/csrf";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
@@ -39,7 +39,7 @@ export async function POST(request: Request): Promise<Response> {
       return new Response("Internal server error", { status: 500 });
     }
 
-    const dashboardOrigin = process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
+    const dashboardOrigin = DASHBOARD_BASE_URL;
 
     let planId = "";
     try {
@@ -129,7 +129,8 @@ export async function POST(request: Request): Promise<Response> {
 const PLAN_ID_RE = /^[a-z0-9-]{1,32}$/;
 
 // STRIPE_PRICE_ID_RE validates that the resolved value is a real Stripe price ID.
-const STRIPE_PRICE_ID_RE = /^price_[a-zA-Z0-9_]+$/;
+// Stripe price IDs are alphanumeric after the prefix — no underscores in the suffix.
+const STRIPE_PRICE_ID_RE = /^price_[a-zA-Z0-9]+$/;
 
 // resolveStripePriceId looks up STRIPE_PRICE_<PLAN_ID_UPPER> and validates it.
 async function resolveStripePriceId(planId: string): Promise<string | null> {

@@ -402,6 +402,10 @@ func (h *Webhook) invalidateCustomerCache(ctx context.Context, customerID string
 	if h.cache == nil {
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		log.Warn().Err(err).Str("customer_id", customerID).Msg("cache invalidation: context already canceled, skipping")
+		return
+	}
 	const maxPrefixes = 1000
 	// ORDER BY prefix gives a deterministic subset when LIMIT is hit,
 	// so repeated invalidations cover the same keys rather than an arbitrary shard.

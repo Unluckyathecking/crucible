@@ -27,9 +27,12 @@ export default auth((req) => {
     res.cookies.set("__csrf", token, {
       httpOnly: false,    // must be JS-readable for the double-submit pattern
       sameSite: "strict", // prevents cross-site cookie submission
-      // Also check NEXTAUTH_URL: handles TLS-terminating proxies where NODE_ENV
-      // might not be exactly "production" but the origin is unambiguously HTTPS.
-      secure: process.env.NODE_ENV === "production" || (process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "").startsWith("https://"),
+      // Also check NEXTAUTH_URL via URL parsing: handles TLS-terminating proxies
+      // where NODE_ENV is not exactly "production" but the origin is HTTPS.
+      // URL parsing handles case-insensitive scheme and port variations correctly.
+      secure: process.env.NODE_ENV === "production" || (() => {
+        try { return new URL(process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "").protocol === "https:"; } catch { return false; }
+      })(),
       path: "/",
       maxAge: 86400,      // 24 h; refreshed on next page load
     });

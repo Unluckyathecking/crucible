@@ -98,13 +98,16 @@ func (c *CheckoutClient) CreatePortalSession(ctx context.Context, stripeCustomer
 }
 
 // LookupStripeCustomerID fetches the stripe_customer_id for the given internal
-// customer UUID. Returns "" if the customer exists but has no stripe link yet.
+// customer UUID. Returns "" if the customer has no stripe link yet (or does not exist).
 func (c *CheckoutClient) LookupStripeCustomerID(ctx context.Context, customerID string) (string, error) {
 	var stripeCustomerID *string
 	if err := c.db.QueryRow(ctx,
 		`SELECT stripe_customer_id FROM customers WHERE id = $1`,
 		customerID,
 	).Scan(&stripeCustomerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
 		return "", fmt.Errorf("lookup stripe customer: %w", err)
 	}
 	if stripeCustomerID == nil {
