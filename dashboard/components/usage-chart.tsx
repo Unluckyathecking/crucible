@@ -17,7 +17,7 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
     const barSlot = chartW / buckets.length;
     const barW = Math.max(1, barSlot - 1);
     return { maxUnits, barSlot, barW };
-  }, [buckets, chartW]);
+  }, [buckets, chartW, chartH]);
 
   if (buckets.length === 0) {
     return <p className="text-sm text-zinc-500">No data to visualize.</p>;

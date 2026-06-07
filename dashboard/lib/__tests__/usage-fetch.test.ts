@@ -17,7 +17,7 @@ describe("fetchUsage", () => {
   });
 
   it("returns data array on 200 OK with valid array JSON", async () => {
-    const events = [{ operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }];
+    const events = [{ id: "evt-1", operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }];
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, events));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     expect(result).toEqual({ data: events });
@@ -41,16 +41,24 @@ describe("fetchUsage", () => {
     expect(result).toEqual({ error: "Unexpected response format from server" });
   });
 
-  it("returns data when id field is a string (valid optional field)", async () => {
+  it("returns data when id field is a string (required by isRawEvent)", async () => {
     const event = { id: "abc", operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" };
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, [event]));
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     expect(result).toEqual({ data: [event] });
   });
 
-  it("returns error when id field is a number (must be string or absent)", async () => {
+  it("returns error when id field is a number (must be a string)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse(200, [{ id: 123, operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }]),
+    );
+    const result = await fetchUsage("2024-01-01", "2024-02-01");
+    expect(result).toEqual({ error: "Unexpected response format from server" });
+  });
+
+  it("returns error when id field is absent (isRawEvent requires id as string)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(200, [{ operation: "search", billable_units: 5, created_at: "2024-01-01T00:00:00.000Z" }]),
     );
     const result = await fetchUsage("2024-01-01", "2024-02-01");
     expect(result).toEqual({ error: "Unexpected response format from server" });

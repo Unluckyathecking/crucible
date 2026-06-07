@@ -341,7 +341,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={e.id ?? `${e.operation}-${e.created_at}-${e.billable_units}-${i}`}
+                                                key={e.id!}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
