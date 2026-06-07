@@ -67,12 +67,13 @@ describe("validateDateRange", () => {
   });
 
   it("rejects null 'from' date", () => {
-    const result = validateDateRange(null as unknown as Date, parseDateParam("2024-01-01"));
+    // validateDateRange accepts null/undefined to handle unvalidated parsed values.
+    const result = validateDateRange(null, parseDateParam("2024-01-01"));
     expect(result.valid).toBe(false);
   });
 
   it("rejects undefined 'to' date", () => {
-    const result = validateDateRange(parseDateParam("2024-01-01"), undefined as unknown as Date);
+    const result = validateDateRange(parseDateParam("2024-01-01"), undefined);
     expect(result.valid).toBe(false);
   });
 });
@@ -176,8 +177,12 @@ describe("aggregateByOperation", () => {
       { operation: "named", billable_units: 1, created_at: "2024-01-01T00:00:00.000Z" },
     ];
     const rows = aggregateByOperation(events);
-    expect(rows.find((r) => r.operation === "")).toBeDefined();
-    expect(rows.find((r) => r.operation === "named")).toBeDefined();
+    const emptyRow = rows.find((r) => r.operation === "");
+    const namedRow = rows.find((r) => r.operation === "named");
+    expect(emptyRow).toBeDefined();
+    expect(emptyRow?.total_billable_units).toBe(3);
+    expect(namedRow).toBeDefined();
+    expect(namedRow?.total_billable_units).toBe(1);
   });
 
   it("clamps all-negative billable_units to 0 (total is 0, count is 2)", () => {

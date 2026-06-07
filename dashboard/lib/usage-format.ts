@@ -48,11 +48,13 @@ export function toISODateString(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-// Validates a date range using the same rules as /api/usage route.ts:114-125.
-// from and to are both UTC midnights; to is the exclusive upper bound (API convention).
+// Validates a date range using the same rules as the /api/usage server route:
+// from and to are UTC midnights; to is the exclusive upper bound (API convention);
+// maximum span is MAX_USAGE_RANGE_DAYS days.
+// Accepts null/undefined to allow callers to forward unvalidated parsed values.
 export function validateDateRange(
-  from: Date,
-  to: Date,
+  from: Date | null | undefined,
+  to: Date | null | undefined,
 ): { valid: boolean; error?: string } {
   if (from == null || to == null || isNaN(from.getTime()) || isNaN(to.getTime())) {
     return { valid: false, error: "Invalid date" };

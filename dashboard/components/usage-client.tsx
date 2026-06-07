@@ -32,13 +32,15 @@ function initRange(): { from: string; to: string; apiTo: string } {
   const todayUTC = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
   );
+  // Exclusive upper bound. Mirrors page.tsx: thirtyDaysAgo = tomorrowMidnight - N * MS_PER_DAY.
+  // [tomorrowUTC - N*MS_PER_DAY, tomorrowUTC) = N full days; display range [from, today] = N dates.
+  const tomorrowUTC = new Date(todayUTC.getTime() + MS_PER_DAY);
   return {
     from: toISODateString(
-      new Date(todayUTC.getTime() - (DEFAULT_USAGE_WINDOW_DAYS - 1) * MS_PER_DAY),
+      new Date(tomorrowUTC.getTime() - DEFAULT_USAGE_WINDOW_DAYS * MS_PER_DAY),
     ),
     to: toISODateString(todayUTC),
-    // Exclusive upper bound for the API's half-open interval [from, apiTo).
-    apiTo: toISODateString(new Date(todayUTC.getTime() + MS_PER_DAY)),
+    apiTo: toISODateString(tomorrowUTC),
   };
 }
 
@@ -203,16 +205,18 @@ export function UsageClient() {
   // BigInt accumulation matches the pattern in app/dashboard/page.tsx and avoids
   // IEEE 754 precision loss before the MAX_SAFE_INTEGER overflow check.
   const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
+  // Math.trunc guards against fractional billable_units (JSON numbers allow floats;
+  // BigInt() throws RangeError on non-integers).
   const totalUnitsBig =
     data.status === "ok"
       ? data.ops.reduce(
-          (a, r) => a + BigInt(r.total_billable_units),
+          (a, r) => a + BigInt(Math.trunc(r.total_billable_units)),
           0n,
         )
       : 0n;
   const totalCallsBig =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => a + BigInt(r.event_count), 0n)
+      ? data.ops.reduce((a, r) => a + BigInt(Math.trunc(r.event_count)), 0n)
       : 0n;
   const totalUnitsDisplay =
     totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString();
@@ -356,7 +360,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${e.created_at}-${i}`}
+                                                key={`${e.created_at}-${e.billable_units}-${e.operation}-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">
