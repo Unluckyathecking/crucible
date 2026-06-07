@@ -9,7 +9,7 @@ import type { RawEvent } from "./usage-format";
 // < and > are stripped as defence-in-depth for any hypothetical non-React consumer.
 const MAX_ERROR_LENGTH = 200;
 
-function sanitizeError(s: string): string {
+export function sanitizeError(s: string): string {
   return s.replace(/[<>]/g, "").slice(0, MAX_ERROR_LENGTH);
 }
 

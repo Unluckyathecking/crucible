@@ -13,7 +13,7 @@ import {
   type OperationRow,
   type RawEvent,
 } from "@/lib/usage-format";
-import { fetchUsage } from "@/lib/usage-fetch";
+import { fetchUsage, sanitizeError } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
 // Earliest date accepted by the date inputs and by parseDateParam.
@@ -77,9 +77,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       if (seq !== mainSeqRef.current) return;
       if (result === null) return;
       if ("error" in result) {
+        if (seq !== mainSeqRef.current) return;
         setData({ status: "error", message: result.error });
         return;
       }
+      if (seq !== mainSeqRef.current) return;
       setData({
         status: "ok",
         ops: aggregateByOperation(result.data),
@@ -87,7 +89,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       });
     } catch (err) {
       if (seq !== mainSeqRef.current) return;
-      if (process.env.NODE_ENV !== "production") console.error("loadMain failed:", err);
       setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
@@ -162,7 +163,6 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       setDrill({ status: "ok", operation, events: result.data });
     } catch (err) {
       if (drillSeqRef.current !== seq) return;
-      if (process.env.NODE_ENV !== "production") console.error("handleDrillDown failed:", err);
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
   }
@@ -255,7 +255,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
 
       {data.status === "error" && (
         <p className="text-sm text-red-600" role="alert">
-          {data.message}
+          {sanitizeError(data.message)}
         </p>
       )}
 
@@ -318,7 +318,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             <tr className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
-                                  <p className="text-sm text-red-600">{drill.message}</p>
+                                  <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
                                 )}
                                 {isOpen && drill.status === "ok" && (
                                   drill.events.length === 0 ? (
