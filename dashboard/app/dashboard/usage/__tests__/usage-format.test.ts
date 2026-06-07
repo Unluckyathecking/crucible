@@ -21,10 +21,13 @@ describe("validateDateRange", () => {
   });
 
   it("accepts exclusive diff of exactly MAX_USAGE_RANGE_DAYS days", () => {
+    // 2024-01-01 to 2024-03-31 is exactly 90 days in 2024 (31 Jan + 29 Feb + 30 Mar).
+    // Hard-coded so the test verifies the boundary value, not just that the constant
+    // round-trips through arithmetic.
     const from = parseDateParam("2024-01-01");
-    const to = new Date(from.getTime() + MAX_USAGE_RANGE_DAYS * MS_PER_DAY);
-    const result = validateDateRange(from, to);
-    expect(result.valid).toBe(true);
+    const to = parseDateParam("2024-03-31");
+    expect(to.getTime() - from.getTime()).toBe(MAX_USAGE_RANGE_DAYS * MS_PER_DAY);
+    expect(validateDateRange(from, to).valid).toBe(true);
   });
 
   it("rejects a range of 90 days + 1 millisecond", () => {

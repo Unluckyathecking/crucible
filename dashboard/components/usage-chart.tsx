@@ -14,10 +14,10 @@ export function UsageChart({ buckets }: { buckets: DayBucket[] }) {
   const { maxUnits, barSlot, barW } = useMemo(() => {
     // Use reduce instead of spread to avoid call-stack limits on large arrays.
     const maxUnits = buckets.reduce((m, b) => Math.max(m, b.units), 0);
-    const barSlot = chartW / buckets.length;
+    const barSlot = chartW / Math.max(1, buckets.length);
     const barW = Math.max(1, barSlot - 1);
     return { maxUnits, barSlot, barW };
-  }, [buckets, chartW, chartH]);
+  }, [buckets, chartW]);
 
   if (buckets.length === 0) {
     return <p className="text-sm text-zinc-500">No data to visualize.</p>;

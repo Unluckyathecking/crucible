@@ -74,14 +74,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setDrill({ status: "none" });
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
-      if (seq !== mainSeqRef.current) return;
-      if (result === null) return;
+      // null: fetch was aborted (including component unmount — cleanup aborts the signal).
+      // seq guard: discard responses from superseded fetches.
+      if (result === null || seq !== mainSeqRef.current) return;
       if ("error" in result) {
-        if (seq !== mainSeqRef.current) return;
         setData({ status: "error", message: result.error });
         return;
       }
-      if (seq !== mainSeqRef.current) return;
       setData({
         status: "ok",
         ops: aggregateByOperation(result.data),
@@ -119,11 +118,12 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       return;
     }
     const apiFrom = toISODateString(fromDate);
-    // Use the pre-validated toDate object to compute the exclusive upper bound.
-    const apiTo = toISODateString(new Date(toDate.getTime() + MS_PER_DAY));
+    // Compute the exclusive upper bound once; reuse for both validation and the API call.
+    const apiToDate = new Date(toDate.getTime() + MS_PER_DAY);
+    const apiTo = toISODateString(apiToDate);
     // Validate with the exclusive upper bound to match the API contract;
     // the user-visible maximum is MAX_USAGE_RANGE_DAYS inclusive days.
-    const check = validateDateRange(fromDate, new Date(toDate.getTime() + MS_PER_DAY));
+    const check = validateDateRange(fromDate, apiToDate);
     if (!check.valid) {
       setRangeError(check.error ?? "Invalid date range");
       return;
