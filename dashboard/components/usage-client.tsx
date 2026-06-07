@@ -49,10 +49,11 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   const [queryTo, setQueryTo] = useState(initialApiTo);
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // Refs mirror state values at render time so handleDrillDown reads the
-  // latest values even if called within the same event-loop tick as state updates.
-  const drillRef = useRef<DrillState>(drill);
-  drillRef.current = drill;
+  // mounted: false until the first client-side effect fires. Used to defer
+  // dynamic min/max bounds on date inputs so SSR and initial render agree.
+  const [mounted, setMounted] = useState(false);
+  // Refs for queryFrom/queryTo: captured inside async fetchUsage calls so they
+  // must reflect the latest committed values, not a closure-stale snapshot.
   const queryFromRef = useRef(queryFrom);
   queryFromRef.current = queryFrom;
   const queryToRef = useRef(queryTo);
@@ -84,12 +85,13 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       });
     } catch (err) {
       if (seq !== mainSeqRef.current) return;
-      console.error("loadMain failed:", err);
+      if (process.env.NODE_ENV !== "production") console.error("loadMain failed:", err);
       setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
 
   useEffect(() => {
+    setMounted(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     void loadMain(initialFrom, initialApiTo, ctrl.signal);
@@ -133,8 +135,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }
 
   async function handleDrillDown(operation: string) {
-    const latestDrill = drillRef.current;
-    if ((latestDrill.status === "ok" || latestDrill.status === "loading") && latestDrill.operation === operation) {
+    // Use drill state from the render closure (not a ref) for the toggle check:
+    // handleDrillDown is recreated on each render, so drill is always current here.
+    if ((drill.status === "ok" || drill.status === "loading") && drill.operation === operation) {
       // Invalidate before clearing state so any resolving fetch is discarded.
       drillSeqRef.current++;
       setDrill({ status: "none" });
@@ -157,7 +160,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
       setDrill({ status: "ok", operation, events: result.data });
     } catch (err) {
       if (drillSeqRef.current !== seq) return;
-      console.error("handleDrillDown failed:", err);
+      if (process.env.NODE_ENV !== "production") console.error("handleDrillDown failed:", err);
       setDrill({ status: "error", operation, message: err instanceof Error ? err.message : "Failed to load events" });
     }
   }
@@ -210,7 +213,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayFrom}
               min={MIN_DATE_PARAM}
-              max={fromMax}
+              max={mounted ? fromMax : todayStr}
               onChange={(e) => {
                 setDisplayFrom(e.target.value);
                 setRangeError(null);
@@ -223,7 +226,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
             <input
               type="date"
               value={displayTo}
-              min={toMin}
+              min={mounted ? toMin : MIN_DATE_PARAM}
               max={todayStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);

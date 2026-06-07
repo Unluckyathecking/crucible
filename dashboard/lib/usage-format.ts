@@ -30,6 +30,10 @@ export function parseDateParam(s: string): Date {
   // Simple structural check first: exactly YYYY-MM-DD (10 chars, two-digit month and day).
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(NaN);
   const [y, m, day] = s.split("-").map(Number);
+  // Year bounds: usage analytics data predates 1970, and years beyond 3000
+  // are implausible for this dashboard. Also guards Date.UTC's two-digit-year
+  // quirk (e.g. y=99 → 1999) which the round-trip check alone doesn't catch.
+  if (y < 1970 || y > 3000) return new Date(NaN);
   // Explicit bounds: month 1–12, day 1–31. Narrower calendar constraints
   // (Feb 30, Apr 31, etc.) are caught by the round-trip check below:
   // Date.UTC normalises overflow (Feb 30 → Mar 1), and the UTC component

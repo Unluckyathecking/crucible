@@ -17,12 +17,15 @@ function sanitizeError(s: string): string {
 function isRawEvent(item: unknown): item is RawEvent {
   if (item === null || typeof item !== "object") return false;
   const r = item as Record<string, unknown>;
-  return (
-    typeof r.operation === "string" &&
-    typeof r.created_at === "string" &&
-    typeof r.billable_units === "number" &&
-    Number.isFinite(r.billable_units)
-  );
+  if (
+    typeof r.operation !== "string" ||
+    typeof r.created_at !== "string" ||
+    typeof r.billable_units !== "number" ||
+    !Number.isFinite(r.billable_units)
+  ) return false;
+  // id is optional; when present it must be a string (used as React key).
+  if ("id" in r && r.id !== undefined && typeof r.id !== "string") return false;
+  return true;
 }
 
 export async function fetchUsage(

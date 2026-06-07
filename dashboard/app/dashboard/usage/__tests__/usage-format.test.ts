@@ -306,7 +306,7 @@ describe("parseDateParam", () => {
   });
 
   it("returns Invalid Date for string with time component already appended", () => {
-    // Prevents double-appending: '2024-01-01T00:00:00.000ZT00:00:00.000Z' is invalid.
+    // The strict YYYY-MM-DD regex rejects strings containing time components.
     expect(isNaN(parseDateParam("2024-01-01T00:00:00.000Z").getTime())).toBe(true);
   });
 
@@ -363,8 +363,16 @@ describe("parseDateParam", () => {
     expect(isNaN(parseDateParam("2024-02-30").getTime())).toBe(true);
   });
 
-  it("returns Invalid Date for year 0000 (Date.UTC maps year 0 to 1900, round-trip fails)", () => {
+  it("returns Invalid Date for year 0000 (below minimum year 1970)", () => {
     expect(isNaN(parseDateParam("0000-01-01").getTime())).toBe(true);
+  });
+
+  it("returns Invalid Date for year 1969 (below minimum year 1970)", () => {
+    expect(isNaN(parseDateParam("1969-12-31").getTime())).toBe(true);
+  });
+
+  it("accepts year 1970 (minimum valid year)", () => {
+    expect(isNaN(parseDateParam("1970-01-01").getTime())).toBe(false);
   });
 });
 
