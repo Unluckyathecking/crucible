@@ -82,7 +82,7 @@ export function validateDateRange(
     return { valid: false, error: "Invalid date" };
   }
   if (from.getTime() > to.getTime()) {
-    return { valid: false, error: "'From' must not be after 'to'" };
+    return { valid: false, error: "'From' must not be after 'To'" };
   }
   // `>` not `>=`: an exclusive diff of exactly MAX_USAGE_RANGE_DAYS days is allowed.
   // With handleApply's apiTo = userTo + 1 day, this corresponds to exactly
