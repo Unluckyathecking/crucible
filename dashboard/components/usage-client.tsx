@@ -96,6 +96,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   }, []);
 
   useEffect(() => {
+    queryRef.current = { from: initialFrom, to: initialApiTo };
     void loadMain(initialFrom, initialApiTo);
     return () => {
       abortRef.current?.abort();
