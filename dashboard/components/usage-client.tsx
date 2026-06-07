@@ -81,13 +81,11 @@ export function UsageClient() {
     try {
       const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
       if (mainSeqRef.current !== seq) return;
-      if (signal?.aborted || result === null) return;
+      if (result === null) return;
       if ("error" in result) {
-        if (mainSeqRef.current !== seq) return;
         setData({ status: "error", message: result.error });
         return;
       }
-      if (mainSeqRef.current !== seq) return;
       setData({
         status: "ok",
         ops: aggregateByOperation(result.data),
@@ -105,6 +103,8 @@ export function UsageClient() {
     abortRef.current = ctrl;
     void loadMain(init.from, init.apiTo, ctrl.signal);
     return () => {
+      mainSeqRef.current++;
+      drillSeqRef.current++;
       abortRef.current?.abort();
       drillAbortRef.current?.abort();
     };
@@ -160,11 +160,9 @@ export function UsageClient() {
       if (drillSeqRef.current !== seq) return;
       if (result === null) return;
       if ("error" in result) {
-        if (drillSeqRef.current !== seq) return;
         setDrill({ status: "error", operation, message: result.error });
         return;
       }
-      if (drillSeqRef.current !== seq) return;
       setDrill({ status: "ok", operation, events: result.data });
     } catch {
       if (drillSeqRef.current !== seq) return;
@@ -324,7 +322,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={i}
+                                                key={`${e.created_at}-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

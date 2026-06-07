@@ -160,6 +160,25 @@ describe("aggregateByOperation", () => {
     expect(rows.find((r) => r.operation === "")).toBeDefined();
     expect(rows.find((r) => r.operation === "named")).toBeDefined();
   });
+
+  it("clamps all-negative billable_units to 0 (total is 0, count is 2)", () => {
+    const events = [
+      { operation: "op", billable_units: -5, created_at: "2024-01-01T00:00:00.000Z" },
+      { operation: "op", billable_units: -10, created_at: "2024-01-01T00:00:00.000Z" },
+    ];
+    const rows = aggregateByOperation(events);
+    expect(rows[0].total_billable_units).toBe(0);
+    expect(rows[0].event_count).toBe(2);
+  });
+
+  it("preserves zero billable_units (not clamped, counted)", () => {
+    const events = [
+      { operation: "op", billable_units: 0, created_at: "2024-01-01T00:00:00.000Z" },
+    ];
+    const rows = aggregateByOperation(events);
+    expect(rows[0].total_billable_units).toBe(0);
+    expect(rows[0].event_count).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
