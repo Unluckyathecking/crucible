@@ -51,14 +51,9 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // immediately, without a flash of empty state before the useEffect fires.
   const [data, setData] = useState<DataState>({ status: "loading" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
-  // Refs used by async callbacks so they always read the latest committed value
-  // without capturing a stale closure. Synced via useEffect (not render body) to
-  // be safe with React concurrent rendering.
-  const queryFromRef = useRef(queryFrom);
-  const queryToRef = useRef(queryTo);
+  // drillRef: synced via useEffect so toggle-off check in handleDrillDown sees the
+  // latest committed drill state without a stale render-closure snapshot.
   const drillRef = useRef(drill);
-  useEffect(() => { queryFromRef.current = queryFrom; }, [queryFrom]);
-  useEffect(() => { queryToRef.current = queryTo; }, [queryTo]);
   useEffect(() => { drillRef.current = drill; }, [drill]);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -132,18 +127,15 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     setRangeError(null);
     setQueryFrom(apiFrom);
     setQueryTo(apiTo);
-    // Sync refs immediately so handleDrillDown sees the new range right away.
-    // The useEffect syncs happen asynchronously (after render); without this, a
-    // drill-down click that arrives before the next effect run would read stale values.
-    queryFromRef.current = apiFrom;
-    queryToRef.current = apiTo;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     void loadMain(apiFrom, apiTo, ctrl.signal);
   }
 
-  async function handleDrillDown(operation: string) {
+  // from/to are passed by the click handler so they are captured from the current
+  // render's state values rather than read from refs, eliminating any stale-ref window.
+  async function handleDrillDown(operation: string, from: string, to: string) {
     // Read drill state from the ref for the toggle check so rapid clicks see the latest
     // value rather than a potentially stale render-closure snapshot.
     // Toggle off from any non-idle state (ok, loading, or error) for consistent UX.
@@ -161,7 +153,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const seq = ++drillSeqRef.current;
     setDrill({ status: "loading", operation });
     try {
-      const result = await fetchUsage(queryFromRef.current, queryToRef.current, operation, ctrl.signal);
+      const result = await fetchUsage(from, to, operation, ctrl.signal);
       // Stale-response guard: discard this result if a newer drill request superseded it
       // while the fetch was in-flight. Must be checked immediately after the await,
       // before any state mutation — mirrors the generationRef pattern in loadMain.
@@ -316,7 +308,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
                             </td>
                             <td className="py-2 text-right">
                               <button
-                                onClick={() => void handleDrillDown(row.operation)}
+                                onClick={() => void handleDrillDown(row.operation, queryFrom, queryTo)}
                                 disabled={isLoadingDrill}
                                 aria-expanded={isOpen}
                                 aria-label={`${isOpen ? "Hide" : "Show"} events for ${row.operation}`}
