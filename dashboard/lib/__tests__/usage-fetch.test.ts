@@ -146,11 +146,11 @@ describe("fetchUsage", () => {
     expect(url).not.toContain("operation");
   });
 
-  it("appends operation query param for empty-string operation (not silently dropped)", async () => {
+  it("omits operation query param for empty-string operation (server rejects empty param with 400)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, []));
     await fetchUsage("2024-01-01", "2024-02-01", "");
     const url = (vi.mocked(fetch).mock.calls[0][0] as string);
-    expect(url).toContain("operation=");
+    expect(url).not.toContain("operation");
   });
 
   it("sends X-Requested-With: XMLHttpRequest header", async () => {

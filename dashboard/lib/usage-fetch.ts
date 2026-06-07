@@ -11,7 +11,8 @@ export async function fetchUsage(
   signal?: AbortSignal,
 ): Promise<{ data: RawEvent[] } | { error: string } | null> {
   const params = new URLSearchParams({ from, to });
-  if (operation !== undefined) params.set("operation", operation);
+  // Skip empty string: server rejects operation= with 400 "must not be empty".
+  if (operation !== undefined && operation !== "") params.set("operation", operation);
   let res: Response;
   try {
     res = await fetch(`/api/usage?${params}`, {

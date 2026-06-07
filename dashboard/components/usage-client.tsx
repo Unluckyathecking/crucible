@@ -175,26 +175,24 @@ export function UsageClient() {
 
   const todayStr = utcTodayStr();
 
-  // Clamp to Infinity at each step so precision loss from float addition
-  // cannot corrupt the overflow sentinel before the display check below.
-  const totalUnits =
+  // BigInt accumulation matches the pattern in app/dashboard/page.tsx and avoids
+  // IEEE 754 precision loss before the MAX_SAFE_INTEGER overflow check.
+  const MAX_SAFE_BI = BigInt(Number.MAX_SAFE_INTEGER);
+  const totalUnitsBig =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => {
-          const s = a + r.total_billable_units;
-          return s > Number.MAX_SAFE_INTEGER ? Infinity : s;
-        }, 0)
-      : 0;
-  const totalCalls =
+      ? data.ops.reduce(
+          (a, r) => a + BigInt(Math.round(r.total_billable_units)),
+          0n,
+        )
+      : 0n;
+  const totalCallsBig =
     data.status === "ok"
-      ? data.ops.reduce((a, r) => {
-          const s = a + r.event_count;
-          return s > Number.MAX_SAFE_INTEGER ? Infinity : s;
-        }, 0)
-      : 0;
+      ? data.ops.reduce((a, r) => a + BigInt(r.event_count), 0n)
+      : 0n;
   const totalUnitsDisplay =
-    !Number.isFinite(totalUnits) ? "∞" : totalUnits.toLocaleString();
+    totalUnitsBig > MAX_SAFE_BI ? "∞" : Number(totalUnitsBig).toLocaleString();
   const totalCallsDisplay =
-    !Number.isFinite(totalCalls) ? "∞" : totalCalls.toLocaleString();
+    totalCallsBig > MAX_SAFE_BI ? "∞" : Number(totalCallsBig).toLocaleString();
 
   return (
     <div className="space-y-5">

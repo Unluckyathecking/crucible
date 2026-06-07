@@ -31,14 +31,14 @@ export interface OperationRow {
 
 // Parses a YYYY-MM-DD string as UTC midnight.
 // Returns Invalid Date for anything not matching the format or not a real calendar date.
-// The regex validates format (months 01-12, days 01-31); the overflow check below catches
-// dates valid in format but impossible in the calendar (e.g. 2023-02-29 → JS rolls to Mar 1).
+// Uses Date.UTC with numeric components so JS overflow-normalisation (e.g. Feb 30 → Mar 1)
+// is detectable: if any UTC component doesn't round-trip, the input date is impossible.
 export function parseDateParam(s: string): Date {
   if (!/^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s)) {
     return new Date(NaN);
   }
-  const d = new Date(s + "T00:00:00.000Z");
   const [y, m, day] = s.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, day));
   if (d.getUTCFullYear() !== y || d.getUTCMonth() + 1 !== m || d.getUTCDate() !== day) {
     return new Date(NaN);
   }
