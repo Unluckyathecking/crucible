@@ -5,13 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// stripePriceIDRE validates the format of a Stripe price ID fetched from the DB
+// before passing it to Stripe's API, matching the format Stripe assigns.
+var stripePriceIDRE = regexp.MustCompile(`^price_[a-zA-Z0-9_]+$`)
 
 // ErrPlanNotFound is returned by CreateCheckoutSession when the requested plan
 // does not exist in the plans table or has no stripe_price_id configured.
@@ -67,6 +73,9 @@ func (c *CheckoutClient) CreateCheckoutSession(ctx context.Context, customerID, 
 			return "", fmt.Errorf("%w: %q", ErrPlanNotFound, planID)
 		}
 		return "", fmt.Errorf("resolve plan %q: %w", planID, err)
+	}
+	if !stripePriceIDRE.MatchString(priceID) {
+		return "", fmt.Errorf("invalid stripe_price_id format for plan %q: %q", planID, priceID)
 	}
 	form := url.Values{}
 	form.Set("mode", "subscription")
@@ -128,7 +137,10 @@ func (c *CheckoutClient) postSession(ctx context.Context, endpoint string, form 
 	if err != nil {
 		return "", fmt.Errorf("stripe call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	var sr stripeSessionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {

@@ -5,7 +5,10 @@ export const ALLOWED_ORIGIN = (() => {
   try {
     return new URL(raw).origin;
   } catch {
-    return raw;
+    // raw may lack a scheme (e.g. "localhost:3001"); prepend http:// so origin
+    // comparisons and the secure-cookie check don't silently break.
+    const withScheme = raw.includes("://") ? raw : `http://${raw}`;
+    try { return new URL(withScheme).origin; } catch { return "http://localhost:3001"; }
   }
 })();
 

@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,30 @@ func TestCreateCheckoutSession(t *testing.T) {
 	assertField(t, capturedForm, "success_url", "https://example.com/success")
 	assertField(t, capturedForm, "cancel_url", "https://example.com/cancel")
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations: %v", err)
+	}
+}
+
+func TestCreateCheckoutSession_PlanNotFound(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT stripe_price_id FROM plans WHERE id`).
+		WithArgs("unknown").
+		WillReturnError(pgx.ErrNoRows)
+
+	c := &CheckoutClient{db: mock}
+	_, err = c.CreateCheckoutSession(context.Background(), "uuid", "unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown plan")
+	}
+	if !errors.Is(err, ErrPlanNotFound) {
+		t.Errorf("expected ErrPlanNotFound, got: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("mock expectations: %v", err)
 	}
