@@ -49,7 +49,7 @@ export function validateDateRange(
   if (from.getTime() > to.getTime()) {
     return { valid: false, error: "'From' must not be after 'to'" };
   }
-  // Mirrors route.ts:120 — strictly greater than, so exactly 90 days is allowed.
+  // Strictly greater than, so exactly MAX_USAGE_RANGE_DAYS is allowed; one day over is rejected.
   if (to.getTime() - from.getTime() > MAX_USAGE_RANGE_DAYS * MS_PER_DAY) {
     return {
       valid: false,

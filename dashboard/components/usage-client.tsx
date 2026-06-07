@@ -9,52 +9,15 @@ import {
   aggregateByOperation,
   MAX_USAGE_RANGE_DAYS,
   MS_PER_DAY,
-  type RawEvent,
   type DayBucket,
   type OperationRow,
+  type RawEvent,
 } from "@/lib/usage-format";
+import { fetchUsage } from "@/lib/usage-fetch";
 import { UsageChart } from "./usage-chart";
 
-async function fetchUsage(
-  from: string,
-  to: string,
-  operation?: string,
-  signal?: AbortSignal,
-): Promise<{ data: RawEvent[] } | { error: string } | null> {
-  const params = new URLSearchParams({ from, to });
-  if (operation) params.set("operation", operation);
-  let res: Response;
-  try {
-    res = await fetch(`/api/usage?${params}`, {
-      headers: { "X-Requested-With": "XMLHttpRequest" },
-      cache: "no-store",
-      signal,
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") return null;
-    return { error: "Network error — please check your connection." };
-  }
-  if (res.status === 403) {
-    // The header should always be sent; 403 means something stripped it (proxy, extension).
-    return { error: "Forbidden (403) — the X-Requested-With header was stripped by your environment." };
-  }
-  if (res.status === 401) {
-    return { error: "Session expired — please reload the page." };
-  }
-  if (!res.ok) {
-    const body: unknown = await res.json().catch(() => ({}));
-    if (typeof body !== "object" || body === null) {
-      return { error: `Server error (${res.status})` };
-    }
-    const err = (body as Record<string, unknown>).error;
-    return { error: typeof err === "string" ? err.replace(/[<>&]/g, "") : `Server error (${res.status})` };
-  }
-  const json: unknown = await res.json();
-  if (!Array.isArray(json)) {
-    return { error: "Unexpected response format from server" };
-  }
-  return { data: json as RawEvent[] };
-}
+// Default window matches the 30-day aggregate shown on the main dashboard.
+const DEFAULT_USAGE_WINDOW_DAYS = 30;
 
 function utcTodayStr(): string {
   const d = new Date();
@@ -75,7 +38,9 @@ function initRange(): { from: string; to: string } {
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
   );
   return {
-    from: toISODateString(new Date(todayUTC.getTime() - 29 * MS_PER_DAY)),
+    from: toISODateString(
+      new Date(todayUTC.getTime() - (DEFAULT_USAGE_WINDOW_DAYS - 1) * MS_PER_DAY),
+    ),
     to: toISODateString(todayUTC),
   };
 }
@@ -102,12 +67,24 @@ export function UsageClient() {
   const [queryTo, setQueryTo] = useState(() => toApiTo(init.to));
   const [data, setData] = useState<DataState>({ status: "idle" });
   const [drill, setDrill] = useState<DrillState>({ status: "none" });
+
+  const mountedRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  const drillAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
+    if (!mountedRef.current) return;
     setData({ status: "loading" });
     setDrill({ status: "none" });
     const result = await fetchUsage(apiFrom, apiTo, undefined, signal);
+    if (!mountedRef.current) return;
     if (result === null) return;
     if ("error" in result) {
       setData({ status: "error", message: result.error });
@@ -131,6 +108,7 @@ export function UsageClient() {
   }, []);
 
   function handleApply() {
+    setDrill({ status: "none" });
     const fromDate = parseDateParam(displayFrom);
     const toDate = parseDateParam(displayTo);
     if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
@@ -156,13 +134,16 @@ export function UsageClient() {
   }
 
   async function handleDrillDown(operation: string) {
-    if (drill.status === "loading") return;
     if (drill.status === "ok" && drill.operation === operation) {
       setDrill({ status: "none" });
       return;
     }
+    drillAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    drillAbortRef.current = ctrl;
     setDrill({ status: "loading", operation });
-    const result = await fetchUsage(queryFrom, queryTo, operation);
+    const result = await fetchUsage(queryFrom, queryTo, operation, ctrl.signal);
+    if (ctrl.signal.aborted) return;
     if (result === null) return;
     if ("error" in result) {
       setDrill({ status: "error", operation, message: result.error });
