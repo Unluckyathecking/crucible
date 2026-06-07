@@ -62,6 +62,8 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
   // generationRef: monotonically increasing, incremented on each loadMain call.
   // A stale fetch completing after a newer one has started is discarded: gen !== generationRef.current.
   const generationRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const loadMain = useCallback(async (apiFrom: string, apiTo: string, signal?: AbortSignal) => {
     const gen = ++generationRef.current;
@@ -82,7 +84,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
         buckets: bucketByDay(result.data),
       });
     } catch (err) {
-      if (gen !== generationRef.current) return;
+      if (!mountedRef.current || gen !== generationRef.current) return;
       setData({ status: "error", message: err instanceof Error ? err.message : "Failed to load usage data" });
     }
   }, []);
@@ -99,7 +101,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleApply() {
+  const handleApply = useCallback(() => {
     // Invalidate any in-flight drill-down before clearing state so a resolving
     // fetch cannot overwrite the "none" state with stale events.
     drillSeqRef.current++;
@@ -136,7 +138,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     void loadMain(apiFrom, apiTo, ctrl.signal);
-  }
+  }, [displayFrom, displayTo, loadMain]);
 
   const handleDrillDown = useCallback(async (operation: string) => {
     const from = queryFrom;
@@ -175,14 +177,16 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
     }
   }, [queryFrom, queryTo]);
 
+  // UTC midnight of today, derived from Date.now() so timezone offset doesn't shift the date.
+  const todayUTCStr = useMemo(() => {
+    const now = new Date(Date.now());
+    return toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+  }, []);
+
   const fromMax = useMemo(() => {
     const td = parseDateParam(displayTo);
-    if (isNaN(td.getTime())) {
-      const now = new Date();
-      return toISODateString(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
-    }
-    return displayTo;
-  }, [displayTo]);
+    return isNaN(td.getTime()) ? todayUTCStr : displayTo;
+  }, [displayTo, todayUTCStr]);
 
   const toMin = useMemo(() => {
     const fd = parseDateParam(displayFrom);
@@ -233,7 +237,7 @@ export function UsageClient({ initialFrom, initialTo, initialApiTo }: UsageClien
               type="date"
               value={displayTo}
               min={toMin}
-              max={toISODateString(new Date())}
+              max={todayUTCStr}
               onChange={(e) => {
                 setDisplayTo(e.target.value);
                 setRangeError(null);
