@@ -19,9 +19,9 @@ function isRawEvent(item: unknown): item is RawEvent {
   const r = item as Record<string, unknown>;
   return (
     typeof r.operation === "string" &&
+    typeof r.created_at === "string" &&
     typeof r.billable_units === "number" &&
-    Number.isFinite(r.billable_units) &&
-    typeof r.created_at === "string"
+    Number.isFinite(r.billable_units)
   );
 }
 
