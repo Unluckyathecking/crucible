@@ -296,7 +296,7 @@ export function UsageClient() {
                             </td>
                           </tr>
                           {(isOpen || hasError) && (
-                            <tr className="bg-zinc-50">
+                            <tr key={`${row.operation}-drill`} className="bg-zinc-50">
                               <td colSpan={4} className="px-2 py-3">
                                 {hasError && drill.status === "error" && (
                                   <p className="text-sm text-red-600">{sanitizeError(drill.message)}</p>
@@ -322,7 +322,7 @@ export function UsageClient() {
                                             const ts = new Date(e.created_at);
                                             return (
                                               <tr
-                                                key={`${e.created_at}-${i}`}
+                                                key={`${e.created_at}-${e.operation}-${i}`}
                                                 className="border-b border-zinc-100"
                                               >
                                                 <td className="py-1 pr-4 font-mono">

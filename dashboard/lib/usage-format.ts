@@ -37,8 +37,8 @@ export function parseDateParam(s: string): Date {
     return new Date(NaN);
   }
   const d = new Date(s + "T00:00:00.000Z");
-  const [, m, day] = s.split("-").map(Number);
-  if (d.getUTCMonth() + 1 !== m || d.getUTCDate() !== day) {
+  const [y, m, day] = s.split("-").map(Number);
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() + 1 !== m || d.getUTCDate() !== day) {
     return new Date(NaN);
   }
   return d;

@@ -52,12 +52,13 @@ export async function fetchUsage(
     return { error: "Unexpected response format from server" };
   }
   if (!json.every((item): item is RawEvent => {
+    if (item === null || typeof item !== "object") return false;
     const r = item as Record<string, unknown>;
     return (
-      typeof r?.operation === "string" &&
-      typeof r?.billable_units === "number" &&
+      typeof r.operation === "string" &&
+      typeof r.billable_units === "number" &&
       Number.isFinite(r.billable_units) &&
-      typeof r?.created_at === "string"
+      typeof r.created_at === "string"
     );
   })) {
     return { error: "Unexpected response format from server" };
