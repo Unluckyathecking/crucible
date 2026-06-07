@@ -345,9 +345,10 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 		return nil
 	}
 
-	// Look up our customer UUID so we can invalidate the cache after the update.
+	// LOWER() on both sides guards against case-variation between the email stored
+	// in our DB (from the OAuth provider) and the email Stripe recorded at checkout.
 	var customerID string
-	if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE email = $1`, obj.Email).Scan(&customerID); err != nil {
+	if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE LOWER(email) = LOWER($1)`, obj.Email).Scan(&customerID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Customer not in our DB yet (e.g. Stripe test event for unknown email). Safe to skip.
 			log.Info().Str("email", obj.Email).Msg("customer.created: no matching customer row; skipping link")

@@ -103,7 +103,7 @@ func TestHandleSubscriptionUpsert(t *testing.T) {
 				WithArgs(tc.priceID).
 				WillReturnRows(mock.NewRows([]string{"id"}).AddRow(tc.planID))
 
-			mock.ExpectExec(`UPDATE customers`).
+			mock.ExpectExec(`UPDATE customers SET plan_id`).
 				WithArgs(tc.planID, tc.customer).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -468,8 +468,8 @@ func TestHandleCustomerCreated(t *testing.T) {
 	}
 	defer mock.Close()
 
-	// QueryRow to fetch our customer UUID by email.
-	mock.ExpectQuery(`SELECT id FROM customers WHERE email`).
+	// QueryRow to fetch our customer UUID by email (case-insensitive LOWER comparison).
+	mock.ExpectQuery(`SELECT id FROM customers WHERE LOWER`).
 		WithArgs(email).
 		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(customerID))
 
