@@ -307,8 +307,10 @@ func Build() Document {
 						"409": errResp("Idempotency conflict — concurrent request with same key"),
 						"422": errResp("Idempotency key reused with a different request body"),
 						"429": {
-							Description: "Rate limited or quota exceeded",
-							Headers:     rateLimitAndQuotaHeaders(),
+							Description: "Rate limited or quota exceeded. " +
+								"RateLimit-* headers are present on all 429s (ratelimit middleware runs before quota). " +
+								"X-Quota-* headers are present only when the quota middleware triggered the 429.",
+							Headers: rateLimitAndQuotaHeaders(),
 							Content: map[string]MediaType{
 								contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
 							},

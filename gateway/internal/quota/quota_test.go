@@ -93,7 +93,7 @@ func TestReserveN_TableDriven(t *testing.T) {
 
 			tr := New(rdb)
 			for i := 0; i < tt.reserves; i++ {
-				ok, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
+				ok, _, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
 				if err != nil {
 					t.Fatalf("call %d: %v", i, err)
 				}
@@ -150,7 +150,7 @@ func TestRefundN_TableDriven(t *testing.T) {
 
 			tr := New(rdb)
 			for i := 0; i < tt.reserves; i++ {
-				ok, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
+				ok, _, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
 				if err != nil || !ok {
 					t.Fatalf("reserve %d: ok=%v err=%v", i, ok, err)
 				}
@@ -175,7 +175,7 @@ func TestTracker_FailOpenOnRedisError(t *testing.T) {
 	tr := New(rdb)
 	cust := uuid.New()
 
-	_, _, _, err := tr.Reserve(context.Background(), cust, 10)
+	_, _, _, _, err := tr.Reserve(context.Background(), cust, 10)
 	if err == nil {
 		t.Error("Reserve should return error when Redis is down")
 	}
@@ -199,7 +199,7 @@ func TestRefundAt_MonthBoundary_UsesOriginalKey(t *testing.T) {
 	key := monthKey(cust, now)
 	t.Cleanup(func() { rdb.Del(context.Background(), key) })
 
-	ok, reservedKey, _, err := tr.Reserve(context.Background(), cust, 10)
+	ok, reservedKey, _, _, err := tr.Reserve(context.Background(), cust, 10)
 	if err != nil || !ok {
 		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
 	}
@@ -319,7 +319,7 @@ func TestQuotaMiddleware_RejectsWhenOverCap(t *testing.T) {
 
 	planCap := plans.MonthlyCap(context.Background(), "free")
 	for i := int64(0); i < planCap; i++ {
-		ok, _, _, err := tr.Reserve(context.Background(), cust, planCap)
+		ok, _, _, _, err := tr.Reserve(context.Background(), cust, planCap)
 		if err != nil || !ok {
 			t.Fatalf("pre-fill reserve %d: ok=%v err=%v", i, ok, err)
 		}

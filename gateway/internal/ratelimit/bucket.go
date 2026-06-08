@@ -94,6 +94,10 @@ func (b *Bucket) Allow(ctx context.Context, customerID string, perMinute int) (i
 		observability.RateLimitFailOpenTotal.Inc()
 		return noRemaining, nil
 	}
+	if len(res) != 2 {
+		observability.RateLimitFailOpenTotal.Inc()
+		return noRemaining, nil
+	}
 	allowed, ok1 := res[0].(int64)
 	remaining, ok2 := res[1].(int64)
 	if !ok1 || !ok2 {

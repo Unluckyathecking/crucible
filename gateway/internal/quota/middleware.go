@@ -55,7 +55,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				next.ServeHTTP(w, r)
 				return
 			}
-			admitted, reservedKey, current, err := t.Reserve(r.Context(), key.Customer.ID, cap)
+			admitted, reservedKey, current, resetAt, err := t.Reserve(r.Context(), key.Customer.ID, cap)
 			if err != nil {
 				// Fail-open and let the request through. No reliable count, so omit quota
 				// headers to avoid emitting fabricated values. Count it so operators can alert.
@@ -75,7 +75,8 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			if !admitted {
 				// Set all headers before writing the status code. Any Header().Set call after
 				// WriteHeader is silently ignored by http.ResponseWriter.
-				httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
+				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
+				httputil.WriteQuotaHeaders(w, cap, remaining, resetAt)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":{"code":"QUOTA_EXCEEDED","message":"monthly usage quota reached","retryable":false}}`))
@@ -84,7 +85,8 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 
 			// Reserve succeeded — set quota headers before the inner handler writes the
 			// response. Headers must be set before the first WriteHeader/Write call.
-			httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
+			// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
+			httputil.WriteQuotaHeaders(w, cap, remaining, resetAt)
 
 			// Plant a record-signal so the recorder can tell us whether it actually wrote
 			// a usage row downstream.

@@ -77,7 +77,7 @@ func TestTrackerAdd_TableDriven(t *testing.T) {
 
 			// Pre-fill via Reserve so there's a baseline counter.
 			for i := int64(0); i < tt.reserves; i++ {
-				ok, _, _, err := tr.Reserve(context.Background(), cust, 9999)
+				ok, _, _, _, err := tr.Reserve(context.Background(), cust, 9999)
 				if err != nil || !ok {
 					t.Fatalf("pre-fill reserve %d: ok=%v err=%v", i, ok, err)
 				}
