@@ -26,12 +26,13 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			}
 			limit := plans.RatePerMinute(r.Context(), key.Customer.Plan)
 			remaining, err := bucket.Allow(r.Context(), key.Customer.ID.String(), limit)
+			// Capture once after Allow returns so both 429 and success paths use the
+			// same instant for RateLimit-Reset — eliminates any split-millisecond drift
+			// between the two branches.
+			resetAt := time.Now().Add(time.Minute)
 			// Allow returns only nil or ErrLimited; errors.Is(nil, ErrLimited) is false.
 			if errors.Is(err, ErrLimited) {
 				observability.RateLimitedTotal.Inc()
-				// resetAt is captured here so RateLimit-Reset and Retry-After are both
-				// derived from the same instant and stay mutually consistent.
-				resetAt := time.Now().Add(time.Minute)
 				// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
@@ -45,7 +46,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			// Emit rate-limit headers only when the count is reliable (not an unlimited
 			// plan and not a Redis-error fail-open path — both return noRemaining).
 			if remaining != noRemaining {
-				httputil.SetRateLimitHeaders(w, limit, remaining, time.Now().Add(time.Minute))
+				httputil.SetRateLimitHeaders(w, limit, remaining, resetAt)
 			}
 			next.ServeHTTP(w, r)
 		})
