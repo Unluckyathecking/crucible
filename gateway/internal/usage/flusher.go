@@ -166,7 +166,6 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
-	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -177,14 +176,16 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
+			rows.Close()
 			return fmt.Errorf("scan pending batch row: %w", err)
 		}
 		batches = append(batches, p)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return fmt.Errorf("iterate pending: %w", err)
 	}
-	rows.Close() // explicit close before Stripe calls so the pool connection is returned promptly
+	rows.Close() // release connection before Stripe calls
 
 	var failed int
 	for _, b := range batches {
@@ -234,7 +235,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -245,14 +245,16 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	for rows.Next() {
 		var b claimedBatch
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
+			rows.Close()
 			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
 		batches = append(batches, b)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
-	rows.Close() // explicit close before Stripe calls so the pool connection is returned promptly
+	rows.Close() // release connection before Stripe calls
 
 	var failed int
 	for _, b := range batches {
