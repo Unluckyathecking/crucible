@@ -75,9 +75,7 @@ func (f *Flusher) Run(ctx context.Context) {
 			if err := f.claimAndEmitNewBatches(ctx); err != nil {
 				log.Warn().Err(err).Msg("flusher: claim-new phase failed; will retry next tick")
 			}
-			if ctx.Err() == nil {
-				f.setBacklogGauges(ctx)
-			}
+			f.setBacklogGauges(ctx)
 		}
 	}
 }

@@ -37,6 +37,7 @@ func TestStripeMeter_implementsInterface(t *testing.T) {
 }
 
 func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
+	// Must not call t.Parallel() — reads package-level promauto gauges shared process-wide.
 	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without
 	// touching any gauges.
 	gauges := []struct {
