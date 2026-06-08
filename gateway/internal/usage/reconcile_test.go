@@ -297,6 +297,8 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
 	stripeID := "cus_recerr_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
@@ -326,8 +328,6 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert phase-B row: %v", err)
 	}
-
-	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	// Build a second pool then immediately close it so all queries fail.
 	// Fatalf (not Skipf) here — a working DSN is required to construct the closed pool;

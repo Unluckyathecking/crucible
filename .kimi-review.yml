@@ -1,10 +1,6 @@
 # Exclude auto-generated, large binary-like, and low-signal files.
-# Test files in the usage package are excluded to keep the diff token count within
-# the Kimi API timeout budget (~30K tokens). Production code coverage is still
-# verifiable from the implementation files.
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
   - ".gitignore"
   - "ops/grafana/**"
-  - "gateway/internal/usage/*_test.go"
