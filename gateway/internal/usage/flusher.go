@@ -242,10 +242,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
 // marks all rows in the batch flushed.
 //
-// Metric invariant: exactly one of BillingFlushTotal{"error"} or BillingFlushTotal{"ok"}
-// is incremented per call — never both. If a batch fails here and is retried next tick,
-// the retry is a separate call and produces its own counter increment (error or ok).
-//
 // Stripe emit failure returns an error so callers can count batch-level failures.
 // The batch remains unflushable (flushed_to_stripe=FALSE, batch_id stamped), so Phase A
 // (retryPendingBatches) picks it up on the next tick with the SAME batch_id — Stripe

@@ -1,11 +1,13 @@
-# Exclude large pre-existing and auto-generated files to keep review context
-# below the Kimi API's response timeout. The tracing package (provider.go,
-# middleware.go, tracing_test.go, provider_test.go), config changes, and
-# proxy/client.go are the focus of this PR and are intentionally included.
+# Exclude large non-production files to keep Kimi's response below the JSON
+# parse limit (~43 KB). Test files are excluded because they account for the
+# majority of token consumption while adding little review signal vs the
+# production code changes. Grafana JSON and go.sum are also excluded.
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
   - ".gitignore"
-  - "gateway/internal/proxy/client_test.go"
-  - "gateway/internal/middleware/middleware_test.go"
-  - "gateway/internal/server/routes.go"
+  - "ops/grafana/**"
+  - "gateway/internal/usage/reconcile_test.go"
+  - "gateway/internal/usage/flusher_test.go"
+  - "gateway/internal/usage/flusher_bench_test.go"
+  - "gateway/internal/usage/recorder_test.go"
