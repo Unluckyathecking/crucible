@@ -91,6 +91,10 @@ return {1, v}
 // customer's monthly cap without any usage_events row to bill — see PR #5 P1.
 func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, string, int64, time.Time, error) {
 	if cap <= 0 {
+		// Unlimited plan: sentinel values returned. Callers MUST check cap > 0
+		// before using current or resetAt — passing time.Time{} to SetQuotaHeaders
+		// would emit X-Quota-Reset: 0 (Unix epoch). The quota middleware guards this
+		// by checking cap == 0 and returning before calling Reserve.
 		return true, "", 0, time.Time{}, nil
 	}
 	// Use UTC throughout so the key (which monthKey() builds in UTC) and the expiry
