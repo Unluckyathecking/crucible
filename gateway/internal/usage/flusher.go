@@ -263,7 +263,7 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	// JOIN on stripe_customer_id for defense-in-depth: a hypothetical batch_id UUID
 	// collision must not mark another customer's rows as flushed.
-	if _, err := f.db.Exec(ctx, `
+	tag, err := f.db.Exec(ctx, `
 		UPDATE usage_events
 		SET flushed_to_stripe = TRUE
 		FROM customers
@@ -271,9 +271,18 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		  AND usage_events.flushed_to_stripe = FALSE
 		  AND usage_events.customer_id = customers.id
 		  AND customers.stripe_customer_id = $2
-	`, batchID, stripeCustomerID); err != nil {
+	`, batchID, stripeCustomerID)
+	if err != nil {
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Zero rows updated: the customer may have been unlinked from Stripe between
+		// emit and mark, or there is a data inconsistency. The batch stays in Phase A's
+		// retry queue (batch_id stamped, flushed_to_stripe=FALSE); Stripe deduplicates.
+		log.Warn().Str("batch", batchID.String()).Str("stripe_customer_id", stripeCustomerID).
+			Msg("flusher: mark-flushed affected 0 rows; possible customer unlink race")
+		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
 	}
 	return nil
 }
