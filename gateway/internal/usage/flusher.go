@@ -81,7 +81,7 @@ func (f *Flusher) Run(ctx context.Context) {
 // Queries run sequentially, each with its own bounded timeout, so a failure in
 // BacklogStats does not prevent UnbillableUsage from running.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
-	if f.reconciler == nil || ctx.Err() != nil {
+	if f.reconciler == nil {
 		return
 	}
 
