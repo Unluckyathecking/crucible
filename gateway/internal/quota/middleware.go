@@ -51,7 +51,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 			cap := plans.MonthlyCap(r.Context(), key.Customer.Plan)
 			if cap == 0 {
-				// 0 means unlimited (e.g. Business tier); no quota headers per spec.
+				// 0 means unlimited (e.g. Business tier); omit quota headers to avoid implying a cap.
 				next.ServeHTTP(w, r)
 				return
 			}

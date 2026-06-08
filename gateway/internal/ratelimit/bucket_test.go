@@ -64,7 +64,6 @@ func TestAllow_LimitedRequestsDoNotResetWindow(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	cust := fmt.Sprintf("test-noslip-%d", time.Now().UnixNano())
-	rdb.Del(ctx, "rl:"+cust)
 	defer rdb.Del(ctx, "rl:"+cust)
 
 	b := New(rdb)
@@ -84,7 +83,7 @@ func TestAllow_ZeroLimitMeansUnlimited(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	cust := fmt.Sprintf("test-unl-%d", time.Now().UnixNano())
-	rdb.Del(ctx, "rl:"+cust)
+	defer rdb.Del(ctx, "rl:"+cust)
 
 	b := New(rdb)
 	for i := 0; i < 1000; i++ {
@@ -104,7 +103,6 @@ func TestAllow_RemainingDecrementsAndReachesZero(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	cust := fmt.Sprintf("test-decrement-%d", time.Now().UnixNano())
-	rdb.Del(ctx, "rl:"+cust)
 	defer rdb.Del(ctx, "rl:"+cust)
 
 	b := New(rdb)

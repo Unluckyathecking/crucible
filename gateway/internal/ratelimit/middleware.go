@@ -29,15 +29,14 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			if err != nil {
 				if errors.Is(err, ErrLimited) {
 					observability.RateLimitedTotal.Inc()
-					// Compute resetAt here so RateLimit-Reset and Retry-After are anchored
-					// to the same instant and stay consistent with each other.
-					resetAt := time.Now().Add(windowSeconds * time.Second)
+					// resetAt is captured here so RateLimit-Reset and Retry-After are both
+					// derived from the same instant and stay mutually consistent.
+					resetAt := time.Now().Add(time.Minute)
 					// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
 					if limit > 0 {
 						httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 					}
 					w.Header().Set("Content-Type", "application/json")
-					// Derive from windowSeconds so this stays in sync if the constant changes.
 					w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
 					w.WriteHeader(http.StatusTooManyRequests)
 					_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"rate limit exceeded","retryable":true}}`))
