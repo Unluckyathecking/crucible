@@ -283,11 +283,15 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		observability.BillingUnbillableUnits.Set(prevUnbillable)
 		observability.BillingUnbillableRows.Set(prevUnbillableRows)
 	})
-	observability.BillingBacklogUnits.Set(0)
-	observability.BillingBacklogRows.Set(0)
-	observability.BillingBacklogOldestAgeSeconds.Set(0)
-	observability.BillingUnbillableUnits.Set(0)
-	observability.BillingUnbillableRows.Set(0)
+	// Set to non-zero sentinels so we can prove the error path PRESERVES these values
+	// rather than resetting them to 0. If the code incorrectly did Set(0) on error,
+	// the assertions below would catch it.
+	const sentinel = float64(42)
+	observability.BillingBacklogUnits.Set(sentinel)
+	observability.BillingBacklogRows.Set(sentinel)
+	observability.BillingBacklogOldestAgeSeconds.Set(sentinel)
+	observability.BillingUnbillableUnits.Set(sentinel)
+	observability.BillingUnbillableRows.Set(sentinel)
 
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -352,23 +356,24 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
-	// Both queries fail (bad pool); error path leaves gauges unchanged, so they
-	// remain at 0 (pre-set above). Gauges are NOT reset to 0 on error — that would
-	// make a DB timeout indistinguishable from an empty backlog and clear active alerts.
-	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != 0 {
-		t.Errorf("BillingBacklogUnits = %g after reconcile error, want 0", got)
+	// Both queries fail (bad pool); error path must PRESERVE gauge values at the sentinel
+	// (42). If the code incorrectly reset them to 0, the assertions below would fail.
+	// Resetting to 0 on error makes a DB timeout indistinguishable from an empty backlog
+	// and would clear active Prometheus alerts — so we prove that does NOT happen.
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != sentinel {
+		t.Errorf("BillingBacklogUnits = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != 0 {
-		t.Errorf("BillingBacklogRows = %g after reconcile error, want 0", got)
+	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != sentinel {
+		t.Errorf("BillingBacklogRows = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != 0 {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want 0", got)
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != sentinel {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != 0 {
-		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want 0", got)
+	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != sentinel {
+		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != 0 {
-		t.Errorf("BillingUnbillableRows = %g after reconcile error, want 0", got)
+	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != sentinel {
+		t.Errorf("BillingUnbillableRows = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
 	}
 
 	// Both phases must have fired independently of the reconcile failure.
