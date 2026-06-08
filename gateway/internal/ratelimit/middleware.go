@@ -30,7 +30,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 					observability.RateLimitedTotal.Inc()
 					// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
 					if limit > 0 {
-						httputil.WriteRateLimitHeaders(w, limit, 0, time.Now().Add(windowSeconds*time.Second))
+						httputil.SetRateLimitHeaders(w, limit, 0, time.Now().Add(windowSeconds*time.Second))
 					}
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("Retry-After", "60")
@@ -42,7 +42,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			// Emit rate-limit headers only when the count is reliable (not an unlimited
 			// plan and not a Redis-error fail-open path — both return noRemaining).
 			if remaining != noRemaining {
-				httputil.WriteRateLimitHeaders(w, limit, remaining, time.Now().Add(windowSeconds*time.Second))
+				httputil.SetRateLimitHeaders(w, limit, remaining, time.Now().Add(windowSeconds*time.Second))
 			}
 			next.ServeHTTP(w, r)
 		})

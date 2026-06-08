@@ -76,7 +76,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				// Set all headers before writing the status code. Any Header().Set call after
 				// WriteHeader is silently ignored by http.ResponseWriter.
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
-				httputil.WriteQuotaHeaders(w, cap, remaining, resetAt)
+				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":{"code":"QUOTA_EXCEEDED","message":"monthly usage quota reached","retryable":false}}`))
@@ -86,7 +86,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			// Reserve succeeded — set quota headers before the inner handler writes the
 			// response. Headers must be set before the first WriteHeader/Write call.
 			// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
-			httputil.WriteQuotaHeaders(w, cap, remaining, resetAt)
+			httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
 
 			// Plant a record-signal so the recorder can tell us whether it actually wrote
 			// a usage row downstream.

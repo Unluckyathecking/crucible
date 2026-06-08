@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-func TestWriteRateLimitHeaders_SetsAllSixHeaders(t *testing.T) {
+func TestSetRateLimitHeaders_SetsAllSixHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	limit := 100
 	remaining := 42
 	resetAt := time.Unix(1700000000, 0)
 
-	WriteRateLimitHeaders(w, limit, remaining, resetAt)
+	SetRateLimitHeaders(w, limit, remaining, resetAt)
 
 	h := w.Header()
 	tests := [][2]string{
@@ -31,9 +31,9 @@ func TestWriteRateLimitHeaders_SetsAllSixHeaders(t *testing.T) {
 	}
 }
 
-func TestWriteRateLimitHeaders_RemainingZero(t *testing.T) {
+func TestSetRateLimitHeaders_RemainingZero(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteRateLimitHeaders(w, 60, 0, time.Now().Add(60*time.Second))
+	SetRateLimitHeaders(w, 60, 0, time.Now().Add(60*time.Second))
 
 	if got := w.Header().Get("RateLimit-Remaining"); got != "0" {
 		t.Errorf("RateLimit-Remaining = %q, want 0", got)
@@ -43,10 +43,10 @@ func TestWriteRateLimitHeaders_RemainingZero(t *testing.T) {
 	}
 }
 
-func TestWriteRateLimitHeaders_ResetIsPositiveUnixTimestamp(t *testing.T) {
+func TestSetRateLimitHeaders_ResetIsPositiveUnixTimestamp(t *testing.T) {
 	w := httptest.NewRecorder()
 	resetAt := time.Now().Add(60 * time.Second)
-	WriteRateLimitHeaders(w, 100, 50, resetAt)
+	SetRateLimitHeaders(w, 100, 50, resetAt)
 
 	for _, hdr := range []string{"RateLimit-Reset", "X-RateLimit-Reset"} {
 		v := w.Header().Get(hdr)
@@ -64,9 +64,9 @@ func TestWriteRateLimitHeaders_ResetIsPositiveUnixTimestamp(t *testing.T) {
 	}
 }
 
-func TestWriteRateLimitHeaders_AliasesMatchCanonicals(t *testing.T) {
+func TestSetRateLimitHeaders_AliasesMatchCanonicals(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteRateLimitHeaders(w, 200, 77, time.Unix(1800000000, 0))
+	SetRateLimitHeaders(w, 200, 77, time.Unix(1800000000, 0))
 
 	h := w.Header()
 	pairs := [][2]string{
@@ -81,13 +81,13 @@ func TestWriteRateLimitHeaders_AliasesMatchCanonicals(t *testing.T) {
 	}
 }
 
-func TestWriteQuotaHeaders_SetsAllThreeHeaders(t *testing.T) {
+func TestSetQuotaHeaders_SetsAllThreeHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	cap := int64(1000)
 	remaining := int64(750)
 	resetAt := time.Unix(1700000000, 0)
 
-	WriteQuotaHeaders(w, cap, remaining, resetAt)
+	SetQuotaHeaders(w, cap, remaining, resetAt)
 
 	h := w.Header()
 	tests := [][2]string{
@@ -102,9 +102,9 @@ func TestWriteQuotaHeaders_SetsAllThreeHeaders(t *testing.T) {
 	}
 }
 
-func TestWriteQuotaHeaders_RemainingZero(t *testing.T) {
+func TestSetQuotaHeaders_RemainingZero(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteQuotaHeaders(w, 1000, 0, time.Now().Add(24*time.Hour))
+	SetQuotaHeaders(w, 1000, 0, time.Now().Add(24*time.Hour))
 
 	if got := w.Header().Get("X-Quota-Remaining"); got != "0" {
 		t.Errorf("X-Quota-Remaining = %q, want 0", got)
