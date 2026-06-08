@@ -31,7 +31,7 @@ func New(cache *redis.Client) *Bucket { return &Bucket{cache: cache} }
 
 const windowSeconds = 60
 
-// allowScript runs as a single atomic Redis transaction. Logic:
+// allowScript runs as an atomic Lua script (EVAL — not a MULTI/EXEC transaction). Logic:
 //  1. ZREMRANGEBYSCORE removes timestamps older than now-window.
 //  2. ZCARD returns the count of remaining (in-window) timestamps.
 //  3. If count < limit, ZADD (score=now, member=unique-id) and return {1, remaining}.
