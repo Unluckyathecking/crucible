@@ -75,8 +75,13 @@ func TestSetRateLimitHeaders_AliasesMatchCanonicals(t *testing.T) {
 		{"RateLimit-Reset", "X-RateLimit-Reset"},
 	}
 	for _, p := range pairs {
-		if h.Get(p[0]) != h.Get(p[1]) {
-			t.Errorf("%s = %q, %s = %q (aliases must match)", p[0], h.Get(p[0]), p[1], h.Get(p[1]))
+		canon := h.Get(p[0])
+		alias := h.Get(p[1])
+		if canon == "" {
+			t.Errorf("canonical header %s is empty", p[0])
+		}
+		if canon != alias {
+			t.Errorf("%s = %q, %s = %q (aliases must match)", p[0], canon, p[1], alias)
 		}
 	}
 }

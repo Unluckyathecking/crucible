@@ -27,7 +27,7 @@ func TestAllow_BelowLimitPasses(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	cust := fmt.Sprintf("test-below-%d", time.Now().UnixNano())
-	rdb.Del(ctx, "rl:"+cust) // clean state
+	defer rdb.Del(ctx, "rl:"+cust) // clean state
 
 	b := New(rdb)
 	for i := 0; i < 5; i++ {
@@ -41,7 +41,6 @@ func TestAllow_OverLimitRejects(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	cust := fmt.Sprintf("test-over-%d", time.Now().UnixNano())
-	rdb.Del(ctx, "rl:"+cust)
 	defer rdb.Del(ctx, "rl:"+cust)
 
 	b := New(rdb)
