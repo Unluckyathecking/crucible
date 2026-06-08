@@ -87,6 +87,9 @@ func (p *PlanCache) MonthlyCap(ctx context.Context, planID string) int64 {
 
 func (p *PlanCache) reload(ctx context.Context) {
 	p.mu.Lock()
+	// Single-flight guard: only one goroutine reloads at a time.
+	// Get() may schedule multiple background reloads if several requests race to
+	// observe stale=true; this check ensures only the first proceeds.
 	if p.loading {
 		p.mu.Unlock()
 		return

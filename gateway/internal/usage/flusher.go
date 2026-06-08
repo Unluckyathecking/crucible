@@ -3,10 +3,13 @@ package usage
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -16,6 +19,23 @@ import (
 type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
+
+// reconcileQueryTimeout caps each backlog/unbillable reconcile query. Both queries run
+// concurrently in setBacklogGauges, so worst-case reconcile overhead is 1 × 5 s out of
+// the default tick period.
+const reconcileQueryTimeout = 5 * time.Second
+
+// reconcilerIface lets tests inject a deterministic stub in place of a real *Reconciler.
+type reconcilerIface interface {
+	BacklogStats(context.Context) (int64, int64, float64, error)
+	UnbillableUsage(context.Context) (int64, int64, error)
+}
+
+// batchPageSize limits the number of customers processed per flusher tick in each phase.
+// Calibrated against Stripe's meter_event API: 100 customers × 1 call per 30 s tick
+// ≈ 3.3 calls/s, well under typical rate limits. At ~50 ms p95 per call, worst-case
+// serial latency is 5 s, leaving headroom inside the tick period.
+const batchPageSize = 100
 
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
 //
@@ -35,13 +55,35 @@ type StripeMeter interface {
 // derived the idem-key from changing row id ranges, which caused billing drift after a
 // partial failure.
 type Flusher struct {
-	db     *pgxpool.Pool
-	stripe StripeMeter
-	period time.Duration
+	db                  *pgxpool.Pool
+	stripe              StripeMeter
+	period              time.Duration
+	reconciler          reconcilerIface
+	reconcileErrCounter prometheus.Counter // injectable for tests; defaults to observability.BillingReconcileErrorsTotal
+	backlogUnits        prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogUnits
+	backlogRows         prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogRows
+	backlogOldestAge    prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogOldestAgeSeconds
+	unbillableUnits     prometheus.Gauge   // injectable for tests; defaults to observability.BillingUnbillableUnits
+	unbillableRows      prometheus.Gauge   // injectable for tests; defaults to observability.BillingUnbillableRows
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
-	return &Flusher{db: db, stripe: s, period: period}
+	var rec reconcilerIface
+	if db != nil {
+		rec = NewReconciler(db)
+	}
+	return &Flusher{
+		db:                  db,
+		stripe:              s,
+		period:              period,
+		reconciler:          rec,
+		reconcileErrCounter: observability.BillingReconcileErrorsTotal,
+		backlogUnits:        observability.BillingBacklogUnits,
+		backlogRows:         observability.BillingBacklogRows,
+		backlogOldestAge:    observability.BillingBacklogOldestAgeSeconds,
+		unbillableUnits:     observability.BillingUnbillableUnits,
+		unbillableRows:      observability.BillingUnbillableRows,
+	}
 }
 
 // Run blocks until ctx is canceled, ticking every period.
@@ -59,53 +101,167 @@ func (f *Flusher) Run(ctx context.Context) {
 			if err := f.claimAndEmitNewBatches(ctx); err != nil {
 				log.Warn().Err(err).Msg("flusher: claim-new phase failed; will retry next tick")
 			}
+			f.setBacklogGauges(ctx)
 		}
+	}
+}
+
+// setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
+// Prometheus gauges. Called after both flush phases each tick. Both queries run concurrently
+// under their own context.WithTimeout so worst-case latency is 1 × reconcileQueryTimeout.
+// A query failure produces a log warning and increments BillingReconcileErrorsTotal —
+// it never aborts or affects the flush phases.
+func (f *Flusher) setBacklogGauges(ctx context.Context) {
+	if f.reconciler == nil {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
+	// Run both reconcile queries concurrently: BacklogStats and UnbillableUsage launch
+	// in separate goroutines and wg.Wait() joins them. Total latency is bounded by one
+	// reconcileQueryTimeout (5 s) rather than two, keeping reconcile overhead well within
+	// the default 30 s tick period regardless of DB latency.
+	var (
+		blUnits int64
+		blRows  int64
+		blAge   float64
+		blErr   error
+		ubUnits int64
+		ubRows  int64
+		ubErr   error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				log.Error().Interface("panic", r).Str("stack", string(stack)).Msg("flusher: panic in BacklogStats goroutine; treating as reconcile error")
+				blErr = fmt.Errorf("BacklogStats panic: %v\n%s", r, stack)
+			}
+		}()
+		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+		defer rCancel()
+		blUnits, blRows, blAge, blErr = f.reconciler.BacklogStats(rCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				log.Error().Interface("panic", r).Str("stack", string(stack)).Msg("flusher: panic in UnbillableUsage goroutine; treating as reconcile error")
+				ubErr = fmt.Errorf("UnbillableUsage panic: %v\n%s", r, stack)
+			}
+		}()
+		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+		defer rCancel()
+		ubUnits, ubRows, ubErr = f.reconciler.UnbillableUsage(rCtx)
+	}()
+	wg.Wait()
+
+	var hadErr bool
+
+	// Each query family is updated independently: if one fails, the other still
+	// refreshes so its alerts remain live.
+	if blErr != nil {
+		hadErr = true
+		// Leave gauges at their previous values: resetting to 0 would make a DB
+		// timeout indistinguishable from an empty backlog and could clear active alerts.
+		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
+	} else {
+		if blAge < 0 {
+			// Negative age means MIN(created_at) is in the future due to NTP skew;
+			// clamp to 0 so the gauge does not expose a nonsensical negative duration.
+			log.Error().Float64("raw_age_seconds", blAge).Msg("flusher: negative backlog age (clock skew); clamping to 0")
+			blAge = 0
+		}
+		f.backlogUnits.Set(float64(blUnits))
+		f.backlogRows.Set(float64(blRows))
+		f.backlogOldestAge.Set(blAge)
+	}
+
+	if ubErr != nil {
+		hadErr = true
+		log.Warn().Err(ubErr).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
+	} else {
+		f.unbillableUnits.Set(float64(ubUnits))
+		f.unbillableRows.Set(float64(ubRows))
+	}
+
+	// Increment once per tick regardless of how many queries failed; per-query increments
+	// would double-count a tick where both BacklogStats and UnbillableUsage fail, making
+	// the counter drift away from the number of affected flusher ticks.
+	if hadErr {
+		f.reconcileErrCounter.Inc()
 	}
 }
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
 // Safe to call repeatedly — Stripe dedupes on the stable batch_id idempotency key.
+// Returns an error if any batch-level Stripe emit fails; the caller (Run) logs it and
+// continues — the batches remain in the retry queue for the next tick.
 func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	rows, err := f.db.Query(ctx, `
-		SELECT u.batch_id, c.stripe_customer_id, SUM(u.billable_units)::bigint
+		SELECT u.batch_id, c.stripe_customer_id, u.customer_id, SUM(u.billable_units)::bigint
 		FROM usage_events u
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.batch_id IS NOT NULL AND u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NOT NULL
-		GROUP BY u.batch_id, c.stripe_customer_id
-		LIMIT 100
-	`)
+		GROUP BY u.batch_id, c.stripe_customer_id, u.customer_id
+		ORDER BY MIN(u.created_at) ASC
+		LIMIT $1
+	`, batchPageSize)
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
+		customerID       uuid.UUID
 		units            uint64
 	}
 	var batches []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.units); err == nil {
-			batches = append(batches, p)
+		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
+			return fmt.Errorf("scan pending batch row: %w", err)
 		}
+		batches = append(batches, p)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
 
+	var failed int
 	for _, b := range batches {
-		f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units)
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.customerID, b.units); err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		// Batch-level failures are retry-safe: Phase A re-picks them up next tick
+		// with the same batch_id; Stripe deduplicates on the idempotency key.
+		return fmt.Errorf("retry-pending: %d/%d batches failed emit", failed, len(batches))
 	}
 	return nil
 }
 
 // claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID per customer,
 // and stamps it onto all their unbatched rows in one bulk statement. Then emits + marks flushed.
+// Returns an error if any batch-level Stripe emit fails; the caller (Run) logs it and
+// continues — the claimed batch_ids remain for Phase A to retry next tick.
 func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
-	// Atomic bulk claim: find up to 100 customers with unbatched usage,
+	// Atomic bulk claim: find up to batchPageSize customers with unbatched usage,
 	// assign each a new batch_id, stamp their rows, and return the aggregated units.
+	//
+	// The claimed CTE UPDATE returns one row per updated usage_events row (RETURNING
+	// semantics), so a customer with N unbatched rows produces N rows in claimed, all
+	// sharing the same batch_id. The outer GROUP BY batch_id aggregates them back to
+	// one row per batch with SUM(billable_units) — this is intentional, not a bug.
 	rows, err := f.db.Query(ctx, `
 		WITH targets AS (
 			SELECT u.customer_id, c.stripe_customer_id, gen_random_uuid() as new_batch_id
@@ -114,7 +270,8 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			WHERE u.batch_id IS NULL AND u.flushed_to_stripe = FALSE
 			  AND c.stripe_customer_id IS NOT NULL
 			GROUP BY u.customer_id, c.stripe_customer_id
-			LIMIT 100
+			ORDER BY MIN(u.created_at) ASC
+			LIMIT $1
 		),
 		claimed AS (
 			UPDATE usage_events
@@ -123,47 +280,91 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			WHERE usage_events.customer_id = targets.customer_id
 			  AND usage_events.batch_id IS NULL
 			  AND usage_events.flushed_to_stripe = FALSE
-			RETURNING usage_events.batch_id, targets.stripe_customer_id, usage_events.billable_units
+			RETURNING usage_events.batch_id, targets.stripe_customer_id, usage_events.customer_id, usage_events.billable_units
 		)
-		SELECT batch_id, stripe_customer_id, COALESCE(SUM(billable_units), 0)::bigint
+		SELECT batch_id, stripe_customer_id, customer_id, COALESCE(SUM(billable_units), 0)::bigint
 		FROM claimed
-		GROUP BY batch_id, stripe_customer_id
-	`)
+		GROUP BY batch_id, stripe_customer_id, customer_id
+	`, batchPageSize)
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-
+	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
+		customerID       uuid.UUID
 		units            uint64
 	}
 	var batches []claimedBatch
 	for rows.Next() {
 		var b claimedBatch
-		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.units); err == nil {
-			if b.units > 0 {
-				batches = append(batches, b)
-			}
-		} else {
-			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row")
+		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
+			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
+		batches = append(batches, b)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
 
+	var failed int
 	for _, b := range batches {
-		f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units)
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.customerID, b.units); err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		// Batch-level failures are retry-safe: Phase A re-picks the claimed-but-unflushed
+		// rows up next tick with the same batch_id; Stripe deduplicates on the idempotency key.
+		return fmt.Errorf("claim-new: %d/%d batches failed emit", failed, len(batches))
 	}
 	return nil
 }
 
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
-// marks all rows in the batch flushed. Failures at either step are safe to retry —
-// Stripe dedupes by idempotency-key, and the mark-flushed UPDATE is idempotent.
-func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, units uint64) {
+// marks all rows in the batch flushed.
+//
+// Zero-unit batches: skip Stripe and mark flushed. Increments BillingFlushTotal{outcome="error"}
+// so the anomaly is observable (zero-unit batches cannot occur in production; their presence
+// indicates a claim-logic bug or data corruption). Zero-unit batches cannot occur via normal
+// operation (server/routes.go enforces BillableUnits >= 1) but this guard drains them from
+// Phase A's retry queue.
+//
+// Non-zero batches: Stripe emit failures, mark-flushed DB errors, and RowsAffected==0
+// after a successful Stripe emit all increment BillingFlushTotal{outcome="error"} and
+// return an error. RowsAffected==0 triggers a retry next tick with the same idempotency key;
+// Stripe deduplicates so billing is never doubled. "ok" is incremented only when Stripe
+// accepted the event AND the DB update confirmed rows were marked flushed.
+func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, customerID uuid.UUID, units uint64) error {
+	if units == 0 {
+		// Zero-unit batches indicate a bug in claim logic or manual data corruption.
+		// Mark flushed to drain the batch from the retry queue. Increment the error counter
+		// so this anomaly is visible in the BillingFlushErrorRateElevated alert.
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
+			Msg("flusher: zero-unit batch; this should not occur in production — marking flushed without Stripe emit")
+		ct, err := f.db.Exec(ctx, `
+			UPDATE usage_events
+			SET flushed_to_stripe = TRUE
+			WHERE batch_id = $1
+			  AND customer_id = $2
+			  AND flushed_to_stripe = FALSE
+		`, batchID, customerID)
+		if err != nil {
+			log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed for zero-unit batch")
+			return fmt.Errorf("mark flushed zero-unit batch %s: %w", batchID, err)
+		}
+		if ct.RowsAffected() == 0 {
+			log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
+				Msg("flusher: zero-unit mark-flushed affected 0 rows; already flushed or no matching rows")
+		}
+		// Return an error so the caller's failed++ fires and the anomaly is visible
+		// at the phase level. The batch is already drained (marked flushed) so Phase
+		// A will not re-pick it up — the error is informational, not a retry signal.
+		return fmt.Errorf("zero-unit batch %s (customer %s): data corruption or claim bug; batch drained", batchID, customerID)
+	}
+
 	idemKey := "crucible-batch-" + batchID.String()
 	if err := f.stripe.EmitMeterEvent(ctx, stripeCustomerID, units, idemKey); err != nil {
 		observability.BillingFlushTotal.WithLabelValues("error").Inc()
@@ -171,13 +372,33 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			Str("batch", batchID.String()).
 			Uint64("units", units).
 			Msg("flusher: stripe emit failed; will retry next tick (same batch_id, idempotent)")
-		return
+		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
+	}
+	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
+	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
+	// collision or manual intervention can never mark another customer's rows as flushed.
+	ct, err := f.db.Exec(ctx, `
+		UPDATE usage_events
+		SET flushed_to_stripe = TRUE
+		WHERE batch_id = $1
+		  AND customer_id = $2
+		  AND flushed_to_stripe = FALSE
+	`, batchID, customerID)
+	if err != nil {
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
+		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
+	}
+	if ct.RowsAffected() == 0 {
+		// Stripe accepted the event but no rows were marked flushed.
+		// Possible: concurrent tick already marked them (Phase A won't re-find them since
+		// flushed_to_stripe=TRUE), or batch_id/customer_id no longer matches (data integrity).
+		// Return error so Phase A retries with the same idempotency key; Stripe deduplicates.
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
+			Msg("flusher: mark-flushed affected 0 rows after Stripe success; batch will retry next tick")
+		return fmt.Errorf("mark flushed batch %s: 0 rows affected after Stripe success", batchID)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
-	if _, err := f.db.Exec(ctx, `
-		UPDATE usage_events SET flushed_to_stripe = TRUE
-		WHERE batch_id = $1 AND flushed_to_stripe = FALSE
-	`, batchID); err != nil {
-		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
-	}
+	return nil
 }

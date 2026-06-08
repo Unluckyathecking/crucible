@@ -13,12 +13,22 @@ import (
 	"os"
 )
 
+// testDSN returns the Postgres DSN used by all usage package tests.
+// Override with PG_TEST_DSN to point at a non-default instance.
+// WARNING: must be a dedicated test database; tests create and delete rows.
+func testDSN() string {
+	if dsn := os.Getenv("PG_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	return "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+}
+
 func newTestPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	pool, err := pgxpool.New(ctx, testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}
@@ -52,6 +62,24 @@ func setupTestCustomer(t testing.TB, pool *pgxpool.Pool) (customerID, apiKeyID u
 		t.Fatalf("insert api_key: %v", err)
 	}
 	return customerID, apiKeyID
+}
+
+// deleteUsageRows removes usage_events, api_keys, and customer rows for the given customer.
+// Called by t.Cleanup so test rows don't accumulate across runs and pollute aggregate assertions.
+// Deletion order respects FK constraints: usage_events → api_keys → customers.
+// Uses t.Logf (not t.Errorf) so cleanup failures are visible without failing an already-passing test.
+func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM usage_events WHERE customer_id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete usage_events for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM api_keys WHERE customer_id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete api_keys for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM customers WHERE id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete customers for %v: %v", custID, err)
+	}
 }
 
 func TestNewRecorder_nilDB(t *testing.T) {
@@ -146,7 +174,7 @@ func TestRecord_multipleCalls(t *testing.T) {
 
 	r := NewRecorder(pool, nil)
 	for i := range 5 {
-		reqID := "req-multi-" + string(rune('a'+i))
+		reqID := fmt.Sprintf("req-multi-%d", i)
 		if err := r.Record(context.Background(), custID, apiKeyID, "multi.op", reqID, uint64((i+1)*100)); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}

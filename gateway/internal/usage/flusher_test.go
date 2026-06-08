@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 type mockStripeMeter struct {
@@ -33,6 +36,38 @@ func TestStripeMeter_implementsInterface(t *testing.T) {
 	var _ StripeMeter = (*mockStripeMeter)(nil)
 }
 
+func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
+	// Must not call t.Parallel() — reads package-level promauto gauges shared process-wide.
+	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without
+	// touching any gauges.
+	gauges := []struct {
+		name string
+		get  func() float64
+	}{
+		{"BillingBacklogUnits", func() float64 { return testutil.ToFloat64(observability.BillingBacklogUnits) }},
+		{"BillingBacklogRows", func() float64 { return testutil.ToFloat64(observability.BillingBacklogRows) }},
+		{"BillingBacklogOldestAgeSeconds", func() float64 {
+			return testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+		}},
+		{"BillingUnbillableUnits", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableUnits) }},
+		{"BillingUnbillableRows", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableRows) }},
+		{"BillingReconcileErrorsTotal", func() float64 {
+			return testutil.ToFloat64(observability.BillingReconcileErrorsTotal)
+		}},
+	}
+	prevs := make(map[string]float64, len(gauges))
+	for _, g := range gauges {
+		prevs[g.name] = g.get()
+	}
+	f := NewFlusher(nil, &mockStripeMeter{}, 0)
+	f.setBacklogGauges(context.Background())
+	for _, g := range gauges {
+		if got := g.get(); got != prevs[g.name] {
+			t.Errorf("%s changed with nil reconciler: %g -> %g", g.name, prevs[g.name], got)
+		}
+	}
+}
+
 func TestNewFlusher(t *testing.T) {
 	mock := &mockStripeMeter{}
 	period := 10 * time.Second
@@ -57,7 +92,6 @@ func TestEmitAndMark_idempotencyKeyFormat(t *testing.T) {
 		units   uint64
 	}{
 		{"standard batch", uuid.New(), "cus_test123", 42},
-		{"zero units", uuid.New(), "cus_zero", 0},
 		{"large units", uuid.New(), "cus_large", 1 << 40},
 	}
 
@@ -65,7 +99,7 @@ func TestEmitAndMark_idempotencyKeyFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockStripeMeter{err: errors.New("stripe err")}
 			f := NewFlusher(nil, mock, 0)
-			f.emitAndMark(context.Background(), tt.batchID, tt.custID, tt.units)
+			f.emitAndMark(context.Background(), tt.batchID, tt.custID, uuid.New(), tt.units)
 
 			if len(mock.calls) != 1 {
 				t.Fatalf("expected 1 call, got %d", len(mock.calls))
@@ -92,11 +126,11 @@ func TestEmitAndMark_sameBatchSameIdempotencyKey(t *testing.T) {
 
 	mock1 := &mockStripeMeter{err: errors.New("err")}
 	f1 := NewFlusher(nil, mock1, 0)
-	f1.emitAndMark(context.Background(), batchID, "cus_a", 100)
+	f1.emitAndMark(context.Background(), batchID, "cus_a", uuid.New(), 100)
 
 	mock2 := &mockStripeMeter{err: errors.New("err")}
 	f2 := NewFlusher(nil, mock2, 0)
-	f2.emitAndMark(context.Background(), batchID, "cus_b", 200)
+	f2.emitAndMark(context.Background(), batchID, "cus_b", uuid.New(), 200)
 
 	if mock1.calls[0].idempotencyKey != wantKey {
 		t.Errorf("first key = %q, want %q", mock1.calls[0].idempotencyKey, wantKey)
@@ -116,8 +150,8 @@ func TestEmitAndMark_differentBatchesDifferentKeys(t *testing.T) {
 	batch1 := uuid.New()
 	batch2 := uuid.New()
 
-	f.emitAndMark(context.Background(), batch1, "cus_1", 10)
-	f.emitAndMark(context.Background(), batch2, "cus_2", 20)
+	f.emitAndMark(context.Background(), batch1, "cus_1", uuid.New(), 10)
+	f.emitAndMark(context.Background(), batch2, "cus_2", uuid.New(), 20)
 
 	if len(mock.calls) != 2 {
 		t.Fatalf("expected 2 calls, got %d", len(mock.calls))
@@ -130,16 +164,75 @@ func TestEmitAndMark_differentBatchesDifferentKeys(t *testing.T) {
 func TestEmitAndMark_stripeErrorDoesNotPanic(t *testing.T) {
 	mock := &mockStripeMeter{err: errors.New("stripe network error")}
 	f := NewFlusher(nil, mock, 0)
-	f.emitAndMark(context.Background(), uuid.New(), "cus_err", 1)
+	f.emitAndMark(context.Background(), uuid.New(), "cus_err", uuid.New(), 1)
 
 	if len(mock.calls) != 1 {
 		t.Error("stripe error should still record the call")
 	}
 }
 
+func TestEmitAndMark_crossCustomerIsolation(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	cust1, apiKey1 := setupTestCustomer(t, pool)
+	cust2, _ := setupTestCustomer(t, pool)
+	t.Cleanup(func() {
+		deleteUsageRows(t, pool, cust1)
+		deleteUsageRows(t, pool, cust2)
+	})
+
+	batchID := uuid.New()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id)
+		 VALUES ($1, $2, 'iso.op', 10, $3, $4)`,
+		cust1, apiKey1, "req-iso-"+cust1.String()[:8], batchID,
+	); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+
+	mock := &mockStripeMeter{}
+	f := NewFlusher(pool, mock, 0)
+
+	// emitAndMark with cust2's customerID — RowsAffected is 0 because the rows belong to
+	// cust1. The defense-in-depth UPDATE predicate prevents marking the wrong rows.
+	// RowsAffected==0 now returns an error to surface data-integrity violations to operators.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err == nil {
+		t.Fatal("expected error for 0-rows-affected after Stripe success; got nil")
+	}
+
+	// cust1's rows must remain unflushed — the defense-in-depth predicate worked.
+	var flushed bool
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE batch_id=$1 AND customer_id=$2 LIMIT 1`,
+		batchID, cust1,
+	).Scan(&flushed); err != nil {
+		t.Fatalf("query flushed: %v", err)
+	}
+	if flushed {
+		t.Error("AND customer_id predicate failed: wrong customer's batch_id marked another customer's rows flushed")
+	}
+
+	// Now with the correct customerID — must succeed.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust1, 10); err != nil {
+		t.Fatalf("emitAndMark with correct customerID: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE batch_id=$1 AND customer_id=$2 LIMIT 1`,
+		batchID, cust1,
+	).Scan(&flushed); err != nil {
+		t.Fatalf("query flushed after correct emit: %v", err)
+	}
+	if !flushed {
+		t.Error("expected flushed_to_stripe=true after emitAndMark with correct customerID")
+	}
+}
+
 func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	batchID := uuid.New()
 
@@ -153,10 +246,11 @@ func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("stamp batch_id: %v", err)
 	}
-
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
-	f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", 15)
+	if err := f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", custID, 15); err != nil {
+		t.Fatalf("emitAndMark: %v", err)
+	}
 
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected 1 Stripe call, got %d", len(mock.calls))

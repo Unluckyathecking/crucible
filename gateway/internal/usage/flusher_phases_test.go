@@ -194,8 +194,9 @@ func TestRetryPendingBatches_stripeErrorDoesNotMark(t *testing.T) {
 	mock := &mockStripeMeter{err: errStripe}
 	f := NewFlusher(pool, mock, 0)
 
-	if err := f.retryPendingBatches(ctx); err != nil {
-		t.Fatalf("retryPendingBatches: %v", err)
+	// Stripe failure propagates: retryPendingBatches returns an error summarising failed batches.
+	if err := f.retryPendingBatches(ctx); err == nil {
+		t.Errorf("expected error from retryPendingBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted (Stripe was called for our batch).
@@ -469,8 +470,9 @@ func TestClaimAndEmitNewBatches_stripeErrorLeavesRowsBatched(t *testing.T) {
 	mock := &mockStripeMeter{err: errStripe}
 	f := NewFlusher(pool, mock, 0)
 
-	if err := f.claimAndEmitNewBatches(ctx); err != nil {
-		t.Fatalf("claimAndEmitNewBatches: %v", err)
+	// Stripe failure propagates: claimAndEmitNewBatches returns an error summarising failed batches.
+	if err := f.claimAndEmitNewBatches(ctx); err == nil {
+		t.Errorf("expected error from claimAndEmitNewBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted.
@@ -620,7 +622,7 @@ func TestRun_tickCallsPhases(t *testing.T) {
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
-	stripeID := "cus_run_" + custID.String()[:8]
+	stripeID := "cus_run_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -629,7 +631,7 @@ func TestRun_tickCallsPhases(t *testing.T) {
 
 	// Phase-A seed: a row with batch_id already stamped but not yet flushed.
 	pendingBatchID := uuid.New()
-	reqA := "req-run-phaseA-" + custID.String()[:8]
+	reqA := "req-run-phaseA-" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id, flushed_to_stripe)
 		 VALUES ($1, $2, 'run.phaseA', 7, $3, $4, FALSE)`,
@@ -639,7 +641,7 @@ func TestRun_tickCallsPhases(t *testing.T) {
 	}
 
 	// Phase-B seed: an unbatched row (batch_id IS NULL).
-	reqB := "req-run-phaseB-" + custID.String()[:8]
+	reqB := "req-run-phaseB-" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, 'run.phaseB', 3, $3)`,
