@@ -193,9 +193,9 @@ func TestEmitAndMark_crossCustomerIsolation(t *testing.T) {
 
 	// emitAndMark with cust2's customerID — RowsAffected is 0 because the rows belong to
 	// cust1. The defense-in-depth UPDATE predicate prevents marking the wrong rows.
-	// RowsAffected==0 is treated as idempotent success (no error returned).
-	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err != nil {
-		t.Fatalf("expected nil (idempotent success) for 0-rows-affected; got: %v", err)
+	// RowsAffected==0 now returns an error to surface data-integrity violations to operators.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err == nil {
+		t.Fatal("expected error for 0-rows-affected after Stripe success; got nil")
 	}
 
 	// cust1's rows must remain unflushed — the defense-in-depth predicate worked.

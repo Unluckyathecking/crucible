@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,7 +51,6 @@ type Flusher struct {
 	period              time.Duration
 	reconciler          *Reconciler
 	reconcileErrCounter prometheus.Counter // defaults to observability.BillingReconcileErrorsTotal; injectable for tests
-	reconcileMu         sync.Mutex        // serializes gauge writes so multiple snapshots don't interleave
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
@@ -91,16 +89,17 @@ func (f *Flusher) Run(ctx context.Context) {
 
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. Each query runs under its
-// own context.WithTimeout — outside the mutex — so the lock is only held during the brief
-// gauge-write phase, not during DB I/O. Worst-case latency is 2 × reconcileQueryTimeout.
+// own context.WithTimeout. Worst-case latency is 2 × reconcileQueryTimeout.
 // A query failure produces a log warning and increments BillingReconcileErrorsTotal —
 // it never aborts or affects the flush phases.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		return // skip reconcile during shutdown
+	}
 
-	// Run both DB queries outside the lock to avoid holding a mutex during I/O.
 	rCtx1, rCancel1 := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel1()
 	blUnits, blRows, blAge, blErr := f.reconciler.BacklogStats(rCtx1)
@@ -108,10 +107,6 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	rCtx2, rCancel2 := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel2()
 	ubUnits, ubRows, ubErr := f.reconciler.UnbillableUsage(rCtx2)
-
-	// Lock only for the gauge writes so concurrent callers see a consistent snapshot.
-	f.reconcileMu.Lock()
-	defer f.reconcileMu.Unlock()
 
 	var hadErr bool
 
@@ -275,20 +270,23 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
 // marks all rows in the batch flushed.
 //
-// Zero-unit batches: skip Stripe and mark flushed; BillingFlushTotal is not incremented
-// since the counter tracks Stripe billing events, not defensive no-ops. Zero-unit batches
-// cannot occur in production (server/routes.go enforces BillableUnits >= 1) but this guard
-// prevents Phase A from emitting 0-unit events if a zero-unit batch ever enters the retry queue.
+// Zero-unit batches: skip Stripe and mark flushed; BillingFlushTotal{outcome="ok"} is
+// incremented to preserve the accounting invariant (counter + backlog ≈ total rows).
+// Zero-unit batches cannot occur in production (server/routes.go enforces BillableUnits >= 1)
+// but this guard prevents Phase A from emitting 0-unit events if one ever enters the retry queue.
 //
-// Non-zero batches: Stripe emit failures and mark-flushed DB errors increment
-// BillingFlushTotal{outcome="error"} and return an error. RowsAffected==0 after a successful
-// Stripe emit is treated as idempotent success (rows already flushed by a concurrent tick;
-// Phase A's flushed_to_stripe=FALSE predicate won't find them again). "ok" is incremented
-// only when Stripe accepted the event AND the DB update confirmed rows were marked flushed.
+// Non-zero batches: Stripe emit failures, mark-flushed DB errors, and RowsAffected==0
+// after a successful Stripe emit all increment BillingFlushTotal{outcome="error"} and
+// return an error. RowsAffected==0 triggers a retry next tick with the same idempotency key;
+// Stripe deduplicates so billing is never doubled. "ok" is incremented only when Stripe
+// accepted the event AND the DB update confirmed rows were marked flushed.
 func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, customerID uuid.UUID, units uint64) error {
 	if units == 0 {
-		// Zero-unit path: no Stripe call, no BillingFlushTotal increment.
-		log.Warn().Str("batch", batchID.String()).Msg("flusher: zero-unit batch; marking flushed without Stripe emit")
+		// Zero-unit batches indicate a bug in claim logic or manual data corruption.
+		// Mark flushed to drain the batch from the retry queue; increment ok to preserve
+		// the accounting invariant (BillingFlushTotal + backlog_rows ≈ total rows).
+		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
+			Msg("flusher: zero-unit batch; this should not occur in production — marking flushed without Stripe emit")
 		ct, err := f.db.Exec(ctx, `
 			UPDATE usage_events
 			SET flushed_to_stripe = TRUE
@@ -304,6 +302,7 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
 				Msg("flusher: zero-unit mark-flushed affected 0 rows; already flushed or no matching rows")
 		}
+		observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 		return nil
 	}
 
@@ -332,11 +331,14 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
 	if ct.RowsAffected() == 0 {
-		// Rows are already flushed (concurrent tick) or the batch/customer combo has no
-		// unflushed rows. Either way, Stripe has the event and Phase A won't find these
-		// rows again. Treat as idempotent success rather than incrementing the error counter.
-		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
-			Msg("flusher: mark-flushed affected 0 rows; treating as idempotent success")
+		// Stripe accepted the event but no rows were marked flushed.
+		// Possible: concurrent tick already marked them (Phase A won't re-find them since
+		// flushed_to_stripe=TRUE), or batch_id/customer_id no longer matches (data integrity).
+		// Return error so Phase A retries with the same idempotency key; Stripe deduplicates.
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
+			Msg("flusher: mark-flushed affected 0 rows after Stripe success; batch will retry next tick")
+		return fmt.Errorf("mark flushed batch %s: 0 rows affected after Stripe success", batchID)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	return nil
