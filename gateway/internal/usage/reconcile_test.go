@@ -2,7 +2,7 @@ package usage
 
 import (
 	"context"
-	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -106,7 +106,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
 	const wantDeltaUnits = int64(30)
 	for i, u := range []int{5, 10, 15} {
-		reqID := fmt.Sprintf("req-bs-uf-%s%d", custID.String()[:8], i)
+		reqID := "req-bs-uf-" + custID.String()[:8] + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.uf', $3, $4)`,
@@ -162,7 +162,7 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 
 	// Insert unflushed rows — customer has no stripe_customer_id, so these are unbillable.
 	for i, u := range []int{100, 200} {
-		reqID := fmt.Sprintf("req-bs-ubexcl-%s%d", custID.String()[:8], i)
+		reqID := "req-bs-ubexcl-" + custID.String()[:8] + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.ubexcl', $3, $4)`,
@@ -289,16 +289,19 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	prevRows := testutil.ToFloat64(observability.BillingBacklogRows)
 	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
 	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
+	prevUnbillableRows := testutil.ToFloat64(observability.BillingUnbillableRows)
 	t.Cleanup(func() {
 		observability.BillingBacklogUnits.Set(prevUnits)
 		observability.BillingBacklogRows.Set(prevRows)
 		observability.BillingBacklogOldestAgeSeconds.Set(prevAge)
 		observability.BillingUnbillableUnits.Set(prevUnbillable)
+		observability.BillingUnbillableRows.Set(prevUnbillableRows)
 	})
 	observability.BillingBacklogUnits.Set(0)
 	observability.BillingBacklogRows.Set(0)
 	observability.BillingBacklogOldestAgeSeconds.Set(0)
 	observability.BillingUnbillableUnits.Set(0)
+	observability.BillingUnbillableRows.Set(0)
 
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -359,6 +362,9 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != 0 {
 		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want 0", got)
 	}
+	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != 0 {
+		t.Errorf("BillingUnbillableRows = %g after reconcile error, want 0", got)
+	}
 
 	// The flush phases must have completed: Stripe was called for our customer.
 	var found bool
@@ -370,5 +376,68 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected at least one Stripe call; flush phases must not be aborted by a reconcile failure")
+	}
+}
+
+// TestSetBacklogGauges_setsGauges verifies that setBacklogGauges writes real values into the
+// Prometheus gauges on a success path (not just that errors leave them at 0). Must not call
+// t.Parallel() — writes to package-level promauto gauges shared process-wide.
+func TestSetBacklogGauges_setsGauges(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	custID, apiKeyID := setupTestCustomer(t, pool)
+	stripeID := "cus_gauge_ok_" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
+	); err != nil {
+		t.Fatalf("set stripe_customer_id: %v", err)
+	}
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
+	// Save and restore all gauges.
+	prevUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
+	prevRows := testutil.ToFloat64(observability.BillingBacklogRows)
+	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
+	prevUnbillableRows := testutil.ToFloat64(observability.BillingUnbillableRows)
+	t.Cleanup(func() {
+		observability.BillingBacklogUnits.Set(prevUnits)
+		observability.BillingBacklogRows.Set(prevRows)
+		observability.BillingBacklogOldestAgeSeconds.Set(prevAge)
+		observability.BillingUnbillableUnits.Set(prevUnbillable)
+		observability.BillingUnbillableRows.Set(prevUnbillableRows)
+	})
+
+	// Insert 2 unflushed rows for our Stripe-linked customer.
+	for i := 0; i < 2; i++ {
+		reqID := "req-gauge-ok-" + custID.String()[:8] + strconv.Itoa(i)
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
+			 VALUES ($1, $2, 'gauge.ok', 5, $3)`,
+			custID, apiKeyID, reqID,
+		); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	// Get expected values directly from the reconciler before calling setBacklogGauges.
+	rec := NewReconciler(pool)
+	wantUnits, wantRows, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats: %v", err)
+	}
+
+	f := NewFlusher(pool, &mockStripeMeter{}, 0)
+	f.setBacklogGauges(ctx)
+
+	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != float64(wantRows) {
+		t.Errorf("BillingBacklogRows = %g, want %g", got, float64(wantRows))
+	}
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != float64(wantUnits) {
+		t.Errorf("BillingBacklogUnits = %g, want %g", got, float64(wantUnits))
+	}
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", got)
 	}
 }

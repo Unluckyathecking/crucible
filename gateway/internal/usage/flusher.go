@@ -89,6 +89,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer bCancel()
 	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // parent canceled (shutdown) — not an operator warning
+		}
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
 		observability.BillingBacklogUnits.Set(float64(units))
@@ -98,11 +101,15 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer ubCancel()
-	unbillableUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
+	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
+		observability.BillingUnbillableRows.Set(float64(unbillableRows))
 	}
 }
 

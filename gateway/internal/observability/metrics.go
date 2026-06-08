@@ -14,6 +14,7 @@
 //	crucible_billing_backlog_rows                        — unflushed row count (label-free gauge, flusher tick)
 //	crucible_billing_backlog_oldest_age_seconds          — age of oldest unflushed row (label-free gauge, flusher tick)
 //	crucible_billing_unbillable_units                    — unflushed units with no Stripe customer (label-free gauge, flusher tick)
+//	crucible_billing_unbillable_rows                     — unflushed row count with no Stripe customer (label-free gauge, flusher tick)
 //	crucible_rate_limited_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
@@ -114,6 +115,13 @@ var (
 		Help: "Unflushed billable_units for customers without a stripe_customer_id (label-free; set each flusher tick).",
 	})
 
+	// BillingUnbillableRows is the number of unflushed usage_events rows for customers
+	// without a stripe_customer_id. Paired with BillingUnbillableUnits for operator context.
+	BillingUnbillableRows = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_billing_unbillable_rows",
+		Help: "Number of unflushed usage_events rows for customers without a stripe_customer_id (label-free; set each flusher tick).",
+	})
+
 	RateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_rate_limited_total",
 		Help: "Number of requests rejected for exceeding rate limits.",
@@ -149,6 +157,7 @@ type Metrics struct {
 	BillingBacklogRows             prometheus.Gauge
 	BillingBacklogOldestAgeSeconds prometheus.Gauge
 	BillingUnbillableUnits         prometheus.Gauge
+	BillingUnbillableRows          prometheus.Gauge
 	RateLimitedTotal               prometheus.Counter
 	RateLimitFailOpen              prometheus.Counter
 	QuotaFailOpen                  prometheus.Counter
@@ -209,6 +218,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_billing_unbillable_units",
 			Help: "Unflushed billable_units for customers without a stripe_customer_id (label-free; set each flusher tick).",
 		}),
+		BillingUnbillableRows: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_billing_unbillable_rows",
+			Help: "Number of unflushed usage_events rows for customers without a stripe_customer_id (label-free; set each flusher tick).",
+		}),
 		RateLimitedTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_rate_limited_total",
 			Help: "Number of requests rejected for exceeding rate limits.",
@@ -235,6 +248,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.BillingBacklogRows,
 		m.BillingBacklogOldestAgeSeconds,
 		m.BillingUnbillableUnits,
+		m.BillingUnbillableRows,
 		m.RateLimitedTotal,
 		m.RateLimitFailOpen,
 		m.QuotaFailOpen,
