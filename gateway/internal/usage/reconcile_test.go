@@ -357,9 +357,10 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err := f.claimAndEmitNewBatches(ctx); err != nil {
 		t.Fatalf("claimAndEmitNewBatches: %v", err)
 	}
-	// Bound the reconcile queries: closed pool should fail instantly, but cap at 2s
-	// so a slow connection attempt can't hang the test for the full reconcileQueryTimeout.
-	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 2*time.Second)
+	// Timeout must exceed 2×reconcileQueryTimeout (2×5s=10s) so the test ctx
+	// doesn't fire before the reconciler's own per-query timeout. The closed pool
+	// fails instantly in practice, so the 15s limit is a safety cap only.
+	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
