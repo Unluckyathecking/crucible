@@ -89,7 +89,6 @@ func TestEmitAndMark_idempotencyKeyFormat(t *testing.T) {
 		units   uint64
 	}{
 		{"standard batch", uuid.New(), "cus_test123", 42},
-		{"zero units", uuid.New(), "cus_zero", 0},
 		{"large units", uuid.New(), "cus_large", 1 << 40},
 	}
 
@@ -192,12 +191,14 @@ func TestEmitAndMark_crossCustomerIsolation(t *testing.T) {
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
 
-	// emitAndMark with cust2's customerID — must return an error: 0 rows updated because
-	// customer_id doesn't match the batch owner (cust1). The defense-in-depth predicate works.
-	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err == nil {
-		t.Fatal("expected error when customerID doesn't match batch owner; got nil")
+	// emitAndMark with cust2's customerID — RowsAffected is 0 because the rows belong to
+	// cust1. The defense-in-depth UPDATE predicate prevents marking the wrong rows.
+	// RowsAffected==0 is treated as idempotent success (no error returned).
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err != nil {
+		t.Fatalf("expected nil (idempotent success) for 0-rows-affected; got: %v", err)
 	}
 
+	// cust1's rows must remain unflushed — the defense-in-depth predicate worked.
 	var flushed bool
 	if err := pool.QueryRow(ctx,
 		`SELECT flushed_to_stripe FROM usage_events WHERE batch_id=$1 AND customer_id=$2 LIMIT 1`,

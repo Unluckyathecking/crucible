@@ -51,7 +51,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Billing flush error rate elevated ({{ $value | humanizePercentage }})"
+          summary: "Billing flush error rate elevated ({{ $value }} errors/sec)"
           description: >
             More than 10% of crucible_billing_flush_total events are outcome="error"
             over the last 5 minutes. Check Stripe API health and gateway logs.
