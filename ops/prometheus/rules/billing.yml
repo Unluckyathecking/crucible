@@ -51,6 +51,8 @@ groups:
             rate(crucible_billing_flush_total{outcome="error"}[5m])
             / ignoring(outcome) sum without(outcome) (rate(crucible_billing_flush_total[5m]))
           ) > 0.1
+          and
+          ignoring(outcome) sum without(outcome) (rate(crucible_billing_flush_total[5m])) > 0
         for: 5m
         labels:
           severity: warning

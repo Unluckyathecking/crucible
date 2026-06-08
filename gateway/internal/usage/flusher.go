@@ -277,12 +277,13 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		// Zero rows updated: the customer may have been unlinked from Stripe between
-		// emit and mark, or there is a data inconsistency. The batch stays in Phase A's
-		// retry queue (batch_id stamped, flushed_to_stripe=FALSE); Stripe deduplicates.
+		// Zero rows: customer was unlinked from Stripe between emit and mark. Do NOT
+		// return an error here — if we did, Phase A (retryPendingBatches) would never
+		// re-process this batch because its query filters on stripe_customer_id IS NOT NULL,
+		// permanently orphaning the batch. Logging at warn surfaces the event for operators;
+		// the unbillable gauge will also reflect these rows.
 		log.Warn().Str("batch", batchID.String()).Str("stripe_customer_id", stripeCustomerID).
-			Msg("flusher: mark-flushed affected 0 rows; possible customer unlink race")
-		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
+			Msg("flusher: mark-flushed affected 0 rows; customer likely unlinked from Stripe between emit and mark")
 	}
 	return nil
 }
