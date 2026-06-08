@@ -94,8 +94,14 @@ func (b *Bucket) Allow(ctx context.Context, customerID string, perMinute int) (i
 		observability.RateLimitFailOpenTotal.Inc()
 		return noRemaining, nil
 	}
-	allowed, _ := res[0].(int64)
-	remaining, _ := res[1].(int64)
+	allowed, ok1 := res[0].(int64)
+	remaining, ok2 := res[1].(int64)
+	if !ok1 || !ok2 {
+		// Unexpected Lua return type (Redis version mismatch, protocol error). Fail-open
+		// and omit headers rather than emitting fabricated counts.
+		observability.RateLimitFailOpenTotal.Inc()
+		return noRemaining, nil
+	}
 	if allowed == 0 {
 		return 0, ErrLimited
 	}

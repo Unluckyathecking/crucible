@@ -98,8 +98,11 @@ func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) 
 	if err != nil {
 		return false, "", 0, fmt.Errorf("reserve: %w", err)
 	}
-	admitted, _ := res[0].(int64)
-	current, _ := res[1].(int64)
+	admitted, ok1 := res[0].(int64)
+	current, ok2 := res[1].(int64)
+	if !ok1 || !ok2 {
+		return false, "", 0, fmt.Errorf("reserve: unexpected script return type: %T, %T", res[0], res[1])
+	}
 	return admitted == 1, key, current, nil
 }
 

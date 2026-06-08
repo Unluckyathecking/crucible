@@ -215,8 +215,22 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 func TestMiddleware_UnlimitedPlanNoRateLimitHeaders(t *testing.T) {
 	rdb := newTestRedis(t)
 	pool := newTestPool(t)
-	plans := billing.NewPlanCache(pool)
 
+	// Seed a test-specific plan with rate_limit_per_minute=0 (unlimited).
+	// The built-in "business" plan is seeded with rate=6000, not 0.
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO plans (id, display_name, stripe_price_id, rate_limit_per_minute, monthly_unit_cap)
+		VALUES ('test-unlimited-rl', 'Test Unlimited RL', NULL, 0, NULL)
+		ON CONFLICT (id) DO UPDATE SET rate_limit_per_minute = 0
+	`)
+	if err != nil {
+		t.Skipf("cannot seed test plan: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM plans WHERE id = 'test-unlimited-rl'")
+	})
+
+	plans := billing.NewPlanCache(pool)
 	bucket := New(rdb)
 
 	key := &auth.Key{
@@ -224,7 +238,7 @@ func TestMiddleware_UnlimitedPlanNoRateLimitHeaders(t *testing.T) {
 		Customer: auth.Customer{
 			ID:    uuid.New(),
 			Email: "test-unlimited@example.com",
-			Plan:  "business", // unlimited plan
+			Plan:  "test-unlimited-rl",
 		},
 	}
 

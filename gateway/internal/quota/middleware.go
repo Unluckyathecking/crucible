@@ -64,19 +64,30 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				return
 			}
 
-			// Redis was reachable — emit X-Quota-* headers on both admit and deny paths.
+			// Clamp to zero: cap-current should never go negative given the Lua contract
+			// (denied returns {0, cap} so remaining = cap - cap = 0), but be defensive at
+			// this trust boundary so we never emit X-Quota-Remaining: -1 to a customer.
 			remaining := cap - current
-			httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
+			if remaining < 0 {
+				remaining = 0
+			}
 
 			if !admitted {
+				// Set all headers before writing the status code. Any Header().Set call after
+				// WriteHeader is silently ignored by http.ResponseWriter.
+				httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":{"code":"QUOTA_EXCEEDED","message":"monthly usage quota reached","retryable":false}}`))
 				return
 			}
 
-			// Reserve succeeded. Plant a record-signal so the recorder can tell us whether
-			// it actually wrote a usage row downstream.
+			// Reserve succeeded — set quota headers before the inner handler writes the
+			// response. Headers must be set before the first WriteHeader/Write call.
+			httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
+
+			// Plant a record-signal so the recorder can tell us whether it actually wrote
+			// a usage row downstream.
 			ctx, signal := withRecordSignal(r.Context())
 			next.ServeHTTP(w, r.WithContext(ctx))
 
