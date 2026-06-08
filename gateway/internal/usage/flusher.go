@@ -195,7 +195,6 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
-	rows.Close() // release connection before Stripe calls
 
 	var failed int
 	for _, b := range batches {
@@ -263,7 +262,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
-	rows.Close() // release connection before Stripe calls
 
 	var failed int
 	for _, b := range batches {
