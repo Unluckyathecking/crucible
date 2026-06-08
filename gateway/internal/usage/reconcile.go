@@ -23,7 +23,8 @@ func NewReconciler(db *pgxpool.Pool) *Reconciler {
 // oldest unflushed row. Only rows for customers with a stripe_customer_id are counted,
 // mirroring the flusher's own AND c.stripe_customer_id IS NOT NULL filter. Permanently
 // unbillable rows (no stripe_customer_id) are tracked separately by UnbillableUsage.
-// Returns zeros (and no error) when the billable backlog is empty.
+// Returns zeros for all three values when no unflushed Stripe-linked rows exist;
+// oldestAgeSecs is also zero when the backlog is empty (COALESCE on NULL interval).
 func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldestAgeSecs float64, err error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT

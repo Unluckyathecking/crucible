@@ -77,6 +77,10 @@ func (f *Flusher) Run(ctx context.Context) {
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
+//
+// The two reconcile queries are intentionally independent: if BacklogStats fails but
+// UnbillableUsage succeeds (or vice versa), we update what we can. Forcing all-or-none
+// would sacrifice fresh data from the healthy query to match the stale one.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
@@ -91,6 +95,8 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if ageSecs < 0 {
+			// Clock skew: a writer host with a future-drifted clock makes created_at appear
+			// in the future; COALESCE handles NULL (empty backlog) but not negatives.
 			ageSecs = 0
 		}
 		observability.BillingBacklogUnits.Set(float64(units))
@@ -270,6 +276,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
 	if ct.RowsAffected() == 0 {
+		// Counted as "error": the batch failed to complete despite a successful Stripe emit.
+		// Root cause is a data inconsistency (batch_id/customer_id mismatch), not a Stripe
+		// outage, but the outcome for the operator is the same — the batch must be retried.
+		// Phase A picks it up next tick with the same batch_id; Stripe deduplicates.
 		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).Msg("flusher: mark-flushed affected 0 rows; batch_id/customer_id mismatch")
 		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)

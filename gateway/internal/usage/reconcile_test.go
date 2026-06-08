@@ -283,15 +283,15 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		observability.BillingUnbillableUnits.Set(prevUnbillable)
 		observability.BillingUnbillableRows.Set(prevUnbillableRows)
 	})
-	// Set to non-zero sentinels so we can prove the error path PRESERVES these values
+	// Set to non-zero gaugePreservationSentinels so we can prove the error path PRESERVES these values
 	// rather than resetting them to 0. If the code incorrectly did Set(0) on error,
 	// the assertions below would catch it.
-	const sentinel = float64(42)
-	observability.BillingBacklogUnits.Set(sentinel)
-	observability.BillingBacklogRows.Set(sentinel)
-	observability.BillingBacklogOldestAgeSeconds.Set(sentinel)
-	observability.BillingUnbillableUnits.Set(sentinel)
-	observability.BillingUnbillableRows.Set(sentinel)
+	const gaugePreservationSentinel = float64(42)
+	observability.BillingBacklogUnits.Set(gaugePreservationSentinel)
+	observability.BillingBacklogRows.Set(gaugePreservationSentinel)
+	observability.BillingBacklogOldestAgeSeconds.Set(gaugePreservationSentinel)
+	observability.BillingUnbillableUnits.Set(gaugePreservationSentinel)
+	observability.BillingUnbillableRows.Set(gaugePreservationSentinel)
 
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -356,24 +356,24 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
-	// Both queries fail (bad pool); error path must PRESERVE gauge values at the sentinel
+	// Both queries fail (bad pool); error path must PRESERVE gauge values at the gaugePreservationSentinel
 	// (42). If the code incorrectly reset them to 0, the assertions below would fail.
 	// Resetting to 0 on error makes a DB timeout indistinguishable from an empty backlog
 	// and would clear active Prometheus alerts — so we prove that does NOT happen.
-	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != sentinel {
-		t.Errorf("BillingBacklogUnits = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != gaugePreservationSentinel {
+		t.Errorf("BillingBacklogUnits = %g after reconcile error, want %g (gaugePreservationSentinel preserved)", got, gaugePreservationSentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != sentinel {
-		t.Errorf("BillingBacklogRows = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
+	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != gaugePreservationSentinel {
+		t.Errorf("BillingBacklogRows = %g after reconcile error, want %g (gaugePreservationSentinel preserved)", got, gaugePreservationSentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != sentinel {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != gaugePreservationSentinel {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want %g (gaugePreservationSentinel preserved)", got, gaugePreservationSentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != sentinel {
-		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
+	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != gaugePreservationSentinel {
+		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want %g (gaugePreservationSentinel preserved)", got, gaugePreservationSentinel)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != sentinel {
-		t.Errorf("BillingUnbillableRows = %g after reconcile error, want %g (sentinel preserved)", got, sentinel)
+	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != gaugePreservationSentinel {
+		t.Errorf("BillingUnbillableRows = %g after reconcile error, want %g (gaugePreservationSentinel preserved)", got, gaugePreservationSentinel)
 	}
 
 	// Both phases must have fired independently of the reconcile failure.
