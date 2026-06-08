@@ -459,6 +459,11 @@ func checkQuotaHeaders(t *testing.T, h http.Header, wantCap, wantRemaining int64
 	ts, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || ts <= 0 {
 		t.Errorf("X-Quota-Reset = %q, want a positive Unix timestamp", v)
+		return
+	}
+	wantReset := expireAt(time.Now().UTC()).Unix()
+	if ts != wantReset {
+		t.Errorf("X-Quota-Reset = %d, want %d (2nd of next UTC month)", ts, wantReset)
 	}
 }
 

@@ -27,6 +27,8 @@ func monthKey(customerID uuid.UUID, now time.Time) string {
 }
 
 func expireAt(now time.Time) time.Time {
+	// Month()+1 == 13 in December; time.Date normalises 13 → January of year+1,
+	// which is the correct result for a December quota key.
 	return time.Date(now.Year(), now.Month()+1, 2, 0, 0, 0, 0, time.UTC)
 }
 
