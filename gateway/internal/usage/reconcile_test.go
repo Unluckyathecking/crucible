@@ -338,8 +338,14 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	}
 
 	// The flush phases must have completed: Stripe was called for our customer.
-	ourCalls := callsForCustomer(mock.calls, stripeID)
-	if len(ourCalls) == 0 {
+	var found bool
+	for _, c := range mock.calls {
+		if c.stripeCustomerID == stripeID {
+			found = true
+			break
+		}
+	}
+	if !found {
 		t.Error("expected at least one Stripe call; flush phases must not be aborted by a reconcile failure")
 	}
 }
