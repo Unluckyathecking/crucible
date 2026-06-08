@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -357,10 +358,9 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err := f.claimAndEmitNewBatches(ctx); err != nil {
 		t.Fatalf("claimAndEmitNewBatches: %v", err)
 	}
-	// Timeout must exceed 2×reconcileQueryTimeout (2×5s=10s) so the test ctx
-	// doesn't fire before the reconciler's own per-query timeout. The closed pool
-	// fails instantly in practice, so the 15s limit is a safety cap only.
-	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 15*time.Second)
+	// Safety cap: 3×reconcileQueryTimeout keeps the test aligned with the production
+	// constant — if reconcileQueryTimeout changes this scales automatically.
+	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 3*reconcileQueryTimeout)
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
@@ -498,11 +498,17 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 		t.Errorf("BillingBacklogUnits delta = %d, want 10 (2 rows × 5 units)", got)
 	}
 	gotAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
-	// Rows were just inserted, so age must be positive and within the test timeout window.
-	// A tight delta comparison against a second BacklogStats call is fragile under load;
-	// a generous upper bound (30 s) is more reliable while still catching stale/zero values.
-	if gotAge <= 0 || gotAge > 30 {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 and <= 30 (rows just inserted)", gotAge)
+	// Verify gauge matches the live DB state: call BacklogStats again and check the gauge
+	// is within 2s of the fresh query result. Both queries run immediately after
+	// setBacklogGauges, so clock drift between the two is negligible.
+	_, _, dbAgeRef, ageErr := rec.BacklogStats(ctx)
+	if ageErr != nil {
+		t.Fatalf("BacklogStats age reference: %v", ageErr)
+	}
+	if gotAge <= 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", gotAge)
+	} else if dbAgeRef > 0 && math.Abs(gotAge-dbAgeRef) > 2.0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds gauge = %g, reconciler = %g (delta > 2s)", gotAge, dbAgeRef)
 	}
 	// Our customer is Stripe-linked, so unbillable gauges must not change.
 	if got := int64(testutil.ToFloat64(observability.BillingUnbillableUnits)) - baseUbUnits; got != 0 {

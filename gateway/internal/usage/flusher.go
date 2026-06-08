@@ -135,8 +135,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if blAge < 0 {
-			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
-			blAge = 0
+			// Preserve the negative value so clock skew is visible in dashboards
+			// rather than masking it. The Warn log provides operator context.
+			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); preserving for visibility")
 		}
 		f.backlogUnits.Set(float64(blUnits))
 		f.backlogRows.Set(float64(blRows))
