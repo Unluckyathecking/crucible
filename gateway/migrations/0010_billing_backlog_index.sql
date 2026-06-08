@@ -15,5 +15,5 @@
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 
 CREATE INDEX IF NOT EXISTS idx_usage_unflushed
-    ON usage_events(customer_id)
+    ON usage_events(customer_id, billable_units)
     WHERE flushed_to_stripe = FALSE;

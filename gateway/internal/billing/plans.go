@@ -53,10 +53,7 @@ func (p *PlanCache) Get(ctx context.Context, planID string) PlanEntry {
 	stale := time.Since(p.fresh) > cacheTTL
 	already := p.loading
 	p.mu.RUnlock()
-	// The cold/stale/already snapshot is advisory: another goroutine may refresh the
-	// cache between this RUnlock and the switch below. reload() re-checks all guards
-	// atomically under its write lock, so any TOCTOU here is harmless — at most one
-	// extra background reload is triggered per TTL window and returns immediately.
+
 	switch {
 	case cold:
 		// First load: no last-known-good value exists. Serving an empty plan set
@@ -88,20 +85,12 @@ func (p *PlanCache) MonthlyCap(ctx context.Context, planID string) int64 {
 	return p.Get(ctx, planID).MonthlyCap
 }
 
-// reload fetches the plans table and atomically swaps it into the cache.
-//
-// Lock discipline: p.loading and p.fresh are accessed ONLY under p.mu — writes here
-// hold p.mu.Lock(), reads in Get() hold p.mu.RLock(). The Go memory model's
-// happens-before guarantee for sync.RWMutex makes all accesses to these fields
-// data-race-free by construction. There is no race on p.fresh.
 func (p *PlanCache) reload(ctx context.Context) {
 	p.mu.Lock()
-	// Both the loading guard and the freshness check run atomically under the same
-	// Lock acquisition. If N goroutines all saw stale=true in Get() before the first
-	// reload completed, only the one that wins this lock proceeds; the rest see
-	// loading=true (while the first is running) or time.Since(p.fresh) <= cacheTTL
-	// (after it finishes) and return without issuing a DB query.
-	if p.loading || time.Since(p.fresh) <= cacheTTL {
+	// Single-flight guard: only one goroutine reloads at a time.
+	// Get() may schedule multiple background reloads if several requests race to
+	// observe stale=true; this check ensures only the first proceeds.
+	if p.loading {
 		p.mu.Unlock()
 		return
 	}

@@ -14,16 +14,49 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
-// stubReconciler is a deterministic reconcilerIface for tests that need controlled failures.
-type stubReconciler struct{ err error }
+// stubReconciler is a deterministic reconcilerIface for tests that need controlled failures
+// or fixed return values. backlogAge is returned as the oldestAgeSecs from BacklogStats; the
+// zero value (0.0) means "empty backlog" and is the default for failure-injection tests.
+type stubReconciler struct {
+	err        error
+	backlogAge float64
+}
 
 func (s *stubReconciler) BacklogStats(context.Context) (int64, int64, float64, error) {
-	return 0, 0, 0, s.err
+	return 0, 0, s.backlogAge, s.err
 }
 func (s *stubReconciler) UnbillableUsage(context.Context) (int64, int64, error) {
 	return 0, 0, s.err
 }
 
+
+// TestSetBacklogGauges_negativeAgeIsClamped verifies that setBacklogGauges clamps a
+// negative backlog age (which can arise from NTP clock skew where MIN(created_at) is in
+// the future) to 0 rather than exposing a nonsensical negative gauge value.
+// Uses injected per-test Prometheus gauges so no global state is read or modified.
+func TestSetBacklogGauges_negativeAgeIsClamped(t *testing.T) {
+	backlogAge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "crucible_test_backlog_age_neg_clamp"})
+	backlogUnits := prometheus.NewGauge(prometheus.GaugeOpts{Name: "crucible_test_backlog_units_neg_clamp"})
+	backlogRows := prometheus.NewGauge(prometheus.GaugeOpts{Name: "crucible_test_backlog_rows_neg_clamp"})
+	ubUnits := prometheus.NewGauge(prometheus.GaugeOpts{Name: "crucible_test_ub_units_neg_clamp"})
+	ubRows := prometheus.NewGauge(prometheus.GaugeOpts{Name: "crucible_test_ub_rows_neg_clamp"})
+	errCtr := prometheus.NewCounter(prometheus.CounterOpts{Name: "crucible_test_errs_neg_clamp"})
+
+	f := NewFlusher(nil, &mockStripeMeter{}, 0)
+	f.reconciler = &stubReconciler{backlogAge: -5.0} // simulate NTP skew: created_at > NOW()
+	f.backlogOldestAge = backlogAge
+	f.backlogUnits = backlogUnits
+	f.backlogRows = backlogRows
+	f.unbillableUnits = ubUnits
+	f.unbillableRows = ubRows
+	f.reconcileErrCounter = errCtr
+
+	f.setBacklogGauges(context.Background())
+
+	if got := testutil.ToFloat64(backlogAge); got != 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g after negative age input (-5s), want 0 (clamped to 0)", got)
+	}
+}
 
 // TestBacklogStats_flushedRowExcluded verifies that a row with flushed_to_stripe=TRUE
 // is not counted in the backlog. Uses a before/after delta against the shared DB so the
