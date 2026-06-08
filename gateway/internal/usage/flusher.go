@@ -124,6 +124,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -139,10 +140,6 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		}
 		batches = append(batches, p)
 	}
-	// Explicit Close before Err: in pgx, Close populates rows.err with any
-	// close-time errors (e.g., network failure during result finalization), so
-	// calling Err after Close captures both iteration and close errors.
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
@@ -194,6 +191,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -211,9 +209,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			batches = append(batches, b)
 		}
 	}
-	// Explicit Close before Err: pgx populates rows.err on Close, so calling
-	// Err after Close captures both iteration and close-time errors.
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}

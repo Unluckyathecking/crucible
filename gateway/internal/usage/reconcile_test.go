@@ -333,8 +333,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("could not create bad pool: %v", err)
 	}
 	badPool.Close()
-	// Do NOT register t.Cleanup(badPool.Close): pgxpool.Close is not idempotent
-	// and panics on double-close. The inline close above is sufficient.
+	// Do not register t.Cleanup(badPool.Close): the pool is already closed above.
 
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
@@ -427,6 +426,10 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BacklogStats: %v", err)
 	}
+	wantUbUnits, wantUbRows, err := rec.UnbillableUsage(ctx)
+	if err != nil {
+		t.Fatalf("UnbillableUsage: %v", err)
+	}
 
 	f := NewFlusher(pool, &mockStripeMeter{}, 0)
 	f.setBacklogGauges(ctx)
@@ -437,7 +440,13 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != float64(wantUnits) {
 		t.Errorf("BillingBacklogUnits = %g, want %g", got, float64(wantUnits))
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", got)
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 || got >= 60 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 and < 60 (unflushed rows exist)", got)
+	}
+	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != float64(wantUbUnits) {
+		t.Errorf("BillingUnbillableUnits = %g, want %g", got, float64(wantUbUnits))
+	}
+	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != float64(wantUbRows) {
+		t.Errorf("BillingUnbillableRows = %g, want %g", got, float64(wantUbRows))
 	}
 }
