@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,9 +18,9 @@ type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
 
-// reconcileQueryTimeout caps each backlog/unbillable reconcile query. Both queries run
-// concurrently (one goroutine each), so the worst-case reconcile overhead equals a single
-// query timeout (5 s) out of the default 30 s flusher period.
+// reconcileQueryTimeout caps each backlog/unbillable reconcile query. The two queries run
+// sequentially, so the worst-case reconcile overhead is 2 × 5 s = 10 s out of the default
+// 30 s flusher period.
 const reconcileQueryTimeout = 5 * time.Second
 
 // batchPageSize limits the number of customers processed per flusher tick in each phase.
@@ -90,7 +89,7 @@ func (f *Flusher) Run(ctx context.Context) {
 
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. The two queries run
-// concurrently via a WaitGroup; worst-case latency is one query timeout (5 s), not two.
+// sequentially under a single shared timeout; worst-case latency is 2 × reconcileQueryTimeout.
 // A query failure produces a log warning and increments BillingReconcileErrorsTotal —
 // it never aborts or affects the flush phases.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
@@ -101,61 +100,39 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel()
 
-	// Each result struct is owned by exactly one goroutine (br by goroutine-1,
-	// ur by goroutine-2). The main goroutine reads them only after wg.Wait(),
-	// which establishes the necessary happens-before edge. No mutex needed.
-	type backlogResult struct {
-		units, rows int64
-		age         float64
-		err         error
-	}
-	type unbillableResult struct {
-		units, rows int64
-		err         error
-	}
-	var (
-		br backlogResult
-		ur unbillableResult
-		wg sync.WaitGroup
-	)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		br.units, br.rows, br.age, br.err = f.reconciler.BacklogStats(rCtx)
-	}()
-	go func() {
-		defer wg.Done()
-		ur.units, ur.rows, ur.err = f.reconciler.UnbillableUsage(rCtx)
-	}()
-	wg.Wait()
+	var hadErr bool
 
 	// Each query family is updated independently: if one fails, the other still
 	// refreshes so its alerts remain live.
-	if br.err != nil {
+	blUnits, blRows, blAge, err := f.reconciler.BacklogStats(rCtx)
+	if err != nil {
+		hadErr = true
 		// Leave gauges at their previous values: resetting to 0 would make a DB
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
-		log.Warn().Err(br.err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
+		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
-		if br.age < 0 {
-			log.Warn().Float64("raw_age_seconds", br.age).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
-			br.age = 0
+		if blAge < 0 {
+			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
+			blAge = 0
 		}
-		observability.BillingBacklogUnits.Set(float64(br.units))
-		observability.BillingBacklogRows.Set(float64(br.rows))
-		observability.BillingBacklogOldestAgeSeconds.Set(br.age)
+		observability.BillingBacklogUnits.Set(float64(blUnits))
+		observability.BillingBacklogRows.Set(float64(blRows))
+		observability.BillingBacklogOldestAgeSeconds.Set(blAge)
 	}
 
-	if ur.err != nil {
-		log.Warn().Err(ur.err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
+	ubUnits, ubRows, err := f.reconciler.UnbillableUsage(rCtx)
+	if err != nil {
+		hadErr = true
+		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(ur.units))
-		observability.BillingUnbillableRows.Set(float64(ur.rows))
+		observability.BillingUnbillableUnits.Set(float64(ubUnits))
+		observability.BillingUnbillableRows.Set(float64(ubRows))
 	}
 
 	// Increment once per tick regardless of how many queries failed; per-query increments
 	// would double-count a tick where both BacklogStats and UnbillableUsage fail, making
 	// the counter drift away from the number of affected flusher ticks.
-	if br.err != nil || ur.err != nil {
+	if hadErr {
 		f.reconcileErrCounter.Inc()
 	}
 }
@@ -279,7 +256,10 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 				  AND flushed_to_stripe = FALSE
 			`, b.batchID, b.customerID); dbErr != nil {
 				log.Warn().Err(dbErr).Str("batch", b.batchID.String()).Msg("flusher: mark-flushed failed for zero-unit batch")
+				observability.BillingFlushTotal.WithLabelValues("error").Inc()
 				failed++
+			} else {
+				observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 			}
 			continue
 		}
