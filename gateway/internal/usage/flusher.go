@@ -82,6 +82,13 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 
+	// Reset to zero so a failed query doesn't leave stale values.
+	observability.BillingBacklogUnits.Set(0)
+	observability.BillingBacklogRows.Set(0)
+	observability.BillingBacklogOldestAgeSeconds.Set(0)
+	observability.BillingUnbillableUnits.Set(0)
+	observability.BillingUnbillableRows.Set(0)
+
 	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer bCancel()
 	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
@@ -202,9 +209,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row; skipping")
 			continue
 		}
-		if b.units > 0 {
-			batches = append(batches, b)
-		}
+		batches = append(batches, b)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)

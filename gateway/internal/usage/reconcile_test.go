@@ -3,8 +3,8 @@ package usage
 import (
 	"context"
 	"strconv"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"
@@ -40,7 +40,7 @@ func TestBacklogStats_flushedRowExcluded(t *testing.T) {
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	// Give the customer a stripe_customer_id so they're eligible for BacklogStats.
-	stripeID := "cus_bs_flushed_" + custID.String()[:8]
+	stripeID := "cus_bs_flushed_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -58,7 +58,7 @@ func TestBacklogStats_flushedRowExcluded(t *testing.T) {
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, flushed_to_stripe)
 		 VALUES ($1, $2, 'bs.flushed', 7, $3, TRUE)`,
-		custID, apiKeyID, "req-bs-flushed-"+custID.String()[:8],
+		custID, apiKeyID, "req-bs-flushed-"+custID.String(),
 	); err != nil {
 		t.Fatalf("insert flushed row: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	// Give the customer a stripe_customer_id so BacklogStats counts their rows.
-	stripeID := "cus_bs_uf_" + custID.String()[:8]
+	stripeID := "cus_bs_uf_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -107,7 +107,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
 	const wantDeltaUnits = int64(30)
 	for i, u := range []int{5, 10, 15} {
-		reqID := "req-bs-uf-" + custID.String()[:8] + strconv.Itoa(i)
+		reqID := "req-bs-uf-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.uf', $3, $4)`,
@@ -120,7 +120,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, flushed_to_stripe)
 		 VALUES ($1, $2, 'bs.flushed', 999, $3, TRUE)`,
-		custID, apiKeyID, "req-bs-flushed-"+custID.String()[:8],
+		custID, apiKeyID, "req-bs-flushed-"+custID.String(),
 	); err != nil {
 		t.Fatalf("insert flushed row: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 
 	// Insert unflushed rows — customer has no stripe_customer_id, so these are unbillable.
 	for i, u := range []int{100, 200} {
-		reqID := "req-bs-ubexcl-" + custID.String()[:8] + strconv.Itoa(i)
+		reqID := "req-bs-ubexcl-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.ubexcl', $3, $4)`,
@@ -208,7 +208,7 @@ func TestUnbillableUsage_noStripeCustomer(t *testing.T) {
 	}
 
 	const wantDelta = int64(42)
-	reqID := "req-ub-nostripe-" + custID.String()[:8]
+	reqID := "req-ub-nostripe-" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, 'ub.nostripe', $3, $4)`,
@@ -239,7 +239,7 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
-	stripeID := "cus_ub_excl_" + custID.String()[:8]
+	stripeID := "cus_ub_excl_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -258,7 +258,7 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, 'ub.excl', 100, $3)`,
-		custID, apiKeyID, "req-ub-excl-"+custID.String()[:8],
+		custID, apiKeyID, "req-ub-excl-"+custID.String(),
 	); err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
-	stripeID := "cus_recerr_" + custID.String()[:8]
+	stripeID := "cus_recerr_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -318,7 +318,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	// Phase-A seed: a row with batch_id already stamped but not yet flushed.
 	// retryPendingBatches queries WHERE batch_id IS NOT NULL.
 	pendingBatchID := uuid.New()
-	reqA := "req-recerr-A-" + custID.String()[:8]
+	reqA := "req-recerr-A-" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id)
 		 VALUES ($1, $2, 'recerr.phaseA', 5, $3, $4)`,
@@ -329,7 +329,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 
 	// Phase-B seed: an unbatched row (batch_id IS NULL).
 	// claimAndEmitNewBatches queries WHERE batch_id IS NULL.
-	reqB := "req-recerr-B-" + custID.String()[:8]
+	reqB := "req-recerr-B-" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, 'recerr.phaseB', 3, $3)`,
@@ -361,7 +361,11 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err := f.claimAndEmitNewBatches(ctx); err != nil {
 		t.Fatalf("claimAndEmitNewBatches: %v", err)
 	}
-	f.setBacklogGauges(ctx) // must not panic; errors are warnings only
+	// Bound the reconcile queries: closed pool should fail instantly, but cap at 2s
+	// so a slow connection attempt can't hang the test for the full reconcileQueryTimeout.
+	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer gaugeCancel()
+	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
 	// Both queries fail (bad pool); gauges must remain at 0 (reset to 0 above).
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != 0 {
@@ -383,7 +387,20 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	// Both phases must have fired independently of the reconcile failure.
 	// Phase A (retryPendingBatches) uses the stable batch_id we pre-stamped.
 	// Phase B (claimAndEmitNewBatches) allocates a new batch_id for the unbatched row.
+
+	// Verify phase B actually claimed the row by reading its assigned batch_id from the DB.
+	var batchBPtr *uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT batch_id FROM usage_events WHERE request_id=$1`, reqB,
+	).Scan(&batchBPtr); err != nil {
+		t.Fatalf("query phase-B batch_id: %v", err)
+	}
+	if batchBPtr == nil {
+		t.Fatal("phase B did not claim the unbatched row (batch_id IS NULL)")
+	}
+
 	wantKeyA := "crucible-batch-" + pendingBatchID.String()
+	wantKeyB := "crucible-batch-" + batchBPtr.String()
 	var foundA, foundB bool
 	for _, c := range mock.calls {
 		if c.stripeCustomerID != stripeID {
@@ -391,7 +408,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		}
 		if c.idempotencyKey == wantKeyA {
 			foundA = true
-		} else if strings.HasPrefix(c.idempotencyKey, "crucible-batch-") {
+		} else if c.idempotencyKey == wantKeyB {
 			foundB = true
 		}
 	}
@@ -411,7 +428,7 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
-	stripeID := "cus_gauge_ok_" + custID.String()[:8]
+	stripeID := "cus_gauge_ok_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
@@ -435,7 +452,7 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 
 	// Insert 2 unflushed rows for our Stripe-linked customer.
 	for i := 0; i < 2; i++ {
-		reqID := "req-gauge-ok-" + custID.String()[:8] + strconv.Itoa(i)
+		reqID := "req-gauge-ok-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'gauge.ok', 5, $3)`,
