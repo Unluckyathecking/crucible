@@ -1,8 +1,18 @@
+# Threshold reference — keep these in sync with the Grafana dashboard panel thresholds
+# (ops/grafana/provisioning/dashboards/gateway-overview.json panels 8-10):
+#
+#   backlog_stale_seconds:    900       15 min — max acceptable lag before revenue risk; matches
+#                                       typical Stripe meter_event settling window.
+#   backlog_units_critical:   1000000   1 M units — calibrate to highest-tier plan × billing period;
+#                                       chosen to fire only after extended pipeline outage.
+#   unbillable_threshold:     0         any non-zero signals a customer linking gap; zero
+#                                       means the metric is purely boolean in practice.
+
 groups:
   - name: crucible-billing-backlog
     interval: 1m
     rules:
-      # Alert when the oldest unflushed usage row is older than 15 minutes.
+      # Alert when the oldest unflushed usage row is older than 15 minutes (900 s).
       # A stalled flusher or Stripe outage will trigger this before revenue is lost.
       - alert: BillingBacklogStale
         expr: crucible_billing_backlog_oldest_age_seconds > 900
@@ -15,7 +25,8 @@ groups:
             crucible_billing_backlog_oldest_age_seconds has been above 900 s (15 min) for 5 minutes.
             The flusher may be stuck or Stripe may be unreachable. Check crucible_billing_flush_total{outcome="error"}.
 
-      # Alert when the backlog is so large it suggests the flusher has been down for a while.
+      # Alert when the backlog exceeds 1 000 000 units for 10 minutes.
+      # This volume implies the flush pipeline has been blocked for an extended period.
       - alert: BillingBacklogUnitsCritical
         expr: crucible_billing_backlog_units > 1000000
         for: 10m
@@ -27,7 +38,7 @@ groups:
             crucible_billing_backlog_units has exceeded 1 000 000 for 10 minutes.
             This suggests the flush pipeline has been blocked for an extended period.
 
-      # Alert when any permanently-unbillable usage is detected.
+      # Alert when any permanently-unbillable usage is detected (threshold: 0).
       # These units belong to customers with no stripe_customer_id and will never be billed.
       - alert: BillingUnbillableUsageDetected
         expr: crucible_billing_unbillable_units > 0

@@ -76,8 +76,9 @@ func (f *Flusher) Run(ctx context.Context) {
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
 //
-// Each reconcile query gets its own 10-second deadline derived from the parent ctx so
-// a timeout or cancellation on the first call does not poison the second.
+// Each query gets its own 10-second deadline. The second context is created lazily —
+// only after the first query succeeds — so a cancellation or timeout on BacklogStats
+// does not spawn a second timer goroutine or produce a redundant warning on shutdown.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
@@ -88,19 +89,19 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping gauge update")
-	} else {
-		observability.BillingBacklogUnits.Set(float64(units))
-		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
+		return
 	}
+	observability.BillingBacklogUnits.Set(float64(units))
+	observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
 
 	ubCtx, ubCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer ubCancel()
 	ubUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping gauge update")
-	} else {
-		observability.BillingUnbillableUnits.Set(float64(ubUnits))
+		return
 	}
+	observability.BillingUnbillableUnits.Set(float64(ubUnits))
 }
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
