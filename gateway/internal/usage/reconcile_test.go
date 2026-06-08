@@ -329,10 +329,14 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("insert phase-B row: %v", err)
 	}
 
-	// Build a second pool then immediately close it so all queries fail.
-	badPool, err := pgxpool.New(ctx, testDSN())
+	// Build a second pool with an already-cancelled context so background connection goroutines
+	// exit immediately, then close the pool. This avoids a race between pool.Close() and the
+	// asynchronous connection-establishment goroutines that pgxpool starts internally.
+	badCtx, badCancel := context.WithCancel(ctx)
+	badCancel()
+	badPool, err := pgxpool.New(badCtx, testDSN())
 	if err != nil {
-		t.Skipf("postgres unavailable for bad-pool injection: %v", err)
+		t.Fatalf("pgxpool.New failed (postgres reachable at this point): %v", err)
 	}
 	badPool.Close()
 	// Do not register t.Cleanup(badPool.Close): the pool is already closed above.
@@ -480,8 +484,17 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	if got := int64(testutil.ToFloat64(observability.BillingBacklogUnits)) - baseUnits; got != 10 {
 		t.Errorf("BillingBacklogUnits delta = %d, want 10 (2 rows × 5 units)", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", got)
+	// Call the reconciler immediately after setBacklogGauges to get a reference age for comparison.
+	// Both queries run against the same DB in rapid succession, so the values should be within 2s.
+	_, _, wantAge, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats for age comparison: %v", err)
+	}
+	gotAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+	if gotAge <= 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", gotAge)
+	} else if wantAge > 0 && (gotAge < wantAge-2.0 || gotAge > wantAge+2.0) {
+		t.Errorf("BillingBacklogOldestAgeSeconds gauge = %g, reconciler = %g (delta > 2s)", gotAge, wantAge)
 	}
 	// Our customer is Stripe-linked, so unbillable gauges must not change.
 	if got := int64(testutil.ToFloat64(observability.BillingUnbillableUnits)) - baseUbUnits; got != 0 {

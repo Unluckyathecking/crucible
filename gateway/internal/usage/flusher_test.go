@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 type mockStripeMeter struct {
@@ -34,9 +37,14 @@ func TestStripeMeter_implementsInterface(t *testing.T) {
 }
 
 func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
-	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without panic.
+	prev := testutil.ToFloat64(observability.BillingBacklogUnits)
+	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without
+	// touching any gauges.
 	f := NewFlusher(nil, &mockStripeMeter{}, 0)
 	f.setBacklogGauges(context.Background())
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != prev {
+		t.Errorf("BillingBacklogUnits changed with nil reconciler: %g -> %g", prev, got)
+	}
 }
 
 func TestNewFlusher(t *testing.T) {

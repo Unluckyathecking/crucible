@@ -23,6 +23,11 @@ type StripeMeter interface {
 // query timeout (5 s) out of the default 30 s flusher period.
 const reconcileQueryTimeout = 5 * time.Second
 
+// batchPageSize limits the number of customers processed per flusher tick in each phase.
+// At 30 s per tick, 100 customers × 1 Stripe API call each (~50 ms p95) ≈ 5 s max serial
+// latency; in practice calls are fast and the limit is generous.
+const batchPageSize = 100
+
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
 //
 // The flow is two-phase to make the Stripe idempotency-key STABLE across retries:
@@ -146,8 +151,8 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		WHERE u.batch_id IS NOT NULL AND u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NOT NULL
 		GROUP BY u.batch_id, c.stripe_customer_id, u.customer_id
-		LIMIT 100
-	`)
+		LIMIT $1
+	`, batchPageSize)
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
@@ -199,7 +204,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			WHERE u.batch_id IS NULL AND u.flushed_to_stripe = FALSE
 			  AND c.stripe_customer_id IS NOT NULL
 			GROUP BY u.customer_id, c.stripe_customer_id
-			LIMIT 100
+			LIMIT $1
 		),
 		claimed AS (
 			UPDATE usage_events
@@ -213,7 +218,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		SELECT batch_id, stripe_customer_id, customer_id, COALESCE(SUM(billable_units), 0)::bigint
 		FROM claimed
 		GROUP BY batch_id, stripe_customer_id, customer_id
-	`)
+	`, batchPageSize)
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
@@ -279,6 +284,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			Msg("flusher: stripe emit failed; will retry next tick (same batch_id, idempotent)")
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
+	// Stripe accepted the event; count it now so the flush_total counter reflects Stripe-level
+	// success even if the mark-flushed DB step below fails. The batch stays in Phase A's retry
+	// queue in that case; Stripe deduplicates on the idempotency key, so it will not double-bill.
+	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
 	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
 	// collision or manual intervention can never mark another customer's rows as flushed.
@@ -297,6 +306,5 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).Msg("flusher: mark-flushed affected 0 rows; batch_id/customer_id mismatch")
 		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
 	}
-	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	return nil
 }
