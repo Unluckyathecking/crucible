@@ -21,12 +21,12 @@ type StripeMeter interface {
 
 // reconcileQueryTimeout caps each backlog/unbillable reconcile query. Each query runs under
 // its own context so the worst-case reconcile overhead is 2 × 5 s = 10 s out of the
-// default 30 s flusher period.
+// default tick period.
 const reconcileQueryTimeout = 5 * time.Second
 
 // batchPageSize limits the number of customers processed per flusher tick in each phase.
-// At 30 s per tick, 100 customers × 1 Stripe API call each (~50 ms p95) ≈ 5 s max serial
-// latency; in practice calls are fast and the limit is generous.
+// At the default tick period, 100 customers × 1 Stripe API call each (~50 ms p95) ≈ 5 s max
+// serial latency; in practice calls are fast and the limit is generous.
 const batchPageSize = 100
 
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
@@ -52,7 +52,7 @@ type Flusher struct {
 	period              time.Duration
 	reconciler          *Reconciler
 	reconcileErrCounter prometheus.Counter // defaults to observability.BillingReconcileErrorsTotal; injectable for tests
-	reconcileMu         sync.Mutex        // serializes setBacklogGauges so gauge updates are never interleaved
+	reconcileMu         sync.Mutex        // serializes gauge writes so multiple snapshots don't interleave
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
@@ -91,32 +91,37 @@ func (f *Flusher) Run(ctx context.Context) {
 
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. Each query runs under its
-// own context.WithTimeout so a slow BacklogStats cannot starve UnbillableUsage's time budget.
-// Worst-case latency is 2 × reconcileQueryTimeout. A query failure produces a log warning
-// and increments BillingReconcileErrorsTotal — it never aborts or affects the flush phases.
-// reconcileMu is held for the duration so that concurrent callers (e.g. tests or a future
-// periodic goroutine) cannot interleave gauge writes from different snapshots.
+// own context.WithTimeout — outside the mutex — so the lock is only held during the brief
+// gauge-write phase, not during DB I/O. Worst-case latency is 2 × reconcileQueryTimeout.
+// A query failure produces a log warning and increments BillingReconcileErrorsTotal —
+// it never aborts or affects the flush phases.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
 
+	// Run both DB queries outside the lock to avoid holding a mutex during I/O.
+	rCtx1, rCancel1 := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer rCancel1()
+	blUnits, blRows, blAge, blErr := f.reconciler.BacklogStats(rCtx1)
+
+	rCtx2, rCancel2 := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer rCancel2()
+	ubUnits, ubRows, ubErr := f.reconciler.UnbillableUsage(rCtx2)
+
+	// Lock only for the gauge writes so concurrent callers see a consistent snapshot.
 	f.reconcileMu.Lock()
 	defer f.reconcileMu.Unlock()
 
 	var hadErr bool
 
 	// Each query family is updated independently: if one fails, the other still
-	// refreshes so its alerts remain live. Separate timeouts ensure a slow or timed-out
-	// BacklogStats cannot consume the budget that UnbillableUsage needs.
-	rCtx1, rCancel1 := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer rCancel1()
-	blUnits, blRows, blAge, err := f.reconciler.BacklogStats(rCtx1)
-	if err != nil {
+	// refreshes so its alerts remain live.
+	if blErr != nil {
 		hadErr = true
 		// Leave gauges at their previous values: resetting to 0 would make a DB
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
-		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
+		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if blAge < 0 {
 			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
@@ -127,12 +132,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		observability.BillingBacklogOldestAgeSeconds.Set(blAge)
 	}
 
-	rCtx2, rCancel2 := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer rCancel2()
-	ubUnits, ubRows, err := f.reconciler.UnbillableUsage(rCtx2)
-	if err != nil {
+	if ubErr != nil {
 		hadErr = true
-		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
+		log.Warn().Err(ubErr).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(ubUnits))
 		observability.BillingUnbillableRows.Set(float64(ubRows))
@@ -164,6 +166,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -174,13 +177,11 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan pending batch row: %w", err)
 		}
 		batches = append(batches, p)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate pending: %w", err)
 	}
 	rows.Close() // explicit close before Stripe calls so the pool connection is returned promptly
@@ -204,7 +205,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 // Returns an error if any batch-level Stripe emit fails; the caller (Run) logs it and
 // continues — the claimed batch_ids remain for Phase A to retry next tick.
 func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
-	// Atomic bulk claim: find up to 100 customers with unbatched usage,
+	// Atomic bulk claim: find up to batchPageSize customers with unbatched usage,
 	// assign each a new batch_id, stamp their rows, and return the aggregated units.
 	rows, err := f.db.Query(ctx, `
 		WITH targets AS (
@@ -233,6 +234,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -243,13 +245,11 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	for rows.Next() {
 		var b claimedBatch
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
 		batches = append(batches, b)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
 	rows.Close() // explicit close before Stripe calls so the pool connection is returned promptly
@@ -285,15 +285,20 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 	if units == 0 {
 		// Zero-unit path: no Stripe call, no BillingFlushTotal increment.
 		log.Warn().Str("batch", batchID.String()).Msg("flusher: zero-unit batch; marking flushed without Stripe emit")
-		if _, err := f.db.Exec(ctx, `
+		ct, err := f.db.Exec(ctx, `
 			UPDATE usage_events
 			SET flushed_to_stripe = TRUE
 			WHERE batch_id = $1
 			  AND customer_id = $2
 			  AND flushed_to_stripe = FALSE
-		`, batchID, customerID); err != nil {
+		`, batchID, customerID)
+		if err != nil {
 			log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed for zero-unit batch")
 			return fmt.Errorf("mark flushed zero-unit batch %s: %w", batchID, err)
+		}
+		if ct.RowsAffected() == 0 {
+			log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
+				Msg("flusher: zero-unit mark-flushed affected 0 rows; already flushed or no matching rows")
 		}
 		return nil
 	}
