@@ -33,6 +33,12 @@ func TestStripeMeter_implementsInterface(t *testing.T) {
 	var _ StripeMeter = (*mockStripeMeter)(nil)
 }
 
+func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
+	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without panic.
+	f := NewFlusher(nil, &mockStripeMeter{}, 0)
+	f.setBacklogGauges(context.Background())
+}
+
 func TestNewFlusher(t *testing.T) {
 	mock := &mockStripeMeter{}
 	period := 10 * time.Second

@@ -107,6 +107,8 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
 // Safe to call repeatedly — Stripe dedupes on the stable batch_id idempotency key.
+// Returns an error if any batch-level Stripe emit fails; the caller (Run) logs it and
+// continues — the batches remain in the retry queue for the next tick.
 func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	rows, err := f.db.Query(ctx, `
 		SELECT u.batch_id, c.stripe_customer_id, SUM(u.billable_units)::bigint
@@ -149,16 +151,17 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		}
 	}
 	if failed > 0 {
-		// Individual batch failures are retry-safe: Phase A re-picks them up next tick
-		// with the same batch_id. We log the summary here; emitAndMark has the per-batch detail.
-		log.Warn().Int("failed", failed).Int("total", len(batches)).
-			Msg("flusher: retry-pending: some batches failed emit; will retry next tick")
+		// Batch-level failures are retry-safe: Phase A re-picks them up next tick
+		// with the same batch_id; Stripe deduplicates on the idempotency key.
+		return fmt.Errorf("retry-pending: %d/%d batches failed emit", failed, len(batches))
 	}
 	return nil
 }
 
 // claimAndEmitNewBatches finds customers with unbatched events, allocates a UUID per customer,
 // and stamps it onto all their unbatched rows in one bulk statement. Then emits + marks flushed.
+// Returns an error if any batch-level Stripe emit fails; the caller (Run) logs it and
+// continues — the claimed batch_ids remain for Phase A to retry next tick.
 func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	// Atomic bulk claim: find up to 100 customers with unbatched usage,
 	// assign each a new batch_id, stamp their rows, and return the aggregated units.
@@ -218,9 +221,9 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		}
 	}
 	if failed > 0 {
-		// Individual batch failures are retry-safe: Phase A re-picks them up next tick.
-		log.Warn().Int("failed", failed).Int("total", len(batches)).
-			Msg("flusher: claim-new: some batches failed emit; will retry next tick")
+		// Batch-level failures are retry-safe: Phase A re-picks the claimed-but-unflushed
+		// rows up next tick with the same batch_id; Stripe deduplicates on the idempotency key.
+		return fmt.Errorf("claim-new: %d/%d batches failed emit", failed, len(batches))
 	}
 	return nil
 }

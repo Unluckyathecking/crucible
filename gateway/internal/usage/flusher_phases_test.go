@@ -194,8 +194,9 @@ func TestRetryPendingBatches_stripeErrorDoesNotMark(t *testing.T) {
 	mock := &mockStripeMeter{err: errStripe}
 	f := NewFlusher(pool, mock, 0)
 
-	if err := f.retryPendingBatches(ctx); err != nil {
-		t.Fatalf("retryPendingBatches: %v", err)
+	// Stripe failure propagates: retryPendingBatches returns an error summarising failed batches.
+	if err := f.retryPendingBatches(ctx); err == nil {
+		t.Error("expected error from retryPendingBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted (Stripe was called for our batch).
@@ -469,8 +470,9 @@ func TestClaimAndEmitNewBatches_stripeErrorLeavesRowsBatched(t *testing.T) {
 	mock := &mockStripeMeter{err: errStripe}
 	f := NewFlusher(pool, mock, 0)
 
-	if err := f.claimAndEmitNewBatches(ctx); err != nil {
-		t.Fatalf("claimAndEmitNewBatches: %v", err)
+	// Stripe failure propagates: claimAndEmitNewBatches returns an error summarising failed batches.
+	if err := f.claimAndEmitNewBatches(ctx); err == nil {
+		t.Error("expected error from claimAndEmitNewBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted.
