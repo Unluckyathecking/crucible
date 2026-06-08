@@ -11,14 +11,20 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// deleteUsageRows removes all usage_events for the given customer — used by t.Cleanup
-// so test rows don't accumulate across runs and pollute aggregate assertions.
+// deleteUsageRows removes usage_events, api_keys, and customer rows for the given customer.
+// Called by t.Cleanup so test rows don't accumulate across runs and pollute aggregate assertions.
+// Deletion order respects FK constraints: usage_events → api_keys → customers.
 func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM usage_events WHERE customer_id=$1`, custID,
-	); err != nil {
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM usage_events WHERE customer_id=$1`, custID); err != nil {
 		t.Errorf("cleanup: delete usage_events for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM api_keys WHERE customer_id=$1`, custID); err != nil {
+		t.Errorf("cleanup: delete api_keys for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM customers WHERE id=$1`, custID); err != nil {
+		t.Errorf("cleanup: delete customers for %v: %v", custID, err)
 	}
 }
 
