@@ -7,6 +7,10 @@
 #                                       chosen to fire only after extended pipeline outage.
 #   unbillable_threshold:     0         any non-zero signals a customer linking gap; zero
 #                                       means the metric is purely boolean in practice.
+#
+# Flusher tick period: the default is 30 s (set in gateway/cmd/gateway/main.go). The
+# gauge is updated each tick, so with a 30 s period the `for` windows below (5 m and
+# 10 m) are comfortably larger than the update interval.
 
 groups:
   - name: crucible-billing-backlog

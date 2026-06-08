@@ -12,10 +12,6 @@
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 
-BEGIN;
-
 CREATE INDEX IF NOT EXISTS idx_customers_no_stripe
     ON customers(id)
     WHERE stripe_customer_id IS NULL;
-
-COMMIT;

@@ -18,7 +18,7 @@ func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
 	if _, err := pool.Exec(context.Background(),
 		`DELETE FROM usage_events WHERE customer_id=$1`, custID,
 	); err != nil {
-		t.Logf("cleanup: delete usage_events for %v: %v", custID, err)
+		t.Errorf("cleanup: delete usage_events for %v: %v", custID, err)
 	}
 }
 
@@ -273,6 +273,12 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 // (here: pool is closed before reconcile runs) is only a warning and does NOT prevent
 // the flush phases from completing or Stripe from being called.
 func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
+	// Reset global gauges to a known baseline — they are promauto package-level vars
+	// that may carry values from other tests in the same process.
+	observability.BillingBacklogUnits.Set(0)
+	observability.BillingBacklogOldestAgeSeconds.Set(0)
+	observability.BillingUnbillableUnits.Set(0)
+
 	pool := newTestPool(t)
 	ctx := context.Background()
 

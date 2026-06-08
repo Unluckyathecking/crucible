@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,32 +77,42 @@ func (f *Flusher) Run(ctx context.Context) {
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
 //
-// The two reconcile queries are independent: a failure on BacklogStats does not
-// prevent UnbillableUsage from running, so each gauge degrades individually.
-// Each gets its own 10-second deadline derived from the parent ctx.
+// Both queries run concurrently so the worst-case overhead is one query's timeout (5 s)
+// rather than two sequential timeouts. Each degrades independently.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
 
-	bCtx, bCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer bCancel()
-	units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
-	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
-	} else {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		bCtx, bCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer bCancel()
+		units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
+		if err != nil {
+			log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
+			return
+		}
 		observability.BillingBacklogUnits.Set(float64(units))
 		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
-	}
+	}()
 
-	ubCtx, ubCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer ubCancel()
-	ubUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
-	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
-	} else {
+	go func() {
+		defer wg.Done()
+		ubCtx, ubCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer ubCancel()
+		ubUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
+		if err != nil {
+			log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+			return
+		}
 		observability.BillingUnbillableUnits.Set(float64(ubUnits))
-	}
+	}()
+
+	wg.Wait()
 }
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
@@ -138,8 +149,14 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
 
+	var failed int
 	for _, b := range batches {
-		f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units)
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units); err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("retry-pending: %d of %d batches failed; see warn logs", failed, len(batches))
 	}
 	return nil
 }
@@ -197,16 +214,30 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
 
+	var failed int
 	for _, b := range batches {
-		f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units)
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units); err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("claim-new: %d of %d batches failed; see warn logs", failed, len(batches))
 	}
 	return nil
 }
 
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
-// marks all rows in the batch flushed. Failures at either step are safe to retry —
-// Stripe dedupes by idempotency-key, and the mark-flushed UPDATE is idempotent.
-func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, units uint64) {
+// marks all rows in the batch flushed.
+//
+// Stripe emit failure returns an error so callers can count batch-level failures.
+// The batch remains unflushable (flushed_to_stripe=FALSE, batch_id stamped), so Phase A
+// (retryPendingBatches) picks it up on the next tick with the SAME batch_id — Stripe
+// deduplicates on "crucible-batch-<uuid>", preventing double-billing.
+//
+// Mark-flushed failure is a soft-fail: the batch was already emitted to Stripe, and
+// Phase A re-emits with the same idempotency key on the next tick (Stripe dedupes).
+// Propagating this error would abort the whole batch loop and block other customers.
+func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, units uint64) error {
 	idemKey := "crucible-batch-" + batchID.String()
 	if err := f.stripe.EmitMeterEvent(ctx, stripeCustomerID, units, idemKey); err != nil {
 		observability.BillingFlushTotal.WithLabelValues("error").Inc()
@@ -214,17 +245,14 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			Str("batch", batchID.String()).
 			Uint64("units", units).
 			Msg("flusher: stripe emit failed; will retry next tick (same batch_id, idempotent)")
-		return
+		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
-	// Intentional soft-fail: the stable batch_id means Phase A (retryPendingBatches)
-	// picks this batch up on the next tick and re-emits to Stripe. Stripe server-side
-	// deduplication on the "crucible-batch-<uuid>" idempotency key prevents double-billing.
-	// Propagating this error would abort the whole batch loop and block other customers.
 	if _, err := f.db.Exec(ctx, `
 		UPDATE usage_events SET flushed_to_stripe = TRUE
 		WHERE batch_id = $1 AND flushed_to_stripe = FALSE
 	`, batchID); err != nil {
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 	}
+	return nil
 }
