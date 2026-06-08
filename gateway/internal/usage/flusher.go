@@ -266,7 +266,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		  AND flushed_to_stripe = FALSE
 	`, batchID, customerID)
 	if err != nil {
-		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
