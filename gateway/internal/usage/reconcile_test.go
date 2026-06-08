@@ -413,20 +413,26 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 // TestSetBacklogGauges_setsGauges verifies that setBacklogGauges writes real values into the
 // Prometheus gauges on a success path (not just that errors leave them at 0). Must not call
 // t.Parallel() — writes to package-level promauto gauges shared process-wide.
+//
+// Delta design: take a baseline before inserting test rows, then verify the gauge
+// increased by exactly the expected amount (2 rows × 5 units = 10 units). This proves
+// the reconcile query counts our specific rows correctly, independent of any pre-existing
+// rows from other tests or prior runs.
 func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
 	stripeID := "cus_gauge_ok_" + custID.String()
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
 	); err != nil {
 		t.Fatalf("set stripe_customer_id: %v", err)
 	}
-	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
-	// Save and restore all gauges.
+	// Save and restore all gauges so other sequential tests see a clean slate.
 	prevUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
 	prevRows := testutil.ToFloat64(observability.BillingBacklogRows)
 	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
@@ -440,7 +446,19 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 		observability.BillingUnbillableRows.Set(prevUnbillableRows)
 	})
 
-	// Insert 2 unflushed rows for our Stripe-linked customer.
+	// Baseline BEFORE inserting our rows: accounts for any pre-existing unflushed rows
+	// in the shared DB so the delta assertions below are deterministic.
+	rec := NewReconciler(pool)
+	baseUnits, baseRows, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats baseline: %v", err)
+	}
+	baseUbUnits, baseUbRows, err := rec.UnbillableUsage(ctx)
+	if err != nil {
+		t.Fatalf("UnbillableUsage baseline: %v", err)
+	}
+
+	// Insert 2 unflushed rows × 5 units = 10 units for our Stripe-linked customer.
 	for i := 0; i < 2; i++ {
 		reqID := "req-gauge-ok-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
@@ -452,33 +470,24 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 		}
 	}
 
-	// Get expected values directly from the reconciler before calling setBacklogGauges.
-	rec := NewReconciler(pool)
-	wantUnits, wantRows, _, err := rec.BacklogStats(ctx)
-	if err != nil {
-		t.Fatalf("BacklogStats: %v", err)
-	}
-	wantUbUnits, wantUbRows, err := rec.UnbillableUsage(ctx)
-	if err != nil {
-		t.Fatalf("UnbillableUsage: %v", err)
-	}
-
 	f := NewFlusher(pool, &mockStripeMeter{}, 0)
 	f.setBacklogGauges(ctx)
 
-	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != float64(wantRows) {
-		t.Errorf("BillingBacklogRows = %g, want %g", got, float64(wantRows))
+	// Our 2 rows × 5 units must appear as an exact delta over the baseline.
+	if got := int64(testutil.ToFloat64(observability.BillingBacklogRows)) - baseRows; got != 2 {
+		t.Errorf("BillingBacklogRows delta = %d, want 2", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != float64(wantUnits) {
-		t.Errorf("BillingBacklogUnits = %g, want %g", got, float64(wantUnits))
+	if got := int64(testutil.ToFloat64(observability.BillingBacklogUnits)) - baseUnits; got != 10 {
+		t.Errorf("BillingBacklogUnits delta = %d, want 10 (2 rows × 5 units)", got)
 	}
 	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 {
 		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != float64(wantUbUnits) {
-		t.Errorf("BillingUnbillableUnits = %g, want %g", got, float64(wantUbUnits))
+	// Our customer is Stripe-linked, so unbillable gauges must not change.
+	if got := int64(testutil.ToFloat64(observability.BillingUnbillableUnits)) - baseUbUnits; got != 0 {
+		t.Errorf("BillingUnbillableUnits delta = %d, want 0 (Stripe-linked customer)", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableRows); got != float64(wantUbRows) {
-		t.Errorf("BillingUnbillableRows = %g, want %g", got, float64(wantUbRows))
+	if got := int64(testutil.ToFloat64(observability.BillingUnbillableRows)) - baseUbRows; got != 0 {
+		t.Errorf("BillingUnbillableRows delta = %d, want 0 (Stripe-linked customer)", got)
 	}
 }

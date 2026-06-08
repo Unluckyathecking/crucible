@@ -85,10 +85,8 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 
-	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer bCancel()
-	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer ubCancel()
+	rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer rCancel()
 
 	var (
 		backlogUnits, backlogRows       int64
@@ -101,11 +99,11 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		backlogUnits, backlogRows, backlogAgeSecs, backlogErr = f.reconciler.BacklogStats(bCtx)
+		backlogUnits, backlogRows, backlogAgeSecs, backlogErr = f.reconciler.BacklogStats(rCtx)
 	}()
 	go func() {
 		defer wg.Done()
-		unbillableUnits, unbillableRows, unbillableErr = f.reconciler.UnbillableUsage(ubCtx)
+		unbillableUnits, unbillableRows, unbillableErr = f.reconciler.UnbillableUsage(rCtx)
 	}()
 	wg.Wait()
 
