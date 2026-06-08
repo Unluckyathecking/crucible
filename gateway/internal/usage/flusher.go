@@ -166,6 +166,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		WHERE u.batch_id IS NOT NULL AND u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NOT NULL
 		GROUP BY u.batch_id, c.stripe_customer_id, u.customer_id
+		ORDER BY MIN(u.created_at) ASC
 		LIMIT $1
 	`, batchPageSize)
 	if err != nil {
@@ -219,6 +220,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			WHERE u.batch_id IS NULL AND u.flushed_to_stripe = FALSE
 			  AND c.stripe_customer_id IS NOT NULL
 			GROUP BY u.customer_id, c.stripe_customer_id
+			ORDER BY MIN(u.created_at) ASC
 			LIMIT $1
 		),
 		claimed AS (
@@ -250,13 +252,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
 			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
-		if b.units == 0 {
-			// Zero-unit batches can't occur in production (server/routes.go enforces
-			// BillableUnits >= 1), but guard defensively: skip the Stripe call and let
-			// Phase A pick up the stamped row next tick.
-			log.Warn().Str("batch", b.batchID.String()).Msg("flusher: skipping zero-unit batch")
-			continue
-		}
 		batches = append(batches, b)
 	}
 	if err := rows.Err(); err != nil {
@@ -265,6 +260,23 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 
 	var failed int
 	for _, b := range batches {
+		if b.units == 0 {
+			// Zero-unit batches can't occur in production (server/routes.go enforces
+			// BillableUnits >= 1). Mark flushed immediately without emitting to Stripe —
+			// leaving them for Phase A retry would cause an infinite retry loop if units stay 0.
+			log.Warn().Str("batch", b.batchID.String()).Msg("flusher: zero-unit batch; marking flushed without Stripe emit")
+			if _, dbErr := f.db.Exec(ctx, `
+				UPDATE usage_events
+				SET flushed_to_stripe = TRUE
+				WHERE batch_id = $1
+				  AND customer_id = $2
+				  AND flushed_to_stripe = FALSE
+			`, b.batchID, b.customerID); dbErr != nil {
+				log.Warn().Err(dbErr).Str("batch", b.batchID.String()).Msg("flusher: mark-flushed failed for zero-unit batch")
+				failed++
+			}
+			continue
+		}
 		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.customerID, b.units); err != nil {
 			failed++
 		}

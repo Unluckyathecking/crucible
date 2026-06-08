@@ -330,17 +330,13 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("insert phase-B row: %v", err)
 	}
 
-	// Build a second pool with an already-cancelled context so background connection goroutines
-	// exit immediately, then close the pool. This avoids a race between pool.Close() and the
-	// asynchronous connection-establishment goroutines that pgxpool starts internally.
-	badCtx, badCancel := context.WithCancel(ctx)
-	badCancel()
-	badPool, err := pgxpool.New(badCtx, testDSN())
+	// Build a valid pool then close it immediately — a closed pool returns errors
+	// on all Acquire calls, reliably exercising the reconcile failure path.
+	badPool, err := pgxpool.New(ctx, testDSN())
 	if err != nil {
-		t.Fatalf("pgxpool.New failed (postgres reachable at this point): %v", err)
+		t.Fatalf("pgxpool.New failed: %v", err)
 	}
 	badPool.Close()
-	// Do not register t.Cleanup(badPool.Close): the pool is already closed above.
 
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
