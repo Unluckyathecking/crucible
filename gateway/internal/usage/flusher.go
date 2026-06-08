@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,8 +77,9 @@ func (f *Flusher) Run(ctx context.Context) {
 
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. The two queries run
-// concurrently. A query failure produces a log warning and increments
-// BillingReconcileErrorsTotal — it never aborts or affects the flush phases.
+// concurrently via a WaitGroup; worst-case latency is one query timeout (5 s), not two.
+// A query failure produces a log warning and increments BillingReconcileErrorsTotal —
+// it never aborts or affects the flush phases.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
@@ -88,52 +90,49 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer ubCancel()
 
-	type backlogResult struct {
-		units, rows int64
-		ageSecs     float64
-		err         error
-	}
-	type unbillableResult struct {
-		units, rows int64
-		err         error
-	}
-
-	backlogCh := make(chan backlogResult, 1)
-	unbillableCh := make(chan unbillableResult, 1)
-
+	var (
+		backlogUnits, backlogRows       int64
+		backlogAgeSecs                  float64
+		backlogErr                      error
+		unbillableUnits, unbillableRows int64
+		unbillableErr                   error
+		wg                              sync.WaitGroup
+	)
+	wg.Add(2)
 	go func() {
-		u, r, a, err := f.reconciler.BacklogStats(bCtx)
-		backlogCh <- backlogResult{u, r, a, err}
+		defer wg.Done()
+		backlogUnits, backlogRows, backlogAgeSecs, backlogErr = f.reconciler.BacklogStats(bCtx)
 	}()
 	go func() {
-		u, r, err := f.reconciler.UnbillableUsage(ubCtx)
-		unbillableCh <- unbillableResult{u, r, err}
+		defer wg.Done()
+		unbillableUnits, unbillableRows, unbillableErr = f.reconciler.UnbillableUsage(ubCtx)
 	}()
+	wg.Wait()
 
-	br := <-backlogCh
-	if br.err != nil {
+	// Each query family is updated independently: if one fails, the other still
+	// refreshes so its alerts remain live. BillingReconcileErrorsTotal signals that
+	// at least one gauge family is stale.
+	if backlogErr != nil {
 		// Leave gauges at their previous values: resetting to 0 would make a DB
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
 		observability.BillingReconcileErrorsTotal.Inc()
-		log.Warn().Err(br.err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
+		log.Warn().Err(backlogErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
-		ageSecs := br.ageSecs
-		if ageSecs < 0 {
-			log.Warn().Float64("raw_age_seconds", ageSecs).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
-			ageSecs = 0
+		if backlogAgeSecs < 0 {
+			log.Warn().Float64("raw_age_seconds", backlogAgeSecs).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
+			backlogAgeSecs = 0
 		}
-		observability.BillingBacklogUnits.Set(float64(br.units))
-		observability.BillingBacklogRows.Set(float64(br.rows))
-		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
+		observability.BillingBacklogUnits.Set(float64(backlogUnits))
+		observability.BillingBacklogRows.Set(float64(backlogRows))
+		observability.BillingBacklogOldestAgeSeconds.Set(backlogAgeSecs)
 	}
 
-	ur := <-unbillableCh
-	if ur.err != nil {
+	if unbillableErr != nil {
 		observability.BillingReconcileErrorsTotal.Inc()
-		log.Warn().Err(ur.err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
+		log.Warn().Err(unbillableErr).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(ur.units))
-		observability.BillingUnbillableRows.Set(float64(ur.rows))
+		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
+		observability.BillingUnbillableRows.Set(float64(unbillableRows))
 	}
 }
 
