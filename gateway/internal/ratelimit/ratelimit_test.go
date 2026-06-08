@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,9 +79,14 @@ func TestAllow_TableDriven(t *testing.T) {
 
 			b := New(rdb)
 			for i := 0; i < tt.calls; i++ {
-				err := b.Allow(context.Background(), cust, tt.limit)
+				rem, err := b.Allow(context.Background(), cust, tt.limit)
 				if !errors.Is(err, tt.wantErr[i]) {
 					t.Errorf("call %d: err=%v, want %v", i, err, tt.wantErr[i])
+				}
+				// Unlimited plans (limit==0) must return the noRemaining sentinel so
+				// callers know not to emit rate-limit headers.
+				if tt.limit == 0 && rem != noRemaining {
+					t.Errorf("call %d: unlimited plan should return noRemaining (%d), got %d", i, noRemaining, rem)
 				}
 			}
 		})
@@ -96,14 +102,45 @@ func TestBucket_FailOpenOnRedisError(t *testing.T) {
 
 	before := testutil.ToFloat64(observability.RateLimitFailOpenTotal)
 
-	err := b.Allow(context.Background(), cust, 5)
+	rem, err := b.Allow(context.Background(), cust, 5)
 	if err != nil {
 		t.Errorf("Allow should return nil on Redis error (fail-open), got %v", err)
+	}
+	if rem != noRemaining {
+		t.Errorf("Allow on Redis error should return noRemaining sentinel, got %d", rem)
 	}
 
 	after := testutil.ToFloat64(observability.RateLimitFailOpenTotal)
 	if after != before+1 {
 		t.Errorf("crucible_ratelimit_failopen_total = %v, want %v (must increment on Redis-error fail-open)", after, before+1)
+	}
+}
+
+// checkRateLimitHeaders asserts all six RateLimit-* / X-RateLimit-* headers are present
+// and consistent with the expected limit and remaining values.
+func checkRateLimitHeaders(t *testing.T, h http.Header, wantLimit, wantRemaining int) {
+	t.Helper()
+	for _, pair := range [][2]string{
+		{"RateLimit-Limit", strconv.Itoa(wantLimit)},
+		{"RateLimit-Remaining", strconv.Itoa(wantRemaining)},
+		{"X-RateLimit-Limit", strconv.Itoa(wantLimit)},
+		{"X-RateLimit-Remaining", strconv.Itoa(wantRemaining)},
+	} {
+		if got := h.Get(pair[0]); got != pair[1] {
+			t.Errorf("header %s = %q, want %q", pair[0], got, pair[1])
+		}
+	}
+	// Reset headers must be set and look like a Unix timestamp (positive integer).
+	for _, hdr := range []string{"RateLimit-Reset", "X-RateLimit-Reset"} {
+		v := h.Get(hdr)
+		if v == "" {
+			t.Errorf("header %s is missing", hdr)
+			continue
+		}
+		ts, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || ts <= 0 {
+			t.Errorf("header %s = %q, want a positive Unix timestamp", hdr, v)
+		}
 	}
 }
 
@@ -130,7 +167,8 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	t.Run("under limit returns ok with no rate-limit headers", func(t *testing.T) {
+	t.Run("under limit returns ok with rate-limit headers", func(t *testing.T) {
+		rdb.Del(context.Background(), "rl:"+custStr)
 		ctx := auth.WithTestKey(context.Background(), key)
 		req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
 		rec := httptest.NewRecorder()
@@ -140,17 +178,20 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 		}
+		limit := plans.RatePerMinute(context.Background(), "free")
+		checkRateLimitHeaders(t, rec.Header(), limit, limit-1)
+
 		if v := rec.Header().Get("Retry-After"); v != "" {
 			t.Errorf("Retry-After should not be set on success, got %q", v)
 		}
 	})
 
-	t.Run("over limit returns 429 with Retry-After header", func(t *testing.T) {
+	t.Run("over limit returns 429 with rate-limit headers Remaining=0", func(t *testing.T) {
 		rdb.Del(context.Background(), "rl:"+custStr)
 
 		planLimit := plans.RatePerMinute(context.Background(), "free")
 		for i := 0; i < planLimit; i++ {
-			if err := bucket.Allow(context.Background(), custStr, planLimit); err != nil {
+			if _, err := bucket.Allow(context.Background(), custStr, planLimit); err != nil {
 				t.Fatalf("pre-fill call %d: %v", i, err)
 			}
 		}
@@ -170,7 +211,110 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
+		checkRateLimitHeaders(t, rec.Header(), planLimit, 0)
 	})
+}
+
+// TestMiddleware_UnlimitedPlanNoRateLimitHeaders asserts that unlimited plans
+// (RatePerMinute <= 0) do not emit misleading rate-limit headers.
+func TestMiddleware_UnlimitedPlanNoRateLimitHeaders(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+
+	// Seed a test-specific plan with rate_limit_per_minute=0 (unlimited).
+	// The built-in "business" plan is seeded with rate=6000, not 0.
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO plans (id, display_name, stripe_price_id, rate_limit_per_minute, monthly_unit_cap)
+		VALUES ('test-unlimited-rl', 'Test Unlimited RL', NULL, 0, NULL)
+		ON CONFLICT (id) DO UPDATE SET rate_limit_per_minute = 0
+	`)
+	if err != nil {
+		t.Skipf("cannot seed test plan: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM plans WHERE id = 'test-unlimited-rl'")
+	})
+
+	plans := billing.NewPlanCache(pool)
+	bucket := New(rdb)
+
+	key := &auth.Key{
+		ID: uuid.New(),
+		Customer: auth.Customer{
+			ID:    uuid.New(),
+			Email: "test-unlimited@example.com",
+			Plan:  "test-unlimited-rl",
+		},
+	}
+
+	handler := Middleware(bucket, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx := auth.WithTestKey(context.Background(), key)
+	req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	for _, hdr := range []string{
+		"RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+	} {
+		if v := rec.Header().Get(hdr); v != "" {
+			t.Errorf("unlimited plan: header %s = %q, want empty (must not emit misleading cap)", hdr, v)
+		}
+	}
+}
+
+// TestMiddleware_RedisDownNoFabricatedHeaders asserts that fail-open (Redis error)
+// passes the request through without emitting rate-limit headers.
+func TestMiddleware_RedisDownNoFabricatedHeaders(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	bucket := New(rdb)
+	rdb.Close() // force Redis error
+
+	key := &auth.Key{
+		ID: uuid.New(),
+		Customer: auth.Customer{
+			ID:    uuid.New(),
+			Email: "test-redisdown@example.com",
+			Plan:  "free",
+		},
+	}
+
+	called := false
+	handler := Middleware(bucket, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx := auth.WithTestKey(context.Background(), key)
+	req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("handler should be called on Redis error (fail-open)")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (fail-open on Redis error)", rec.Code, http.StatusOK)
+	}
+	for _, hdr := range []string{
+		"RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+	} {
+		if v := rec.Header().Get(hdr); v != "" {
+			t.Errorf("Redis-down path: header %s = %q, want empty (must not fabricate values)", hdr, v)
+		}
+	}
 }
 
 func TestMiddleware_FailOpenOnRedisError(t *testing.T) {

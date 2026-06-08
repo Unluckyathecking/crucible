@@ -2,10 +2,12 @@ package quota
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -91,7 +93,7 @@ func TestReserveN_TableDriven(t *testing.T) {
 
 			tr := New(rdb)
 			for i := 0; i < tt.reserves; i++ {
-				ok, _, err := tr.Reserve(context.Background(), cust, tt.cap)
+				ok, _, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
 				if err != nil {
 					t.Fatalf("call %d: %v", i, err)
 				}
@@ -148,7 +150,7 @@ func TestRefundN_TableDriven(t *testing.T) {
 
 			tr := New(rdb)
 			for i := 0; i < tt.reserves; i++ {
-				ok, _, err := tr.Reserve(context.Background(), cust, tt.cap)
+				ok, _, _, _, err := tr.Reserve(context.Background(), cust, tt.cap)
 				if err != nil || !ok {
 					t.Fatalf("reserve %d: ok=%v err=%v", i, ok, err)
 				}
@@ -173,7 +175,7 @@ func TestTracker_FailOpenOnRedisError(t *testing.T) {
 	tr := New(rdb)
 	cust := uuid.New()
 
-	_, _, err := tr.Reserve(context.Background(), cust, 10)
+	_, _, _, _, err := tr.Reserve(context.Background(), cust, 10)
 	if err == nil {
 		t.Error("Reserve should return error when Redis is down")
 	}
@@ -197,7 +199,7 @@ func TestRefundAt_MonthBoundary_UsesOriginalKey(t *testing.T) {
 	key := monthKey(cust, now)
 	t.Cleanup(func() { rdb.Del(context.Background(), key) })
 
-	ok, reservedKey, err := tr.Reserve(context.Background(), cust, 10)
+	ok, reservedKey, _, _, err := tr.Reserve(context.Background(), cust, 10)
 	if err != nil || !ok {
 		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
 	}
@@ -283,6 +285,12 @@ func TestQuotaMiddleware_UnlimitedPlanSkipsReserve(t *testing.T) {
 	if !errors.Is(err, redis.Nil) {
 		t.Errorf("unlimited plan should not touch Redis counter (got key)")
 	}
+	// Unlimited plan must NOT emit quota headers.
+	for _, hdr := range []string{"X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"} {
+		if v := rec.Header().Get(hdr); v != "" {
+			t.Errorf("unlimited plan: header %s = %q, want empty (must not emit misleading cap)", hdr, v)
+		}
+	}
 }
 
 func TestQuotaMiddleware_RejectsWhenOverCap(t *testing.T) {
@@ -311,7 +319,7 @@ func TestQuotaMiddleware_RejectsWhenOverCap(t *testing.T) {
 
 	planCap := plans.MonthlyCap(context.Background(), "free")
 	for i := int64(0); i < planCap; i++ {
-		ok, _, err := tr.Reserve(context.Background(), cust, planCap)
+		ok, _, _, _, err := tr.Reserve(context.Background(), cust, planCap)
 		if err != nil || !ok {
 			t.Fatalf("pre-fill reserve %d: ok=%v err=%v", i, ok, err)
 		}
@@ -332,6 +340,8 @@ func TestQuotaMiddleware_RejectsWhenOverCap(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
+	// 429 QUOTA_EXCEEDED must carry X-Quota-* headers with Remaining=0.
+	checkQuotaHeaders(t, rec.Header(), planCap, 0)
 }
 
 func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
@@ -377,5 +387,225 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 	after := testutil.ToFloat64(observability.QuotaFailOpenTotal)
 	if after != before+1 {
 		t.Errorf("crucible_quota_failopen_total = %v, want %v (must increment on Redis-error fail-open)", after, before+1)
+	}
+
+	// Fail-open must NOT emit fabricated quota headers.
+	for _, hdr := range []string{"X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"} {
+		if v := rec.Header().Get(hdr); v != "" {
+			t.Errorf("Redis-down path: header %s = %q, want empty (must not fabricate values)", hdr, v)
+		}
+	}
+}
+
+// TestQuotaMiddleware_SuccessEmitsQuotaHeaders checks the success path emits X-Quota-*
+// headers derived from the plan cap and live remaining count.
+func TestQuotaMiddleware_SuccessEmitsQuotaHeaders(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	tr := New(rdb)
+	key := &auth.Key{
+		ID: uuid.New(),
+		Customer: auth.Customer{
+			ID:    uuid.New(),
+			Email: "test-quotahdr@example.com",
+			Plan:  "free",
+		},
+	}
+	cust := key.Customer
+
+	redisKey := monthKey(cust.ID, time.Now().UTC())
+	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
+
+	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		MarkRecorded(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx := auth.WithTestKey(context.Background(), key)
+	req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	planCap := plans.MonthlyCap(context.Background(), "free")
+	if planCap == 0 {
+		t.Skip("free plan is unlimited in this environment; skipping quota header test")
+	}
+	// After one successful reserve, remaining = cap - 1.
+	checkQuotaHeaders(t, rec.Header(), planCap, planCap-1)
+}
+
+// checkQuotaHeaders verifies all three X-Quota-* headers are present and accurate.
+func checkQuotaHeaders(t *testing.T, h http.Header, wantCap, wantRemaining int64) {
+	t.Helper()
+	for _, pair := range [][2]string{
+		{"X-Quota-Limit", strconv.FormatInt(wantCap, 10)},
+		{"X-Quota-Remaining", strconv.FormatInt(wantRemaining, 10)},
+	} {
+		if got := h.Get(pair[0]); got != pair[1] {
+			t.Errorf("header %s = %q, want %q", pair[0], got, pair[1])
+		}
+	}
+	v := h.Get("X-Quota-Reset")
+	if v == "" {
+		t.Error("X-Quota-Reset is missing")
+		return
+	}
+	ts, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || ts <= 0 {
+		t.Errorf("X-Quota-Reset = %q, want a positive Unix timestamp", v)
+		return
+	}
+	// Verify Reset falls in the [1, 33]-day future window rather than
+	// pinning to an exact expireAt value: Reserve captures now internally,
+	// so recomputing expireAt here can disagree by one month if the test
+	// straddles a UTC month boundary.
+	nowUnix := time.Now().Unix()
+	if ts <= nowUnix {
+		t.Errorf("X-Quota-Reset = %d: must be a future timestamp (now=%d)", ts, nowUnix)
+	} else if ts > nowUnix+33*24*60*60 {
+		t.Errorf("X-Quota-Reset = %d: more than 33 days in the future (now=%d)", ts, nowUnix)
+	}
+}
+
+// TestQuotaMiddleware_QuotaExceeded_TableDriven is a table-driven 429 test. It pre-fills
+// the counter to capacity via direct Reserve calls, then fires a request through the
+// middleware and asserts the response shape and quota headers.
+func TestMiddleware_QuotaExceeded_TableDriven(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	// "free" plan has a known cap from the DB; use the real MonthlyCap call to get it.
+	freeCap := plans.MonthlyCap(context.Background(), "free")
+	if freeCap == 0 {
+		t.Skip("free plan has unlimited cap in this environment; skipping over-cap test")
+	}
+
+	tests := []struct {
+		name    string
+		prefill int64 // reserves to make before the middleware call
+		planID  string
+	}{
+		{
+			name:    "exactly at cap returns 429",
+			prefill: freeCap,
+			planID:  "free",
+		},
+		{
+			name:    "two over cap returns 429",
+			prefill: freeCap + 2, // clamped by rollback; counter stays at freeCap
+			planID:  "free",
+		},
+	}
+
+	tr := New(rdb)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := testKeyForPlan(tt.planID)
+			cust := key.Customer
+
+			redisKey := monthKey(cust.ID, time.Now().UTC())
+			t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
+
+			// Pre-fill the counter. Once the counter == freeCap the Reserve script rolls
+			// back, so the actual counter will be at most freeCap regardless of prefill.
+			for i := int64(0); i < tt.prefill; i++ {
+				tr.Reserve(context.Background(), cust.ID, freeCap) //nolint:errcheck
+			}
+
+			handlerCalled := false
+			handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			ctx := auth.WithTestKey(context.Background(), key)
+			req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if handlerCalled {
+				t.Error("handler must not be called when quota is exceeded")
+			}
+			if rec.Code != http.StatusTooManyRequests {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			// Verify the response body is valid JSON with the expected error code.
+			var body struct {
+				Error struct {
+					Code      string `json:"code"`
+					Retryable bool   `json:"retryable"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("response body is not valid JSON: %v", err)
+			}
+			if body.Error.Code != "QUOTA_EXCEEDED" {
+				t.Errorf("error.code = %q, want QUOTA_EXCEEDED", body.Error.Code)
+			}
+			if body.Error.Retryable {
+				t.Error("error.retryable must be false for quota exhaustion")
+			}
+			// X-Quota-* headers must be present with Remaining=0.
+			checkQuotaHeaders(t, rec.Header(), freeCap, 0)
+		})
+	}
+}
+
+// TestMiddleware_RefundsWhenNoUsageRecorded_Concurrent stress-tests the refund path:
+// N concurrent requests, none of which record usage. After all handlers complete, the
+// counter must be zero because every reserve was refunded.
+func TestMiddleware_RefundsWhenNoUsageRecorded_Concurrent(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	tr := New(rdb)
+	key := testKeyForPlan("free")
+	cust := key.Customer
+
+	redisKey := monthKey(cust.ID, time.Now().UTC())
+	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
+
+	const n = 10
+
+	// Handler always "fails" (no MarkRecorded), but the plan's cap (1000 for free
+	// fallback) is large enough that all 10 requests are admitted.
+	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never call MarkRecorded — simulate worker failure for every request.
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			ctx := auth.WithTestKey(context.Background(), key)
+			req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}()
+	}
+	for i := 0; i < n; i++ {
+		<-done
+	}
+
+	// All reserves were refunded; counter must be zero.
+	got, err := tr.Current(context.Background(), cust.ID)
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("counter after %d refunded requests = %d, want 0", n, got)
 	}
 }

@@ -9,18 +9,22 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
-// Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve.
+// Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve
+// and sets X-Quota-* headers on every response where the count is known.
 // MUST be mounted AFTER auth.Middleware (it depends on auth context).
 //
 // Flow:
 //  1. Reserve(+1) atomically against the customer's monthly counter. Returns 429 on cap.
-//  2. Seed a record-signal into context so the downstream usage recorder can flip
+//  2. Emit X-Quota-* headers (both admit and deny paths); omit on Redis error or
+//     unlimited plan so no fabricated values escape.
+//  3. Seed a record-signal into context so the downstream usage recorder can flip
 //     it true on a successful insert.
-//  3. Run the handler.
-//  4. After the handler returns, if the recorder never flipped the signal (worker
+//  4. Run the handler.
+//  5. After the handler returns, if the recorder never flipped the signal (worker
 //     failed, response carried an error envelope, recorder write failed, etc.),
 //     refund the reserve against the EXACT key Reserve used.
 //
@@ -47,27 +51,52 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 			cap := plans.MonthlyCap(r.Context(), key.Customer.Plan)
 			if cap == 0 {
-				// 0 means unlimited (e.g. Business tier).
+				// 0 means unlimited (e.g. Business tier); omit quota headers to avoid implying a cap.
 				next.ServeHTTP(w, r)
 				return
 			}
-			admitted, reservedKey, err := t.Reserve(r.Context(), key.Customer.ID, cap)
+			admitted, reservedKey, current, resetAt, err := t.Reserve(r.Context(), key.Customer.ID, cap)
 			if err != nil {
-				// Fail-open and let the request through. Count it so operators can alert on a
-				// degraded quota store instead of the fail-open being silent.
+				// Fail-open and let the request through. No reliable count, so omit quota
+				// headers to avoid emitting fabricated values. Count it so operators can alert.
 				observability.QuotaFailOpenTotal.Inc()
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Clamp to zero: cap-current should never go negative given the Lua contract
+			// (denied returns {0, cap} so remaining = cap - cap = 0), but be defensive at
+			// this trust boundary so we never emit X-Quota-Remaining: -1 to a customer.
+			remaining := cap - current
+			if remaining < 0 {
+				// This should never happen given the Lua contract, but log so operators
+				// can detect a script bug rather than silently papering over it.
+				log.Warn().
+					Str("customer", key.Customer.ID.String()).
+					Int64("cap", cap).
+					Int64("current", current).
+					Msg("quota remaining went negative; clamping to zero (Lua contract breach?)")
+				remaining = 0
+			}
+
 			if !admitted {
+				// Set all headers before writing the status code. Any Header().Set call after
+				// WriteHeader is silently ignored by http.ResponseWriter.
+				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
+				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"error":{"code":"QUOTA_EXCEEDED","message":"monthly usage quota reached","retryable":false}}`))
 				return
 			}
 
-			// Reserve succeeded. Plant a record-signal so the recorder can tell us whether
-			// it actually wrote a usage row downstream.
+			// Reserve succeeded — set quota headers before the inner handler writes the
+			// response. Headers must be set before the first WriteHeader/Write call.
+			// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
+			httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
+
+			// Plant a record-signal so the recorder can tell us whether it actually wrote
+			// a usage row downstream.
 			ctx, signal := withRecordSignal(r.Context())
 			next.ServeHTTP(w, r.WithContext(ctx))
 

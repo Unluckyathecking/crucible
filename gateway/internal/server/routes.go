@@ -97,7 +97,7 @@ func NewRouter(d *Deps) http.Handler {
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
-		ExposedHeaders:   []string{"X-Idempotent-Replayed"},
+		ExposedHeaders:   []string{"X-Idempotent-Replayed", "Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))

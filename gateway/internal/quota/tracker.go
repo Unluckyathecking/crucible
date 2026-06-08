@@ -27,17 +27,23 @@ func monthKey(customerID uuid.UUID, now time.Time) string {
 }
 
 func expireAt(now time.Time) time.Time {
+	// Month()+1 == 13 in December; time.Date normalises 13 → January of year+1,
+	// which is the correct result for a December quota key.
 	return time.Date(now.Year(), now.Month()+1, 2, 0, 0, 0, 0, time.UTC)
 }
 
 // reserveScript atomically: INCRs the counter by 1, sets the month-end expiry, and
-// rolls back the increment if it would push the customer over their cap. Returns 1
-// if the slot is reserved, 0 if the request would exceed the cap.
+// rolls back the increment if it would push the customer over their cap. Returns a
+// 2-element array {admitted, current}: admitted=1 with the post-INCR counter value,
+// or {0, cap} when denied (counter rolled back to cap via DECR).
 //
 // The pre-fix code used a non-atomic GET-then-check pattern in the middleware: under
 // stampede, N goroutines could all read `current < cap` before any of them committed,
 // allowing soft-overshoot of (N-1) requests per stampede event. Reserving via an
 // atomic INCR-and-check closes that race.
+//
+// Returning the counter value is additive — the check-and-INCR semantics are unchanged.
+// The caller computes remaining = cap − current without a second Redis round-trip.
 //
 // Net behaviour: the recorder's later Add(units) still runs after worker success, so
 // total counter movement per successful call = 1 (reserve) + units (recorder). The
@@ -51,19 +57,28 @@ local v = redis.call('INCR', key)
 redis.call('EXPIREAT', key, exp)
 if v > cap then
   redis.call('DECR', key)
-  return 0
+  return {0, cap}
 end
-return 1
+return {1, v}
 `)
 
 // Reserve atomically checks the in-month counter against `cap` and, if there's room,
-// reserves a single unit. Returns `(admitted, reservedKey, err)`. `reservedKey` is the
-// exact Redis key the reserve was applied to — callers MUST pass it back to RefundAt
-// when releasing the reservation. This is what makes the refund path correct across
-// midnight-UTC boundaries: a request that reserves at 23:59 and refunds at 00:01 must
-// release the *previous* month's counter, not the new month's empty key.
+// reserves a single unit. Returns `(admitted, reservedKey, current, resetAt, err)`.
+// `reservedKey` is the exact Redis key the reserve was applied to — callers MUST pass
+// it back to RefundAt when releasing the reservation. This is what makes the refund
+// path correct across midnight-UTC boundaries: a request that reserves at 23:59 and
+// refunds at 00:01 must release the *previous* month's counter, not the new month's
+// empty key.
 //
-// `cap <= 0` means unlimited (always admit; empty reservedKey).
+// `current` is the counter value after this operation:
+//   - admitted=true: the post-INCR value (remaining = cap − current).
+//   - admitted=false: cap (counter rolled back; remaining = 0).
+//
+// `resetAt` is the expiry time passed to Redis EXPIREAT — callers MUST use this value
+// for the X-Quota-Reset header rather than recomputing expireAt(time.Now()) so the
+// header is guaranteed to match the actual key expiry even across UTC month boundaries.
+//
+// `cap <= 0` means unlimited (always admit; empty reservedKey; current=0; zero resetAt).
 //
 // Callers MUST pair an admitted Reserve with either:
 //   - usage.Recorder.Record on successful worker invocation (adds the actual units), OR
@@ -74,22 +89,35 @@ return 1
 //
 // Without the refund path, transient worker outages would burn a slot from the
 // customer's monthly cap without any usage_events row to bill — see PR #5 P1.
-func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, string, error) {
+func (t *Tracker) Reserve(ctx context.Context, customerID uuid.UUID, cap int64) (bool, string, int64, time.Time, error) {
 	if cap <= 0 {
-		return true, "", nil
+		// Unlimited plan: sentinel values returned. Callers MUST check cap > 0
+		// before using current or resetAt — passing time.Time{} to SetQuotaHeaders
+		// would emit X-Quota-Reset: 0 (Unix epoch). The quota middleware guards this
+		// by checking cap == 0 and returning before calling Reserve.
+		return true, "", 0, time.Time{}, nil
 	}
 	// Use UTC throughout so the key (which monthKey() builds in UTC) and the expiry
 	// always reference the same calendar month, even on hosts running in a non-UTC TZ.
 	now := time.Now().UTC()
 	key := monthKey(customerID, now)
+	exp := expireAt(now)
 	res, err := reserveScript.Run(ctx, t.cache,
 		[]string{key},
-		cap, expireAt(now).Unix(),
-	).Int()
+		cap, exp.Unix(),
+	).Slice()
 	if err != nil {
-		return false, "", fmt.Errorf("reserve: %w", err)
+		return false, "", 0, time.Time{}, fmt.Errorf("reserve: %w", err)
 	}
-	return res == 1, key, nil
+	if len(res) != 2 {
+		return false, "", 0, time.Time{}, fmt.Errorf("reserve: unexpected script return length: %d", len(res))
+	}
+	admitted, ok1 := res[0].(int64)
+	current, ok2 := res[1].(int64)
+	if !ok1 || !ok2 {
+		return false, "", 0, time.Time{}, fmt.Errorf("reserve: unexpected script return type: %T, %T", res[0], res[1])
+	}
+	return admitted == 1, key, current, exp, nil
 }
 
 // RefundAt decrements the counter at the specified Redis key by 1. The key MUST come
