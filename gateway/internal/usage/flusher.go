@@ -87,11 +87,12 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer bCancel()
-	units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
+	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
 		observability.BillingBacklogUnits.Set(float64(units))
+		observability.BillingBacklogRows.Set(float64(rows))
 		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
 	}
 
@@ -122,7 +123,6 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
-	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -193,7 +193,6 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string

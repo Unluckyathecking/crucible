@@ -143,6 +143,61 @@ func TestEmitAndMark_stripeErrorDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestEmitAndMark_crossCustomerIsolation(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	cust1, apiKey1 := setupTestCustomer(t, pool)
+	cust2, _ := setupTestCustomer(t, pool)
+	t.Cleanup(func() {
+		deleteUsageRows(t, pool, cust1)
+		deleteUsageRows(t, pool, cust2)
+	})
+
+	batchID := uuid.New()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id)
+		 VALUES ($1, $2, 'iso.op', 10, $3, $4)`,
+		cust1, apiKey1, "req-iso-"+cust1.String()[:8], batchID,
+	); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+
+	mock := &mockStripeMeter{}
+	f := NewFlusher(pool, mock, 0)
+
+	// emitAndMark with cust2's customerID — the UPDATE WHERE customer_id=$2 matches no rows for cust1's batch.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err != nil {
+		t.Fatalf("emitAndMark with wrong customerID: %v", err)
+	}
+
+	var flushed bool
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE batch_id=$1 AND customer_id=$2 LIMIT 1`,
+		batchID, cust1,
+	).Scan(&flushed); err != nil {
+		t.Fatalf("query flushed: %v", err)
+	}
+	if flushed {
+		t.Error("AND customer_id predicate failed: wrong customer's batch_id marked another customer's rows flushed")
+	}
+
+	// Now with the correct customerID — must succeed.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust1, 10); err != nil {
+		t.Fatalf("emitAndMark with correct customerID: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx,
+		`SELECT flushed_to_stripe FROM usage_events WHERE batch_id=$1 AND customer_id=$2 LIMIT 1`,
+		batchID, cust1,
+	).Scan(&flushed); err != nil {
+		t.Fatalf("query flushed after correct emit: %v", err)
+	}
+	if !flushed {
+		t.Error("expected flushed_to_stripe=true after emitAndMark with correct customerID")
+	}
+}
+
 func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)

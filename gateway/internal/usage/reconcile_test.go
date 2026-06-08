@@ -279,21 +279,24 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 // (closed pool → all reconcile queries fail) do not prevent retryPendingBatches and
 // claimAndEmitNewBatches from running or Stripe from being called. The three methods
 // are tested directly rather than via Run() so the reconciler pool can be swapped
-// independently of the flush pool. Must not call t.Parallel() — it resets and asserts
-// on package-level promauto gauges shared across the entire test process.
+// independently of the flush pool. Must not call t.Parallel() — this test writes to
+// package-level promauto gauges shared across the test process and is not safe for
+// concurrent execution.
 func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
-	// Save and restore global gauge state around this test to minimise pollution
-	// for tests that run after us. Must not call t.Parallel() — we still race with
-	// concurrent package tests, but at least we restore what we clobber.
+	// Save and restore global gauge state so other sequential tests see a clean slate.
+	// Must not call t.Parallel() — package-level promauto gauges are shared process-wide.
 	prevUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
+	prevRows := testutil.ToFloat64(observability.BillingBacklogRows)
 	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
 	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
 	t.Cleanup(func() {
 		observability.BillingBacklogUnits.Set(prevUnits)
+		observability.BillingBacklogRows.Set(prevRows)
 		observability.BillingBacklogOldestAgeSeconds.Set(prevAge)
 		observability.BillingUnbillableUnits.Set(prevUnbillable)
 	})
 	observability.BillingBacklogUnits.Set(0)
+	observability.BillingBacklogRows.Set(0)
 	observability.BillingBacklogOldestAgeSeconds.Set(0)
 	observability.BillingUnbillableUnits.Set(0)
 
@@ -346,6 +349,9 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	// Both queries fail (bad pool); gauges must remain at 0 (reset to 0 above).
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != 0 {
 		t.Errorf("BillingBacklogUnits = %g after reconcile error, want 0", got)
+	}
+	if got := testutil.ToFloat64(observability.BillingBacklogRows); got != 0 {
+		t.Errorf("BillingBacklogRows = %g after reconcile error, want 0", got)
 	}
 	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != 0 {
 		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want 0", got)

@@ -11,6 +11,7 @@
 //	crucible_usage_records_total
 //	crucible_billing_flush_total{outcome}
 //	crucible_billing_backlog_units                       — unflushed billable_units (label-free gauge, flusher tick)
+//	crucible_billing_backlog_rows                        — unflushed row count (label-free gauge, flusher tick)
 //	crucible_billing_backlog_oldest_age_seconds          — age of oldest unflushed row (label-free gauge, flusher tick)
 //	crucible_billing_unbillable_units                    — unflushed units with no Stripe customer (label-free gauge, flusher tick)
 //	crucible_rate_limited_total
@@ -90,6 +91,14 @@ var (
 		Help: "Current unflushed billable_units in usage_events (label-free; set each flusher tick).",
 	})
 
+	// BillingBacklogRows is the number of unflushed usage_events rows (not units).
+	// Useful alongside BillingBacklogUnits: 1M units in 2 rows vs 1M rows indicates
+	// very different operational profiles. Label-free.
+	BillingBacklogRows = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_billing_backlog_rows",
+		Help: "Number of unflushed usage_events rows (label-free; set each flusher tick).",
+	})
+
 	// BillingBacklogOldestAgeSeconds is the age in seconds of the oldest unflushed row.
 	// Zero when the backlog is empty. Label-free.
 	BillingBacklogOldestAgeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
@@ -137,6 +146,7 @@ type Metrics struct {
 	UsageRecordsTotal              prometheus.Counter
 	BillingFlushTotal              *prometheus.CounterVec
 	BillingBacklogUnits            prometheus.Gauge
+	BillingBacklogRows             prometheus.Gauge
 	BillingBacklogOldestAgeSeconds prometheus.Gauge
 	BillingUnbillableUnits         prometheus.Gauge
 	RateLimitedTotal               prometheus.Counter
@@ -187,6 +197,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_billing_backlog_units",
 			Help: "Current unflushed billable_units in usage_events (label-free; set each flusher tick).",
 		}),
+		BillingBacklogRows: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_billing_backlog_rows",
+			Help: "Number of unflushed usage_events rows (label-free; set each flusher tick).",
+		}),
 		BillingBacklogOldestAgeSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "crucible_billing_backlog_oldest_age_seconds",
 			Help: "Age in seconds of the oldest unflushed usage_events row (label-free; set each flusher tick).",
@@ -218,6 +232,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
 		m.BillingBacklogUnits,
+		m.BillingBacklogRows,
 		m.BillingBacklogOldestAgeSeconds,
 		m.BillingUnbillableUnits,
 		m.RateLimitedTotal,

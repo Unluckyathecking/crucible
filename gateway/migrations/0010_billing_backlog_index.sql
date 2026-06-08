@@ -1,18 +1,17 @@
--- Partial index to help the UnbillableUsage reconcile query find unlinked customers.
+-- Index for the billing reconcile queries (BacklogStats, UnbillableUsage).
 --
--- The partial condition (WHERE stripe_customer_id IS NULL) lets Postgres consider a
--- customers-first plan: scan only the subset of customers without a Stripe ID, then
--- join to usage_events. Whether the planner actually chooses this plan depends on
--- table statistics — with small customer tables or mostly-flushed usage_events, the
--- planner is likely to drive from usage_events via idx_usage_pending_flush instead,
--- in which case this index is unused. Run EXPLAIN ANALYZE on production data if
--- UnbillableUsage queries appear in slow-query logs.
+-- Both reconcile queries filter usage_events WHERE flushed_to_stripe = FALSE and
+-- then join to customers. This partial index lets the planner drive the join from
+-- the usage_events side: scan only unflushed rows indexed by customer_id, then look
+-- up the customers row. Without it, small customer tables cause a full customers scan
+-- with a nested loop into usage_events.
 --
--- The index is on customers(id) — the PK column. The partial condition is what provides
--- the benefit; without it the index would be a redundant duplicate of the PK index.
+-- The existing idx_usage_events_unbatched (0004) already covers the flusher's
+-- claim query (batch_id IS NULL AND flushed_to_stripe = FALSE), but that partial
+-- condition is too narrow for the reconcile queries which do not filter on batch_id.
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 
-CREATE INDEX IF NOT EXISTS idx_customers_no_stripe
-    ON customers(id)
-    WHERE stripe_customer_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_usage_unflushed
+    ON usage_events(customer_id)
+    WHERE flushed_to_stripe = FALSE;
