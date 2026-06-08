@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,8 +77,8 @@ func (f *Flusher) Run(ctx context.Context) {
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
 //
-// Both queries run concurrently so the worst-case overhead is one query's timeout (5 s)
-// rather than two sequential timeouts. Each degrades independently.
+// Queries run sequentially, each with its own bounded timeout, so a failure in
+// BacklogStats does not prevent UnbillableUsage from running.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
@@ -91,35 +90,24 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-		defer bCancel()
-		units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
-		if err != nil {
-			log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
-			return
-		}
+	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer bCancel()
+	units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
+	if err != nil {
+		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
+	} else {
 		observability.BillingBacklogUnits.Set(float64(units))
 		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
-	}()
+	}
 
-	go func() {
-		defer wg.Done()
-		ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-		defer ubCancel()
-		unbillableUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
-		if err != nil {
-			log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
-			return
-		}
+	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer ubCancel()
+	unbillableUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
+	if err != nil {
+		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+	} else {
 		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
-	}()
-
-	wg.Wait()
+	}
 }
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
