@@ -273,13 +273,13 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 	}
 }
 
-// TestFlusher_reconcileErrorDoesNotAbortPhases verifies that setBacklogGauges failures
-// (closed pool → all reconcile queries fail) do not prevent retryPendingBatches and
-// claimAndEmitNewBatches from running or Stripe from being called. The three methods
-// are tested directly rather than via Run() so the reconciler pool can be swapped
-// independently of the flush pool. Must not call t.Parallel() — this test writes to
-// package-level promauto gauges shared across the test process and is not safe for
-// concurrent execution.
+// TestFlusher_reconcileErrorDoesNotAbortPhases verifies that a reconcile error does not
+// corrupt flusher state or prevent the flush phases from completing. The test calls
+// setBacklogGauges FIRST (with an injected failing reconciler) to demonstrate that a
+// reconcile error leaves the flusher in a state where both flush phases still work. If
+// setBacklogGauges somehow corrupted the flusher's DB pool or phase state, the subsequent
+// retryPendingBatches/claimAndEmitNewBatches calls would fail. Must not call t.Parallel()
+// — this test writes to package-level promauto gauges shared across the test process.
 func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	// Save and restore global gauge state so other sequential tests see a clean slate.
 	// Must not call t.Parallel() — package-level promauto gauges are shared process-wide.
@@ -355,18 +355,12 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	})
 	f.reconcileErrCounter = freshErrCounter
 
-	// Run both phases then reconcile — must not panic or return an error to the caller.
-	if err := f.retryPendingBatches(ctx); err != nil {
-		t.Fatalf("retryPendingBatches: %v", err)
-	}
-	if err := f.claimAndEmitNewBatches(ctx); err != nil {
-		t.Fatalf("claimAndEmitNewBatches: %v", err)
-	}
-	// Safety cap: 3×reconcileQueryTimeout keeps the test aligned with the production
-	// constant — if reconcileQueryTimeout changes this scales automatically.
+	// Call setBacklogGauges FIRST — with a failing reconciler. This is the key ordering:
+	// if setBacklogGauges corrupts flusher state (panics, poisons the DB pool, etc.)
+	// the flush phases below would fail, proving the invariant is violated.
 	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 3*reconcileQueryTimeout)
 	defer gaugeCancel()
-	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
+	f.setBacklogGauges(gaugeCtx) // must not panic; reconcile errors are non-fatal
 
 	// Both queries fail (injected stub error). The counter must be incremented exactly once (not twice) —
 	// the once-per-tick semantic prevents double-counting when both BacklogStats and UnbillableUsage fail.
@@ -375,8 +369,8 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Errorf("reconcileErrCounter = %g, want 1 (incremented once per tick even when both queries fail)", got)
 	}
 
-	// Both queries fail (injected stub); error path must PRESERVE gauge values at the gaugePreservationSentinel
-	// (42). If the code incorrectly reset them to 0, the assertions below would fail.
+	// Error path must PRESERVE gauge values at the gaugePreservationSentinel (42).
+	// If the code incorrectly reset them to 0, the assertions below would fail.
 	// Resetting to 0 on error makes a DB timeout indistinguishable from an empty backlog
 	// and would clear active Prometheus alerts — so we prove that does NOT happen.
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != gaugePreservationSentinel {
@@ -396,6 +390,15 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	}
 
 	// Both phases must have fired independently of the reconcile failure.
+	// Both flush phases must succeed despite the preceding reconcile failure.
+	// If setBacklogGauges corrupted the flusher or DB pool, these calls would fail.
+	if err := f.retryPendingBatches(ctx); err != nil {
+		t.Fatalf("retryPendingBatches: %v", err)
+	}
+	if err := f.claimAndEmitNewBatches(ctx); err != nil {
+		t.Fatalf("claimAndEmitNewBatches: %v", err)
+	}
+
 	// Phase A (retryPendingBatches) uses the stable batch_id we pre-stamped.
 	// Phase B (claimAndEmitNewBatches) allocates a new batch_id for the unbatched row.
 

@@ -26,14 +26,15 @@ func NewReconciler(db *pgxpool.Pool) *Reconciler {
 // Returns zeros for all three values when no unflushed Stripe-linked rows exist;
 // oldestAgeSecs is also zero when the backlog is empty (COALESCE on NULL interval).
 func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldestAgeSecs float64, err error) {
-	// COUNT(*) is correct here: usage_events.id is BIGSERIAL PRIMARY KEY, so each
-	// row in the JOIN result is distinct. COUNT(*) == COUNT(DISTINCT u.id) with no
-	// extra sort/hash cost.
+	// COUNT(*) is correct here: usage_events.id is BIGSERIAL PRIMARY KEY so each
+	// JOIN row is distinct. COALESCE returns 0 for an empty backlog; for non-empty
+	// backlogs EXTRACT returns a positive epoch value unless the host clock skewed
+	// MIN(created_at) into the future, in which case the caller clamps negatives.
 	row := r.db.QueryRow(ctx, `
 		SELECT
 		    COALESCE(SUM(u.billable_units), 0)::bigint,
 		    COUNT(*)::bigint,
-		    GREATEST(COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8, 0)::float8
+		    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8
 		FROM usage_events u
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.flushed_to_stripe = FALSE

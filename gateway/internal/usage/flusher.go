@@ -120,8 +120,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 
-	// Run both reconcile queries concurrently so total latency is bounded by one
-	// reconcileQueryTimeout rather than two.
+	// Run both reconcile queries concurrently: BacklogStats and UnbillableUsage launch
+	// in separate goroutines and wg.Wait() joins them. Total latency is bounded by one
+	// reconcileQueryTimeout (5 s) rather than two, keeping reconcile overhead well within
+	// the default 30 s tick period regardless of DB latency.
 	var (
 		blUnits int64
 		blRows  int64
@@ -172,10 +174,11 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if math.Signbit(blAge) {
-			// math.Signbit catches blAge < 0 (system clock skew) and IEEE 754 -0.0
-			// (GREATEST edge case: -0.0 < 0 is false in Go, so plain < 0 misses it).
-			// Either indicates a host clock problem; Error level since it's not expected.
-			log.Error().Float64("raw_age_seconds", blAge).Msg("flusher: negative backlog age detected (clock skew or -0.0); clamping to 0")
+			// SQL returns COALESCE(EXTRACT(EPOCH FROM ...), 0) without GREATEST clamping;
+			// if MIN(created_at) is in the future (NTP skew), EXTRACT returns a negative
+			// epoch. math.Signbit catches both blAge < 0 and IEEE 754 -0.0 (plain < 0
+			// misses -0.0). Error level: negative backlog age indicates a clock problem.
+			log.Error().Float64("raw_age_seconds", blAge).Msg("flusher: negative backlog age (clock skew); clamping to 0")
 			blAge = 0
 		}
 		f.backlogUnits.Set(float64(blUnits))
