@@ -13,12 +13,21 @@ import (
 	"os"
 )
 
+// testDSN returns the Postgres DSN used by all usage package tests.
+// Override with PG_TEST_DSN to point at a non-default instance.
+func testDSN() string {
+	if dsn := os.Getenv("PG_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	return "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+}
+
 func newTestPool(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	pool, err := pgxpool.New(ctx, testDSN())
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}

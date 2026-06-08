@@ -109,6 +109,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -117,11 +118,12 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	var batches []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.units); err == nil {
-			batches = append(batches, p)
+		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.units); err != nil {
+			log.Warn().Err(err).Msg("flusher: failed to scan pending batch row; skipping")
+			continue
 		}
+		batches = append(batches, p)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
@@ -163,6 +165,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close()
 
 	type claimedBatch struct {
 		batchID          uuid.UUID
@@ -172,15 +175,14 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	var batches []claimedBatch
 	for rows.Next() {
 		var b claimedBatch
-		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.units); err == nil {
-			if b.units > 0 {
-				batches = append(batches, b)
-			}
-		} else {
-			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row")
+		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.units); err != nil {
+			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row; skipping")
+			continue
+		}
+		if b.units > 0 {
+			batches = append(batches, b)
 		}
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}

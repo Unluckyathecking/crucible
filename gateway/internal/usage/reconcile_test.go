@@ -7,17 +7,27 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestBacklogStats_empty verifies zero values are returned when no unflushed rows exist.
-func TestBacklogStats_empty(t *testing.T) {
-	pool := newTestPool(t)
+// deleteUsageRows removes all usage_events for the given customer — used by t.Cleanup
+// so test rows don't accumulate across runs and pollute aggregate assertions.
+func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID interface{}) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM usage_events WHERE customer_id=$1`, custID,
+	); err != nil {
+		t.Logf("cleanup: delete usage_events for %v: %v", custID, err)
+	}
+}
 
-	// Use a customer whose rows we can isolate; don't rely on a clean slate.
+// TestBacklogStats_flushedRowExcluded verifies that a row with flushed_to_stripe=TRUE
+// is not counted in the backlog — i.e. BacklogStats only counts pending work.
+func TestBacklogStats_flushedRowExcluded(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
 	custID, apiKeyID := setupTestCustomer(t, pool)
-	_ = apiKeyID // ensure customer + key exist but insert nothing
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	rec := NewReconciler(pool)
-	// Insert a flushed row to confirm it is not counted.
-	ctx := context.Background()
 	reqID := "req-bs-empty-" + custID.String()[:8]
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, flushed_to_stripe)
@@ -55,13 +65,24 @@ func TestBacklogStats_empty(t *testing.T) {
 	}
 }
 
-// TestBacklogStats_countsUnflushed seeds a known set of unflushed rows and asserts
-// BacklogStats returns the correct aggregate units and a positive age.
+// TestBacklogStats_countsUnflushed seeds a known set of unflushed rows for a Stripe-linked
+// customer and asserts BacklogStats returns the correct aggregate units and a positive age.
+// BacklogStats mirrors the flusher's stripe_customer_id IS NOT NULL filter so it only
+// counts rows the flusher can actually process.
 func TestBacklogStats_countsUnflushed(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
+	// Give the customer a stripe_customer_id so BacklogStats counts their rows.
+	stripeID := "cus_bs_uf_" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
+	); err != nil {
+		t.Fatalf("set stripe_customer_id: %v", err)
+	}
 
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
 	wantUnits := int64(30)
@@ -90,8 +111,8 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 		t.Fatalf("BacklogStats: %v", err)
 	}
 
-	// Verify our 3 rows contribute at least wantUnits to the total
-	// (other tests may have left rows; we assert >= since we can't guarantee a clean DB).
+	// Assert our 3 rows contribute at least wantUnits to the total
+	// (other tests may have left rows; we use >= since the DB is shared).
 	if units < wantUnits {
 		t.Errorf("BacklogStats units = %d, want >= %d", units, wantUnits)
 	}
@@ -102,17 +123,60 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 		t.Errorf("BacklogStats ageSecs = %f, want > 0 when unflushed rows exist", ageSecs)
 	}
 
-	// The flushed row (999 units) must not inflate the total.
-	// Query the customer-local unflushed sum for a precise assertion.
-	var ourUnits int64
+	// Precise customer-local assertion: flushed row (999 units) must not inflate the total.
+	var ourUnflushedUnits int64
 	if err := pool.QueryRow(ctx,
 		`SELECT COALESCE(SUM(billable_units),0)::bigint FROM usage_events
 		 WHERE customer_id=$1 AND flushed_to_stripe=FALSE`, custID,
-	).Scan(&ourUnits); err != nil {
+	).Scan(&ourUnflushedUnits); err != nil {
 		t.Fatalf("query our unflushed sum: %v", err)
 	}
-	if ourUnits != wantUnits {
-		t.Errorf("customer-local unflushed units = %d, want %d", ourUnits, wantUnits)
+	if ourUnflushedUnits != wantUnits {
+		t.Errorf("customer-local unflushed units = %d, want %d", ourUnflushedUnits, wantUnits)
+	}
+}
+
+// TestBacklogStats_unbillableRowsExcluded verifies that unflushed rows for customers
+// WITHOUT a stripe_customer_id do NOT inflate BacklogStats. These rows belong to
+// UnbillableUsage, not the billable backlog.
+func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	// setupTestCustomer leaves stripe_customer_id NULL — permanently unbillable.
+	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
+	// Insert unflushed rows that should NOT count toward the billable backlog.
+	for i, u := range []int{100, 200} {
+		reqID := "req-bs-ubexcl-" + custID.String()[:8] + string(rune('a'+i))
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
+			 VALUES ($1, $2, 'bs.ubexcl', $3, $4)`,
+			custID, apiKeyID, u, reqID,
+		); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	rec := NewReconciler(pool)
+	_, _, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats: %v", err)
+	}
+
+	// Confirm our customer's rows are in UnbillableUsage, not BacklogStats.
+	var ourBacklog int64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(u.billable_units),0)::bigint
+		 FROM usage_events u JOIN customers c ON c.id=u.customer_id
+		 WHERE u.customer_id=$1 AND u.flushed_to_stripe=FALSE AND c.stripe_customer_id IS NOT NULL`,
+		custID,
+	).Scan(&ourBacklog); err != nil {
+		t.Fatalf("query billable backlog for our customer: %v", err)
+	}
+	if ourBacklog != 0 {
+		t.Errorf("customer without stripe_customer_id must contribute 0 to billable backlog, got %d", ourBacklog)
 	}
 }
 
@@ -124,6 +188,7 @@ func TestUnbillableUsage_noStripeCustomer(t *testing.T) {
 
 	// setupTestCustomer leaves stripe_customer_id NULL — permanently unbillable.
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	wantUnits := int64(42)
 	reqID := "req-ub-nostripe-" + custID.String()[:8]
@@ -170,6 +235,7 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 	ctx := context.Background()
 
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 	stripeID := "cus_ub_excl_" + custID.String()[:8]
 	if _, err := pool.Exec(ctx,
 		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
@@ -231,8 +297,10 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("insert row: %v", err)
 	}
 
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
+
 	// Build a second pool then immediately close it so all queries fail.
-	badPool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	badPool, err := pgxpool.New(ctx, testDSN())
 	if err != nil {
 		t.Skipf("could not create bad pool: %v", err)
 	}

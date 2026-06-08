@@ -18,17 +18,22 @@ func NewReconciler(db *pgxpool.Pool) *Reconciler {
 	return &Reconciler{db: db}
 }
 
-// BacklogStats returns aggregate counts for all unflushed usage_events rows:
-// total billable_units, row count, and the age in seconds of the oldest unflushed row.
-// Returns zeros (and no error) when the backlog is empty.
+// BacklogStats returns aggregate counts for unflushed usage_events rows that the flusher
+// can actually process: total billable_units, row count, and the age in seconds of the
+// oldest unflushed row. Only rows for customers with a stripe_customer_id are counted,
+// mirroring the flusher's own AND c.stripe_customer_id IS NOT NULL filter. Permanently
+// unbillable rows (no stripe_customer_id) are tracked separately by UnbillableUsage.
+// Returns zeros (and no error) when the billable backlog is empty.
 func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldestAgeSecs float64, err error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT
-		    COALESCE(SUM(billable_units), 0)::bigint,
+		    COALESCE(SUM(u.billable_units), 0)::bigint,
 		    COUNT(*)::bigint,
-		    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at))), 0)::float8
-		FROM usage_events
-		WHERE flushed_to_stripe = FALSE
+		    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8
+		FROM usage_events u
+		JOIN customers c ON c.id = u.customer_id
+		WHERE u.flushed_to_stripe = FALSE
+		  AND c.stripe_customer_id IS NOT NULL
 	`)
 	if err = row.Scan(&units, &rows, &oldestAgeSecs); err != nil {
 		return 0, 0, 0, fmt.Errorf("backlog stats: %w", err)
