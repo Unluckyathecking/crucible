@@ -17,9 +17,9 @@ type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
 
-// reconcileQueryTimeout caps each backlog/unbillable reconcile query. With two sequential
-// queries each bounded at 5 s, the worst-case reconcile overhead is 10 s out of the
-// default 30 s flusher period, leaving the majority of the budget for the flush phases.
+// reconcileQueryTimeout caps each backlog/unbillable reconcile query. Both queries run in
+// parallel under a shared timeout so the worst-case reconcile wall time is one timeout (5 s),
+// not two, leaving the majority of the 30 s flusher period for the flush phases.
 const reconcileQueryTimeout = 5 * time.Second
 
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
@@ -78,32 +78,53 @@ func (f *Flusher) Run(ctx context.Context) {
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
 //
-// Queries run sequentially, each with its own bounded timeout, so a failure in
-// BacklogStats does not prevent UnbillableUsage from running.
+// Both queries run concurrently under a shared bounded timeout so a slow BacklogStats
+// cannot delay UnbillableUsage, and total wall time is bounded by one reconcileQueryTimeout.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
 
-	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer bCancel()
-	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
-	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
-	} else {
-		observability.BillingBacklogUnits.Set(float64(units))
-		observability.BillingBacklogRows.Set(float64(rows))
-		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
+	rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+	defer rCancel()
+
+	type backlogRes struct {
+		units   int64
+		rows    int64
+		ageSecs float64
+		err     error
+	}
+	type unbillableRes struct {
+		units int64
+		rows  int64
+		err   error
 	}
 
-	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer ubCancel()
-	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
-	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+	bCh := make(chan backlogRes, 1)
+	ubCh := make(chan unbillableRes, 1)
+
+	go func() {
+		u, r, a, err := f.reconciler.BacklogStats(rCtx)
+		bCh <- backlogRes{u, r, a, err}
+	}()
+	go func() {
+		u, r, err := f.reconciler.UnbillableUsage(rCtx)
+		ubCh <- unbillableRes{u, r, err}
+	}()
+
+	if br := <-bCh; br.err != nil {
+		log.Warn().Err(br.err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
-		observability.BillingUnbillableRows.Set(float64(unbillableRows))
+		observability.BillingBacklogUnits.Set(float64(br.units))
+		observability.BillingBacklogRows.Set(float64(br.rows))
+		observability.BillingBacklogOldestAgeSeconds.Set(br.ageSecs)
+	}
+
+	if ubr := <-ubCh; ubr.err != nil {
+		log.Warn().Err(ubr.err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+	} else {
+		observability.BillingUnbillableUnits.Set(float64(ubr.units))
+		observability.BillingUnbillableRows.Set(float64(ubr.rows))
 	}
 }
 

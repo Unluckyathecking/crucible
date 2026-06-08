@@ -314,13 +314,27 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("set stripe_customer_id: %v", err)
 	}
 
-	reqID := "req-recerr-" + custID.String()[:8]
+	// Phase-A seed: a row with batch_id already stamped but not yet flushed.
+	// retryPendingBatches queries WHERE batch_id IS NOT NULL.
+	pendingBatchID := uuid.New()
+	reqA := "req-recerr-A-" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, batch_id)
+		 VALUES ($1, $2, 'recerr.phaseA', 5, $3, $4)`,
+		custID, apiKeyID, reqA, pendingBatchID,
+	); err != nil {
+		t.Fatalf("insert phase-A row: %v", err)
+	}
+
+	// Phase-B seed: an unbatched row (batch_id IS NULL).
+	// claimAndEmitNewBatches queries WHERE batch_id IS NULL.
+	reqB := "req-recerr-B-" + custID.String()[:8]
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
-		 VALUES ($1, $2, 'recerr.op', 5, $3)`,
-		custID, apiKeyID, reqID,
+		 VALUES ($1, $2, 'recerr.phaseB', 3, $3)`,
+		custID, apiKeyID, reqB,
 	); err != nil {
-		t.Fatalf("insert row: %v", err)
+		t.Fatalf("insert phase-B row: %v", err)
 	}
 
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
@@ -365,16 +379,26 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Errorf("BillingUnbillableRows = %g after reconcile error, want 0", got)
 	}
 
-	// The flush phases must have completed: Stripe was called for our customer.
-	var found bool
+	// Both phases must have fired independently of the reconcile failure.
+	// Phase A (retryPendingBatches) uses the stable batch_id we pre-stamped.
+	// Phase B (claimAndEmitNewBatches) allocates a new batch_id for the unbatched row.
+	wantKeyA := "crucible-batch-" + pendingBatchID.String()
+	var foundA, foundB bool
 	for _, c := range mock.calls {
-		if c.stripeCustomerID == stripeID {
-			found = true
-			break
+		if c.stripeCustomerID != stripeID {
+			continue
+		}
+		if c.idempotencyKey == wantKeyA {
+			foundA = true
+		} else {
+			foundB = true
 		}
 	}
-	if !found {
-		t.Error("expected at least one Stripe call; flush phases must not be aborted by a reconcile failure")
+	if !foundA {
+		t.Error("Phase A (retryPendingBatches) did not call Stripe; reconcile failure must not abort flush phases")
+	}
+	if !foundB {
+		t.Error("Phase B (claimAndEmitNewBatches) did not call Stripe; reconcile failure must not abort flush phases")
 	}
 }
 
