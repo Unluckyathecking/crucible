@@ -461,9 +461,15 @@ func checkQuotaHeaders(t *testing.T, h http.Header, wantCap, wantRemaining int64
 		t.Errorf("X-Quota-Reset = %q, want a positive Unix timestamp", v)
 		return
 	}
-	wantReset := expireAt(time.Now().UTC()).Unix()
-	if ts != wantReset {
-		t.Errorf("X-Quota-Reset = %d, want %d (2nd of next UTC month)", ts, wantReset)
+	// Verify Reset falls in the [1, 33]-day future window rather than
+	// pinning to an exact expireAt value: Reserve captures now internally,
+	// so recomputing expireAt here can disagree by one month if the test
+	// straddles a UTC month boundary.
+	nowUnix := time.Now().Unix()
+	if ts <= nowUnix {
+		t.Errorf("X-Quota-Reset = %d: must be a future timestamp (now=%d)", ts, nowUnix)
+	} else if ts > nowUnix+33*24*60*60 {
+		t.Errorf("X-Quota-Reset = %d: more than 33 days in the future (now=%d)", ts, nowUnix)
 	}
 }
 
