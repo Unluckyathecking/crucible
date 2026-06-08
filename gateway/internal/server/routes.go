@@ -263,6 +263,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		if resp.BillableUnits > 0 {
 			w.Header().Set("X-Billable-Units", strconv.FormatUint(resp.BillableUnits, 10))
 		}
@@ -356,6 +357,7 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string, retryable bool) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
