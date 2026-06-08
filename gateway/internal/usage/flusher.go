@@ -81,7 +81,7 @@ func (f *Flusher) Run(ctx context.Context) {
 // Queries run sequentially, each with its own bounded timeout, so a failure in
 // BacklogStats does not prevent UnbillableUsage from running.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
-	if f.reconciler == nil {
+	if f.reconciler == nil || ctx.Err() != nil {
 		return
 	}
 
@@ -89,9 +89,6 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer bCancel()
 	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return // parent canceled (shutdown) — not an operator warning
-		}
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
 		observability.BillingBacklogUnits.Set(float64(units))
@@ -103,9 +100,6 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer ubCancel()
 	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
@@ -260,7 +254,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			Msg("flusher: stripe emit failed; will retry next tick (same batch_id, idempotent)")
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
-	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
 	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
 	// collision or manual intervention can never mark another customer's rows as flushed.
@@ -271,8 +264,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		  AND customer_id = $2
 		  AND flushed_to_stripe = FALSE
 	`, batchID, customerID); err != nil {
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
+	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	return nil
 }
