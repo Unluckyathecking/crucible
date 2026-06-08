@@ -7,10 +7,11 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 // stubReconciler is a deterministic reconcilerIface for tests that need controlled failures.
@@ -106,7 +107,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 		reqID := "req-bs-uf-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, created_at)
-			 VALUES ($1, $2, 'bs.uf', $3, $4, NOW() - interval '1 second')`,
+			 VALUES ($1, $2, 'bs.unflushed', $3, $4, NOW() - interval '1 second')`,
 			custID, apiKeyID, u, reqID,
 		); err != nil {
 			t.Fatalf("insert row %d: %v", i, err)

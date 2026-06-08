@@ -196,7 +196,7 @@ func TestRetryPendingBatches_stripeErrorDoesNotMark(t *testing.T) {
 
 	// Stripe failure propagates: retryPendingBatches returns an error summarising failed batches.
 	if err := f.retryPendingBatches(ctx); err == nil {
-		t.Error("expected error from retryPendingBatches when Stripe fails, got nil")
+		t.Errorf("expected error from retryPendingBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted (Stripe was called for our batch).
@@ -472,7 +472,7 @@ func TestClaimAndEmitNewBatches_stripeErrorLeavesRowsBatched(t *testing.T) {
 
 	// Stripe failure propagates: claimAndEmitNewBatches returns an error summarising failed batches.
 	if err := f.claimAndEmitNewBatches(ctx); err == nil {
-		t.Error("expected error from claimAndEmitNewBatches when Stripe fails, got nil")
+		t.Errorf("expected error from claimAndEmitNewBatches when Stripe fails, got nil")
 	}
 
 	// Our customer must have been attempted.

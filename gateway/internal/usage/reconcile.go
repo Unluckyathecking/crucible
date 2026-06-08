@@ -29,7 +29,7 @@ func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldes
 	row := r.db.QueryRow(ctx, `
 		SELECT
 		    COALESCE(SUM(u.billable_units), 0)::bigint,
-		    COUNT(*)::bigint,
+		    COUNT(DISTINCT u.id)::bigint,
 		    GREATEST(COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8, 0)::float8
 		FROM usage_events u
 		JOIN customers c ON c.id = u.customer_id

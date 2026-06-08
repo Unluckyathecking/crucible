@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -31,8 +32,9 @@ type reconcilerIface interface {
 }
 
 // batchPageSize limits the number of customers processed per flusher tick in each phase.
-// At the default tick period, 100 customers × 1 Stripe API call each (~50 ms p95) ≈ 5 s max
-// serial latency; in practice calls are fast and the limit is generous.
+// Calibrated against Stripe's meter_event API: 100 customers × 1 call per 30 s tick
+// ≈ 3.3 calls/s, well under typical rate limits. At ~50 ms p95 per call, worst-case
+// serial latency is 5 s, leaving headroom inside the tick period.
 const batchPageSize = 100
 
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
@@ -166,10 +168,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
-		if blAge < 0 {
-			// Clock skew: clamp to 0 (empty-backlog contract) rather than exposing a
-			// negative age that breaks PromQL threshold alerts and confuses dashboards.
-			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
+		if math.Signbit(blAge) {
+			// Covers blAge < 0 (clock skew) and IEEE 754 -0.0, which GREATEST(..., 0)
+			// in some float edge cases can still produce; -0.0 < 0 is false in Go.
+			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (non-positive backlog age); clamping to 0")
 			blAge = 0
 		}
 		f.backlogUnits.Set(float64(blUnits))
