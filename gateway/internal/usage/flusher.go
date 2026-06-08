@@ -35,9 +35,6 @@ type StripeMeter interface {
 // back up with the SAME batch_id, so Stripe never double-counts. The pre-fix flusher
 // derived the idem-key from changing row id ranges, which caused billing drift after a
 // partial failure.
-//
-// After both phases each tick, setBacklogGauges updates observability gauges via the
-// reconciler. Reconcile errors are logged as warnings and never abort the flush phases.
 type Flusher struct {
 	db         *pgxpool.Pool
 	stripe     StripeMeter
@@ -81,6 +78,11 @@ func (f *Flusher) Run(ctx context.Context) {
 // rather than two sequential timeouts. Each degrades independently.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
+		return
+	}
+	// Skip reconcile queries if the parent context is already canceled (e.g., shutdown).
+	// This avoids spurious warn logs from queries that fail immediately on a dead context.
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -156,7 +158,10 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("retry-pending: %d of %d batches failed; see warn logs", failed, len(batches))
+		// Individual batch failures are retry-safe: Phase A re-picks them up next tick
+		// with the same batch_id. We log the summary here; emitAndMark has the per-batch detail.
+		log.Warn().Int("failed", failed).Int("total", len(batches)).
+			Msg("flusher: retry-pending: some batches failed emit; will retry next tick")
 	}
 	return nil
 }
@@ -221,7 +226,9 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("claim-new: %d of %d batches failed; see warn logs", failed, len(batches))
+		// Individual batch failures are retry-safe: Phase A re-picks them up next tick.
+		log.Warn().Int("failed", failed).Int("total", len(batches)).
+			Msg("flusher: claim-new: some batches failed emit; will retry next tick")
 	}
 	return nil
 }

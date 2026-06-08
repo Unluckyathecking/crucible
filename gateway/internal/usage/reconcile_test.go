@@ -302,9 +302,11 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	// Build a second pool then immediately close it so all queries fail.
+	// Fatalf (not Skipf) here — a working DSN is required to construct the closed pool;
+	// if it fails, the test environment is broken, not just missing.
 	badPool, err := pgxpool.New(ctx, testDSN())
 	if err != nil {
-		t.Skipf("could not create bad pool: %v", err)
+		t.Fatalf("could not create bad pool: %v", err)
 	}
 	badPool.Close()
 
