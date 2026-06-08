@@ -166,6 +166,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close() // safety net: releases connection on panic or early return
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -235,6 +236,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close() // safety net: releases connection on panic or early return
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
