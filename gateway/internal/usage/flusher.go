@@ -75,7 +75,9 @@ func (f *Flusher) Run(ctx context.Context) {
 			if err := f.claimAndEmitNewBatches(ctx); err != nil {
 				log.Warn().Err(err).Msg("flusher: claim-new phase failed; will retry next tick")
 			}
-			f.setBacklogGauges(ctx)
+			if ctx.Err() == nil {
+				f.setBacklogGauges(ctx)
+			}
 		}
 	}
 }
@@ -93,49 +95,58 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel()
 
+	// Each result struct is owned by exactly one goroutine (br by goroutine-1,
+	// ur by goroutine-2). The main goroutine reads them only after wg.Wait(),
+	// which establishes the necessary happens-before edge. No mutex needed.
+	type backlogResult struct {
+		units, rows int64
+		age         float64
+		err         error
+	}
+	type unbillableResult struct {
+		units, rows int64
+		err         error
+	}
 	var (
-		backlogUnits, backlogRows       int64
-		backlogAgeSecs                  float64
-		backlogErr                      error
-		unbillableUnits, unbillableRows int64
-		unbillableErr                   error
-		wg                              sync.WaitGroup
+		br backlogResult
+		ur unbillableResult
+		wg sync.WaitGroup
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		backlogUnits, backlogRows, backlogAgeSecs, backlogErr = f.reconciler.BacklogStats(rCtx)
+		br.units, br.rows, br.age, br.err = f.reconciler.BacklogStats(rCtx)
 	}()
 	go func() {
 		defer wg.Done()
-		unbillableUnits, unbillableRows, unbillableErr = f.reconciler.UnbillableUsage(rCtx)
+		ur.units, ur.rows, ur.err = f.reconciler.UnbillableUsage(rCtx)
 	}()
 	wg.Wait()
 
 	// Each query family is updated independently: if one fails, the other still
 	// refreshes so its alerts remain live. BillingReconcileErrorsTotal signals that
 	// at least one gauge family is stale.
-	if backlogErr != nil {
+	if br.err != nil {
 		// Leave gauges at their previous values: resetting to 0 would make a DB
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
 		observability.BillingReconcileErrorsTotal.Inc()
-		log.Warn().Err(backlogErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
+		log.Warn().Err(br.err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
-		if backlogAgeSecs < 0 {
-			log.Warn().Float64("raw_age_seconds", backlogAgeSecs).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
-			backlogAgeSecs = 0
+		if br.age < 0 {
+			log.Warn().Float64("raw_age_seconds", br.age).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
+			br.age = 0
 		}
-		observability.BillingBacklogUnits.Set(float64(backlogUnits))
-		observability.BillingBacklogRows.Set(float64(backlogRows))
-		observability.BillingBacklogOldestAgeSeconds.Set(backlogAgeSecs)
+		observability.BillingBacklogUnits.Set(float64(br.units))
+		observability.BillingBacklogRows.Set(float64(br.rows))
+		observability.BillingBacklogOldestAgeSeconds.Set(br.age)
 	}
 
-	if unbillableErr != nil {
+	if ur.err != nil {
 		observability.BillingReconcileErrorsTotal.Inc()
-		log.Warn().Err(unbillableErr).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
+		log.Warn().Err(ur.err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
-		observability.BillingUnbillableRows.Set(float64(unbillableRows))
+		observability.BillingUnbillableUnits.Set(float64(ur.units))
+		observability.BillingUnbillableRows.Set(float64(ur.rows))
 	}
 }
 
@@ -284,10 +295,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			Msg("flusher: stripe emit failed; will retry next tick (same batch_id, idempotent)")
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
-	// Stripe accepted the event; count it now so the flush_total counter reflects Stripe-level
-	// success even if the mark-flushed DB step below fails. The batch stays in Phase A's retry
-	// queue in that case; Stripe deduplicates on the idempotency key, so it will not double-bill.
-	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
 	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
 	// collision or manual intervention can never mark another customer's rows as flushed.
@@ -306,5 +313,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).Msg("flusher: mark-flushed affected 0 rows; batch_id/customer_id mismatch")
 		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
 	}
+	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	return nil
 }

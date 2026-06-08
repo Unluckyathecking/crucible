@@ -37,13 +37,30 @@ func TestStripeMeter_implementsInterface(t *testing.T) {
 }
 
 func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
-	prev := testutil.ToFloat64(observability.BillingBacklogUnits)
 	// NewFlusher with nil db leaves reconciler nil; setBacklogGauges must return early without
 	// touching any gauges.
+	gauges := []struct {
+		name string
+		get  func() float64
+	}{
+		{"BillingBacklogUnits", func() float64 { return testutil.ToFloat64(observability.BillingBacklogUnits) }},
+		{"BillingBacklogRows", func() float64 { return testutil.ToFloat64(observability.BillingBacklogRows) }},
+		{"BillingBacklogOldestAgeSeconds", func() float64 {
+			return testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+		}},
+		{"BillingUnbillableUnits", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableUnits) }},
+		{"BillingUnbillableRows", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableRows) }},
+	}
+	prevs := make(map[string]float64, len(gauges))
+	for _, g := range gauges {
+		prevs[g.name] = g.get()
+	}
 	f := NewFlusher(nil, &mockStripeMeter{}, 0)
 	f.setBacklogGauges(context.Background())
-	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != prev {
-		t.Errorf("BillingBacklogUnits changed with nil reconciler: %g -> %g", prev, got)
+	for _, g := range gauges {
+		if got := g.get(); got != prevs[g.name] {
+			t.Errorf("%s changed with nil reconciler: %g -> %g", g.name, prevs[g.name], got)
+		}
 	}
 }
 
