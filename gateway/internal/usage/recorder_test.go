@@ -63,6 +63,24 @@ func setupTestCustomer(t testing.TB, pool *pgxpool.Pool) (customerID, apiKeyID u
 	return customerID, apiKeyID
 }
 
+// deleteUsageRows removes usage_events, api_keys, and customer rows for the given customer.
+// Called by t.Cleanup so test rows don't accumulate across runs and pollute aggregate assertions.
+// Deletion order respects FK constraints: usage_events → api_keys → customers.
+// Uses t.Logf (not t.Errorf) so cleanup failures are visible without failing an already-passing test.
+func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DELETE FROM usage_events WHERE customer_id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete usage_events for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM api_keys WHERE customer_id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete api_keys for %v: %v", custID, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM customers WHERE id=$1`, custID); err != nil {
+		t.Logf("cleanup: delete customers for %v: %v", custID, err)
+	}
+}
+
 func TestNewRecorder_nilDB(t *testing.T) {
 	r := NewRecorder(nil, nil)
 	if r == nil {

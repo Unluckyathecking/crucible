@@ -95,6 +95,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
+		if ageSecs < 0 {
+			ageSecs = 0
+		}
 		observability.BillingBacklogUnits.Set(float64(units))
 		observability.BillingBacklogRows.Set(float64(rows))
 		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
@@ -207,6 +210,13 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		var b claimedBatch
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
 			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row; skipping")
+			continue
+		}
+		if b.units == 0 {
+			// Zero-unit batches can't occur in production (server/routes.go enforces
+			// BillableUnits >= 1), but guard defensively: skip the Stripe call and let
+			// Phase A pick up the stamped row next tick.
+			log.Warn().Str("batch", b.batchID.String()).Msg("flusher: skipping zero-unit batch")
 			continue
 		}
 		batches = append(batches, b)

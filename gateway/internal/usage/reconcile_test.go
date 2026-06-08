@@ -12,22 +12,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// deleteUsageRows removes usage_events, api_keys, and customer rows for the given customer.
-// Called by t.Cleanup so test rows don't accumulate across runs and pollute aggregate assertions.
-// Deletion order respects FK constraints: usage_events → api_keys → customers.
-func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `DELETE FROM usage_events WHERE customer_id=$1`, custID); err != nil {
-		t.Errorf("cleanup: delete usage_events for %v: %v", custID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM api_keys WHERE customer_id=$1`, custID); err != nil {
-		t.Errorf("cleanup: delete api_keys for %v: %v", custID, err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM customers WHERE id=$1`, custID); err != nil {
-		t.Errorf("cleanup: delete customers for %v: %v", custID, err)
-	}
-}
 
 // TestBacklogStats_flushedRowExcluded verifies that a row with flushed_to_stripe=TRUE
 // is not counted in the backlog. Uses a before/after delta against the shared DB so the
@@ -105,12 +89,13 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	}
 
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
+	// Explicit created_at 1 second in the past guarantees afterAge > 0 even on fast systems.
 	const wantDeltaUnits = int64(30)
 	for i, u := range []int{5, 10, 15} {
 		reqID := "req-bs-uf-" + custID.String() + strconv.Itoa(i)
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
-			 VALUES ($1, $2, 'bs.uf', $3, $4)`,
+			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, created_at)
+			 VALUES ($1, $2, 'bs.uf', $3, $4, NOW() - interval '1 second')`,
 			custID, apiKeyID, u, reqID,
 		); err != nil {
 			t.Fatalf("insert row %d: %v", i, err)
