@@ -16,7 +16,7 @@ This phase makes the flush pipeline's health **observable** (Prometheus gauges +
 The usage flusher already runs on a ticker, already holds the `*pgxpool.Pool`, and is already wired in `main.go` (`go flusher.Run(rootCtx)`). The new reconciliation scan is hosted on the existing flusher tick — **no `main.go` wiring is needed and none is permitted** (parallel-safe vs open PR #48, which owns `gateway/cmd/gateway/main.go` and `gateway/internal/auth/store.go`).
 
 - New `gateway/internal/usage/reconcile.go` — bounded, aggregate-only backlog/leak SQL queries (kept out of `flusher.go` for testability).
-- Extend `gateway/internal/usage/flusher.go` — after the two existing flush phases on each tick, run the reconcile scan and set gauges. Existing claim/emit logic and the `IS NOT NULL` filter are **untouched**.
+- Extend `gateway/internal/usage/flusher.go` — after the two existing flush phases on each tick, run the reconcile scan and set gauges. The two-phase claim/emit idempotency guarantee and the `IS NOT NULL` filter are **preserved**; `emitAndMark` was hardened (returns `error`, accepts `customerID` for defense-in-depth, checks `RowsAffected`) but the flush semantics are unchanged.
 - Extend `gateway/internal/observability/metrics.go` — add label-free aggregate gauges + mirror them in the test `Metrics` struct.
 - New `gateway/migrations/0010_*.sql` — optional idempotent partial index supporting the unbilled-customer query if `EXPLAIN` shows a seq scan (invariant #8: idempotent, lexical-order).
 - `ops/` — Prometheus alert rules + a Grafana panel for backlog age / leak gauge.

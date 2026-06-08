@@ -82,17 +82,15 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 
-	// Reset to zero so a failed query doesn't leave stale values.
-	observability.BillingBacklogUnits.Set(0)
-	observability.BillingBacklogRows.Set(0)
-	observability.BillingBacklogOldestAgeSeconds.Set(0)
-	observability.BillingUnbillableUnits.Set(0)
-	observability.BillingUnbillableRows.Set(0)
-
 	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer bCancel()
 	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
+		// Reset on failure so stale values don't linger; on success, set directly
+		// (old→new without an intermediate 0) to avoid resetting Prometheus alert for-timers.
+		observability.BillingBacklogUnits.Set(0)
+		observability.BillingBacklogRows.Set(0)
+		observability.BillingBacklogOldestAgeSeconds.Set(0)
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
 	} else {
 		if ageSecs < 0 {
@@ -107,6 +105,8 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer ubCancel()
 	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
+		observability.BillingUnbillableUnits.Set(0)
+		observability.BillingUnbillableRows.Set(0)
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
