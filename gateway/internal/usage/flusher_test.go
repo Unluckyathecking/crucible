@@ -166,9 +166,10 @@ func TestEmitAndMark_crossCustomerIsolation(t *testing.T) {
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
 
-	// emitAndMark with cust2's customerID — the UPDATE WHERE customer_id=$2 matches no rows for cust1's batch.
-	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err != nil {
-		t.Fatalf("emitAndMark with wrong customerID: %v", err)
+	// emitAndMark with cust2's customerID — must return an error: 0 rows updated because
+	// customer_id doesn't match the batch owner (cust1). The defense-in-depth predicate works.
+	if err := f.emitAndMark(ctx, batchID, "cus_iso_stripe", cust2, 10); err == nil {
+		t.Fatal("expected error when customerID doesn't match batch owner; got nil")
 	}
 
 	var flushed bool

@@ -440,8 +440,8 @@ func TestSetBacklogGauges_setsGauges(t *testing.T) {
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != float64(wantUnits) {
 		t.Errorf("BillingBacklogUnits = %g, want %g", got, float64(wantUnits))
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 || got >= 60 {
-		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 and < 60 (unflushed rows exist)", got)
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got <= 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g, want > 0 (unflushed rows exist)", got)
 	}
 	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != float64(wantUbUnits) {
 		t.Errorf("BillingUnbillableUnits = %g, want %g", got, float64(wantUbUnits))

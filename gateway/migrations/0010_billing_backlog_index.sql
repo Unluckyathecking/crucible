@@ -1,14 +1,13 @@
 -- Index for the billing reconcile queries (BacklogStats, UnbillableUsage).
 --
--- Both reconcile queries filter usage_events WHERE flushed_to_stripe = FALSE and
--- then join to customers. This partial index lets the planner drive the join from
--- the usage_events side: scan only unflushed rows indexed by customer_id, then look
--- up the customers row. Without it, small customer tables cause a full customers scan
--- with a nested loop into usage_events.
+-- BacklogStats filters usage_events WHERE flushed_to_stripe = FALSE and joins to
+-- customers on customer_id. This partial index lets the planner scan only unflushed
+-- rows indexed by customer_id rather than performing a full usage_events scan.
 --
--- The existing idx_usage_events_unbatched (0004) already covers the flusher's
--- claim query (batch_id IS NULL AND flushed_to_stripe = FALSE), but that partial
--- condition is too narrow for the reconcile queries which do not filter on batch_id.
+-- UnbillableUsage uses the same flushed_to_stripe = FALSE filter. For small customer
+-- tables the planner may instead drive from customers (stripe_customer_id IS NULL)
+-- and nest-loop into usage_events, in which case this index is not used. Useful
+-- primarily for BacklogStats on large usage_events tables.
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 

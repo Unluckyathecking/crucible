@@ -252,16 +252,22 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
 	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
 	// collision or manual intervention can never mark another customer's rows as flushed.
-	if _, err := f.db.Exec(ctx, `
+	ct, err := f.db.Exec(ctx, `
 		UPDATE usage_events
 		SET flushed_to_stripe = TRUE
 		WHERE batch_id = $1
 		  AND customer_id = $2
 		  AND flushed_to_stripe = FALSE
-	`, batchID, customerID); err != nil {
+	`, batchID, customerID)
+	if err != nil {
 		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
+	}
+	if ct.RowsAffected() == 0 {
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).Msg("flusher: mark-flushed affected 0 rows; batch_id/customer_id mismatch")
+		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 	return nil
