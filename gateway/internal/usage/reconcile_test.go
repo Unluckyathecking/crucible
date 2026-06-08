@@ -323,22 +323,17 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err := f.claimAndEmitNewBatches(ctx); err != nil {
 		t.Fatalf("claimAndEmitNewBatches: %v", err)
 	}
-	// Capture gauge values before the reconcile call — a failing reconciler must not mutate them.
-	beforeBacklogUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
-	beforeBacklogAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
-	beforeUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
-
 	f.setBacklogGauges(ctx) // must not panic; errors are warnings only
 
-	// Gauges must be unchanged — failed reconciler must not overwrite them.
-	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != beforeBacklogUnits {
-		t.Errorf("BillingBacklogUnits changed after reconcile error: before=%g after=%g", beforeBacklogUnits, got)
+	// Both queries fail (bad pool); gauges must remain at 0 (reset to 0 above).
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != 0 {
+		t.Errorf("BillingBacklogUnits = %g after reconcile error, want 0", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != beforeBacklogAge {
-		t.Errorf("BillingBacklogOldestAgeSeconds changed after reconcile error: before=%g after=%g", beforeBacklogAge, got)
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != 0 {
+		t.Errorf("BillingBacklogOldestAgeSeconds = %g after reconcile error, want 0", got)
 	}
-	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != beforeUnbillable {
-		t.Errorf("BillingUnbillableUnits changed after reconcile error: before=%g after=%g", beforeUnbillable, got)
+	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != 0 {
+		t.Errorf("BillingUnbillableUnits = %g after reconcile error, want 0", got)
 	}
 
 	// The flush phases must have completed: Stripe was called for our customer.

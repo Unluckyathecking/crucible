@@ -69,7 +69,7 @@ func (f *Flusher) Run(ctx context.Context) {
 			if err := f.claimAndEmitNewBatches(ctx); err != nil {
 				log.Warn().Err(err).Msg("flusher: claim-new phase failed; will retry next tick")
 			}
-			f.setBacklogGauges(ctx)
+			go f.setBacklogGauges(ctx)
 		}
 	}
 }
@@ -246,9 +246,10 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // (retryPendingBatches) picks it up on the next tick with the SAME batch_id — Stripe
 // deduplicates on "crucible-batch-<uuid>", preventing double-billing.
 //
-// Mark-flushed failure is a soft-fail: the batch was already emitted to Stripe, and
-// Phase A re-emits with the same idempotency key on the next tick (Stripe dedupes).
-// Propagating this error would abort the whole batch loop and block other customers.
+// Mark-flushed failure is returned to the caller so the batch is counted in the
+// failed summary and the operator can observe it via log warnings. The batch stays
+// in Phase A's retry queue (batch_id stamped, flushed_to_stripe=FALSE) and is
+// re-emitted next tick with the same idempotency key; Stripe deduplicates.
 func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, units uint64) error {
 	idemKey := "crucible-batch-" + batchID.String()
 	if err := f.stripe.EmitMeterEvent(ctx, stripeCustomerID, units, idemKey); err != nil {
@@ -271,12 +272,8 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		  AND usage_events.customer_id = customers.id
 		  AND customers.stripe_customer_id = $2
 	`, batchID, stripeCustomerID); err != nil {
-		// Intentional soft-fail: the batch was already emitted to Stripe. Phase A
-		// (retryPendingBatches) re-emits with the same batch_id next tick; Stripe dedupes.
-		// Do NOT increment BillingFlushTotal{outcome="error"} here — doing so would
-		// double-count: one batch would contribute both "ok" (Stripe emit) and "error"
-		// (mark-flushed), breaking the BillingFlushErrorRateElevated ratio alert.
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
+		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
 	return nil
 }

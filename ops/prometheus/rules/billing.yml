@@ -46,14 +46,11 @@ groups:
       # Catches Stripe API failures or rate-limiting that don't yet manifest as
       # backlog growth (e.g., batches that are retried and eventually succeed).
       - alert: BillingFlushErrorRateElevated
-        expr: >
+        expr: |
           (
             rate(crucible_billing_flush_total{outcome="error"}[5m])
             / ignoring(outcome) sum without(outcome) (rate(crucible_billing_flush_total[5m]))
-            > 0.1
-          )
-          and
-          (sum without(outcome) (rate(crucible_billing_flush_total[5m])) > 0)
+          ) > 0.1
         for: 5m
         labels:
           severity: warning
