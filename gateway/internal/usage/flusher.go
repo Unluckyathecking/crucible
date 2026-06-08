@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"fmt"
-	"math"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -173,11 +172,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
-		if math.Signbit(blAge) {
-			// SQL returns COALESCE(EXTRACT(EPOCH FROM ...), 0) without GREATEST clamping;
-			// if MIN(created_at) is in the future (NTP skew), EXTRACT returns a negative
-			// epoch. math.Signbit catches both blAge < 0 and IEEE 754 -0.0 (plain < 0
-			// misses -0.0). Error level: negative backlog age indicates a clock problem.
+		if blAge < 0 {
+			// SQL returns COALESCE(EXTRACT(EPOCH FROM ...), 0); if MIN(created_at) is in
+			// the future (NTP skew), EXTRACT returns a negative float. IEEE 754 -0.0
+			// cannot result from EXTRACT on a timestamp interval, so < 0 is sufficient.
 			log.Error().Float64("raw_age_seconds", blAge).Msg("flusher: negative backlog age (clock skew); clamping to 0")
 			blAge = 0
 		}
@@ -217,10 +215,12 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		ORDER BY MIN(u.created_at) ASC
 		LIMIT $1
 	`, batchPageSize)
+	// pgxpool.Query always returns a non-nil rows even on error; Close before the
+	// error check ensures the connection is released in all exit paths.
+	defer rows.Close()
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
-	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -289,10 +289,12 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		FROM claimed
 		GROUP BY batch_id, stripe_customer_id, customer_id
 	`, batchPageSize)
+	// pgxpool.Query always returns a non-nil rows even on error; Close before the
+	// error check ensures the connection is released in all exit paths.
+	defer rows.Close()
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
