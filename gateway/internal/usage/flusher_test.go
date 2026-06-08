@@ -71,7 +71,7 @@ func TestEmitAndMark_idempotencyKeyFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockStripeMeter{err: errors.New("stripe err")}
 			f := NewFlusher(nil, mock, 0)
-			f.emitAndMark(context.Background(), tt.batchID, tt.custID, tt.units)
+			f.emitAndMark(context.Background(), tt.batchID, tt.custID, uuid.New(), tt.units)
 
 			if len(mock.calls) != 1 {
 				t.Fatalf("expected 1 call, got %d", len(mock.calls))
@@ -98,11 +98,11 @@ func TestEmitAndMark_sameBatchSameIdempotencyKey(t *testing.T) {
 
 	mock1 := &mockStripeMeter{err: errors.New("err")}
 	f1 := NewFlusher(nil, mock1, 0)
-	f1.emitAndMark(context.Background(), batchID, "cus_a", 100)
+	f1.emitAndMark(context.Background(), batchID, "cus_a", uuid.New(), 100)
 
 	mock2 := &mockStripeMeter{err: errors.New("err")}
 	f2 := NewFlusher(nil, mock2, 0)
-	f2.emitAndMark(context.Background(), batchID, "cus_b", 200)
+	f2.emitAndMark(context.Background(), batchID, "cus_b", uuid.New(), 200)
 
 	if mock1.calls[0].idempotencyKey != wantKey {
 		t.Errorf("first key = %q, want %q", mock1.calls[0].idempotencyKey, wantKey)
@@ -122,8 +122,8 @@ func TestEmitAndMark_differentBatchesDifferentKeys(t *testing.T) {
 	batch1 := uuid.New()
 	batch2 := uuid.New()
 
-	f.emitAndMark(context.Background(), batch1, "cus_1", 10)
-	f.emitAndMark(context.Background(), batch2, "cus_2", 20)
+	f.emitAndMark(context.Background(), batch1, "cus_1", uuid.New(), 10)
+	f.emitAndMark(context.Background(), batch2, "cus_2", uuid.New(), 20)
 
 	if len(mock.calls) != 2 {
 		t.Fatalf("expected 2 calls, got %d", len(mock.calls))
@@ -136,7 +136,7 @@ func TestEmitAndMark_differentBatchesDifferentKeys(t *testing.T) {
 func TestEmitAndMark_stripeErrorDoesNotPanic(t *testing.T) {
 	mock := &mockStripeMeter{err: errors.New("stripe network error")}
 	f := NewFlusher(nil, mock, 0)
-	f.emitAndMark(context.Background(), uuid.New(), "cus_err", 1)
+	f.emitAndMark(context.Background(), uuid.New(), "cus_err", uuid.New(), 1)
 
 	if len(mock.calls) != 1 {
 		t.Error("stripe error should still record the call")
@@ -162,7 +162,7 @@ func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	}
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
-	if err := f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", 15); err != nil {
+	if err := f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", custID, 15); err != nil {
 		t.Fatalf("emitAndMark: %v", err)
 	}
 

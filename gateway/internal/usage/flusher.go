@@ -111,26 +111,28 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 // continues — the batches remain in the retry queue for the next tick.
 func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	rows, err := f.db.Query(ctx, `
-		SELECT u.batch_id, c.stripe_customer_id, SUM(u.billable_units)::bigint
+		SELECT u.batch_id, c.stripe_customer_id, u.customer_id, SUM(u.billable_units)::bigint
 		FROM usage_events u
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.batch_id IS NOT NULL AND u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NOT NULL
-		GROUP BY u.batch_id, c.stripe_customer_id
+		GROUP BY u.batch_id, c.stripe_customer_id, u.customer_id
 		LIMIT 100
 	`)
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
+		customerID       uuid.UUID
 		units            uint64
 	}
 	var batches []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.units); err != nil {
+		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
 			log.Warn().Err(err).Msg("flusher: failed to scan pending batch row; skipping")
 			continue
 		}
@@ -146,7 +148,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 
 	var failed int
 	for _, b := range batches {
-		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units); err != nil {
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.customerID, b.units); err != nil {
 			failed++
 		}
 	}
@@ -182,11 +184,11 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			WHERE usage_events.customer_id = targets.customer_id
 			  AND usage_events.batch_id IS NULL
 			  AND usage_events.flushed_to_stripe = FALSE
-			RETURNING usage_events.batch_id, targets.stripe_customer_id, usage_events.billable_units
+			RETURNING usage_events.batch_id, targets.stripe_customer_id, usage_events.customer_id, usage_events.billable_units
 		)
-		SELECT batch_id, stripe_customer_id, COALESCE(SUM(billable_units), 0)::bigint
+		SELECT batch_id, stripe_customer_id, customer_id, COALESCE(SUM(billable_units), 0)::bigint
 		FROM claimed
-		GROUP BY batch_id, stripe_customer_id
+		GROUP BY batch_id, stripe_customer_id, customer_id
 	`)
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
@@ -194,12 +196,13 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
+		customerID       uuid.UUID
 		units            uint64
 	}
 	var batches []claimedBatch
 	for rows.Next() {
 		var b claimedBatch
-		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.units); err != nil {
+		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
 			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row; skipping")
 			continue
 		}
@@ -216,7 +219,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 
 	var failed int
 	for _, b := range batches {
-		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.units); err != nil {
+		if err := f.emitAndMark(ctx, b.batchID, b.stripeCustomerID, b.customerID, b.units); err != nil {
 			failed++
 		}
 	}
@@ -240,7 +243,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // failed summary and the operator can observe it via log warnings. The batch stays
 // in Phase A's retry queue (batch_id stamped, flushed_to_stripe=FALSE) and is
 // re-emitted next tick with the same idempotency key; Stripe deduplicates.
-func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, units uint64) error {
+func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, customerID uuid.UUID, units uint64) error {
 	idemKey := "crucible-batch-" + batchID.String()
 	if err := f.stripe.EmitMeterEvent(ctx, stripeCustomerID, units, idemKey); err != nil {
 		observability.BillingFlushTotal.WithLabelValues("error").Inc()
@@ -251,14 +254,16 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
-	// Mark by batch_id: each batch_id is a fresh UUID allocated per-customer per tick,
-	// so it uniquely identifies this batch without needing a customer filter.
+	// Filter by both batch_id and customer_id: batch_id is a fresh UUID per-customer per tick
+	// (statistically unique), and customer_id adds defense-in-depth so a hypothetical UUID
+	// collision or manual intervention can never mark another customer's rows as flushed.
 	if _, err := f.db.Exec(ctx, `
 		UPDATE usage_events
 		SET flushed_to_stripe = TRUE
 		WHERE batch_id = $1
+		  AND customer_id = $2
 		  AND flushed_to_stripe = FALSE
-	`, batchID); err != nil {
+	`, batchID, customerID); err != nil {
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
