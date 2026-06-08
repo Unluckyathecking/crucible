@@ -253,6 +253,11 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	// Atomic bulk claim: find up to batchPageSize customers with unbatched usage,
 	// assign each a new batch_id, stamp their rows, and return the aggregated units.
+	//
+	// The claimed CTE UPDATE returns one row per updated usage_events row (RETURNING
+	// semantics), so a customer with N unbatched rows produces N rows in claimed, all
+	// sharing the same batch_id. The outer GROUP BY batch_id aggregates them back to
+	// one row per batch with SUM(billable_units) — this is intentional, not a bug.
 	rows, err := f.db.Query(ctx, `
 		WITH targets AS (
 			SELECT u.customer_id, c.stripe_customer_id, gen_random_uuid() as new_batch_id
@@ -316,10 +321,11 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
 // marks all rows in the batch flushed.
 //
-// Zero-unit batches: skip Stripe and mark flushed; BillingFlushTotal is NOT incremented
-// since the counter tracks Stripe billing events, not defensive no-ops. Zero-unit batches
-// cannot occur in production (server/routes.go enforces BillableUnits >= 1) but this guard
-// prevents Phase A from emitting 0-unit events if one ever enters the retry queue.
+// Zero-unit batches: skip Stripe and mark flushed. Increments BillingFlushTotal{outcome="error"}
+// so the anomaly is observable (zero-unit batches cannot occur in production; their presence
+// indicates a claim-logic bug or data corruption). Zero-unit batches cannot occur via normal
+// operation (server/routes.go enforces BillableUnits >= 1) but this guard drains them from
+// Phase A's retry queue.
 //
 // Non-zero batches: Stripe emit failures, mark-flushed DB errors, and RowsAffected==0
 // after a successful Stripe emit all increment BillingFlushTotal{outcome="error"} and
@@ -329,8 +335,9 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, customerID uuid.UUID, units uint64) error {
 	if units == 0 {
 		// Zero-unit batches indicate a bug in claim logic or manual data corruption.
-		// Mark flushed to drain the batch from the retry queue. No Stripe call and no
-		// BillingFlushTotal increment — the counter tracks Stripe billing events only.
+		// Mark flushed to drain the batch from the retry queue. Increment the error counter
+		// so this anomaly is visible in the BillingFlushErrorRateElevated alert.
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
 			Msg("flusher: zero-unit batch; this should not occur in production — marking flushed without Stripe emit")
 		ct, err := f.db.Exec(ctx, `
