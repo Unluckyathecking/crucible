@@ -15,6 +15,7 @@ import (
 
 // testDSN returns the Postgres DSN used by all usage package tests.
 // Override with PG_TEST_DSN to point at a non-default instance.
+// WARNING: must be a dedicated test database; tests create and delete rows.
 func testDSN() string {
 	if dsn := os.Getenv("PG_TEST_DSN"); dsn != "" {
 		return dsn

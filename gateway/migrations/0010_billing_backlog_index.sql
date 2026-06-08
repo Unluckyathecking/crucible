@@ -8,6 +8,9 @@
 -- tables the planner may instead drive from customers (stripe_customer_id IS NULL)
 -- and nest-loop into usage_events, in which case this index is not used. Useful
 -- primarily for BacklogStats on large usage_events tables.
+-- If EXPLAIN shows a customers seq-scan for UnbillableUsage, add:
+--   CREATE INDEX IF NOT EXISTS idx_customers_stripe_unlinked ON customers(id)
+--     WHERE stripe_customer_id IS NULL;
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 

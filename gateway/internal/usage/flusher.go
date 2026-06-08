@@ -50,7 +50,12 @@ type Flusher struct {
 	stripe              StripeMeter
 	period              time.Duration
 	reconciler          *Reconciler
-	reconcileErrCounter prometheus.Counter // defaults to observability.BillingReconcileErrorsTotal; injectable for tests
+	reconcileErrCounter prometheus.Counter // injectable for tests; defaults to observability.BillingReconcileErrorsTotal
+	backlogUnits        prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogUnits
+	backlogRows         prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogRows
+	backlogOldestAge    prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogOldestAgeSeconds
+	unbillableUnits     prometheus.Gauge   // injectable for tests; defaults to observability.BillingUnbillableUnits
+	unbillableRows      prometheus.Gauge   // injectable for tests; defaults to observability.BillingUnbillableRows
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
@@ -64,6 +69,11 @@ func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher 
 		period:              period,
 		reconciler:          rec,
 		reconcileErrCounter: observability.BillingReconcileErrorsTotal,
+		backlogUnits:        observability.BillingBacklogUnits,
+		backlogRows:         observability.BillingBacklogRows,
+		backlogOldestAge:    observability.BillingBacklogOldestAgeSeconds,
+		unbillableUnits:     observability.BillingUnbillableUnits,
+		unbillableRows:      observability.BillingUnbillableRows,
 	}
 }
 
@@ -122,17 +132,17 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
 			blAge = 0
 		}
-		observability.BillingBacklogUnits.Set(float64(blUnits))
-		observability.BillingBacklogRows.Set(float64(blRows))
-		observability.BillingBacklogOldestAgeSeconds.Set(blAge)
+		f.backlogUnits.Set(float64(blUnits))
+		f.backlogRows.Set(float64(blRows))
+		f.backlogOldestAge.Set(blAge)
 	}
 
 	if ubErr != nil {
 		hadErr = true
 		log.Warn().Err(ubErr).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(ubUnits))
-		observability.BillingUnbillableRows.Set(float64(ubRows))
+		f.unbillableUnits.Set(float64(ubUnits))
+		f.unbillableRows.Set(float64(ubRows))
 	}
 
 	// Increment once per tick regardless of how many queries failed; per-query increments
