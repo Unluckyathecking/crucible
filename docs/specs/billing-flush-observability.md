@@ -28,7 +28,7 @@ Every Crucible clone inherits the same flusher and the same Stripe meter pipelin
 ## Suggested decomposition for downstream workers
 
 1. **Reconcile queries** — `usage/reconcile.go`: `BacklogStats(ctx)` → (unflushed_units, unflushed_rows, oldest_unflushed_age_seconds) using the existing `idx_usage_pending_flush` partial index (`migrations/0001_init.sql`); `UnbillableUsage(ctx)` → units/rows for customers with `stripe_customer_id IS NULL`. Aggregate/LIMIT-only; no per-row scan.
-2. **Gauges** — add `BillingBacklogUnits`, `BillingBacklogOldestAgeSeconds`, `BillingUnbillableUnits` to `metrics.go` (label-free) and mirror in the test `Metrics` struct / `NewMetricsForTest`.
+2. **Gauges** — add `BillingBacklogUnits`, `BillingBacklogRows`, `BillingBacklogOldestAgeSeconds`, `BillingUnbillableUnits`, `BillingUnbillableRows` to `metrics.go` (label-free) and mirror in the test `Metrics` struct / `NewMetricsForTest`.
 3. **Flusher integration** — call reconcile + set gauges at the end of each flusher tick, after both existing phases.
 4. **Bounded-cost / fail-soft guard** — reconcile query errors degrade to a logged warning and must never abort or block the flush phases (mirror existing phase error handling).
 5. **Migration** — `0010_*.sql` idempotent partial index for the unbillable query if `EXPLAIN` shows a seq scan.
