@@ -9,6 +9,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -276,7 +277,6 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
 	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
 	prevUnbillableRows := testutil.ToFloat64(observability.BillingUnbillableRows)
-	prevReconcileErrors := testutil.ToFloat64(observability.BillingReconcileErrorsTotal)
 	t.Cleanup(func() {
 		observability.BillingBacklogUnits.Set(prevUnits)
 		observability.BillingBacklogRows.Set(prevRows)
@@ -342,6 +342,14 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	f := NewFlusher(pool, mock, 0)
 	f.reconciler = NewReconciler(badPool) // inject failing reconciler
 
+	// Inject a fresh counter so this test doesn't pollute the global BillingReconcileErrorsTotal.
+	// The counter starts at 0, so we can assert an absolute value of 1 after setBacklogGauges.
+	freshErrCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_test_reconcile_errors_for_" + t.Name(),
+		Help: "test-only counter for reconcile errors",
+	})
+	f.reconcileErrCounter = freshErrCounter
+
 	// Run both phases then reconcile — must not panic or return an error to the caller.
 	if err := f.retryPendingBatches(ctx); err != nil {
 		t.Fatalf("retryPendingBatches: %v", err)
@@ -357,9 +365,9 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 
 	// Both queries fail (bad pool). The counter must be incremented exactly once (not twice) —
 	// the once-per-tick semantic prevents double-counting when both BacklogStats and UnbillableUsage fail.
-	if got := testutil.ToFloat64(observability.BillingReconcileErrorsTotal); got != prevReconcileErrors+1 {
-		t.Errorf("BillingReconcileErrorsTotal = %g, want %g (incremented once per tick even when both queries fail)",
-			got, prevReconcileErrors+1)
+	// freshErrCounter starts at 0, so we assert an absolute value of 1 with no global state dependency.
+	if got := testutil.ToFloat64(freshErrCounter); got != 1 {
+		t.Errorf("reconcileErrCounter = %g, want 1 (incremented once per tick even when both queries fail)", got)
 	}
 
 	// Both queries fail (bad pool); error path must PRESERVE gauge values at the gaugePreservationSentinel

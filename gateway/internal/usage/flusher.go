@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -46,10 +47,11 @@ const batchPageSize = 100
 // derived the idem-key from changing row id ranges, which caused billing drift after a
 // partial failure.
 type Flusher struct {
-	db         *pgxpool.Pool
-	stripe     StripeMeter
-	period     time.Duration
-	reconciler *Reconciler
+	db                  *pgxpool.Pool
+	stripe              StripeMeter
+	period              time.Duration
+	reconciler          *Reconciler
+	reconcileErrCounter prometheus.Counter // defaults to observability.BillingReconcileErrorsTotal; injectable for tests
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
@@ -57,7 +59,13 @@ func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher 
 	if db != nil {
 		rec = NewReconciler(db)
 	}
-	return &Flusher{db: db, stripe: s, period: period, reconciler: rec}
+	return &Flusher{
+		db:                  db,
+		stripe:              s,
+		period:              period,
+		reconciler:          rec,
+		reconcileErrCounter: observability.BillingReconcileErrorsTotal,
+	}
 }
 
 // Run blocks until ctx is canceled, ticking every period.
@@ -148,7 +156,7 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	// would double-count a tick where both BacklogStats and UnbillableUsage fail, making
 	// the counter drift away from the number of affected flusher ticks.
 	if br.err != nil || ur.err != nil {
-		observability.BillingReconcileErrorsTotal.Inc()
+		f.reconcileErrCounter.Inc()
 	}
 }
 
