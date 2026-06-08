@@ -18,6 +18,8 @@ type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
 
+const reconcileQueryTimeout = 5 * time.Second
+
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
 //
 // The flow is two-phase to make the Stripe idempotency-key STABLE across retries:
@@ -91,7 +93,7 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 	go func() {
 		defer wg.Done()
-		bCtx, bCancel := context.WithTimeout(ctx, 5*time.Second)
+		bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 		defer bCancel()
 		units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 		if err != nil {
@@ -104,7 +106,7 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 	go func() {
 		defer wg.Done()
-		ubCtx, ubCancel := context.WithTimeout(ctx, 5*time.Second)
+		ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 		defer ubCancel()
 		ubUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
 		if err != nil {
@@ -255,10 +257,17 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
+	// JOIN on stripe_customer_id for defense-in-depth: a hypothetical batch_id UUID
+	// collision must not mark another customer's rows as flushed.
 	if _, err := f.db.Exec(ctx, `
-		UPDATE usage_events SET flushed_to_stripe = TRUE
-		WHERE batch_id = $1 AND flushed_to_stripe = FALSE
-	`, batchID); err != nil {
+		UPDATE usage_events
+		SET flushed_to_stripe = TRUE
+		FROM customers
+		WHERE usage_events.batch_id = $1
+		  AND usage_events.flushed_to_stripe = FALSE
+		  AND usage_events.customer_id = customers.id
+		  AND customers.stripe_customer_id = $2
+	`, batchID, stripeCustomerID); err != nil {
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 	}
 	return nil
