@@ -153,14 +153,6 @@ func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("stamp batch_id: %v", err)
 	}
-	// emitAndMark's UPDATE now joins on stripe_customer_id for defense-in-depth;
-	// the customer must have a matching stripe_customer_id or 0 rows are marked.
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE customers SET stripe_customer_id='cus_stripe_ok' WHERE id=$1`, custID,
-	); err != nil {
-		t.Fatalf("set stripe_customer_id: %v", err)
-	}
-
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
 	f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", 15)
