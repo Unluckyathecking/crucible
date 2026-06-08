@@ -75,18 +75,24 @@ func (f *Flusher) Run(ctx context.Context) {
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
+//
+// The reconcile queries run under a 10-second deadline so a stuck DB never blocks
+// the flusher tick loop indefinitely.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
-	units, _, ageSecs, err := f.reconciler.BacklogStats(ctx)
+	rCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	units, _, ageSecs, err := f.reconciler.BacklogStats(rCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping gauge update")
 	} else {
 		observability.BillingBacklogUnits.Set(float64(units))
 		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
 	}
-	ubUnits, _, err := f.reconciler.UnbillableUsage(ctx)
+	ubUnits, _, err := f.reconciler.UnbillableUsage(rCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping gauge update")
 	} else {

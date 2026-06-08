@@ -4,12 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // deleteUsageRows removes all usage_events for the given customer — used by t.Cleanup
 // so test rows don't accumulate across runs and pollute aggregate assertions.
-func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID interface{}) {
+func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID uuid.UUID) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
 		`DELETE FROM usage_events WHERE customer_id=$1`, custID,
@@ -19,7 +20,8 @@ func deleteUsageRows(t testing.TB, pool *pgxpool.Pool, custID interface{}) {
 }
 
 // TestBacklogStats_flushedRowExcluded verifies that a row with flushed_to_stripe=TRUE
-// is not counted in the backlog — i.e. BacklogStats only counts pending work.
+// is not counted in the backlog. Uses a before/after delta against the shared DB so the
+// assertion is deterministic regardless of other tests' rows.
 func TestBacklogStats_flushedRowExcluded(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -27,46 +29,46 @@ func TestBacklogStats_flushedRowExcluded(t *testing.T) {
 	custID, apiKeyID := setupTestCustomer(t, pool)
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
+	// Give the customer a stripe_customer_id so they're eligible for BacklogStats.
+	stripeID := "cus_bs_flushed_" + custID.String()[:8]
+	if _, err := pool.Exec(ctx,
+		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`, stripeID, custID,
+	); err != nil {
+		t.Fatalf("set stripe_customer_id: %v", err)
+	}
+
 	rec := NewReconciler(pool)
-	reqID := "req-bs-empty-" + custID.String()[:8]
+
+	// Baseline before inserting our flushed row.
+	baseUnits, baseRows, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats baseline: %v", err)
+	}
+
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, flushed_to_stripe)
-		 VALUES ($1, $2, 'bs.empty', 7, $3, TRUE)`,
-		custID, apiKeyID, reqID,
+		 VALUES ($1, $2, 'bs.flushed', 7, $3, TRUE)`,
+		custID, apiKeyID, "req-bs-flushed-"+custID.String()[:8],
 	); err != nil {
 		t.Fatalf("insert flushed row: %v", err)
 	}
 
-	// BacklogStats may report other tests' rows; we just verify no panic and correct types.
-	units, rows, ageSecs, err := rec.BacklogStats(ctx)
+	// After: BacklogStats must not change — flushed rows are excluded.
+	afterUnits, afterRows, _, err := rec.BacklogStats(ctx)
 	if err != nil {
-		t.Fatalf("BacklogStats: %v", err)
+		t.Fatalf("BacklogStats after insert: %v", err)
 	}
-	// The flushed row we inserted must not inflate the backlog.
-	// Query directly to confirm our flushed row is excluded.
-	var ourUnflushed int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM usage_events WHERE customer_id=$1 AND flushed_to_stripe=FALSE`, custID,
-	).Scan(&ourUnflushed); err != nil {
-		t.Fatalf("count unflushed for our customer: %v", err)
+	if afterUnits != baseUnits {
+		t.Errorf("flushed row inflated BacklogStats units: before=%d after=%d", baseUnits, afterUnits)
 	}
-	if ourUnflushed != 0 {
-		t.Errorf("expected 0 unflushed rows for our customer, got %d", ourUnflushed)
-	}
-	// The aggregate values should be non-negative and consistent.
-	if units < 0 {
-		t.Errorf("BacklogStats units = %d, must be >= 0", units)
-	}
-	if rows < 0 {
-		t.Errorf("BacklogStats rows = %d, must be >= 0", rows)
-	}
-	if ageSecs < 0 {
-		t.Errorf("BacklogStats ageSecs = %f, must be >= 0", ageSecs)
+	if afterRows != baseRows {
+		t.Errorf("flushed row inflated BacklogStats rows: before=%d after=%d", baseRows, afterRows)
 	}
 }
 
 // TestBacklogStats_countsUnflushed seeds a known set of unflushed rows for a Stripe-linked
 // customer and asserts BacklogStats returns the correct aggregate units and a positive age.
+// Uses a before/after delta so the assertion is deterministic on a shared DB.
 // BacklogStats mirrors the flusher's stripe_customer_id IS NOT NULL filter so it only
 // counts rows the flusher can actually process.
 func TestBacklogStats_countsUnflushed(t *testing.T) {
@@ -84,8 +86,16 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 		t.Fatalf("set stripe_customer_id: %v", err)
 	}
 
+	rec := NewReconciler(pool)
+
+	// Baseline before inserting any rows.
+	baseUnits, baseRows, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats baseline: %v", err)
+	}
+
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
-	wantUnits := int64(30)
+	const wantDeltaUnits = int64(30)
 	for i, u := range []int{5, 10, 15} {
 		reqID := "req-bs-uf-" + custID.String()[:8] + string(rune('a'+i))
 		if _, err := pool.Exec(ctx,
@@ -96,7 +106,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 			t.Fatalf("insert row %d: %v", i, err)
 		}
 	}
-	// Insert one flushed row — must NOT be counted.
+	// Insert one flushed row — must NOT change the delta.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id, flushed_to_stripe)
 		 VALUES ($1, $2, 'bs.flushed', 999, $3, TRUE)`,
@@ -105,40 +115,26 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 		t.Fatalf("insert flushed row: %v", err)
 	}
 
-	rec := NewReconciler(pool)
-	units, rows, ageSecs, err := rec.BacklogStats(ctx)
+	// After: delta must be exactly our 3 unflushed rows; flushed row (999 units) is excluded.
+	afterUnits, afterRows, afterAge, err := rec.BacklogStats(ctx)
 	if err != nil {
-		t.Fatalf("BacklogStats: %v", err)
+		t.Fatalf("BacklogStats after insert: %v", err)
 	}
-
-	// Assert our 3 rows contribute at least wantUnits to the total
-	// (other tests may have left rows; we use >= since the DB is shared).
-	if units < wantUnits {
-		t.Errorf("BacklogStats units = %d, want >= %d", units, wantUnits)
+	if afterUnits-baseUnits != wantDeltaUnits {
+		t.Errorf("BacklogStats units delta = %d, want %d (3 unflushed rows, flushed excluded)",
+			afterUnits-baseUnits, wantDeltaUnits)
 	}
-	if rows < 3 {
-		t.Errorf("BacklogStats rows = %d, want >= 3", rows)
+	if afterRows-baseRows != 3 {
+		t.Errorf("BacklogStats rows delta = %d, want 3", afterRows-baseRows)
 	}
-	if ageSecs <= 0 {
-		t.Errorf("BacklogStats ageSecs = %f, want > 0 when unflushed rows exist", ageSecs)
-	}
-
-	// Precise customer-local assertion: flushed row (999 units) must not inflate the total.
-	var ourUnflushedUnits int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(billable_units),0)::bigint FROM usage_events
-		 WHERE customer_id=$1 AND flushed_to_stripe=FALSE`, custID,
-	).Scan(&ourUnflushedUnits); err != nil {
-		t.Fatalf("query our unflushed sum: %v", err)
-	}
-	if ourUnflushedUnits != wantUnits {
-		t.Errorf("customer-local unflushed units = %d, want %d", ourUnflushedUnits, wantUnits)
+	if afterAge <= 0 {
+		t.Errorf("BacklogStats ageSecs = %f, want > 0 when unflushed rows exist", afterAge)
 	}
 }
 
 // TestBacklogStats_unbillableRowsExcluded verifies that unflushed rows for customers
-// WITHOUT a stripe_customer_id do NOT inflate BacklogStats. These rows belong to
-// UnbillableUsage, not the billable backlog.
+// WITHOUT a stripe_customer_id do NOT inflate BacklogStats. Uses a before/after delta
+// so the assertion is deterministic on a shared DB.
 func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -147,7 +143,15 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 	custID, apiKeyID := setupTestCustomer(t, pool)
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
-	// Insert unflushed rows that should NOT count toward the billable backlog.
+	rec := NewReconciler(pool)
+
+	// Baseline before inserting unbillable rows.
+	baseUnits, baseRows, _, err := rec.BacklogStats(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStats baseline: %v", err)
+	}
+
+	// Insert unflushed rows — customer has no stripe_customer_id, so these are unbillable.
 	for i, u := range []int{100, 200} {
 		reqID := "req-bs-ubexcl-" + custID.String()[:8] + string(rune('a'+i))
 		if _, err := pool.Exec(ctx,
@@ -159,24 +163,18 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 		}
 	}
 
-	rec := NewReconciler(pool)
-	_, _, _, err := rec.BacklogStats(ctx)
+	// After: BacklogStats must not change — unbillable rows are excluded by the Stripe filter.
+	afterUnits, afterRows, _, err := rec.BacklogStats(ctx)
 	if err != nil {
-		t.Fatalf("BacklogStats: %v", err)
+		t.Fatalf("BacklogStats after insert: %v", err)
 	}
-
-	// Confirm our customer's rows are in UnbillableUsage, not BacklogStats.
-	var ourBacklog int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(u.billable_units),0)::bigint
-		 FROM usage_events u JOIN customers c ON c.id=u.customer_id
-		 WHERE u.customer_id=$1 AND u.flushed_to_stripe=FALSE AND c.stripe_customer_id IS NOT NULL`,
-		custID,
-	).Scan(&ourBacklog); err != nil {
-		t.Fatalf("query billable backlog for our customer: %v", err)
+	if afterUnits != baseUnits {
+		t.Errorf("unbillable rows inflated BacklogStats units: before=%d after=%d (delta=%d)",
+			baseUnits, afterUnits, afterUnits-baseUnits)
 	}
-	if ourBacklog != 0 {
-		t.Errorf("customer without stripe_customer_id must contribute 0 to billable backlog, got %d", ourBacklog)
+	if afterRows != baseRows {
+		t.Errorf("unbillable rows inflated BacklogStats rows: before=%d after=%d (delta=%d)",
+			baseRows, afterRows, afterRows-baseRows)
 	}
 }
 
