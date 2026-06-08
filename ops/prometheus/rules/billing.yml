@@ -1,0 +1,43 @@
+groups:
+  - name: crucible-billing-backlog
+    interval: 1m
+    rules:
+      # Alert when the oldest unflushed usage row is older than 15 minutes.
+      # A stalled flusher or Stripe outage will trigger this before revenue is lost.
+      - alert: BillingBacklogStale
+        expr: crucible_billing_backlog_oldest_age_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Billing flush backlog stale: oldest unflushed row is {{ $value | humanizeDuration }} old"
+          description: >
+            crucible_billing_backlog_oldest_age_seconds has been above 900 s (15 min) for 5 minutes.
+            The flusher may be stuck or Stripe may be unreachable. Check crucible_billing_flush_total{outcome="error"}.
+
+      # Alert when the backlog is so large it suggests the flusher has been down for a while.
+      - alert: BillingBacklogUnitsCritical
+        expr: crucible_billing_backlog_units > 1000000
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Billing backlog exceeds 1M units ({{ $value }} units unflushed)"
+          description: >
+            crucible_billing_backlog_units has exceeded 1 000 000 for 10 minutes.
+            This suggests the flush pipeline has been blocked for an extended period.
+
+      # Alert when any permanently-unbillable usage is detected.
+      # These units belong to customers with no stripe_customer_id and will never be billed.
+      - alert: BillingUnbillableUsageDetected
+        expr: crucible_billing_unbillable_units > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Permanently unbillable usage: {{ $value }} units for Stripe-unlinked customers"
+          description: >
+            crucible_billing_unbillable_units is non-zero for 10 minutes.
+            Usage_events rows exist for customers with stripe_customer_id IS NULL.
+            These rows are silently excluded by the flush filter and will never reach Stripe.
+            Link the affected customers to a Stripe customer to stop the revenue leak.

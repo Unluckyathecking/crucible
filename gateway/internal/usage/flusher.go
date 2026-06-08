@@ -34,14 +34,22 @@ type StripeMeter interface {
 // back up with the SAME batch_id, so Stripe never double-counts. The pre-fix flusher
 // derived the idem-key from changing row id ranges, which caused billing drift after a
 // partial failure.
+//
+// After both phases each tick, setBacklogGauges updates observability gauges via the
+// reconciler. Reconcile errors are logged as warnings and never abort the flush phases.
 type Flusher struct {
-	db     *pgxpool.Pool
-	stripe StripeMeter
-	period time.Duration
+	db         *pgxpool.Pool
+	stripe     StripeMeter
+	period     time.Duration
+	reconciler *Reconciler
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
-	return &Flusher{db: db, stripe: s, period: period}
+	var rec *Reconciler
+	if db != nil {
+		rec = NewReconciler(db)
+	}
+	return &Flusher{db: db, stripe: s, period: period, reconciler: rec}
 }
 
 // Run blocks until ctx is canceled, ticking every period.
@@ -59,7 +67,30 @@ func (f *Flusher) Run(ctx context.Context) {
 			if err := f.claimAndEmitNewBatches(ctx); err != nil {
 				log.Warn().Err(err).Msg("flusher: claim-new phase failed; will retry next tick")
 			}
+			f.setBacklogGauges(ctx)
 		}
+	}
+}
+
+// setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
+// Prometheus gauges. Called after both flush phases each tick. A query failure only
+// produces a log warning — it never aborts or affects the flush phases.
+func (f *Flusher) setBacklogGauges(ctx context.Context) {
+	if f.reconciler == nil {
+		return
+	}
+	units, _, ageSecs, err := f.reconciler.BacklogStats(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping gauge update")
+	} else {
+		observability.BillingBacklogUnits.Set(float64(units))
+		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
+	}
+	ubUnits, _, err := f.reconciler.UnbillableUsage(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping gauge update")
+	} else {
+		observability.BillingUnbillableUnits.Set(float64(ubUnits))
 	}
 }
 

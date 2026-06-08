@@ -2,14 +2,17 @@
 //
 // Metrics exposed on /metrics (separate listener on METRICS_PORT, off the public API surface):
 //
-//	crucible_requests_total{method,path,status}     — per-request counter (Middleware)
-//	crucible_request_duration_seconds{method,path}  — end-to-end latency (Middleware)
-//	crucible_worker_call_duration_seconds           — per-attempt worker latency (proxy.Client)
-//	crucible_worker_errors_total{code}              — structured worker error codes (route handler)
-//	crucible_worker_retries_total                   — retry attempts past breaker gate (proxy.Client)
-//	crucible_worker_breaker_state                   — circuit-breaker state 0/1/2 (proxy.Client)
+//	crucible_requests_total{method,path,status}          — per-request counter (Middleware)
+//	crucible_request_duration_seconds{method,path}       — end-to-end latency (Middleware)
+//	crucible_worker_call_duration_seconds                — per-attempt worker latency (proxy.Client)
+//	crucible_worker_errors_total{code}                   — structured worker error codes (route handler)
+//	crucible_worker_retries_total                        — retry attempts past breaker gate (proxy.Client)
+//	crucible_worker_breaker_state                        — circuit-breaker state 0/1/2 (proxy.Client)
 //	crucible_usage_records_total
 //	crucible_billing_flush_total{outcome}
+//	crucible_billing_backlog_units                       — unflushed billable_units (label-free gauge, flusher tick)
+//	crucible_billing_backlog_oldest_age_seconds          — age of oldest unflushed row (label-free gauge, flusher tick)
+//	crucible_billing_unbillable_units                    — unflushed units with no Stripe customer (label-free gauge, flusher tick)
 //	crucible_rate_limited_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
@@ -80,6 +83,28 @@ var (
 		Help: "Number of billing flush attempts. outcome=ok|error",
 	}, []string{"outcome"})
 
+	// BillingBacklogUnits is the current count of unflushed billable_units across all customers.
+	// Set by the flusher tick after both flush phases via the reconciler. Label-free.
+	BillingBacklogUnits = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_billing_backlog_units",
+		Help: "Current unflushed billable_units in usage_events (label-free; set each flusher tick).",
+	})
+
+	// BillingBacklogOldestAgeSeconds is the age in seconds of the oldest unflushed row.
+	// Zero when the backlog is empty. Label-free.
+	BillingBacklogOldestAgeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_billing_backlog_oldest_age_seconds",
+		Help: "Age in seconds of the oldest unflushed usage_events row (label-free; set each flusher tick).",
+	})
+
+	// BillingUnbillableUnits is the count of unflushed billable_units for customers that have
+	// no stripe_customer_id. These rows are permanently excluded from the flush filter and
+	// represent a silent revenue leak unless the customer is linked to Stripe. Label-free.
+	BillingUnbillableUnits = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_billing_unbillable_units",
+		Help: "Unflushed billable_units for customers without a stripe_customer_id (label-free; set each flusher tick).",
+	})
+
 	RateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crucible_rate_limited_total",
 		Help: "Number of requests rejected for exceeding rate limits.",
@@ -103,17 +128,20 @@ var (
 // Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
 // Pass the result to the proxy client's metrics injection method for worker-call metrics in tests.
 type Metrics struct {
-	RequestsTotal      *prometheus.CounterVec
-	RequestDuration    *prometheus.HistogramVec
-	WorkerCallDuration prometheus.Histogram
-	WorkerErrorsTotal  *prometheus.CounterVec
-	WorkerRetriesTotal prometheus.Counter
-	WorkerBreakerState prometheus.Gauge
-	UsageRecordsTotal  prometheus.Counter
-	BillingFlushTotal  *prometheus.CounterVec
-	RateLimitedTotal   prometheus.Counter
-	RateLimitFailOpen  prometheus.Counter
-	QuotaFailOpen      prometheus.Counter
+	RequestsTotal                  *prometheus.CounterVec
+	RequestDuration                *prometheus.HistogramVec
+	WorkerCallDuration             prometheus.Histogram
+	WorkerErrorsTotal              *prometheus.CounterVec
+	WorkerRetriesTotal             prometheus.Counter
+	WorkerBreakerState             prometheus.Gauge
+	UsageRecordsTotal              prometheus.Counter
+	BillingFlushTotal              *prometheus.CounterVec
+	BillingBacklogUnits            prometheus.Gauge
+	BillingBacklogOldestAgeSeconds prometheus.Gauge
+	BillingUnbillableUnits         prometheus.Gauge
+	RateLimitedTotal               prometheus.Counter
+	RateLimitFailOpen              prometheus.Counter
+	QuotaFailOpen                  prometheus.Counter
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -155,6 +183,18 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_billing_flush_total",
 			Help: "Number of billing flush attempts. outcome=ok|error",
 		}, []string{"outcome"}),
+		BillingBacklogUnits: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_billing_backlog_units",
+			Help: "Current unflushed billable_units in usage_events (label-free; set each flusher tick).",
+		}),
+		BillingBacklogOldestAgeSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_billing_backlog_oldest_age_seconds",
+			Help: "Age in seconds of the oldest unflushed usage_events row (label-free; set each flusher tick).",
+		}),
+		BillingUnbillableUnits: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_billing_unbillable_units",
+			Help: "Unflushed billable_units for customers without a stripe_customer_id (label-free; set each flusher tick).",
+		}),
 		RateLimitedTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_rate_limited_total",
 			Help: "Number of requests rejected for exceeding rate limits.",
@@ -177,6 +217,9 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.WorkerBreakerState,
 		m.UsageRecordsTotal,
 		m.BillingFlushTotal,
+		m.BillingBacklogUnits,
+		m.BillingBacklogOldestAgeSeconds,
+		m.BillingUnbillableUnits,
 		m.RateLimitedTotal,
 		m.RateLimitFailOpen,
 		m.QuotaFailOpen,

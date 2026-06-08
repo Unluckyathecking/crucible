@@ -1,0 +1,58 @@
+package usage
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Reconciler runs aggregate-only scans against the DB to expose billing flush
+// observability signals. It never writes or mutates any row — pure reads only.
+type Reconciler struct {
+	db *pgxpool.Pool
+}
+
+// NewReconciler returns a Reconciler backed by the given pool.
+func NewReconciler(db *pgxpool.Pool) *Reconciler {
+	return &Reconciler{db: db}
+}
+
+// BacklogStats returns aggregate counts for all unflushed usage_events rows:
+// total billable_units, row count, and the age in seconds of the oldest unflushed row.
+// Returns zeros (and no error) when the backlog is empty.
+func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldestAgeSecs float64, err error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT
+		    COALESCE(SUM(billable_units), 0)::bigint,
+		    COUNT(*)::bigint,
+		    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at))), 0)::float8
+		FROM usage_events
+		WHERE flushed_to_stripe = FALSE
+	`)
+	if err = row.Scan(&units, &rows, &oldestAgeSecs); err != nil {
+		return 0, 0, 0, fmt.Errorf("backlog stats: %w", err)
+	}
+	return units, rows, oldestAgeSecs, nil
+}
+
+// UnbillableUsage returns aggregate counts for unflushed usage_events rows whose
+// customer has no stripe_customer_id. These rows are permanently excluded by the
+// flusher's AND c.stripe_customer_id IS NOT NULL filter and will never reach Stripe
+// unless the customer is linked — a silent revenue leak.
+// Returns zeros (and no error) when no such rows exist.
+func (r *Reconciler) UnbillableUsage(ctx context.Context) (units, rows int64, err error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT
+		    COALESCE(SUM(u.billable_units), 0)::bigint,
+		    COUNT(*)::bigint
+		FROM usage_events u
+		JOIN customers c ON c.id = u.customer_id
+		WHERE u.flushed_to_stripe = FALSE
+		  AND c.stripe_customer_id IS NULL
+	`)
+	if err = row.Scan(&units, &rows); err != nil {
+		return 0, 0, fmt.Errorf("unbillable usage: %w", err)
+	}
+	return units, rows, nil
+}

@@ -77,6 +77,75 @@
       "targets": [
         { "expr": "sum(rate(crucible_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx/s" }
       ]
+    },
+    {
+      "id": 8,
+      "title": "Billing backlog — unflushed units",
+      "description": "Current count of billable_units not yet emitted to Stripe. Updated each flusher tick. A rising value indicates a stalled flush pipeline.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 22, "w": 8, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10000 },
+              { "color": "red", "value": 1000000 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "crucible_billing_backlog_units", "legendFormat": "unflushed units" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Billing backlog — oldest row age",
+      "description": "Age in seconds of the oldest unflushed usage_events row. Zero when the backlog is empty. Exceeding 900 s (15 min) triggers the BillingBacklogStale alert.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 8, "y": 22, "w": 8, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 900 },
+              { "color": "red", "value": 1800 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "crucible_billing_backlog_oldest_age_seconds", "legendFormat": "oldest age" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Permanently unbillable units",
+      "description": "Unflushed billable_units for customers with no stripe_customer_id. These rows are silently excluded by the flush filter and represent a revenue leak. Should be zero in steady state.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 16, "y": 22, "w": 8, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "crucible_billing_unbillable_units", "legendFormat": "unbillable units" }
+      ]
     }
   ]
 }
