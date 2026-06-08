@@ -124,12 +124,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	wg.Wait()
 
 	// Each query family is updated independently: if one fails, the other still
-	// refreshes so its alerts remain live. BillingReconcileErrorsTotal signals that
-	// at least one gauge family is stale.
+	// refreshes so its alerts remain live.
 	if br.err != nil {
 		// Leave gauges at their previous values: resetting to 0 would make a DB
 		// timeout indistinguishable from an empty backlog and could clear active alerts.
-		observability.BillingReconcileErrorsTotal.Inc()
 		log.Warn().Err(br.err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if br.age < 0 {
@@ -142,11 +140,17 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	}
 
 	if ur.err != nil {
-		observability.BillingReconcileErrorsTotal.Inc()
 		log.Warn().Err(ur.err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(ur.units))
 		observability.BillingUnbillableRows.Set(float64(ur.rows))
+	}
+
+	// Increment once per tick regardless of how many queries failed; per-query increments
+	// would double-count a tick where both BacklogStats and UnbillableUsage fail, making
+	// the counter drift away from the number of affected flusher ticks.
+	if br.err != nil || ur.err != nil {
+		observability.BillingReconcileErrorsTotal.Inc()
 	}
 }
 

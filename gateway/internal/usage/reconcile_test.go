@@ -276,6 +276,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
 	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
 	prevUnbillableRows := testutil.ToFloat64(observability.BillingUnbillableRows)
+	prevReconcileErrors := testutil.ToFloat64(observability.BillingReconcileErrorsTotal)
 	t.Cleanup(func() {
 		observability.BillingBacklogUnits.Set(prevUnits)
 		observability.BillingBacklogRows.Set(prevRows)
@@ -357,6 +358,13 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	gaugeCtx, gaugeCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
+
+	// Both queries fail (bad pool). The counter must be incremented exactly once (not twice) —
+	// the once-per-tick semantic prevents double-counting when both BacklogStats and UnbillableUsage fail.
+	if got := testutil.ToFloat64(observability.BillingReconcileErrorsTotal); got != prevReconcileErrors+1 {
+		t.Errorf("BillingReconcileErrorsTotal = %g, want %g (incremented once per tick even when both queries fail)",
+			got, prevReconcileErrors+1)
+	}
 
 	// Both queries fail (bad pool); error path must PRESERVE gauge values at the gaugePreservationSentinel
 	// (42). If the code incorrectly reset them to 0, the assertions below would fail.
