@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // deleteUsageRows removes all usage_events for the given customer — used by t.Cleanup
@@ -311,7 +313,23 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err := f.claimAndEmitNewBatches(ctx); err != nil {
 		t.Fatalf("claimAndEmitNewBatches: %v", err)
 	}
+	// Capture gauge values before the reconcile call — a failing reconciler must not mutate them.
+	beforeBacklogUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
+	beforeBacklogAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+	beforeUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
+
 	f.setBacklogGauges(ctx) // must not panic; errors are warnings only
+
+	// Gauges must be unchanged — failed reconciler must not overwrite them.
+	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != beforeBacklogUnits {
+		t.Errorf("BillingBacklogUnits changed after reconcile error: before=%g after=%g", beforeBacklogUnits, got)
+	}
+	if got := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds); got != beforeBacklogAge {
+		t.Errorf("BillingBacklogOldestAgeSeconds changed after reconcile error: before=%g after=%g", beforeBacklogAge, got)
+	}
+	if got := testutil.ToFloat64(observability.BillingUnbillableUnits); got != beforeUnbillable {
+		t.Errorf("BillingUnbillableUnits changed after reconcile error: before=%g after=%g", beforeUnbillable, got)
+	}
 
 	// The flush phases must have completed: Stripe was called for our customer.
 	ourCalls := callsForCustomer(mock.calls, stripeID)
