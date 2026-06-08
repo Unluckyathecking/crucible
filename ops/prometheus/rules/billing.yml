@@ -42,6 +42,23 @@ groups:
             crucible_billing_backlog_units has exceeded 1 000 000 for 10 minutes.
             This suggests the flush pipeline has been blocked for an extended period.
 
+      # Alert when the Stripe flush error rate exceeds 10% over 5 minutes.
+      # Catches Stripe API failures or rate-limiting that don't yet manifest as
+      # backlog growth (e.g., batches that are retried and eventually succeed).
+      - alert: BillingFlushErrorRateElevated
+        expr: >
+          rate(crucible_billing_flush_total{outcome="error"}[5m])
+          / rate(crucible_billing_flush_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Billing flush error rate elevated ({{ $value | humanizePercentage }})"
+          description: >
+            More than 10% of crucible_billing_flush_total events are outcome="error"
+            over the last 5 minutes. Check Stripe API health and gateway logs.
+            Individual batches are retried automatically with the same idempotency key.
+
       # Alert when any permanently-unbillable usage is detected (threshold: 0).
       # The 10-minute `for` window avoids noise from customers who sign up, use the API,
       # and get linked within minutes. Reduce to 5m on high-value plans where even a brief

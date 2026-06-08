@@ -272,6 +272,8 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 // TestFlusher_reconcileErrorDoesNotAbortPhases verifies that a failing reconcile query
 // (here: pool is closed before reconcile runs) is only a warning and does NOT prevent
 // the flush phases from completing or Stripe from being called.
+// TestFlusher_reconcileErrorDoesNotAbortPhases must not call t.Parallel() — it resets and
+// asserts on package-level promauto gauges that are shared across the entire test process.
 func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	// Reset global gauges to a known baseline — they are promauto package-level vars
 	// that may carry values from other tests in the same process.

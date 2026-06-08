@@ -268,6 +268,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		  AND usage_events.customer_id = customers.id
 		  AND customers.stripe_customer_id = $2
 	`, batchID, stripeCustomerID); err != nil {
+		// Intentional soft-fail: the batch was already emitted to Stripe. Phase A
+		// (retryPendingBatches) re-emits with the same batch_id next tick; Stripe dedupes.
+		// We increment the error counter so the failure is visible in metrics.
+		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 	}
 	return nil
