@@ -113,10 +113,16 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	rCtx1, rCancel1 := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel1()
 	blUnits, blRows, blAge, blErr := f.reconciler.BacklogStats(rCtx1)
+	rCancel1() // release timer resources promptly
+
+	if err := ctx.Err(); err != nil {
+		return // parent canceled while BacklogStats was running
+	}
 
 	rCtx2, rCancel2 := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer rCancel2()
 	ubUnits, ubRows, ubErr := f.reconciler.UnbillableUsage(rCtx2)
+	rCancel2()
 
 	var hadErr bool
 
