@@ -87,7 +87,11 @@ func (p *PlanCache) MonthlyCap(ctx context.Context, planID string) int64 {
 
 func (p *PlanCache) reload(ctx context.Context) {
 	p.mu.Lock()
-	if p.loading {
+	// Also skip if the cache was refreshed since this goroutine was scheduled:
+	// multiple goroutines may have been spawned before the first reload completed
+	// and reset loading=false. Without the freshness check the latecomers would
+	// issue a second DB query even though the cache is now current.
+	if p.loading || time.Since(p.fresh) <= cacheTTL {
 		p.mu.Unlock()
 		return
 	}
