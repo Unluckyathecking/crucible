@@ -179,7 +179,8 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 }
 
 // TestUnbillableUsage_noStripeCustomer seeds unflushed rows for a customer without a
-// stripe_customer_id and asserts UnbillableUsage returns the correct counts.
+// stripe_customer_id and asserts UnbillableUsage returns the correct delta counts.
+// Uses a before/after delta so the assertion is deterministic on a shared DB.
 func TestUnbillableUsage_noStripeCustomer(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -188,46 +189,40 @@ func TestUnbillableUsage_noStripeCustomer(t *testing.T) {
 	custID, apiKeyID := setupTestCustomer(t, pool)
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
-	wantUnits := int64(42)
+	rec := NewReconciler(pool)
+
+	// Baseline before inserting our row.
+	baseUnits, baseRows, err := rec.UnbillableUsage(ctx)
+	if err != nil {
+		t.Fatalf("UnbillableUsage baseline: %v", err)
+	}
+
+	const wantDelta = int64(42)
 	reqID := "req-ub-nostripe-" + custID.String()[:8]
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 		 VALUES ($1, $2, 'ub.nostripe', $3, $4)`,
-		custID, apiKeyID, wantUnits, reqID,
+		custID, apiKeyID, wantDelta, reqID,
 	); err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
 
-	rec := NewReconciler(pool)
+	// After: delta must be exactly our one unbillable row.
 	units, rows, err := rec.UnbillableUsage(ctx)
 	if err != nil {
-		t.Fatalf("UnbillableUsage: %v", err)
+		t.Fatalf("UnbillableUsage after insert: %v", err)
 	}
-
-	if units < wantUnits {
-		t.Errorf("UnbillableUsage units = %d, want >= %d", units, wantUnits)
+	if units-baseUnits != wantDelta {
+		t.Errorf("UnbillableUsage units delta = %d, want %d", units-baseUnits, wantDelta)
 	}
-	if rows < 1 {
-		t.Errorf("UnbillableUsage rows = %d, want >= 1", rows)
-	}
-
-	// Precise assertion against our customer only.
-	var ourUnits int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(u.billable_units),0)::bigint
-		 FROM usage_events u JOIN customers c ON c.id=u.customer_id
-		 WHERE u.customer_id=$1 AND u.flushed_to_stripe=FALSE AND c.stripe_customer_id IS NULL`,
-		custID,
-	).Scan(&ourUnits); err != nil {
-		t.Fatalf("query our unbillable units: %v", err)
-	}
-	if ourUnits != wantUnits {
-		t.Errorf("customer-local unbillable units = %d, want %d", ourUnits, wantUnits)
+	if rows-baseRows != 1 {
+		t.Errorf("UnbillableUsage rows delta = %d, want 1", rows-baseRows)
 	}
 }
 
 // TestUnbillableUsage_stripeCustomerExcluded verifies that rows for customers WITH a
-// stripe_customer_id are NOT reported by UnbillableUsage.
+// stripe_customer_id are NOT reported by UnbillableUsage. Uses a before/after delta
+// so the assertion is deterministic on a shared DB.
 func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -241,6 +236,14 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 		t.Fatalf("set stripe_customer_id: %v", err)
 	}
 
+	rec := NewReconciler(pool)
+
+	// Baseline before inserting the stripe-linked customer's row.
+	baseUnits, baseRows, err := rec.UnbillableUsage(ctx)
+	if err != nil {
+		t.Fatalf("UnbillableUsage baseline: %v", err)
+	}
+
 	// Insert an unflushed row — customer has Stripe ID, so should be EXCLUDED from unbillable.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
@@ -250,24 +253,16 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 		t.Fatalf("insert row: %v", err)
 	}
 
-	rec := NewReconciler(pool)
-	_, _, err := rec.UnbillableUsage(ctx)
+	// After: delta must be zero — stripe-linked customer is excluded from unbillable.
+	units, rows, err := rec.UnbillableUsage(ctx)
 	if err != nil {
-		t.Fatalf("UnbillableUsage: %v", err)
+		t.Fatalf("UnbillableUsage after insert: %v", err)
 	}
-
-	// Our customer has a stripe_customer_id, so their row must not appear in unbillable.
-	var ourUnbillable int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(u.billable_units),0)::bigint
-		 FROM usage_events u JOIN customers c ON c.id=u.customer_id
-		 WHERE u.customer_id=$1 AND u.flushed_to_stripe=FALSE AND c.stripe_customer_id IS NULL`,
-		custID,
-	).Scan(&ourUnbillable); err != nil {
-		t.Fatalf("query: %v", err)
+	if units != baseUnits {
+		t.Errorf("UnbillableUsage units changed by Stripe-linked row: before=%d after=%d", baseUnits, units)
 	}
-	if ourUnbillable != 0 {
-		t.Errorf("customer with stripe_customer_id must not appear in unbillable; got %d units", ourUnbillable)
+	if rows != baseRows {
+		t.Errorf("UnbillableUsage rows changed by Stripe-linked row: before=%d after=%d", baseRows, rows)
 	}
 }
 
