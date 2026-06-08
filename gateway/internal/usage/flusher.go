@@ -171,7 +171,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
-	defer rows.Close() // safety net: releases connection on panic or early return
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -182,13 +182,11 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan pending batch row: %w", err)
 		}
 		batches = append(batches, p)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate pending: %w", err)
 	}
 	rows.Close() // release connection before Stripe calls
@@ -241,7 +239,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
-	defer rows.Close() // safety net: releases connection on panic or early return
+	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -252,13 +250,11 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	for rows.Next() {
 		var b claimedBatch
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
-			rows.Close()
 			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
 		batches = append(batches, b)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
 	rows.Close() // release connection before Stripe calls
@@ -280,10 +276,10 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 // emitAndMark emits a Stripe meter_event using batch_id as the idempotency key, then
 // marks all rows in the batch flushed.
 //
-// Zero-unit batches: skip Stripe and mark flushed; BillingFlushTotal{outcome="ok"} is
-// incremented to preserve the accounting invariant (counter + backlog ≈ total rows).
-// Zero-unit batches cannot occur in production (server/routes.go enforces BillableUnits >= 1)
-// but this guard prevents Phase A from emitting 0-unit events if one ever enters the retry queue.
+// Zero-unit batches: skip Stripe and mark flushed; BillingFlushTotal is NOT incremented
+// since the counter tracks Stripe billing events, not defensive no-ops. Zero-unit batches
+// cannot occur in production (server/routes.go enforces BillableUnits >= 1) but this guard
+// prevents Phase A from emitting 0-unit events if one ever enters the retry queue.
 //
 // Non-zero batches: Stripe emit failures, mark-flushed DB errors, and RowsAffected==0
 // after a successful Stripe emit all increment BillingFlushTotal{outcome="error"} and
@@ -293,8 +289,8 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCustomerID string, customerID uuid.UUID, units uint64) error {
 	if units == 0 {
 		// Zero-unit batches indicate a bug in claim logic or manual data corruption.
-		// Mark flushed to drain the batch from the retry queue; increment ok to preserve
-		// the accounting invariant (BillingFlushTotal + backlog_rows ≈ total rows).
+		// Mark flushed to drain the batch from the retry queue. No Stripe call and no
+		// BillingFlushTotal increment — the counter tracks Stripe billing events only.
 		log.Error().Str("batch", batchID.String()).Str("customer", customerID.String()).
 			Msg("flusher: zero-unit batch; this should not occur in production — marking flushed without Stripe emit")
 		ct, err := f.db.Exec(ctx, `
@@ -312,7 +308,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
 				Msg("flusher: zero-unit mark-flushed affected 0 rows; already flushed or no matching rows")
 		}
-		observability.BillingFlushTotal.WithLabelValues("ok").Inc()
 		return nil
 	}
 
