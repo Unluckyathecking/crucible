@@ -48,7 +48,7 @@ groups:
       - alert: BillingFlushErrorRateElevated
         expr: |
           (
-            sum(rate(crucible_billing_flush_total{outcome="error"}[5m]))
+            sum(rate(crucible_billing_flush_total{outcome="error"}[5m]) or on() vector(0))
             /
             sum(rate(crucible_billing_flush_total[5m]))
           ) > 0.1

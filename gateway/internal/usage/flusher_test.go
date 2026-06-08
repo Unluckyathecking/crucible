@@ -142,14 +142,6 @@ func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	custID, apiKeyID := setupTestCustomer(t, pool)
 	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
-	const stripeID = "cus_em_ok"
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE customers SET stripe_customer_id=$1 WHERE id=$2`,
-		stripeID, custID,
-	); err != nil {
-		t.Fatalf("set stripe_customer_id: %v", err)
-	}
-
 	batchID := uuid.New()
 
 	rec := NewRecorder(pool, nil)
@@ -164,7 +156,9 @@ func TestEmitAndMark_successMarksFlushed(t *testing.T) {
 	}
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
-	f.emitAndMark(context.Background(), batchID, stripeID, 15)
+	if err := f.emitAndMark(context.Background(), batchID, "cus_stripe_ok", 15); err != nil {
+		t.Fatalf("emitAndMark: %v", err)
+	}
 
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected 1 Stripe call, got %d", len(mock.calls))

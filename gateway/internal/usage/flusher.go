@@ -126,6 +126,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query pending batches: %w", err)
 	}
+	defer rows.Close()
 	type pending struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -141,10 +142,8 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		batches = append(batches, p)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate pending: %w", err)
 	}
-	rows.Close()
 
 	var failed int
 	for _, b := range batches {
@@ -192,6 +191,8 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close()
+
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
@@ -209,10 +210,8 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
-	rows.Close()
 
 	var failed int
 	for _, b := range batches {
@@ -251,19 +250,14 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("stripe emit batch %s: %w", batchID, err)
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
-	// Scope mark-flushed to the specific Stripe customer (defense-in-depth): although
-	// batch_id is a fresh UUID per claim and collision is astronomically unlikely,
-	// including stripe_customer_id prevents a hypothetical bad-state row from being
-	// silently marked flushed across a customer boundary.
+	// Mark by batch_id: each batch_id is a fresh UUID allocated per-customer per tick,
+	// so it uniquely identifies this batch without needing a customer filter.
 	if _, err := f.db.Exec(ctx, `
 		UPDATE usage_events
 		SET flushed_to_stripe = TRUE
-		FROM customers c
-		WHERE usage_events.customer_id = c.id
-		  AND c.stripe_customer_id = $1
-		  AND usage_events.batch_id = $2
-		  AND usage_events.flushed_to_stripe = FALSE
-	`, stripeCustomerID, batchID); err != nil {
+		WHERE batch_id = $1
+		  AND flushed_to_stripe = FALSE
+	`, batchID); err != nil {
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
