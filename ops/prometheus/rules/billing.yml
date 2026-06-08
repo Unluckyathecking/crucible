@@ -53,11 +53,11 @@ groups:
             sum(rate(crucible_billing_flush_total[5m]))
           ) > 0.1
           and
-          # Guard: require at least 3 flushes in the 5m window to avoid division-by-zero
-          # and noise during idle periods. 0.01 /s × 300 s = 3 flushes per 5m window;
-          # with the default 30 s tick period the flusher produces ~10 flushes/5m.
-          # If the flusher period changes, recalibrate: min_rate = 1/(period_s) × 0.5
-          sum(rate(crucible_billing_flush_total[5m])) > 0.01
+          # Guard: require at least one flush in the 5m window. When no flushes exist,
+          # rate() returns 0 and 0 > 0 is false, suppressing spurious alerts during
+          # idle periods. Using > 0 instead of a magic rate threshold makes the guard
+          # independent of the flusher tick period.
+          sum(rate(crucible_billing_flush_total[5m])) > 0
         for: 5m
         labels:
           severity: warning

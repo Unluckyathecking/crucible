@@ -86,12 +86,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer bCancel()
 	units, rows, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
-		// Reset on failure so stale values don't linger; on success, set directly
-		// (old→new without an intermediate 0) to avoid resetting Prometheus alert for-timers.
-		observability.BillingBacklogUnits.Set(0)
-		observability.BillingBacklogRows.Set(0)
-		observability.BillingBacklogOldestAgeSeconds.Set(0)
-		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
+		// Leave gauges at their previous values: resetting to 0 would make a DB
+		// timeout indistinguishable from an empty backlog and could clear active alerts.
+		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if ageSecs < 0 {
 			ageSecs = 0
@@ -105,9 +102,7 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer ubCancel()
 	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
-		observability.BillingUnbillableUnits.Set(0)
-		observability.BillingUnbillableRows.Set(0)
-		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; preserving previous gauge values")
 	} else {
 		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
 		observability.BillingUnbillableRows.Set(float64(unbillableRows))
@@ -142,8 +137,7 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 	for rows.Next() {
 		var p pending
 		if err := rows.Scan(&p.batchID, &p.stripeCustomerID, &p.customerID, &p.units); err != nil {
-			log.Warn().Err(err).Msg("flusher: failed to scan pending batch row; skipping")
-			continue
+			return fmt.Errorf("scan pending batch row: %w", err)
 		}
 		batches = append(batches, p)
 	}
@@ -209,8 +203,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	for rows.Next() {
 		var b claimedBatch
 		if err := rows.Scan(&b.batchID, &b.stripeCustomerID, &b.customerID, &b.units); err != nil {
-			log.Warn().Err(err).Msg("flusher: failed to scan claimed batch row; skipping")
-			continue
+			return fmt.Errorf("scan claimed batch row: %w", err)
 		}
 		if b.units == 0 {
 			// Zero-unit batches can't occur in production (server/routes.go enforces

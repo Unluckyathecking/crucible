@@ -1,13 +1,9 @@
-# Exclude large non-production files to keep Kimi's response below the JSON
-# parse limit (~43 KB). Test files are excluded because they account for the
-# majority of token consumption while adding little review signal vs the
-# production code changes. Grafana JSON and go.sum are also excluded.
+# Exclude auto-generated, large binary-like, and truly low-signal files.
+# Benchmark tests are excluded (low review value). Integration tests are included
+# so reviewers can verify that tests actually exercise the production guarantees.
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
   - ".gitignore"
   - "ops/grafana/**"
-  - "gateway/internal/usage/reconcile_test.go"
-  - "gateway/internal/usage/flusher_test.go"
-  - "gateway/internal/usage/flusher_bench_test.go"
-  - "gateway/internal/usage/recorder_test.go"
+  - "gateway/internal/usage/*_bench_test.go"

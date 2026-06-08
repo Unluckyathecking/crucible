@@ -352,7 +352,9 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
-	// Both queries fail (bad pool); gauges must remain at 0 (reset to 0 above).
+	// Both queries fail (bad pool); error path leaves gauges unchanged, so they
+	// remain at 0 (pre-set above). Gauges are NOT reset to 0 on error — that would
+	// make a DB timeout indistinguishable from an empty backlog and clear active alerts.
 	if got := testutil.ToFloat64(observability.BillingBacklogUnits); got != 0 {
 		t.Errorf("BillingBacklogUnits = %g after reconcile error, want 0", got)
 	}
