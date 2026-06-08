@@ -105,12 +105,12 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 
 	ubCtx, ubCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer ubCancel()
-	ubUnits, ubRows, err := f.reconciler.UnbillableUsage(ubCtx)
+	unbillableUnits, unbillableRows, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
 	} else {
-		observability.BillingUnbillableUnits.Set(float64(ubUnits))
-		observability.BillingUnbillableRows.Set(float64(ubRows))
+		observability.BillingUnbillableUnits.Set(float64(unbillableUnits))
+		observability.BillingUnbillableRows.Set(float64(unbillableRows))
 	}
 }
 
