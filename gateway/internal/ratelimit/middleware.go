@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
@@ -25,18 +26,19 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			}
 			limit := plans.RatePerMinute(r.Context(), key.Customer.Plan)
 			remaining, err := bucket.Allow(r.Context(), key.Customer.ID.String(), limit)
-			// Capture once so both the 429 path and the success path emit the same
-			// RateLimit-Reset timestamp regardless of which branch executes.
-			resetAt := time.Now().Add(windowSeconds * time.Second)
 			if err != nil {
 				if errors.Is(err, ErrLimited) {
 					observability.RateLimitedTotal.Inc()
+					// Compute resetAt here so RateLimit-Reset and Retry-After are anchored
+					// to the same instant and stay consistent with each other.
+					resetAt := time.Now().Add(windowSeconds * time.Second)
 					// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
 					if limit > 0 {
 						httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 					}
 					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Retry-After", "60")
+					// Derive from windowSeconds so this stays in sync if the constant changes.
+					w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
 					w.WriteHeader(http.StatusTooManyRequests)
 					_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"rate limit exceeded","retryable":true}}`))
 					return
@@ -45,7 +47,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			// Emit rate-limit headers only when the count is reliable (not an unlimited
 			// plan and not a Redis-error fail-open path — both return noRemaining).
 			if remaining != noRemaining {
-				httputil.SetRateLimitHeaders(w, limit, remaining, resetAt)
+				httputil.SetRateLimitHeaders(w, limit, remaining, time.Now().Add(windowSeconds*time.Second))
 			}
 			next.ServeHTTP(w, r)
 		})

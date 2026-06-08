@@ -79,9 +79,14 @@ func TestAllow_TableDriven(t *testing.T) {
 
 			b := New(rdb)
 			for i := 0; i < tt.calls; i++ {
-				_, err := b.Allow(context.Background(), cust, tt.limit)
+				rem, err := b.Allow(context.Background(), cust, tt.limit)
 				if !errors.Is(err, tt.wantErr[i]) {
 					t.Errorf("call %d: err=%v, want %v", i, err, tt.wantErr[i])
+				}
+				// Unlimited plans (limit==0) must return the noRemaining sentinel so
+				// callers know not to emit rate-limit headers.
+				if tt.limit == 0 && rem != noRemaining {
+					t.Errorf("call %d: unlimited plan should return noRemaining (%d), got %d", i, noRemaining, rem)
 				}
 			}
 		})

@@ -69,6 +69,13 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			// this trust boundary so we never emit X-Quota-Remaining: -1 to a customer.
 			remaining := cap - current
 			if remaining < 0 {
+				// This should never happen given the Lua contract, but log so operators
+				// can detect a script bug rather than silently papering over it.
+				log.Warn().
+					Str("customer", key.Customer.ID.String()).
+					Int64("cap", cap).
+					Int64("current", current).
+					Msg("quota remaining went negative; clamping to zero (Lua contract breach?)")
 				remaining = 0
 			}
 

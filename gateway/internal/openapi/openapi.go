@@ -316,11 +316,9 @@ func Build() Document {
 						"422": errResp("Idempotency key reused with a different request body"),
 						"429": {
 							Description: "Rate limited or quota exceeded. " +
-								"RateLimit-*/X-RateLimit-* headers are always present on a 429 (ratelimit middleware " +
-								"runs before quota and sets them before calling the next handler). " +
-								"X-Quota-* headers are additionally present when the quota middleware triggered " +
-								"the 429, but are absent on a ratelimit-triggered 429.",
-							Headers: rateLimitHeaders(),
+								"RateLimit-*/X-RateLimit-* headers are always present. " +
+								"X-Quota-* headers are present only on quota-triggered 429s.",
+							Headers: rateLimitAndQuotaHeaders(),
 							Content: map[string]MediaType{
 								contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
 							},
