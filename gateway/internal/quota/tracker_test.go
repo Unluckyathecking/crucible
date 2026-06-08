@@ -30,7 +30,7 @@ func TestReserve_BelowCapAdmits(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 5; i++ {
-		ok, _, err := tr.Reserve(context.Background(), cust, 10)
+		ok, _, _, err := tr.Reserve(context.Background(), cust, 10)
 		if err != nil || !ok {
 			t.Fatalf("call %d: ok=%v err=%v", i, ok, err)
 		}
@@ -45,12 +45,12 @@ func TestReserve_OverCapRejects(t *testing.T) {
 	tr := New(rdb)
 	const cap = 3
 	for i := 0; i < cap; i++ {
-		ok, _, _ := tr.Reserve(context.Background(), cust, cap)
+		ok, _, _, _ := tr.Reserve(context.Background(), cust, cap)
 		if !ok {
 			t.Fatalf("call %d should admit", i)
 		}
 	}
-	ok, _, _ := tr.Reserve(context.Background(), cust, cap)
+	ok, _, _, _ := tr.Reserve(context.Background(), cust, cap)
 	if ok {
 		t.Error("call past cap should reject")
 	}
@@ -80,7 +80,7 @@ func TestReserve_NoStampedeOvershoot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			ok, _, _ := tr.Reserve(context.Background(), cust, cap)
+			ok, _, _, _ := tr.Reserve(context.Background(), cust, cap)
 			if ok {
 				admitted.Add(1)
 			}
@@ -105,7 +105,7 @@ func TestReserve_CapZeroMeansUnlimited(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 50; i++ {
-		ok, _, err := tr.Reserve(context.Background(), cust, 0)
+		ok, _, _, err := tr.Reserve(context.Background(), cust, 0)
 		if err != nil || !ok {
 			t.Fatalf("call %d: unlimited cap should always admit (ok=%v err=%v)", i, ok, err)
 		}
@@ -127,13 +127,13 @@ func TestReserve_PerCustomerIsolation(t *testing.T) {
 	tr := New(rdb)
 	const cap = 3
 	for i := 0; i < cap; i++ {
-		ok, _, _ := tr.Reserve(context.Background(), a, cap)
+		ok, _, _, _ := tr.Reserve(context.Background(), a, cap)
 		if !ok {
 			t.Fatalf("a call %d should admit", i)
 		}
 	}
 	// Customer A is exhausted; customer B should be untouched.
-	ok, _, _ := tr.Reserve(context.Background(), b, cap)
+	ok, _, _, _ := tr.Reserve(context.Background(), b, cap)
 	if !ok {
 		t.Error("customer B should be admitted independently of A")
 	}
@@ -162,7 +162,7 @@ func TestReserve_MultipleCustomersConcurrent(t *testing.T) {
 			wg.Add(1)
 			go func(ci int, cust uuid.UUID) {
 				defer wg.Done()
-				ok, _, _ := tr.Reserve(context.Background(), cust, capPerCust)
+				ok, _, _, _ := tr.Reserve(context.Background(), cust, capPerCust)
 				if ok {
 					admittedPerCust[ci].Add(1)
 				}
@@ -203,7 +203,7 @@ func TestRefund_DecrementsCounter(t *testing.T) {
 
 	// Reserve a few slots.
 	for i := 0; i < 3; i++ {
-		ok, _, _ := tr.Reserve(context.Background(), cust, cap)
+		ok, _, _, _ := tr.Reserve(context.Background(), cust, cap)
 		if !ok {
 			t.Fatalf("reserve %d should admit", i)
 		}
@@ -258,7 +258,7 @@ func TestReserveThenRefund_NetsToZero(t *testing.T) {
 
 	tr := New(rdb)
 	for i := 0; i < 20; i++ {
-		ok, _, _ := tr.Reserve(context.Background(), cust, 100)
+		ok, _, _, _ := tr.Reserve(context.Background(), cust, 100)
 		if !ok {
 			t.Fatalf("admit %d", i)
 		}
@@ -285,7 +285,7 @@ func TestReserve_UsesUTCKey(t *testing.T) {
 	defer rdb.Del(context.Background(), utcKey)
 
 	tr := New(rdb)
-	ok, returnedKey, err := tr.Reserve(context.Background(), cust, 5)
+	ok, returnedKey, _, err := tr.Reserve(context.Background(), cust, 5)
 	if err != nil || !ok {
 		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
 	}
@@ -310,7 +310,7 @@ func TestRefundAt_TargetsOriginalReservedKey(t *testing.T) {
 	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
 
 	tr := New(rdb)
-	ok, reservedKey, err := tr.Reserve(context.Background(), cust, 10)
+	ok, reservedKey, _, err := tr.Reserve(context.Background(), cust, 10)
 	if err != nil || !ok {
 		t.Fatalf("Reserve: ok=%v err=%v", ok, err)
 	}
@@ -351,5 +351,38 @@ func TestRecordSignal_DefaultsToFalse_MarkRecordedFlips(t *testing.T) {
 	MarkRecorded(ctx)
 	if !sig.recorded.Load() {
 		t.Error("MarkRecorded should have flipped the signal to true")
+	}
+}
+
+// TestReserve_CurrentValueAccurate asserts the new additive return from reserveScript:
+// the current counter value after each reserve equals the call index+1, and remaining
+// equals cap minus that index+1.
+func TestReserve_CurrentValueAccurate(t *testing.T) {
+	rdb := newTestRedis(t)
+	cust := uuid.New()
+	defer rdb.Del(context.Background(), monthKey(cust, time.Now().UTC()))
+
+	tr := New(rdb)
+	const cap = 5
+	for i := 0; i < cap; i++ {
+		ok, _, current, err := tr.Reserve(context.Background(), cust, cap)
+		if err != nil || !ok {
+			t.Fatalf("call %d: ok=%v err=%v", i, ok, err)
+		}
+		wantCurrent := int64(i + 1)
+		if current != wantCurrent {
+			t.Errorf("call %d: current = %d, want %d", i, current, wantCurrent)
+		}
+	}
+	// Denied call — script returns {0, cap}.
+	ok, _, current, err := tr.Reserve(context.Background(), cust, cap)
+	if err != nil {
+		t.Fatalf("denied Reserve: unexpected error %v", err)
+	}
+	if ok {
+		t.Error("denied Reserve: should return ok=false")
+	}
+	if current != cap {
+		t.Errorf("denied Reserve: current = %d, want %d (cap)", current, cap)
 	}
 }

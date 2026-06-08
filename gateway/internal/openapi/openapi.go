@@ -101,9 +101,16 @@ type MediaType struct {
 	Schema *Schema `json:"schema,omitempty"`
 }
 
+// Header describes a single response header.
+type Header struct {
+	Description string  `json:"description,omitempty"`
+	Schema      *Schema `json:"schema,omitempty"`
+}
+
 // Response describes a single HTTP response.
 type Response struct {
 	Description string               `json:"description,omitempty"`
+	Headers     map[string]Header    `json:"headers,omitempty"`
 	Content     map[string]MediaType `json:"content,omitempty"`
 }
 
@@ -116,6 +123,29 @@ const (
 )
 
 // --- builder -----------------------------------------------------------------
+
+// intHeader is a shorthand for a response header with an integer schema.
+func intHeader(desc string) Header {
+	return Header{Description: desc, Schema: &Schema{Type: "integer"}}
+}
+
+// rateLimitAndQuotaHeaders returns the shared header map for responses that carry
+// rate-limit and quota observability fields. Limited-plan responses always include
+// all six RateLimit-*/X-RateLimit-* headers; X-Quota-* headers are omitted for
+// unlimited plans at runtime, but the schema documents them here for completeness.
+func rateLimitAndQuotaHeaders() map[string]Header {
+	return map[string]Header{
+		"RateLimit-Limit":       intHeader("Per-minute request cap for the customer's plan"),
+		"RateLimit-Remaining":   intHeader("Requests remaining in the current sliding window"),
+		"RateLimit-Reset":       intHeader("Unix timestamp when the sliding window fully resets"),
+		"X-RateLimit-Limit":     intHeader("Alias for RateLimit-Limit"),
+		"X-RateLimit-Remaining": intHeader("Alias for RateLimit-Remaining"),
+		"X-RateLimit-Reset":     intHeader("Alias for RateLimit-Reset"),
+		"X-Quota-Limit":         intHeader("Monthly billable-unit cap for the customer's plan"),
+		"X-Quota-Remaining":     intHeader("Billable units remaining in the current calendar month"),
+		"X-Quota-Reset":         intHeader("Unix timestamp when the monthly quota resets (UTC month-end)"),
+	}
+}
 
 // errResp returns a Response whose content schema is a $ref to the Error component.
 func errResp(desc string) Response {
@@ -267,6 +297,7 @@ func Build() Document {
 					Responses: map[string]Response{
 						"200": {
 							Description: "Successful invocation",
+							Headers:     rateLimitAndQuotaHeaders(),
 							Content: map[string]MediaType{
 								contentTypeJSON: {Schema: &Schema{Type: "object"}},
 							},
@@ -275,7 +306,13 @@ func Build() Document {
 						"401": errResp("Unauthorized — missing or invalid API key"),
 						"409": errResp("Idempotency conflict — concurrent request with same key"),
 						"422": errResp("Idempotency key reused with a different request body"),
-						"429": errResp("Rate limited"),
+						"429": {
+							Description: "Rate limited or quota exceeded",
+							Headers:     rateLimitAndQuotaHeaders(),
+							Content: map[string]MediaType{
+								contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
+							},
+						},
 						"500": errResp("Internal server error"),
 						"502": errResp("Worker unavailable"),
 					},

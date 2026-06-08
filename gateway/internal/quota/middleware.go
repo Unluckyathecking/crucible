@@ -9,18 +9,22 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
-// Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve.
+// Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve
+// and sets X-Quota-* headers on every response where the count is known.
 // MUST be mounted AFTER auth.Middleware (it depends on auth context).
 //
 // Flow:
 //  1. Reserve(+1) atomically against the customer's monthly counter. Returns 429 on cap.
-//  2. Seed a record-signal into context so the downstream usage recorder can flip
+//  2. Emit X-Quota-* headers (both admit and deny paths); omit on Redis error or
+//     unlimited plan so no fabricated values escape.
+//  3. Seed a record-signal into context so the downstream usage recorder can flip
 //     it true on a successful insert.
-//  3. Run the handler.
-//  4. After the handler returns, if the recorder never flipped the signal (worker
+//  4. Run the handler.
+//  5. After the handler returns, if the recorder never flipped the signal (worker
 //     failed, response carried an error envelope, recorder write failed, etc.),
 //     refund the reserve against the EXACT key Reserve used.
 //
@@ -47,18 +51,23 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 			cap := plans.MonthlyCap(r.Context(), key.Customer.Plan)
 			if cap == 0 {
-				// 0 means unlimited (e.g. Business tier).
+				// 0 means unlimited (e.g. Business tier); no quota headers per spec.
 				next.ServeHTTP(w, r)
 				return
 			}
-			admitted, reservedKey, err := t.Reserve(r.Context(), key.Customer.ID, cap)
+			admitted, reservedKey, current, err := t.Reserve(r.Context(), key.Customer.ID, cap)
 			if err != nil {
-				// Fail-open and let the request through. Count it so operators can alert on a
-				// degraded quota store instead of the fail-open being silent.
+				// Fail-open and let the request through. No reliable count, so omit quota
+				// headers to avoid emitting fabricated values. Count it so operators can alert.
 				observability.QuotaFailOpenTotal.Inc()
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Redis was reachable — emit X-Quota-* headers on both admit and deny paths.
+			remaining := cap - current
+			httputil.WriteQuotaHeaders(w, cap, remaining, expireAt(time.Now().UTC()))
+
 			if !admitted {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
