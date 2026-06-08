@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,8 +99,8 @@ func (f *Flusher) Run(ctx context.Context) {
 }
 
 // setBacklogGauges queries the DB via the reconciler and updates the backlog/unbillable
-// Prometheus gauges. Called after both flush phases each tick. Each query runs under its
-// own context.WithTimeout. Worst-case latency is 2 × reconcileQueryTimeout.
+// Prometheus gauges. Called after both flush phases each tick. Both queries run concurrently
+// under their own context.WithTimeout so worst-case latency is 1 × reconcileQueryTimeout.
 // A query failure produces a log warning and increments BillingReconcileErrorsTotal —
 // it never aborts or affects the flush phases.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
@@ -107,22 +108,35 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		return // skip reconcile during shutdown
+		return
 	}
 
-	rCtx1, rCancel1 := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer rCancel1()
-	blUnits, blRows, blAge, blErr := f.reconciler.BacklogStats(rCtx1)
-	rCancel1() // release timer resources promptly
-
-	if err := ctx.Err(); err != nil {
-		return // parent canceled while BacklogStats was running
-	}
-
-	rCtx2, rCancel2 := context.WithTimeout(ctx, reconcileQueryTimeout)
-	defer rCancel2()
-	ubUnits, ubRows, ubErr := f.reconciler.UnbillableUsage(rCtx2)
-	rCancel2()
+	// Run both reconcile queries concurrently so total latency is bounded by one
+	// reconcileQueryTimeout rather than two.
+	var (
+		blUnits int64
+		blRows  int64
+		blAge   float64
+		blErr   error
+		ubUnits int64
+		ubRows  int64
+		ubErr   error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+		defer rCancel()
+		blUnits, blRows, blAge, blErr = f.reconciler.BacklogStats(rCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
+		defer rCancel()
+		ubUnits, ubRows, ubErr = f.reconciler.UnbillableUsage(rCtx)
+	}()
+	wg.Wait()
 
 	var hadErr bool
 
@@ -135,9 +149,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if blAge < 0 {
-			// Preserve the negative value so clock skew is visible in dashboards
-			// rather than masking it. The Warn log provides operator context.
-			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); preserving for visibility")
+			// Clock skew: clamp to 0 (empty-backlog contract) rather than exposing a
+			// negative age that breaks PromQL threshold alerts and confuses dashboards.
+			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
+			blAge = 0
 		}
 		f.backlogUnits.Set(float64(blUnits))
 		f.backlogRows.Set(float64(blRows))

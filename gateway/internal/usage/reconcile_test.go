@@ -5,7 +5,6 @@ import (
 	"math"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"

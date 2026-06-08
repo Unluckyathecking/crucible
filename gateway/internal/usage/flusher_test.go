@@ -51,6 +51,9 @@ func TestSetBacklogGauges_nilReconcilerIsNoop(t *testing.T) {
 		}},
 		{"BillingUnbillableUnits", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableUnits) }},
 		{"BillingUnbillableRows", func() float64 { return testutil.ToFloat64(observability.BillingUnbillableRows) }},
+		{"BillingReconcileErrorsTotal", func() float64 {
+			return testutil.ToFloat64(observability.BillingReconcileErrorsTotal)
+		}},
 	}
 	prevs := make(map[string]float64, len(gauges))
 	for _, g := range gauges {
