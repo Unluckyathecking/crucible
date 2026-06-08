@@ -53,10 +53,6 @@ groups:
             sum(rate(crucible_billing_flush_total[5m]))
           ) > 0.1
           and
-          # Guard: require at least one flush in the 5m window. When no flushes exist,
-          # rate() returns 0 and 0 > 0 is false, suppressing spurious alerts during
-          # idle periods. Using > 0 instead of a magic rate threshold makes the guard
-          # independent of the flusher tick period.
           sum(rate(crucible_billing_flush_total[5m])) > 0
         for: 5m
         labels:
@@ -67,6 +63,8 @@ groups:
             More than 10% of crucible_billing_flush_total events are outcome="error"
             over the last 5 minutes. Check Stripe API health and gateway logs.
             Individual batches are retried automatically with the same idempotency key.
+            Guard: the and clause requires at least one flush in the 5m window so
+            rate() returning 0/0 during idle periods does not fire a false alert.
 
       # Alert when any permanently-unbillable usage is detected (threshold: 0).
       # The 10-minute `for` window avoids noise from customers who sign up, use the API,
