@@ -19,10 +19,16 @@ type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
 
-// reconcileQueryTimeout caps each backlog/unbillable reconcile query. Each query runs under
-// its own context so the worst-case reconcile overhead is 2 × 5 s = 10 s out of the
-// default tick period.
+// reconcileQueryTimeout caps each backlog/unbillable reconcile query. Both queries run
+// concurrently in setBacklogGauges, so worst-case reconcile overhead is 1 × 5 s out of
+// the default tick period.
 const reconcileQueryTimeout = 5 * time.Second
+
+// reconcilerIface lets tests inject a deterministic stub in place of a real *Reconciler.
+type reconcilerIface interface {
+	BacklogStats(context.Context) (int64, int64, float64, error)
+	UnbillableUsage(context.Context) (int64, int64, error)
+}
 
 // batchPageSize limits the number of customers processed per flusher tick in each phase.
 // At the default tick period, 100 customers × 1 Stripe API call each (~50 ms p95) ≈ 5 s max
@@ -50,7 +56,7 @@ type Flusher struct {
 	db                  *pgxpool.Pool
 	stripe              StripeMeter
 	period              time.Duration
-	reconciler          *Reconciler
+	reconciler          reconcilerIface
 	reconcileErrCounter prometheus.Counter // injectable for tests; defaults to observability.BillingReconcileErrorsTotal
 	backlogUnits        prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogUnits
 	backlogRows         prometheus.Gauge   // injectable for tests; defaults to observability.BillingBacklogRows
@@ -60,7 +66,7 @@ type Flusher struct {
 }
 
 func NewFlusher(db *pgxpool.Pool, s StripeMeter, period time.Duration) *Flusher {
-	var rec *Reconciler
+	var rec reconcilerIface
 	if db != nil {
 		rec = NewReconciler(db)
 	}
@@ -126,12 +132,24 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Interface("panic", r).Msg("flusher: panic in BacklogStats goroutine; treating as reconcile error")
+				blErr = fmt.Errorf("BacklogStats panic: %v", r)
+			}
+		}()
 		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 		defer rCancel()
 		blUnits, blRows, blAge, blErr = f.reconciler.BacklogStats(rCtx)
 	}()
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Interface("panic", r).Msg("flusher: panic in UnbillableUsage goroutine; treating as reconcile error")
+				ubErr = fmt.Errorf("UnbillableUsage panic: %v", r)
+			}
+		}()
 		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 		defer rCancel()
 		ubUnits, ubRows, ubErr = f.reconciler.UnbillableUsage(rCtx)

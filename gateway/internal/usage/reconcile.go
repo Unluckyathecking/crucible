@@ -30,7 +30,7 @@ func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldes
 		SELECT
 		    COALESCE(SUM(u.billable_units), 0)::bigint,
 		    COUNT(*)::bigint,
-		    COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8
+		    GREATEST(COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(u.created_at))), 0)::float8, 0)::float8
 		FROM usage_events u
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.flushed_to_stripe = FALSE

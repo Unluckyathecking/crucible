@@ -2,16 +2,26 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strconv"
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// stubReconciler is a deterministic reconcilerIface for tests that need controlled failures.
+type stubReconciler struct{ err error }
+
+func (s *stubReconciler) BacklogStats(context.Context) (int64, int64, float64, error) {
+	return 0, 0, 0, s.err
+}
+func (s *stubReconciler) UnbillableUsage(context.Context) (int64, int64, error) {
+	return 0, 0, s.err
+}
 
 
 // TestBacklogStats_flushedRowExcluded verifies that a row with flushed_to_stripe=TRUE
@@ -330,17 +340,11 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("insert phase-B row: %v", err)
 	}
 
-	// Build a valid pool then close it immediately — a closed pool returns errors
-	// on all Acquire calls, reliably exercising the reconcile failure path.
-	badPool, err := pgxpool.New(ctx, testDSN())
-	if err != nil {
-		t.Fatalf("pgxpool.New failed: %v", err)
-	}
-	badPool.Close()
-
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
-	f.reconciler = NewReconciler(badPool) // inject failing reconciler
+	// Inject a deterministic stub that always fails — avoids relying on closed-pool
+	// timing semantics and makes the failure injection unconditionally reliable.
+	f.reconciler = &stubReconciler{err: errors.New("injected reconcile failure")}
 
 	// Inject a fresh counter so this test doesn't pollute the global BillingReconcileErrorsTotal.
 	// The counter starts at 0, so we can assert an absolute value of 1 after setBacklogGauges.
