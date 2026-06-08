@@ -317,8 +317,8 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not create bad pool: %v", err)
 	}
-	t.Cleanup(badPool.Close) // close on test exit even if the test panics before the inline close below
 	badPool.Close()
+	t.Cleanup(badPool.Close) // pgxpool.Close is idempotent; safety net for any re-open
 
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)

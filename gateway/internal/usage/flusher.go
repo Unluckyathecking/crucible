@@ -84,12 +84,6 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
 	}
-	// Skip reconcile queries if the parent context is already canceled (e.g., shutdown).
-	// This avoids spurious warn logs from queries that fail immediately on a dead context.
-	if err := ctx.Err(); err != nil {
-		log.Debug().Err(err).Msg("flusher: skipping backlog gauges due to context done")
-		return
-	}
 
 	bCtx, bCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
 	defer bCancel()
@@ -141,6 +135,10 @@ func (f *Flusher) retryPendingBatches(ctx context.Context) error {
 		}
 		batches = append(batches, p)
 	}
+	// Explicit Close before Err: in pgx, Close populates rows.err with any
+	// close-time errors (e.g., network failure during result finalization), so
+	// calling Err after Close captures both iteration and close errors.
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate pending: %w", err)
 	}
@@ -209,6 +207,9 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 			batches = append(batches, b)
 		}
 	}
+	// Explicit Close before Err: pgx populates rows.err on Close, so calling
+	// Err after Close captures both iteration and close-time errors.
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate claimed batches: %w", err)
 	}
