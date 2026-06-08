@@ -91,8 +91,7 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if ageSecs < 0 {
-			// Clock skew: a writer host with a future-drifted clock makes created_at appear
-			// in the future; COALESCE handles NULL (empty backlog) but not negatives.
+			log.Warn().Float64("raw_age_seconds", ageSecs).Msg("flusher: clock skew detected (negative backlog age); clamping to 0")
 			ageSecs = 0
 		}
 		observability.BillingBacklogUnits.Set(float64(units))
@@ -272,7 +271,6 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return fmt.Errorf("mark flushed batch %s: %w", batchID, err)
 	}
 	if ct.RowsAffected() == 0 {
-		observability.BillingFlushTotal.WithLabelValues("error").Inc()
 		log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).Msg("flusher: mark-flushed affected 0 rows; batch_id/customer_id mismatch")
 		return fmt.Errorf("mark flushed batch %s: 0 rows affected", batchID)
 	}
