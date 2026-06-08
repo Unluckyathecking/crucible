@@ -4,8 +4,9 @@
 -- customers-first plan: scan only the subset of customers without a Stripe ID, then
 -- join to usage_events. Whether the planner actually chooses this plan depends on
 -- table statistics — with small customer tables or mostly-flushed usage_events, the
--- planner may still drive from usage_events via idx_usage_pending_flush. Verify with
--- EXPLAIN ANALYZE on production data if UnbillableUsage queries appear in slow-query logs.
+-- planner is likely to drive from usage_events via idx_usage_pending_flush instead,
+-- in which case this index is unused. Run EXPLAIN ANALYZE on production data if
+-- UnbillableUsage queries appear in slow-query logs.
 --
 -- The index is on customers(id) — the PK column. The partial condition is what provides
 -- the benefit; without it the index would be a redundant duplicate of the PK index.
