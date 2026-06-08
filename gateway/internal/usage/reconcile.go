@@ -34,6 +34,7 @@ func (r *Reconciler) BacklogStats(ctx context.Context) (units, rows int64, oldes
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NOT NULL
+		LIMIT 1
 	`)
 	if err = row.Scan(&units, &rows, &oldestAgeSecs); err != nil {
 		return 0, 0, 0, fmt.Errorf("backlog stats: %w", err)
@@ -55,6 +56,7 @@ func (r *Reconciler) UnbillableUsage(ctx context.Context) (units, rows int64, er
 		JOIN customers c ON c.id = u.customer_id
 		WHERE u.flushed_to_stripe = FALSE
 		  AND c.stripe_customer_id IS NULL
+		LIMIT 1
 	`)
 	if err = row.Scan(&units, &rows); err != nil {
 		return 0, 0, fmt.Errorf("unbillable usage: %w", err)

@@ -282,8 +282,17 @@ func TestUnbillableUsage_stripeCustomerExcluded(t *testing.T) {
 // independently of the flush pool. Must not call t.Parallel() — it resets and asserts
 // on package-level promauto gauges shared across the entire test process.
 func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
-	// Reset global gauges to a known baseline — they are promauto package-level vars
-	// that may carry values from other tests in the same process.
+	// Save and restore global gauge state around this test to minimise pollution
+	// for tests that run after us. Must not call t.Parallel() — we still race with
+	// concurrent package tests, but at least we restore what we clobber.
+	prevUnits := testutil.ToFloat64(observability.BillingBacklogUnits)
+	prevAge := testutil.ToFloat64(observability.BillingBacklogOldestAgeSeconds)
+	prevUnbillable := testutil.ToFloat64(observability.BillingUnbillableUnits)
+	t.Cleanup(func() {
+		observability.BillingBacklogUnits.Set(prevUnits)
+		observability.BillingBacklogOldestAgeSeconds.Set(prevAge)
+		observability.BillingUnbillableUnits.Set(prevUnbillable)
+	})
 	observability.BillingBacklogUnits.Set(0)
 	observability.BillingBacklogOldestAgeSeconds.Set(0)
 	observability.BillingUnbillableUnits.Set(0)
@@ -318,7 +327,8 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		t.Fatalf("could not create bad pool: %v", err)
 	}
 	badPool.Close()
-	t.Cleanup(badPool.Close) // pgxpool.Close is idempotent; safety net for any re-open
+	// Do NOT register t.Cleanup(badPool.Close): pgxpool.Close is not idempotent
+	// and panics on double-close. The inline close above is sufficient.
 
 	mock := &mockStripeMeter{}
 	f := NewFlusher(pool, mock, 0)
