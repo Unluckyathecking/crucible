@@ -53,6 +53,9 @@ groups:
             sum(rate(crucible_billing_flush_total[5m]))
           ) > 0.1
           and
+          # 0.01 /s × 300 s = 3 flushes per 5-minute window. With the default 30 s tick
+          # period the flusher produces ~10 flushes/5m, so this guard suppresses noise
+          # during low-traffic periods without masking real flush outages.
           sum(rate(crucible_billing_flush_total[5m])) > 0.01
         for: 5m
         labels:

@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -390,7 +391,7 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 		}
 		if c.idempotencyKey == wantKeyA {
 			foundA = true
-		} else {
+		} else if strings.HasPrefix(c.idempotencyKey, "crucible-batch-") {
 			foundB = true
 		}
 	}
