@@ -18,6 +18,8 @@ type StripeMeter interface {
 	EmitMeterEvent(ctx context.Context, stripeCustomerID string, units uint64, idempotencyKey string) error
 }
 
+// reconcileQueryTimeout caps each backlog/unbillable reconcile query. 5 s is 1/6 of
+// the default 30 s flusher period, leaving the remaining budget for the two flush phases.
 const reconcileQueryTimeout = 5 * time.Second
 
 // Flusher periodically emits Stripe meter_events for unflushed usage_events rows.
@@ -84,7 +86,8 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	}
 	// Skip reconcile queries if the parent context is already canceled (e.g., shutdown).
 	// This avoids spurious warn logs from queries that fail immediately on a dead context.
-	if ctx.Err() != nil {
+	if err := ctx.Err(); err != nil {
+		log.Debug().Err(err).Msg("flusher: skipping backlog gauges due to context done")
 		return
 	}
 
@@ -270,8 +273,9 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 	`, batchID, stripeCustomerID); err != nil {
 		// Intentional soft-fail: the batch was already emitted to Stripe. Phase A
 		// (retryPendingBatches) re-emits with the same batch_id next tick; Stripe dedupes.
-		// We increment the error counter so the failure is visible in metrics.
-		observability.BillingFlushTotal.WithLabelValues("error").Inc()
+		// Do NOT increment BillingFlushTotal{outcome="error"} here — doing so would
+		// double-count: one batch would contribute both "ok" (Stripe emit) and "error"
+		// (mark-flushed), breaking the BillingFlushErrorRateElevated ratio alert.
 		log.Warn().Err(err).Str("batch", batchID.String()).Msg("flusher: mark-flushed failed; next tick will re-emit (Stripe will dedupe)")
 	}
 	return nil

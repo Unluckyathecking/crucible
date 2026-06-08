@@ -47,8 +47,13 @@ groups:
       # backlog growth (e.g., batches that are retried and eventually succeed).
       - alert: BillingFlushErrorRateElevated
         expr: >
-          rate(crucible_billing_flush_total{outcome="error"}[5m])
-          / rate(crucible_billing_flush_total[5m]) > 0.1
+          (
+            rate(crucible_billing_flush_total{outcome="error"}[5m])
+            / ignoring(outcome) sum without(outcome) (rate(crucible_billing_flush_total[5m]))
+            > 0.1
+          )
+          and
+          (sum without(outcome) (rate(crucible_billing_flush_total[5m])) > 0)
         for: 5m
         labels:
           severity: warning
