@@ -193,6 +193,7 @@ func (f *Flusher) claimAndEmitNewBatches(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bulk claim unbatched customers: %w", err)
 	}
+	defer rows.Close()
 	type claimedBatch struct {
 		batchID          uuid.UUID
 		stripeCustomerID string
