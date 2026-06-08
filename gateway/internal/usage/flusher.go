@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -136,8 +137,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("flusher: panic in BacklogStats goroutine; treating as reconcile error")
-				blErr = fmt.Errorf("BacklogStats panic: %v", r)
+				stack := debug.Stack()
+				log.Error().Interface("panic", r).Str("stack", string(stack)).Msg("flusher: panic in BacklogStats goroutine; treating as reconcile error")
+				blErr = fmt.Errorf("BacklogStats panic: %v\n%s", r, stack)
 			}
 		}()
 		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
@@ -148,8 +150,9 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("flusher: panic in UnbillableUsage goroutine; treating as reconcile error")
-				ubErr = fmt.Errorf("UnbillableUsage panic: %v", r)
+				stack := debug.Stack()
+				log.Error().Interface("panic", r).Str("stack", string(stack)).Msg("flusher: panic in UnbillableUsage goroutine; treating as reconcile error")
+				ubErr = fmt.Errorf("UnbillableUsage panic: %v\n%s", r, stack)
 			}
 		}()
 		rCtx, rCancel := context.WithTimeout(ctx, reconcileQueryTimeout)
@@ -169,9 +172,10 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 		log.Warn().Err(blErr).Msg("flusher: reconcile BacklogStats failed; preserving previous gauge values")
 	} else {
 		if math.Signbit(blAge) {
-			// Covers blAge < 0 (clock skew) and IEEE 754 -0.0, which GREATEST(..., 0)
-			// in some float edge cases can still produce; -0.0 < 0 is false in Go.
-			log.Warn().Float64("raw_age_seconds", blAge).Msg("flusher: clock skew detected (non-positive backlog age); clamping to 0")
+			// math.Signbit catches blAge < 0 (system clock skew) and IEEE 754 -0.0
+			// (GREATEST edge case: -0.0 < 0 is false in Go, so plain < 0 misses it).
+			// Either indicates a host clock problem; Error level since it's not expected.
+			log.Error().Float64("raw_age_seconds", blAge).Msg("flusher: negative backlog age detected (clock skew or -0.0); clamping to 0")
 			blAge = 0
 		}
 		f.backlogUnits.Set(float64(blUnits))
@@ -355,7 +359,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 			log.Warn().Str("batch", batchID.String()).Str("customer", customerID.String()).
 				Msg("flusher: zero-unit mark-flushed affected 0 rows; already flushed or no matching rows")
 		}
-		return nil
+		// Return an error so the caller's failed++ fires and the anomaly is visible
+		// at the phase level. The batch is already drained (marked flushed) so Phase
+		// A will not re-pick it up — the error is informational, not a retry signal.
+		return fmt.Errorf("zero-unit batch %s (customer %s): data corruption or claim bug; batch drained", batchID, customerID)
 	}
 
 	idemKey := "crucible-batch-" + batchID.String()

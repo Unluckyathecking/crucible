@@ -368,14 +368,14 @@ func TestFlusher_reconcileErrorDoesNotAbortPhases(t *testing.T) {
 	defer gaugeCancel()
 	f.setBacklogGauges(gaugeCtx) // must not panic; errors are warnings only
 
-	// Both queries fail (bad pool). The counter must be incremented exactly once (not twice) —
+	// Both queries fail (injected stub error). The counter must be incremented exactly once (not twice) —
 	// the once-per-tick semantic prevents double-counting when both BacklogStats and UnbillableUsage fail.
 	// freshErrCounter starts at 0, so we assert an absolute value of 1 with no global state dependency.
 	if got := testutil.ToFloat64(freshErrCounter); got != 1 {
 		t.Errorf("reconcileErrCounter = %g, want 1 (incremented once per tick even when both queries fail)", got)
 	}
 
-	// Both queries fail (bad pool); error path must PRESERVE gauge values at the gaugePreservationSentinel
+	// Both queries fail (injected stub); error path must PRESERVE gauge values at the gaugePreservationSentinel
 	// (42). If the code incorrectly reset them to 0, the assertions below would fail.
 	// Resetting to 0 on error makes a DB timeout indistinguishable from an empty backlog
 	// and would clear active Prometheus alerts — so we prove that does NOT happen.
