@@ -39,6 +39,9 @@ groups:
             This suggests the flush pipeline has been blocked for an extended period.
 
       # Alert when any permanently-unbillable usage is detected (threshold: 0).
+      # The 10-minute `for` window avoids noise from customers who sign up, use the API,
+      # and get linked within minutes. Reduce to 5m on high-value plans where even a brief
+      # linking gap represents meaningful revenue risk.
       # These units belong to customers with no stripe_customer_id and will never be billed.
       - alert: BillingUnbillableUsageDetected
         expr: crucible_billing_unbillable_units > 0

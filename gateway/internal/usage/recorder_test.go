@@ -155,7 +155,7 @@ func TestRecord_multipleCalls(t *testing.T) {
 
 	r := NewRecorder(pool, nil)
 	for i := range 5 {
-		reqID := "req-multi-" + string(rune('a'+i))
+		reqID := fmt.Sprintf("req-multi-%d", i)
 		if err := r.Record(context.Background(), custID, apiKeyID, "multi.op", reqID, uint64((i+1)*100)); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}

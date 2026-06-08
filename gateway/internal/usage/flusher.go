@@ -76,9 +76,9 @@ func (f *Flusher) Run(ctx context.Context) {
 // Prometheus gauges. Called after both flush phases each tick. A query failure only
 // produces a log warning — it never aborts or affects the flush phases.
 //
-// Each query gets its own 10-second deadline. The second context is created lazily —
-// only after the first query succeeds — so a cancellation or timeout on BacklogStats
-// does not spawn a second timer goroutine or produce a redundant warning on shutdown.
+// The two reconcile queries are independent: a failure on BacklogStats does not
+// prevent UnbillableUsage from running, so each gauge degrades individually.
+// Each gets its own 10-second deadline derived from the parent ctx.
 func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	if f.reconciler == nil {
 		return
@@ -88,20 +88,20 @@ func (f *Flusher) setBacklogGauges(ctx context.Context) {
 	defer bCancel()
 	units, _, ageSecs, err := f.reconciler.BacklogStats(bCtx)
 	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping gauge update")
-		return
+		log.Warn().Err(err).Msg("flusher: reconcile BacklogStats failed; skipping backlog gauges")
+	} else {
+		observability.BillingBacklogUnits.Set(float64(units))
+		observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
 	}
-	observability.BillingBacklogUnits.Set(float64(units))
-	observability.BillingBacklogOldestAgeSeconds.Set(ageSecs)
 
 	ubCtx, ubCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer ubCancel()
 	ubUnits, _, err := f.reconciler.UnbillableUsage(ubCtx)
 	if err != nil {
-		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping gauge update")
-		return
+		log.Warn().Err(err).Msg("flusher: reconcile UnbillableUsage failed; skipping unbillable gauge")
+	} else {
+		observability.BillingUnbillableUnits.Set(float64(ubUnits))
 	}
-	observability.BillingUnbillableUnits.Set(float64(ubUnits))
 }
 
 // retryPendingBatches re-emits batches that were claimed but never marked flushed.
@@ -217,6 +217,10 @@ func (f *Flusher) emitAndMark(ctx context.Context, batchID uuid.UUID, stripeCust
 		return
 	}
 	observability.BillingFlushTotal.WithLabelValues("ok").Inc()
+	// Intentional soft-fail: the stable batch_id means Phase A (retryPendingBatches)
+	// picks this batch up on the next tick and re-emits to Stripe. Stripe server-side
+	// deduplication on the "crucible-batch-<uuid>" idempotency key prevents double-billing.
+	// Propagating this error would abort the whole batch loop and block other customers.
 	if _, err := f.db.Exec(ctx, `
 		UPDATE usage_events SET flushed_to_stripe = TRUE
 		WHERE batch_id = $1 AND flushed_to_stripe = FALSE

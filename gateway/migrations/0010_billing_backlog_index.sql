@@ -1,13 +1,14 @@
--- Index to accelerate the UnbillableUsage reconcile scan.
+-- Partial index to help the UnbillableUsage reconcile query find unlinked customers.
 --
--- BacklogStats queries usage_events WHERE flushed_to_stripe = FALSE; the existing
--- idx_usage_pending_flush (0001_init.sql) covers that filter for fast row location,
--- but the aggregation (SUM, COUNT, MIN) must still visit matching rows.
+-- The partial condition (WHERE stripe_customer_id IS NULL) lets Postgres consider a
+-- customers-first plan: scan only the subset of customers without a Stripe ID, then
+-- join to usage_events. Whether the planner actually chooses this plan depends on
+-- table statistics — with small customer tables or mostly-flushed usage_events, the
+-- planner may still drive from usage_events via idx_usage_pending_flush. Verify with
+-- EXPLAIN ANALYZE on production data if UnbillableUsage queries appear in slow-query logs.
 --
--- UnbillableUsage joins usage_events to customers WHERE stripe_customer_id IS NULL.
--- Without this index Postgres performs a full customers seq-scan for the join;
--- with it Postgres can use an index scan on the customers side and immediately filter
--- to unlinked customers before touching usage_events rows.
+-- The index is on customers(id) — the PK column. The partial condition is what provides
+-- the benefit; without it the index would be a redundant duplicate of the PK index.
 --
 -- Idempotent: CREATE INDEX IF NOT EXISTS is safe to re-apply on every gateway boot.
 

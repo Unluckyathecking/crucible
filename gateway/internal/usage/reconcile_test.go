@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -97,7 +98,7 @@ func TestBacklogStats_countsUnflushed(t *testing.T) {
 	// Insert 3 unflushed rows with known units (5 + 10 + 15 = 30).
 	const wantDeltaUnits = int64(30)
 	for i, u := range []int{5, 10, 15} {
-		reqID := "req-bs-uf-" + custID.String()[:8] + string(rune('a'+i))
+		reqID := fmt.Sprintf("req-bs-uf-%s%d", custID.String()[:8], i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.uf', $3, $4)`,
@@ -153,7 +154,7 @@ func TestBacklogStats_unbillableRowsExcluded(t *testing.T) {
 
 	// Insert unflushed rows — customer has no stripe_customer_id, so these are unbillable.
 	for i, u := range []int{100, 200} {
-		reqID := "req-bs-ubexcl-" + custID.String()[:8] + string(rune('a'+i))
+		reqID := fmt.Sprintf("req-bs-ubexcl-%s%d", custID.String()[:8], i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO usage_events (customer_id, api_key_id, operation, billable_units, request_id)
 			 VALUES ($1, $2, 'bs.ubexcl', $3, $4)`,
