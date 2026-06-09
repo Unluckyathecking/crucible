@@ -617,6 +617,18 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	if !ok {
 		t.Fatal("envelope missing 'error' key")
 	}
+	// Verify all four canonical fields are present in the JSON (DisallowUnknownFields
+	// only catches extra fields, not absent ones, so check presence explicitly).
+	var objMap map[string]any
+	if err := json.Unmarshal(errRaw, &objMap); err != nil {
+		t.Fatalf("decode error object as map: %v", err)
+	}
+	for _, field := range []string{"code", "message", "retryable", "request_id"} {
+		if _, ok := objMap[field]; !ok {
+			t.Errorf("field %q missing from error object", field)
+		}
+	}
+
 	var obj struct {
 		Code      string `json:"code"`
 		Message   string `json:"message"`
@@ -637,8 +649,8 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	if obj.Retryable {
 		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
 	}
-	if obj.RequestID == "" {
-		t.Error("error.request_id must not be empty when RequestIDKey is set in context")
+	if obj.RequestID != "test-rid-envelope" {
+		t.Errorf("error.request_id = %q, want %q", obj.RequestID, "test-rid-envelope")
 	}
 }
 

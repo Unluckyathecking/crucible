@@ -237,7 +237,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(errCode).Inc()
 			if errorExposure == "full" {
-				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
+				apierror.Write(w, rid, http.StatusBadGateway, errCode, resp.Error.Message, resp.Error.Retryable)
 			} else {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			}

@@ -45,7 +45,8 @@ var marshalJSON = json.Marshal
 // status, and encodes the standard error envelope. requestID is passed as a plain
 // string by each call site so this package needs no context or middleware import.
 // Uses json.Marshal (not json.Encoder) so the body has no trailing newline.
-// Marshal runs before WriteHeader so no status is committed on a marshal failure.
+// Marshal and fallback both run before WriteHeader so a body is always available
+// when the status is committed; callers never see a headers-only response.
 func Write(w http.ResponseWriter, requestID string, status int, code, message string, retryable bool) {
 	b, err := marshalJSON(envelope{
 		Error: Error{
@@ -71,7 +72,7 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		b, ferr = marshalJSON(struct {
 			Error fallback `json:"error"`
 		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
-		if ferr != nil || b == nil {
+		if ferr != nil {
 			b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`)
 		}
 	}
