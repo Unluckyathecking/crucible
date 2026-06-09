@@ -585,8 +585,8 @@ func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 	}
 }
 
-// TestMiddleware_ErrorEnvelope verifies acceptance criterion 8:
-// error envelopes have the stable shape (code + message + retryable).
+// TestMiddleware_ErrorEnvelope verifies that idempotency error responses
+// carry all four canonical fields: code, message, retryable, and request_id.
 func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	pool := newTestPool(t)
 	if err := db.Apply(context.Background(), pool); err != nil {
