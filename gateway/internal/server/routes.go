@@ -238,15 +238,15 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				metricCode = "unknown"
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
-			// In full mode, pass the worker's error through verbatim (including empty Code)
-			// to preserve byte-identical behavior with the pre-refactor writeJSONError.
-			// In sanitized mode, always return WORKER_UNREACHABLE regardless of the
-			// worker's error code — the customer-facing contract must not change.
+			// Sanitized mode always returns WORKER_UNREACHABLE — the customer-facing
+			// contract must not change regardless of what the worker sends.
+			// Full mode passes the worker's error verbatim (including empty Code) to
+			// preserve byte-identical behavior with the pre-refactor writeJSONError.
+			errCode, errMsg, errRetryable := apierror.WORKER_UNREACHABLE, "worker unavailable", true
 			if errorExposure == "full" {
-				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
-			} else {
-				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
+				errCode, errMsg, errRetryable = resp.Error.Code, resp.Error.Message, resp.Error.Retryable
 			}
+			apierror.Write(w, rid, http.StatusBadGateway, errCode, errMsg, errRetryable)
 			return
 		}
 
