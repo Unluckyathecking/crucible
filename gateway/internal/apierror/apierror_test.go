@@ -38,6 +38,19 @@ func TestWrite_StatusAndHeaders(t *testing.T) {
 			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
 				t.Errorf("Cache-Control = %q, want no-store", cc)
 			}
+			var got struct {
+				Error apierror.Error `json:"error"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Errorf("body is not valid JSON: %v", err)
+			} else {
+				if got.Error.Code != tt.code {
+					t.Errorf("error.code = %q, want %q", got.Error.Code, tt.code)
+				}
+				if got.Error.Retryable != tt.retryable {
+					t.Errorf("error.retryable = %v, want %v", got.Error.Retryable, tt.retryable)
+				}
+			}
 		})
 	}
 }

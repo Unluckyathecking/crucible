@@ -52,15 +52,19 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		},
 	})
 	if err != nil {
-		// Only reachable if Error gains a field whose type implements json.Marshaler
-		// and returns an error. Guard here so the response is never silently empty.
-		// requestID may be a user-supplied X-Request-ID header value; escape it
-		// via json.Marshal rather than embedding it verbatim to prevent JSON injection.
-		ridJSON, ridErr := json.Marshal(requestID)
-		if ridErr != nil {
-			ridJSON = []byte(`""`)
+		// Unreachable: all Error fields are plain string/bool. Guard here so a body
+		// is always emitted if Error ever gains a failing json.Marshaler field.
+		// Use an anonymous struct (not Error) to bypass such a field, so requestID
+		// is still properly escaped by json.Marshal rather than via concatenation.
+		type fallback struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
 		}
-		b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":` + string(ridJSON) + `}}`)
+		b, _ = json.Marshal(struct {
+			Error fallback `json:"error"`
+		}{Error: fallback{Code: INTERNAL, Message: "internal error", RequestID: requestID}})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
