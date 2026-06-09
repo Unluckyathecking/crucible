@@ -30,9 +30,9 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			remaining, err := bucket.Allow(r.Context(), key.Customer.ID.String(), limit)
 			// Capture once after Allow returns so both 429 and success paths use the
 			// same instant for RateLimit-Reset — eliminates any split-millisecond drift
-			// between the two branches.
-			// windowSeconds is defined in bucket.go (const windowSeconds = 60).
-			resetAt := time.Now().Add(time.Duration(windowSeconds) * time.Second)
+			// between the two branches. time.Minute matches the 60 s sliding window
+			// used by the Lua script in bucket.go.
+			resetAt := time.Now().Add(time.Minute)
 			// Allow returns only nil or ErrLimited; errors.Is(nil, ErrLimited) is false.
 			if errors.Is(err, ErrLimited) {
 				observability.RateLimitedTotal.Inc()
@@ -40,7 +40,8 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
+				// Retry-After in seconds; must equal the sliding-window duration above.
+				w.Header().Set("Retry-After", strconv.Itoa(int(time.Minute.Seconds())))
 				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return
