@@ -228,9 +228,9 @@ func invokeOperation(operationID, summary string) *Operation {
 // Both slashes and hyphens are replaced with _ so the result is a valid Go/TS identifier
 // for client SDK codegen (gen-clients.sh splits on _ to produce CamelCase names).
 func OperationIDFromPath(path string) string {
-	// TrimLeft removes ALL leading slashes (not just one), so //path → path rather
-	// than /path → invoke__path with a leading double-underscore.
-	s := strings.TrimLeft(path, "/")
+	// path[1:] is safe: validateRouteDescriptor guarantees len(path) >= 2
+	// (starts with / and has at least one segment after it).
+	s := path[1:]
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "-", "_")
 	return "invoke_" + s
@@ -242,7 +242,9 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	if rt.Path == "" || rt.Path[0] != '/' {
 		panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
 	}
-	if len(rt.Path) == 1 {
+	if rt.Path == "/" {
+		// "/" is the only 1-character path that passes the rt.Path[0]=='/' check above.
+		// It would mount at /v1, colliding with the /v1 route group itself.
 		panic("openapi: RouteDescriptor.Path must have at least one segment after /: " + rt.Path)
 	}
 	if rt.Path[len(rt.Path)-1] == '/' {
