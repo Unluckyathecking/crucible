@@ -1,5 +1,5 @@
 // Package apierror provides the canonical JSON error-response envelope for the Crucible gateway.
-// Every handler emits errors through Write; no ad-hoc JSON literals elsewhere.
+// Handlers should emit errors through Write to ensure a consistent envelope shape.
 package apierror
 
 import (
@@ -42,9 +42,11 @@ type envelope struct {
 // Tests may replace it to exercise the defensive fallback path.
 var marshalJSON = json.Marshal
 
-// Write sets Content-Type: application/json and Cache-Control: no-store, writes
-// status, and encodes the standard error envelope. requestID is passed as a plain
-// string by each call site so this package needs no context or middleware import.
+// Write unconditionally sets Content-Type: application/json and Cache-Control: no-store
+// (overriding any pre-existing values for those two headers), writes status, and
+// encodes the standard error envelope. All other response headers already set by the
+// caller are not modified. requestID is passed as a plain string by each call site so
+// this package needs no context or middleware import.
 // Uses json.Marshal (not json.Encoder) so the body has no trailing newline.
 // Marshal and fallback both run before WriteHeader so a body is always available
 // when the status is committed; callers never see a headers-only response.

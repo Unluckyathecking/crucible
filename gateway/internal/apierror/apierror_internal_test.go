@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-// TestWrite_DoesNotClobberPreSetHeaders verifies that Write only sets Content-Type
-// and Cache-Control and leaves any headers already on the ResponseWriter untouched.
-// In practice this protects the Retry-After header written by ratelimit.Middleware
-// immediately before it calls Write.
-func TestWrite_DoesNotClobberPreSetHeaders(t *testing.T) {
+// TestWrite_DoesNotClobberOtherResponseHeaders verifies that Write's unconditional
+// setting of Content-Type and Cache-Control does not disturb any other headers the
+// caller has already set. In practice this protects the Retry-After and X-RateLimit-*
+// headers written by ratelimit.Middleware immediately before it calls Write.
+// Write takes ownership of Content-Type and Cache-Control only.
+func TestWrite_DoesNotClobberOtherResponseHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	w.Header().Set("Retry-After", "60")
 	w.Header().Set("X-Custom", "preserved")
@@ -20,10 +21,10 @@ func TestWrite_DoesNotClobberPreSetHeaders(t *testing.T) {
 	Write(w, "rid", http.StatusTooManyRequests, RATE_LIMITED, "rate limited", true)
 
 	if got := w.Header().Get("Retry-After"); got != "60" {
-		t.Errorf("Retry-After = %q after Write, want %q; Write must not clobber pre-set headers", got, "60")
+		t.Errorf("Retry-After = %q after Write, want %q; Write must not touch non-owned headers", got, "60")
 	}
 	if got := w.Header().Get("X-Custom"); got != "preserved" {
-		t.Errorf("X-Custom = %q after Write, want %q; Write must not clobber pre-set headers", got, "preserved")
+		t.Errorf("X-Custom = %q after Write, want %q; Write must not touch non-owned headers", got, "preserved")
 	}
 	if got := w.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)

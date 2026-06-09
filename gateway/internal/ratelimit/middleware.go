@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
@@ -40,7 +39,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
+				w.Header().Set("Retry-After", "60")
 				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return

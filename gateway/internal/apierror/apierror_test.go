@@ -78,17 +78,41 @@ func TestWrite_EnvelopeShape(t *testing.T) {
 
 func TestWrite_AllFieldsPresent(t *testing.T) {
 	w := httptest.NewRecorder()
-	apierror.Write(w, "", http.StatusInternalServerError, apierror.INTERNAL, "err", false)
+	apierror.Write(w, "req-456", http.StatusInternalServerError, apierror.INTERNAL, "err", false)
 
-	var raw map[string]map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	errObj := raw["error"]
-	for _, field := range []string{"code", "message", "retryable", "request_id"} {
-		if _, ok := errObj[field]; !ok {
-			t.Errorf("field %q missing from error object", field)
-		}
+	if len(top) != 1 {
+		t.Fatalf("top-level keys = %d, want 1", len(top))
+	}
+	errRaw, ok := top["error"]
+	if !ok {
+		t.Fatal("missing top-level 'error' key")
+	}
+	var obj struct {
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		Retryable bool   `json:"retryable"`
+		RequestID string `json:"request_id"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(errRaw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("error object decode failed or has unknown field: %v", err)
+	}
+	if obj.Code != apierror.INTERNAL {
+		t.Errorf("code = %q, want %q", obj.Code, apierror.INTERNAL)
+	}
+	if obj.Message != "err" {
+		t.Errorf("message = %q, want %q", obj.Message, "err")
+	}
+	if obj.Retryable != false {
+		t.Errorf("retryable = %v, want false", obj.Retryable)
+	}
+	if obj.RequestID != "req-456" {
+		t.Errorf("request_id = %q, want %q", obj.RequestID, "req-456")
 	}
 }
 
