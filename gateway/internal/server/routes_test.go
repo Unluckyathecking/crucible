@@ -1080,7 +1080,7 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		if !ok || item.Post == nil {
 			continue // already reported above
 		}
-		wantOpID := "invoke_" + strings.ReplaceAll(strings.TrimPrefix(rt.Path, "/"), "/", "_")
+		wantOpID := openapi.OperationIDFromPath(rt.Path)
 		if item.Post.OperationID != wantOpID {
 			t.Errorf("path %s: openapi operationId = %q, want %q", fullPath, item.Post.OperationID, wantOpID)
 		}

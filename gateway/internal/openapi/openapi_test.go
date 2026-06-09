@@ -10,24 +10,23 @@ import (
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
-	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 )
 
-// productionRoutes is the canonical V1Routes from the server package.
-// openapi_test is an external test package (package openapi_test, not openapi), so
-// importing server (which imports openapi) does not create an import cycle.
-// Using the production value prevents testRoutes from drifting out of sync.
-var productionRoutes = server.V1Routes
+// testRoutes is a fixed set for unit-testing the OpenAPI builder.
+// Production sync is enforced by TestV1RoutesDriftGuard in gateway/internal/server/routes_test.go.
+var testRoutes = []openapi.RouteDescriptor{
+	{Path: "/echo", Operation: "echo", Summary: "Invoke echo worker operation (authenticated)"},
+}
 
 func TestBuild_Version(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	if doc.OpenAPI != "3.1.0" {
 		t.Errorf("openapi = %q; want 3.1.0", doc.OpenAPI)
 	}
 }
 
 func TestBuild_RequiredPaths(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
@@ -36,7 +35,7 @@ func TestBuild_RequiredPaths(t *testing.T) {
 }
 
 func TestBuild_SecurityScheme(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
 	if !ok {
 		t.Fatal("components.securitySchemes missing ApiKeyAuth")
@@ -56,7 +55,7 @@ func TestBuild_SecurityScheme(t *testing.T) {
 }
 
 func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	if _, ok := doc.Components.Schemas["Error"]; !ok {
 		t.Fatal("components.schemas missing Error")
 	}
@@ -64,7 +63,7 @@ func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
 
 func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	const wantRef = "#/components/schemas/Error"
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	echo, ok := doc.Paths["/v1/echo"]
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -97,7 +96,7 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 }
 
 func TestBuild_InvokeRouteSecured(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	echo := doc.Paths["/v1/echo"]
 	if echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -111,7 +110,7 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 }
 
 func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
-	doc := openapi.Build(productionRoutes)
+	doc := openapi.Build(testRoutes)
 	unauthenticated := []struct {
 		path   string
 		method string
@@ -225,7 +224,7 @@ func TestHandler_Response(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 
-	openapi.Handler(productionRoutes)(w, req)
+	openapi.Handler(testRoutes)(w, req)
 
 	res := w.Result()
 
@@ -274,7 +273,7 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 		wg       sync.WaitGroup
 		failures atomic.Int32
 	)
-	handler := openapi.Handler(productionRoutes)
+	handler := openapi.Handler(testRoutes)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
@@ -295,10 +294,10 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 
 func TestHandler_DefensiveCopy(t *testing.T) {
 	// Verify Handler does not race if the caller mutates the slice after calling Handler.
-	// Make a copy of productionRoutes and mutate it after Handler() returns.
-	// The handler must still serve a valid document.
-	routes := make([]openapi.RouteDescriptor, len(productionRoutes))
-	copy(routes, productionRoutes)
+	// Use a dedicated slice so this test is self-contained and never panics on index 0.
+	routes := []openapi.RouteDescriptor{
+		{Path: "/echo", Operation: "echo", Summary: "Echo"},
+	}
 
 	handler := openapi.Handler(routes)
 

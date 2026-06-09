@@ -224,6 +224,23 @@ func invokeOperation(operationID, summary string) *Operation {
 	}
 }
 
+// OperationIDFromPath derives the OpenAPI operationId for a per-product /v1 invoke route.
+// The path must begin with /; interior slashes are replaced with _ so the result is a valid identifier.
+func OperationIDFromPath(path string) string {
+	return "invoke_" + strings.ReplaceAll(strings.TrimPrefix(path, "/"), "/", "_")
+}
+
+// validateRouteDescriptor panics on invalid RouteDescriptor fields.
+// Panics surface at program startup (route registration), not at HTTP request time.
+func validateRouteDescriptor(rt RouteDescriptor) {
+	if rt.Path == "" || rt.Path[0] != '/' {
+		panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
+	}
+	if rt.Operation == "" {
+		panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
+	}
+}
+
 // Build constructs the gateway's OpenAPI 3.1 document from the given invoke route descriptors.
 // It is a pure function with no I/O; safe to call multiple times.
 func Build(invokeRoutes []RouteDescriptor) Document {
@@ -304,14 +321,12 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 	}
 
 	for _, rt := range invokeRoutes {
-		if rt.Path == "" || rt.Path[0] != '/' {
-			panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
+		validateRouteDescriptor(rt)
+		key := "/v1" + rt.Path
+		if _, exists := paths[key]; exists {
+			panic("openapi: duplicate RouteDescriptor.Path: " + rt.Path)
 		}
-		if rt.Operation == "" {
-			panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
-		}
-		opID := "invoke_" + strings.ReplaceAll(strings.TrimPrefix(rt.Path, "/"), "/", "_")
-		paths["/v1"+rt.Path] = PathItem{Post: invokeOperation(opID, rt.Summary)}
+		paths[key] = PathItem{Post: invokeOperation(OperationIDFromPath(rt.Path), rt.Summary)}
 	}
 
 	return Document{
