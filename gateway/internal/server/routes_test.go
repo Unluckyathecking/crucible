@@ -1004,8 +1004,8 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 
 func TestInvokeFullModeEmptyWorkerCodeFallback(t *testing.T) {
 	// WORKER_ERROR_EXPOSURE=full with an empty error.code from the worker must
-	// substitute WORKER_BAD_RESPONSE. An empty code is not correlatable; UNKNOWN
-	// is reserved for Prometheus metric labels and must never reach the customer.
+	// substitute WORKER_BAD_RESPONSE so customers never receive "code":"". An
+	// empty code is not correlatable; UNKNOWN is reserved for Prometheus labels.
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1023,7 +1023,9 @@ func TestInvokeFullModeEmptyWorkerCodeFallback(t *testing.T) {
 	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "full", "test")
 
+	const rid = "test-rid-empty-code-fallback"
 	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -1031,19 +1033,35 @@ func TestInvokeFullModeEmptyWorkerCodeFallback(t *testing.T) {
 		t.Fatalf("status = %d, want 502", w.Code)
 	}
 
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode body: %v", err)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+		t.Fatalf("decode envelope: %v", err)
 	}
-	errObj, ok := body["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error object, got %T", body["error"])
+	if len(top) != 1 {
+		t.Errorf("envelope has %d top-level keys, want 1", len(top))
 	}
-	if errObj["code"] != apierror.WORKER_BAD_RESPONSE {
-		t.Errorf("error.code = %q, want %q", errObj["code"], apierror.WORKER_BAD_RESPONSE)
+	var obj struct {
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		Retryable bool   `json:"retryable"`
+		RequestID string `json:"request_id"`
 	}
-	if errObj["message"] == "" {
+	dec := json.NewDecoder(bytes.NewReader(top["error"]))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("decode error object: %v", err)
+	}
+	if obj.Code != apierror.WORKER_BAD_RESPONSE {
+		t.Errorf("error.code = %q, want %q", obj.Code, apierror.WORKER_BAD_RESPONSE)
+	}
+	if obj.Message == "" {
 		t.Error("error.message must not be empty")
+	}
+	if obj.Retryable {
+		t.Errorf("error.retryable = true, want false")
+	}
+	if obj.RequestID != rid {
+		t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
 	}
 }
 
