@@ -267,8 +267,8 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		}
 
 		// Record usage on successful (non-error) responses. Best-effort; do not fail the customer on write error.
-		// Both guards are needed: key is nil in tests without auth; recorder is nil in tests without a recorder.
-		if key != nil && recorder != nil {
+		// key is nil in tests that bypass auth.Middleware; skip customer fields safely.
+		if key != nil {
 			if err := recorder.Record(r.Context(), key.Customer.ID, key.ID, operation, rid, resp.BillableUnits); err != nil {
 				log.Warn().Err(err).Str("request_id", rid).Msg("usage record failed")
 			}

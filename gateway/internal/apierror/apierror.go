@@ -31,7 +31,7 @@ type Error struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
-	RequestID string `json:"request_id"` // intentionally no omitempty; schema requires key present (may be "")
+	RequestID string `json:"request_id"` // always emitted (empty string is valid per schema)
 }
 
 type envelope struct {

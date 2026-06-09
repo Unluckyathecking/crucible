@@ -673,6 +673,74 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		h(w, req)
 		assertShape(t, w, http.StatusBadGateway, true, rid)
 	})
+
+	t.Run("full mode worker error passes through with four-field envelope", func(t *testing.T) {
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "INVALID_INPUT",
+					"message":   "field required",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "full", "echo")
+		const rid = "test-rid-routes-full"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadGateway, false, rid)
+		// In full mode the worker's own code must be forwarded, not WORKER_UNREACHABLE.
+		var top map[string]json.RawMessage
+		_ = json.Unmarshal(w.Body.Bytes(), &top)
+		var obj struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(top["error"], &obj)
+		if obj.Code != "INVALID_INPUT" {
+			t.Errorf("full mode: error.code = %q, want INVALID_INPUT", obj.Code)
+		}
+	})
+
+	t.Run("full mode empty worker error code returns WORKER_BAD_RESPONSE", func(t *testing.T) {
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "",
+					"message":   "malformed error from worker",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "full", "echo")
+		const rid = "test-rid-routes-bad-code"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		// Empty code is a contract violation; must return WORKER_BAD_RESPONSE (non-retryable).
+		assertShape(t, w, http.StatusBadGateway, false, rid)
+		var top map[string]json.RawMessage
+		_ = json.Unmarshal(w.Body.Bytes(), &top)
+		var obj struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(top["error"], &obj)
+		if obj.Code != "WORKER_BAD_RESPONSE" {
+			t.Errorf("empty worker code: error.code = %q, want WORKER_BAD_RESPONSE", obj.Code)
+		}
+	})
 }
 
 // --- Billing route tests ---

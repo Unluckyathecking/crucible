@@ -46,6 +46,7 @@ import (
 func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 			key := auth.FromContext(r.Context())
 			if key == nil {
 				next.ServeHTTP(w, r)
@@ -86,7 +87,6 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				// WriteHeader is silently ignored by http.ResponseWriter.
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
 				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
-				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false)
 				return
 			}

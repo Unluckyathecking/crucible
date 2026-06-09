@@ -1,3 +1,5 @@
+// Tests in this file MUST NOT run with t.Parallel() — they mutate the package-level
+// marshalJSON var and restore it via defer. Concurrent mutation would cause data races.
 package apierror
 
 import (
