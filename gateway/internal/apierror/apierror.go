@@ -56,7 +56,10 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		// and returns an error. Guard here so the response is never silently empty.
 		// requestID may be a user-supplied X-Request-ID header value; escape it
 		// via json.Marshal rather than embedding it verbatim to prevent JSON injection.
-		ridJSON, _ := json.Marshal(requestID)
+		ridJSON, ridErr := json.Marshal(requestID)
+		if ridErr != nil {
+			ridJSON = []byte(`""`)
+		}
 		b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":` + string(ridJSON) + `}}`)
 	}
 	w.Header().Set("Content-Type", "application/json")

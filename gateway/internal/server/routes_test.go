@@ -596,63 +596,83 @@ func searchSubstring(s, substr string) bool {
 }
 
 // TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
-// (top-level "error" key only, code/message/retryable/request_id present) on an
-// invoke error path. Replaces field-level coverage lost when writeJSONError was removed.
+// (top-level "error" key only, code/message/retryable/request_id present) on
+// two invoke error paths: retryable=false (400 bad JSON body) and
+// retryable=true (502 worker unreachable).
 func TestInvokeErrorEnvelopeShape(t *testing.T) {
-	worker := successWorker(1, "")
-	defer worker.Close()
+	assertShape := func(t *testing.T, w *httptest.ResponseRecorder, wantStatus int, wantRetryable bool, rid string) {
+		t.Helper()
+		if w.Code != wantStatus {
+			t.Fatalf("expected %d, got %d", wantStatus, w.Code)
+		}
+		if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", cc)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse envelope: %v", err)
+		}
+		if len(top) != 1 {
+			t.Errorf("envelope has %d top-level keys, want 1 (\"error\")", len(top))
+		}
+		errRaw, ok := top["error"]
+		if !ok {
+			t.Fatal("envelope missing top-level \"error\" key")
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(errRaw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&obj); err != nil {
+			t.Fatalf("error object has unexpected field or missing field: %v", err)
+		}
+		if obj.Code == "" {
+			t.Error("error.code must not be empty")
+		}
+		if obj.Message == "" {
+			t.Error("error.message must not be empty")
+		}
+		if obj.Retryable != wantRetryable {
+			t.Errorf("error.retryable = %v, want %v", obj.Retryable, wantRetryable)
+		}
+		if obj.RequestID != rid {
+			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
+		}
+	}
 
-	p := proxy.New(worker.URL, 5*time.Second, 0)
-	h := invoke(p, nil, "sanitized", "echo")
+	t.Run("retryable=false (400 bad JSON body)", func(t *testing.T) {
+		worker := successWorker(1, "")
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "sanitized", "echo")
 
-	const testRID = "test-rid-routes"
-	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
-	req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, testRID))
-	w := httptest.NewRecorder()
-	h(w, req)
+		const rid = "test-rid-routes-400"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadRequest, false, rid)
+	})
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
-		t.Errorf("Cache-Control = %q, want no-store", cc)
-	}
+	t.Run("retryable=true (502 worker unreachable)", func(t *testing.T) {
+		// Close the worker before the request so the proxy gets connection refused,
+		// which triggers WORKER_UNREACHABLE (retryable=true).
+		worker := successWorker(1, "")
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		worker.Close()
 
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
-		t.Fatalf("parse envelope: %v", err)
-	}
-	if len(top) != 1 {
-		t.Errorf("envelope has %d top-level keys, want 1 (\"error\")", len(top))
-	}
-	errRaw, ok := top["error"]
-	if !ok {
-		t.Fatal("envelope missing top-level \"error\" key")
-	}
-
-	var obj struct {
-		Code      string `json:"code"`
-		Message   string `json:"message"`
-		Retryable bool   `json:"retryable"`
-		RequestID string `json:"request_id"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(errRaw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&obj); err != nil {
-		t.Fatalf("error object has unexpected field or missing field: %v", err)
-	}
-	if obj.Code == "" {
-		t.Error("error.code must not be empty")
-	}
-	if obj.Message == "" {
-		t.Error("error.message must not be empty")
-	}
-	if obj.Retryable {
-		t.Error("error.retryable = true, want false for BAD_REQUEST")
-	}
-	if obj.RequestID != testRID {
-		t.Errorf("error.request_id = %q, want %q", obj.RequestID, testRID)
-	}
+		h := invoke(p, nil, "sanitized", "echo")
+		const rid = "test-rid-routes-502"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadGateway, true, rid)
+	})
 }
 
 // --- Billing route tests ---

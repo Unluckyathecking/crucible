@@ -120,6 +120,24 @@ func TestWrite_RequestIDPassthrough(t *testing.T) {
 	}
 }
 
+func TestWrite_RequestIDSpecialCharsAreEscaped(t *testing.T) {
+	// Exercises the normal (non-fallback) path: json.Marshal encodes the struct
+	// so JSON-special chars in requestID are escaped automatically.
+	rid := `req"with"quotes\and` + "\ttab"
+	w := httptest.NewRecorder()
+	apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "bad", false)
+
+	var got struct {
+		Error apierror.Error `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode failed (request_id not properly escaped?): %v", err)
+	}
+	if got.Error.RequestID != rid {
+		t.Errorf("request_id = %q, want %q", got.Error.RequestID, rid)
+	}
+}
+
 func TestWrite_NoTrailingNewline(t *testing.T) {
 	w := httptest.NewRecorder()
 	apierror.Write(w, "req-1", http.StatusBadRequest, apierror.BAD_REQUEST, "bad", false)
