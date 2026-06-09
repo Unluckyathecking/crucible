@@ -231,6 +231,9 @@ func OperationIDFromPath(path string) string {
 	if len(path) < 2 || path[0] != '/' {
 		panic("openapi: OperationIDFromPath: path must start with / and have at least one segment: " + path)
 	}
+	if path[len(path)-1] == '/' {
+		panic("openapi: OperationIDFromPath: path must not end with /: " + path)
+	}
 	s := path[1:]
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "-", "_")
@@ -411,8 +414,9 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 // Handler returns an http.HandlerFunc that serves the OpenAPI document built from invokeRoutes.
 // The document is built lazily on first request via sync.Once; no DB or Redis access.
 func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
-	// Defensive copy: the caller's backing array (e.g. V1Routes) may be appended
-	// to after startup, which would silently mutate the slice the closure captures.
+	// Defensive copy: the caller may mutate elements of the original slice after
+	// Handler returns. make+copy gives the closure its own backing array, isolating
+	// it from such mutations.
 	routes := make([]RouteDescriptor, len(invokeRoutes))
 	copy(routes, invokeRoutes)
 	var (

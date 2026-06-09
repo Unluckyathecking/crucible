@@ -350,11 +350,10 @@ func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Error("Build with underscore path did not panic")
-			return
+			t.Fatal("Build with underscore path did not panic")
 		}
 		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "underscore") {
-			t.Errorf("panic message does not mention underscore: %v", r)
+			t.Fatalf("panic message does not mention underscore: %v", r)
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
@@ -368,11 +367,10 @@ func TestBuild_RejectsEmptyPath(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Error("Build with empty path did not panic")
-			return
+			t.Fatal("Build with empty path did not panic")
 		}
 		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "must start with /") {
-			t.Errorf("panic message does not mention 'must start with /': %v", r)
+			t.Fatalf("panic message does not mention 'must start with /': %v", r)
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
@@ -386,11 +384,10 @@ func TestBuild_OperationIDUniqueness(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Error("Build with duplicate operationId paths did not panic")
-			return
+			t.Fatal("Build with duplicate operationId paths did not panic")
 		}
 		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "operationId") {
-			t.Errorf("panic message does not mention operationId: %v", r)
+			t.Fatalf("panic message does not mention operationId: %v", r)
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
