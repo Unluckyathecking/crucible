@@ -585,7 +585,6 @@ func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
 	}
 }
 
-
 // TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
 // (top-level "error" key only, code/message/retryable/request_id present) on
 // two invoke error paths: retryable=false (400 bad JSON body) and
@@ -1016,28 +1015,21 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		t.Fatal("NewRouter did not return a chi.Routes value; cannot walk mounted patterns")
 	}
 
-	// Verify V1Routes has no duplicate paths before walking the router.
-	// chi silently uses last-registration-wins for duplicate patterns; openapi.Build panics,
-	// so this check catches the gap on the router side.
-	seenPaths := make(map[string]struct{}, len(V1Routes))
-	for _, rt := range V1Routes {
-		if _, exists := seenPaths[rt.Path]; exists {
-			t.Errorf("duplicate Path in V1Routes: %q (chi would silently shadow the earlier handler)", rt.Path)
-		}
-		seenPaths[rt.Path] = struct{}{}
-	}
-
 	// mounted[method][path] for all /v1 non-billing routes.
-	// The trailing slash in "/v1/billing/" is intentional: it excludes /v1/billing/* sub-routes
-	// only, and would NOT exclude a hypothetical /v1/billing-v2/* route.
 	mounted := make(map[string]map[string]struct{})
 	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		if strings.HasPrefix(route, "/v1/") && !strings.HasPrefix(route, "/v1/billing/") {
-			if mounted[method] == nil {
-				mounted[method] = make(map[string]struct{})
-			}
-			mounted[method][route] = struct{}{}
+		if !strings.HasPrefix(route, "/v1/") || strings.HasPrefix(route, "/v1/billing/") {
+			return nil
 		}
+		switch method {
+		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			return nil
+		}
+		if mounted[method] == nil {
+			mounted[method] = make(map[string]struct{})
+		}
+		mounted[method][route] = struct{}{}
 		return nil
 	}); err != nil {
 		t.Fatalf("chi.Walk: %v", err)

@@ -240,6 +240,15 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	if rt.Path == "" || rt.Path[0] != '/' {
 		panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
 	}
+	if len(rt.Path) == 1 {
+		panic("openapi: RouteDescriptor.Path must have at least one segment after /: " + rt.Path)
+	}
+	if rt.Path[len(rt.Path)-1] == '/' {
+		panic("openapi: RouteDescriptor.Path must not end with /: " + rt.Path)
+	}
+	if strings.Contains(rt.Path, "//") {
+		panic("openapi: RouteDescriptor.Path must not contain empty segments: " + rt.Path)
+	}
 	if rt.Operation == "" {
 		panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
 	}

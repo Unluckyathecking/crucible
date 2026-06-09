@@ -302,19 +302,28 @@ func TestHandler_DefensiveCopy(t *testing.T) {
 
 	handler := openapi.Handler(routes)
 
-	// Simulate a caller mutation after Handler() returns.
+	// Trigger sync.Once with a first request before mutating the backing slice.
+	req1 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w1 := httptest.NewRecorder()
+	handler(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d; want 200", w1.Code)
+	}
+
+	// Mutate the caller's slice after the document has been built.
 	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
 
-	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w := httptest.NewRecorder()
-	handler(w, req)
+	// Second request must still serve the original (pre-mutation) document.
+	req2 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200", w.Code)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second request: status = %d; want 200", w2.Code)
 	}
 
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(w2.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	var paths map[string]json.RawMessage
