@@ -198,7 +198,7 @@ func Build() Document {
 								"code":       {Type: "string"},
 								"message":    {Type: "string"},
 								"retryable":  {Type: "boolean"},
-								"request_id": {Type: "string", Description: "Mirrors the X-Request-ID response header; use for support correlation."},
+								"request_id": {Type: "string", Description: "Mirrors the X-Request-ID response header; always present (may be empty string). Use for support correlation."},
 							},
 							Required: []string{"code", "message", "retryable", "request_id"},
 						},

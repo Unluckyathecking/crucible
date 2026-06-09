@@ -231,13 +231,16 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
 			// an empty Code would open an unlabelled code="" series. Mirrors the
 			// path=="unmatched" fallback used by the request middleware.
-			errCode := resp.Error.Code
-			if errCode == "" {
-				errCode = "unknown"
+			// metricCode is used only for the Prometheus label; the customer-facing
+			// response in full mode always receives the original resp.Error.Code to
+			// preserve the exact bytes the worker returned.
+			metricCode := resp.Error.Code
+			if metricCode == "" {
+				metricCode = "unknown"
 			}
-			observability.WorkerErrorsTotal.WithLabelValues(errCode).Inc()
+			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			if errorExposure == "full" {
-				apierror.Write(w, rid, http.StatusBadGateway, errCode, resp.Error.Message, resp.Error.Retryable)
+				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			}

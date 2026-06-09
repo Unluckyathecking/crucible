@@ -73,7 +73,12 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			Error fallback `json:"error"`
 		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		if ferr != nil {
-			b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`)
+			// marshalJSON is overridden to fail (test injection only). Call the real
+			// json.Marshal directly — it cannot fail for plain string/bool fields,
+			// and it preserves the caller's values including requestID.
+			b, _ = json.Marshal(struct {
+				Error fallback `json:"error"`
+			}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
