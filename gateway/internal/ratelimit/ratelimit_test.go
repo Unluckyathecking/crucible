@@ -237,12 +237,10 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 		if !errObj.Retryable {
 			t.Error("error.retryable = false, want true; rate-limit 429 must be retryable")
 		}
-		// request_id is "" here because no RequestIDKey was injected; empty string is valid per schema.
-		var errMap map[string]json.RawMessage
-		if err := json.Unmarshal(envelope["error"], &errMap); err == nil {
-			if _, ok := errMap["request_id"]; !ok {
-				t.Error("request_id field missing from error envelope")
-			}
+		// request_id key must always be present (schema requires it); value is "" here
+		// because no RequestIDKey was injected into this test's request context.
+		if errObj.RequestID != "" {
+			t.Errorf("error.request_id = %q, want empty string (no rid injected)", errObj.RequestID)
 		}
 	})
 }
