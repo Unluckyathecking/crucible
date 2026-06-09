@@ -38,7 +38,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			// between the two branches. time.Minute matches the 60 s sliding window
 			// used by the Lua script in bucket.go.
 			resetAt := time.Now().Add(time.Minute)
-			// Allow returns only nil or ErrLimited; errors.Is(nil, ErrLimited) is false.
+			// errors.Is handles wrapped errors correctly if Allow ever wraps ErrLimited.
 			if errors.Is(err, ErrLimited) {
 				observability.RateLimitedTotal.Inc()
 				// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
