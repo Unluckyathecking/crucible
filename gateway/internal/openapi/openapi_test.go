@@ -308,52 +308,38 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 
 func TestHandler_DefensiveCopy(t *testing.T) {
 	// Verify Handler copies the slice at construction time so that caller
-	// mutations after sync.Once fires cannot affect the served document.
+	// mutations between Handler() and the first request cannot affect the document.
 	routes := []openapi.RouteDescriptor{
 		{Path: "/echo", Operation: "echo", Summary: "Echo"},
 	}
 
 	handler := openapi.Handler(routes)
 
-	checkDoc := func(t *testing.T, w *httptest.ResponseRecorder) {
-		t.Helper()
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		var paths map[string]json.RawMessage
-		if err := json.Unmarshal(raw["paths"], &paths); err != nil {
-			t.Fatalf("decode paths: %v", err)
-		}
-		if _, ok := paths["/v1/mutated"]; ok {
-			t.Error("Handler served mutated route — defensive copy not working")
-		}
-		if _, ok := paths["/v1/echo"]; !ok {
-			t.Error("Handler lost original /v1/echo — defensive copy not working")
-		}
-	}
-
-	// First request triggers sync.Once and builds the document.
-	req1 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w1 := httptest.NewRecorder()
-	handler(w1, req1)
-	if w1.Code != http.StatusOK {
-		t.Fatalf("first request: status = %d; want 200", w1.Code)
-	}
-	checkDoc(t, w1)
-
-	// Mutate after sync.Once has fired: the built document must be isolated
-	// from the original slice because Handler copied it at construction time.
+	// Mutate BEFORE the first request: the copy made in Handler() must isolate
+	// the built document from the original slice.
 	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
 
-	// Second request uses the cached doc; mutation must not appear.
-	req2 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w2 := httptest.NewRecorder()
-	handler(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second request: status = %d; want 200", w2.Code)
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
 	}
-	checkDoc(t, w2)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var paths map[string]json.RawMessage
+	if err := json.Unmarshal(raw["paths"], &paths); err != nil {
+		t.Fatalf("decode paths: %v", err)
+	}
+	if _, ok := paths["/v1/mutated"]; ok {
+		t.Error("Handler served mutated route — defensive copy not working")
+	}
+	if _, ok := paths["/v1/echo"]; !ok {
+		t.Error("Handler lost original /v1/echo — defensive copy not working")
+	}
 }
 
 // TestBuild_RejectsUnderscoreInPath verifies that validateRouteDescriptor rejects
@@ -373,6 +359,24 @@ func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
 		{Path: "/my_path", Operation: "my_path", Summary: "Underscore path"},
+	})
+}
+
+// TestBuild_RejectsEmptyPath verifies that validateRouteDescriptor panics when
+// Path is the empty string.
+func TestBuild_RejectsEmptyPath(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Build with empty path did not panic")
+			return
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "must start with /") {
+			t.Errorf("panic message does not mention 'must start with /': %v", r)
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "", Operation: "empty", Summary: "Empty path"},
 	})
 }
 

@@ -1024,15 +1024,16 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 	router := NewRouter(d)
 	chiRoutes := mustChiRoutes(t, router)
 
-	// Verify V1Routes has no duplicate paths. chi silently uses last-registration-wins
-	// semantics; openapi.Build() panics on duplicates (caught below). This check
-	// produces a clear t.Error rather than a test-level panic.
+	// Verify V1Routes has no duplicate paths. NewRouter calls openapi.Handler(V1Routes)
+	// which calls openapi.Build(), and Build panics on duplicate full paths (/v1+Path).
+	// This check produces a clear t.Error rather than a test-level panic from Build.
 	seen := make(map[string]bool, len(V1Routes))
 	for _, rt := range V1Routes {
-		if seen[rt.Path] {
+		key := "/v1" + rt.Path
+		if seen[key] {
 			t.Errorf("duplicate Path in V1Routes: %q (chi would silently shadow the earlier handler)", rt.Path)
 		}
-		seen[rt.Path] = true
+		seen[key] = true
 	}
 
 	// mounted[method][path] for all /v1 non-billing routes.
