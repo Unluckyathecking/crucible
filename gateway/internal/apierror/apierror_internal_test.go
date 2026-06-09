@@ -8,6 +8,25 @@ import (
 	"testing"
 )
 
+// TestWrite_OverwritesContentTypeAndCacheControl documents that Write takes
+// unconditional ownership of Content-Type and Cache-Control. Any pre-existing
+// values for those two headers are replaced; this is intentional — error
+// responses must always be JSON and must never be cached.
+func TestWrite_OverwritesContentTypeAndCacheControl(t *testing.T) {
+	w := httptest.NewRecorder()
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "max-age=3600")
+
+	Write(w, "rid", http.StatusBadRequest, BAD_REQUEST, "bad", false)
+
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json; Write must override caller's value", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store; Write must override caller's value", got)
+	}
+}
+
 // TestWrite_DoesNotClobberOtherResponseHeaders verifies that Write's unconditional
 // setting of Content-Type and Cache-Control does not disturb any other headers the
 // caller has already set. In practice this protects the Retry-After and X-RateLimit-*

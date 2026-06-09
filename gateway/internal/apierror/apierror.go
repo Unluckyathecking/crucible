@@ -40,6 +40,7 @@ type envelope struct {
 
 // marshalJSON is the JSON serialisation function used by Write.
 // Tests may replace it to exercise the defensive fallback path.
+// NOT safe for t.Parallel() — mutates package-level state.
 var marshalJSON = json.Marshal
 
 // Write unconditionally sets Content-Type: application/json and Cache-Control: no-store
@@ -77,8 +78,9 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		if ferr != nil {
 			// Both marshalJSON calls failed (only reachable via test injection).
-			// fmt.Sprintf with %q escapes JSON-special characters and cannot itself
-			// fail, so b is always a non-nil, valid-JSON body preserving caller values.
+			// fmt.Sprintf with %q uses Go string quoting rules, which are a superset
+			// of JSON string escaping for the ASCII subset used by our error codes and
+			// messages. This path cannot itself fail, so b is always a valid-JSON body.
 			b = []byte(fmt.Sprintf(
 				`{"error":{"code":%q,"message":%q,"retryable":%t,"request_id":%q}}`,
 				code, message, retryable, requestID,

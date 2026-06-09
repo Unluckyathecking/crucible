@@ -233,17 +233,16 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
 			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
-			// an empty Code would open an unlabelled code="" series. Mirrors the
-			// path=="unmatched" fallback used by the request middleware.
-			// metricCode is used only for the Prometheus label; the customer-facing
-			// response in full mode always receives the original resp.Error.Code to
-			// preserve the exact bytes the worker returned.
+			// an empty Code would open an unlabelled code="" series.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
 				metricCode = unknownWorkerCode
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
-			if errorExposure == "full" {
+			// In full mode, pass the worker's error through verbatim — but only when Code
+			// is non-empty. An empty Code violates the apierror contract (codes are stable
+			// identifiers), so fall through to WORKER_UNREACHABLE on that path too.
+			if errorExposure == "full" && resp.Error.Code != "" {
 				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)

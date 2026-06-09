@@ -198,7 +198,7 @@ func Build() Document {
 								"code":       {Type: "string"},
 								"message":    {Type: "string"},
 								"retryable":  {Type: "boolean"},
-								"request_id": {Type: "string", Description: "X-Request-ID value for this request; present on all error responses. Non-empty when the request passed through the gateway RequestID middleware. Use for support correlation."},
+								"request_id": {Type: "string", Description: "X-Request-ID value for this request; present on all error responses. May be empty string when no request ID was generated. Use for support correlation."},
 							},
 							Required: []string{"code", "message", "retryable", "request_id"},
 						},
