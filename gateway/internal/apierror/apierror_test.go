@@ -188,6 +188,9 @@ func TestWrite_CodeConstantsUnique(t *testing.T) {
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
+		if c == "" {
+			t.Errorf("constant must not be empty string")
+		}
 		if seen[c] {
 			t.Errorf("duplicate constant value %q", c)
 		}

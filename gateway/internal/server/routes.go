@@ -232,18 +232,16 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
 			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
-			// an empty Code would open an unlabelled code="" series. Use WORKER_BAD_RESPONSE
-			// so the metric label matches the code the customer receives on this path.
+			// an empty Code would open an unlabelled code="" series.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
 				metricCode = apierror.WORKER_BAD_RESPONSE
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
-			// In full mode, pass the worker's error through verbatim — but only when Code
-			// is non-empty. An empty Code violates the apierror contract (codes are stable
-			// identifiers); treat it as a bad response rather than unreachable, since the
-			// worker did respond but returned a malformed error object.
-			if errorExposure == "full" && resp.Error.Code != "" {
+			// In full mode, pass the worker's error through verbatim (including empty Code)
+			// to preserve byte-identical behavior with the pre-refactor writeJSONError.
+			// In sanitized mode, substitute stable gateway codes so worker internals never leak.
+			if errorExposure == "full" {
 				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else if resp.Error.Code == "" {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker returned malformed error", false)

@@ -708,7 +708,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		}
 	})
 
-	t.Run("full mode empty worker error code returns WORKER_BAD_RESPONSE", func(t *testing.T) {
+	t.Run("full mode empty worker error code passes through verbatim", func(t *testing.T) {
+		// Full mode preserves byte-identical behavior with the pre-refactor writeJSONError:
+		// whatever the worker returns (including empty string) is forwarded unchanged.
 		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -729,16 +731,25 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
 		w := httptest.NewRecorder()
 		h(w, req)
-		// Empty code is a contract violation; must return WORKER_BAD_RESPONSE (non-retryable).
-		assertShape(t, w, http.StatusBadGateway, false, rid)
-		var top map[string]json.RawMessage
-		_ = json.Unmarshal(w.Body.Bytes(), &top)
-		var obj struct {
-			Code string `json:"code"`
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
 		}
-		_ = json.Unmarshal(top["error"], &obj)
-		if obj.Code != "WORKER_BAD_RESPONSE" {
-			t.Errorf("empty worker code: error.code = %q, want WORKER_BAD_RESPONSE", obj.Code)
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(top["error"], &obj); err != nil {
+			t.Fatalf("parse error object: %v", err)
+		}
+		if obj.Code != "" {
+			t.Errorf("full mode empty worker code: error.code = %q, want %q (verbatim)", obj.Code, "")
+		}
+		if obj.RequestID != rid {
+			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
 		}
 	})
 }
