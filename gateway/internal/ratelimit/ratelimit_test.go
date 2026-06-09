@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -212,6 +213,37 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 		checkRateLimitHeaders(t, rec.Header(), planLimit, 0)
+
+		// Verify the 429 body is the canonical four-field error envelope.
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("429 body not valid JSON: %v", err)
+		}
+		var errObj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(envelope["error"], &errObj); err != nil {
+			t.Fatalf("error object decode failed: %v", err)
+		}
+		if errObj.Code != "RATE_LIMITED" {
+			t.Errorf("error.code = %q, want RATE_LIMITED", errObj.Code)
+		}
+		if errObj.Message == "" {
+			t.Error("error.message must not be empty")
+		}
+		if !errObj.Retryable {
+			t.Error("error.retryable = false, want true; rate-limit 429 must be retryable")
+		}
+		// request_id is "" here because no RequestIDKey was injected; empty string is valid per schema.
+		var errMap map[string]json.RawMessage
+		if err := json.Unmarshal(envelope["error"], &errMap); err == nil {
+			if _, ok := errMap["request_id"]; !ok {
+				t.Error("request_id field missing from error envelope")
+			}
+		}
 	})
 }
 
