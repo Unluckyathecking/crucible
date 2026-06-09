@@ -605,6 +605,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		if w.Code != wantStatus {
 			t.Fatalf("expected %d, got %d", wantStatus, w.Code)
 		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
 		if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
 			t.Errorf("Cache-Control = %q, want no-store", cc)
 		}
