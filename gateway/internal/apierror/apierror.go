@@ -4,7 +4,6 @@ package apierror
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
@@ -78,18 +77,17 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		if ferr != nil {
 			// Both marshalJSON calls failed (only reachable via test injection).
-			// %q double-quotes each string and escapes backslash and double-quote.
-			// Error codes are ASCII identifiers; messages are ASCII prose — neither
-			// contains characters (e.g. U+0007 bell) where Go %q and JSON escaping
-			// diverge. This path cannot itself fail, so b is always valid JSON.
-			b = []byte(fmt.Sprintf(
-				`{"error":{"code":%q,"message":%q,"retryable":%t,"request_id":%q}}`,
-				code, message, retryable, requestID,
-			))
+			// Use the real json.Marshal directly — it bypasses the injected marshalJSON
+			// and cannot fail for a struct with only string/bool fields.
+			b, _ = json.Marshal(struct {
+				Error fallback `json:"error"`
+			}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_, _ = w.Write(b) // client disconnects are unrecoverable; ignore write errors
+	if _, werr := w.Write(b); werr != nil {
+		return // client disconnected; net/http handles connection cleanup
+	}
 }

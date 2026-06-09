@@ -172,8 +172,8 @@ func TestWrite_DoubleFallbackPreservesCallerValues(t *testing.T) {
 	orig := marshalJSON
 	defer func() { marshalJSON = orig }()
 
-	// Both marshalJSON calls fail; Write falls through to fmt.Sprintf with %q,
-	// which cannot fail and preserves all caller values including requestID.
+	// Both marshalJSON calls fail; Write falls through to real json.Marshal on the
+	// fallback struct, which bypasses the injected marshalJSON and cannot fail.
 	marshalJSON = func(v any) ([]byte, error) {
 		return nil, errors.New("forced marshal failure")
 	}

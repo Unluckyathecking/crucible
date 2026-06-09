@@ -17,6 +17,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
@@ -197,7 +198,12 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 			}
 		}
 
-		ctx := auth.WithTestKey(context.Background(), key)
+		const testRID = "test-rid-ratelimit-429"
+		ctx := context.WithValue(
+			auth.WithTestKey(context.Background(), key),
+			mwpkg.RequestIDKey,
+			testRID,
+		)
 		req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
 		rec := httptest.NewRecorder()
 
@@ -237,10 +243,8 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 		if !errObj.Retryable {
 			t.Error("error.retryable = false, want true; rate-limit 429 must be retryable")
 		}
-		// request_id key must always be present (schema requires it); value is "" here
-		// because no RequestIDKey was injected into this test's request context.
-		if errObj.RequestID != "" {
-			t.Errorf("error.request_id = %q, want empty string (no rid injected)", errObj.RequestID)
+		if errObj.RequestID != testRID {
+			t.Errorf("error.request_id = %q, want %q", errObj.RequestID, testRID)
 		}
 	})
 }
