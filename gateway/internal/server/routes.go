@@ -235,16 +235,15 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// an empty Code would open an unlabelled code="" series.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
-				metricCode = apierror.WORKER_BAD_RESPONSE
+				metricCode = "unknown"
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			// In full mode, pass the worker's error through verbatim (including empty Code)
 			// to preserve byte-identical behavior with the pre-refactor writeJSONError.
-			// In sanitized mode, substitute stable gateway codes so worker internals never leak.
+			// In sanitized mode, always return WORKER_UNREACHABLE regardless of the
+			// worker's error code — the customer-facing contract must not change.
 			if errorExposure == "full" {
 				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
-			} else if resp.Error.Code == "" {
-				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker returned malformed error", false)
 			} else {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			}
@@ -350,7 +349,7 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 			return
 		}
 		if stripeCustomerID == "" {
-			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "no Stripe customer record for this account", false)
+			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "complete checkout first", false)
 			return
 		}
 

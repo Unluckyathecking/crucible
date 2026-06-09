@@ -753,10 +753,11 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		}
 	})
 
-	t.Run("sanitized mode empty worker error code returns WORKER_BAD_RESPONSE", func(t *testing.T) {
-		// In sanitized mode a worker that returns an empty error code (buggy non-SDK
-		// worker) must receive WORKER_BAD_RESPONSE — not the empty string that full
-		// mode passes verbatim. This verifies the customer-facing code on this path.
+	t.Run("sanitized mode empty worker error code still returns WORKER_UNREACHABLE", func(t *testing.T) {
+		// Sanitized mode must return WORKER_UNREACHABLE for ALL worker errors — including
+		// the edge case where the worker returns an empty error code. The customer-facing
+		// contract (code=WORKER_UNREACHABLE, retryable=true) must not vary by whether the
+		// worker's code field is empty or non-empty.
 		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -795,14 +796,14 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		if err := dec.Decode(&obj); err != nil {
 			t.Fatalf("parse error object: %v", err)
 		}
-		if obj.Code != "WORKER_BAD_RESPONSE" {
-			t.Errorf("sanitized empty code: error.code = %q, want WORKER_BAD_RESPONSE", obj.Code)
+		if obj.Code != "WORKER_UNREACHABLE" {
+			t.Errorf("sanitized empty code: error.code = %q, want WORKER_UNREACHABLE", obj.Code)
 		}
-		if obj.Message != "worker returned malformed error" {
-			t.Errorf("sanitized empty code: error.message = %q, want %q", obj.Message, "worker returned malformed error")
+		if obj.Message != "worker unavailable" {
+			t.Errorf("sanitized empty code: error.message = %q, want %q", obj.Message, "worker unavailable")
 		}
-		if obj.Retryable {
-			t.Error("sanitized empty code: error.retryable = true, want false")
+		if !obj.Retryable {
+			t.Error("sanitized empty code: error.retryable = false, want true (WORKER_UNREACHABLE is retryable)")
 		}
 		if obj.RequestID != rid {
 			t.Errorf("sanitized empty code: error.request_id = %q, want %q", obj.RequestID, rid)
