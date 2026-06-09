@@ -1,3 +1,5 @@
+// Package server wires the HTTP router and per-route handlers for the Crucible gateway.
+// V1Routes (this file) is the single ADAPT edit point for per-product /v1 invoke endpoints.
 package server
 
 import "github.com/Unluckyathecking/crucible/gateway/internal/openapi"

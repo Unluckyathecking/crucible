@@ -1005,9 +1005,10 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 }
 
 // TestV1RoutesDriftGuard is the drift guard: it builds the real router, walks its
-// mounted /v1 POST patterns (excluding /v1/billing/*), and asserts that set equals
-// the /v1 paths produced by openapi.Build(V1Routes). The test fails if someone adds
-// a route directly to routes.go without V1Routes, or hard-codes a path in Build().
+// mounted /v1 patterns (excluding /v1/billing/*), and asserts that the POST set
+// equals the /v1 paths produced by openapi.Build(V1Routes). Also asserts:
+//   - all per-product /v1 routes are POST-only (spec invariant)
+//   - each route's OpenAPI operationId matches the expected "invoke_<segment>" pattern
 func TestV1RoutesDriftGuard(t *testing.T) {
 	healthy := &mockChecker{}
 	d := &Deps{
@@ -1024,37 +1025,64 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		t.Fatal("NewRouter did not return a chi.Routes value; cannot walk mounted patterns")
 	}
 
-	mounted := make(map[string]struct{})
+	// mounted[method][path] for all /v1 non-billing routes.
+	mounted := make(map[string]map[string]struct{})
 	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		if method == http.MethodPost &&
-			strings.HasPrefix(route, "/v1/") &&
-			!strings.HasPrefix(route, "/v1/billing/") {
-			mounted[route] = struct{}{}
+		if strings.HasPrefix(route, "/v1/") && !strings.HasPrefix(route, "/v1/billing/") {
+			if mounted[method] == nil {
+				mounted[method] = make(map[string]struct{})
+			}
+			mounted[method][route] = struct{}{}
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("chi.Walk: %v", err)
 	}
 
+	// All per-product /v1 routes must be POST-only — the spec forbids GET/PUT/DELETE here.
+	for method, paths := range mounted {
+		if method != http.MethodPost {
+			for path := range paths {
+				t.Errorf("non-POST /v1 route found: %s %s (per-product routes must be POST)", method, path)
+			}
+		}
+	}
+
 	// Collect /v1/* POST paths from the OpenAPI document (excluding /v1/billing/*).
 	doc := openapi.Build(V1Routes)
 	documented := make(map[string]struct{})
 	for path, item := range doc.Paths {
-		if strings.HasPrefix(path, "/v1/") &&
-			!strings.HasPrefix(path, "/v1/billing/") &&
-			item.Post != nil {
+		if strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/v1/billing/") {
+			if item.Post == nil {
+				t.Errorf("openapi path %s has no POST operation (per-product routes must have POST)", path)
+				continue
+			}
 			documented[path] = struct{}{}
 		}
 	}
 
-	for path := range mounted {
+	mountedPOST := mounted[http.MethodPost]
+	for path := range mountedPOST {
 		if _, ok := documented[path]; !ok {
 			t.Errorf("route %s is mounted in router but absent from openapi.Build(V1Routes)", path)
 		}
 	}
 	for path := range documented {
-		if _, ok := mounted[path]; !ok {
+		if _, ok := mountedPOST[path]; !ok {
 			t.Errorf("path %s is in openapi.Build(V1Routes) but not mounted in router", path)
+		}
+	}
+
+	// Verify the operationId in the OpenAPI document matches "invoke_<path-segment>".
+	for _, rt := range V1Routes {
+		fullPath := "/v1" + rt.Path
+		item, ok := doc.Paths[fullPath]
+		if !ok || item.Post == nil {
+			continue // already reported above
+		}
+		wantOpID := "invoke_" + strings.ReplaceAll(strings.TrimPrefix(rt.Path, "/"), "/", "_")
+		if item.Post.OperationID != wantOpID {
+			t.Errorf("path %s: openapi operationId = %q, want %q", fullPath, item.Post.OperationID, wantOpID)
 		}
 	}
 }

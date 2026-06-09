@@ -10,23 +10,24 @@ import (
 	"testing"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 )
 
-// testRoutes mirrors the current V1Routes used in production (server/routes_table.go).
-// Tests use this to exercise openapi.Build() and openapi.Handler() end-to-end.
-var testRoutes = []openapi.RouteDescriptor{
-	{Path: "/echo", Operation: "echo", Summary: "Invoke echo worker operation (authenticated)"},
-}
+// productionRoutes is the canonical V1Routes from the server package.
+// openapi_test is an external test package (package openapi_test, not openapi), so
+// importing server (which imports openapi) does not create an import cycle.
+// Using the production value prevents testRoutes from drifting out of sync.
+var productionRoutes = server.V1Routes
 
 func TestBuild_Version(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	if doc.OpenAPI != "3.1.0" {
 		t.Errorf("openapi = %q; want 3.1.0", doc.OpenAPI)
 	}
 }
 
 func TestBuild_RequiredPaths(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
@@ -35,7 +36,7 @@ func TestBuild_RequiredPaths(t *testing.T) {
 }
 
 func TestBuild_SecurityScheme(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
 	if !ok {
 		t.Fatal("components.securitySchemes missing ApiKeyAuth")
@@ -55,7 +56,7 @@ func TestBuild_SecurityScheme(t *testing.T) {
 }
 
 func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	if _, ok := doc.Components.Schemas["Error"]; !ok {
 		t.Fatal("components.schemas missing Error")
 	}
@@ -63,7 +64,7 @@ func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
 
 func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	const wantRef = "#/components/schemas/Error"
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	echo, ok := doc.Paths["/v1/echo"]
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -96,7 +97,7 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 }
 
 func TestBuild_InvokeRouteSecured(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	echo := doc.Paths["/v1/echo"]
 	if echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -110,7 +111,7 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 }
 
 func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
-	doc := openapi.Build(testRoutes)
+	doc := openapi.Build(productionRoutes)
 	unauthenticated := []struct {
 		path   string
 		method string
@@ -143,35 +144,80 @@ func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
 	}
 }
 
-func TestBuild_NoHardcodedV1EchoPath(t *testing.T) {
-	// Acceptance: no hard-coded Paths["/v1/echo"] literal remains in Build().
-	// Verify that Build() with an empty route list produces no /v1/* paths at all.
-	doc := openapi.Build([]openapi.RouteDescriptor{})
-	for path := range doc.Paths {
-		if strings.HasPrefix(path, "/v1/") {
-			t.Errorf("Build() with empty routes produced unexpected /v1 path %q", path)
-		}
+func TestBuild_InvokeRouteDerived(t *testing.T) {
+	// Verify Build() derives /v1/* paths from descriptors (no hard-coded literals).
+	cases := []struct {
+		name          string
+		routes        []openapi.RouteDescriptor
+		wantPaths     []string
+		wantAbsent    []string
+		wantOpIDs     map[string]string // path → operationId
+	}{
+		{
+			name:       "empty routes produces no /v1 paths",
+			routes:     []openapi.RouteDescriptor{},
+			wantAbsent: []string{"/v1/echo"},
+		},
+		{
+			name: "single route",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/custom-op", Operation: "custom-op", Summary: "Custom operation"},
+			},
+			wantPaths:  []string{"/v1/custom-op"},
+			wantAbsent: []string{"/v1/echo"},
+			wantOpIDs:  map[string]string{"/v1/custom-op": "invoke_custom-op"},
+		},
+		{
+			name: "hyphenated path like validate-vat",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/validate-vat", Operation: "validate-vat", Summary: "Validate VAT number"},
+			},
+			wantPaths: []string{"/v1/validate-vat"},
+			wantOpIDs: map[string]string{"/v1/validate-vat": "invoke_validate-vat"},
+		},
+		{
+			name: "multiple routes",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/echo", Operation: "echo", Summary: "Echo"},
+				{Path: "/summarise", Operation: "summarise", Summary: "Summarise"},
+			},
+			wantPaths: []string{"/v1/echo", "/v1/summarise"},
+			wantOpIDs: map[string]string{
+				"/v1/echo":      "invoke_echo",
+				"/v1/summarise": "invoke_summarise",
+			},
+		},
 	}
-}
 
-func TestBuild_InvokeRouteDerivedFromDescriptor(t *testing.T) {
-	// Verify that Build() derives /v1/* paths from the descriptor, not hard-coded literals.
-	routes := []openapi.RouteDescriptor{
-		{Path: "/custom-op", Operation: "custom-op", Summary: "Custom operation"},
-	}
-	doc := openapi.Build(routes)
-	item, ok := doc.Paths["/v1/custom-op"]
-	if !ok {
-		t.Fatal("Build() did not produce /v1/custom-op from descriptor")
-	}
-	if item.Post == nil {
-		t.Fatal("/v1/custom-op has no POST operation")
-	}
-	if item.Post.OperationID != "invoke_custom-op" {
-		t.Errorf("operationId = %q; want invoke_custom-op", item.Post.OperationID)
-	}
-	if item.Post.Summary != "Custom operation" {
-		t.Errorf("summary = %q; want Custom operation", item.Post.Summary)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := openapi.Build(tc.routes)
+
+			for _, p := range tc.wantPaths {
+				item, ok := doc.Paths[p]
+				if !ok {
+					t.Errorf("missing expected path %q", p)
+					continue
+				}
+				if item.Post == nil {
+					t.Errorf("path %q has no POST operation", p)
+				}
+			}
+			for _, p := range tc.wantAbsent {
+				if _, ok := doc.Paths[p]; ok {
+					t.Errorf("path %q should be absent", p)
+				}
+			}
+			for path, wantID := range tc.wantOpIDs {
+				item, ok := doc.Paths[path]
+				if !ok || item.Post == nil {
+					continue // already reported above
+				}
+				if item.Post.OperationID != wantID {
+					t.Errorf("path %q: operationId = %q, want %q", path, item.Post.OperationID, wantID)
+				}
+			}
+		})
 	}
 }
 
@@ -179,7 +225,7 @@ func TestHandler_Response(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 
-	openapi.Handler(testRoutes)(w, req)
+	openapi.Handler(productionRoutes)(w, req)
 
 	res := w.Result()
 
@@ -228,7 +274,7 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 		wg       sync.WaitGroup
 		failures atomic.Int32
 	)
-	handler := openapi.Handler(testRoutes)
+	handler := openapi.Handler(productionRoutes)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
@@ -244,5 +290,41 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	if n := failures.Load(); n > 0 {
 		t.Errorf("%d concurrent calls returned non-200", n)
+	}
+}
+
+func TestHandler_DefensiveCopy(t *testing.T) {
+	// Verify Handler does not race if the caller mutates the slice after calling Handler.
+	// Make a copy of productionRoutes and mutate it after Handler() returns.
+	// The handler must still serve a valid document.
+	routes := make([]openapi.RouteDescriptor, len(productionRoutes))
+	copy(routes, productionRoutes)
+
+	handler := openapi.Handler(routes)
+
+	// Simulate a caller mutation after Handler() returns.
+	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var paths map[string]json.RawMessage
+	if err := json.Unmarshal(raw["paths"], &paths); err != nil {
+		t.Fatalf("decode paths: %v", err)
+	}
+	if _, ok := paths["/v1/mutated"]; ok {
+		t.Error("Handler served mutated route — defensive copy not working")
+	}
+	if _, ok := paths["/v1/echo"]; !ok {
+		t.Error("Handler lost original /v1/echo after caller mutation — defensive copy not working")
 	}
 }

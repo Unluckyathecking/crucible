@@ -157,7 +157,6 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
 		for _, rt := range V1Routes {
-			rt := rt
 			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
 		}
 	})

@@ -304,7 +304,13 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 	}
 
 	for _, rt := range invokeRoutes {
-		opID := "invoke_" + strings.TrimPrefix(rt.Path, "/")
+		if rt.Path == "" || rt.Path[0] != '/' {
+			panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
+		}
+		if rt.Operation == "" {
+			panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
+		}
+		opID := "invoke_" + strings.ReplaceAll(strings.TrimPrefix(rt.Path, "/"), "/", "_")
 		paths["/v1"+rt.Path] = PathItem{Post: invokeOperation(opID, rt.Summary)}
 	}
 
@@ -355,13 +361,17 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 // Handler returns an http.HandlerFunc that serves the OpenAPI document built from invokeRoutes.
 // The document is built lazily on first request via sync.Once; no DB or Redis access.
 func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
+	// Defensive copy: the caller's backing array (e.g. V1Routes) may be appended
+	// to after startup, which would silently mutate the slice the closure captures.
+	routes := make([]RouteDescriptor, len(invokeRoutes))
+	copy(routes, invokeRoutes)
 	var (
 		doc  []byte
 		once sync.Once
 	)
 	return func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() {
-			b, err := json.Marshal(Build(invokeRoutes))
+			b, err := json.Marshal(Build(routes))
 			if err != nil {
 				panic("openapi: failed to marshal static document: " + err.Error())
 			}
