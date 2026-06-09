@@ -225,9 +225,13 @@ func invokeOperation(operationID, summary string) *Operation {
 }
 
 // OperationIDFromPath derives the OpenAPI operationId for a per-product /v1 invoke route.
-// The path must begin with /; interior slashes are replaced with _ so the result is a valid identifier.
+// Both slashes and hyphens are replaced with _ so the result is a valid Go/TS identifier
+// for client SDK codegen (gen-clients.sh splits on _ to produce CamelCase names).
 func OperationIDFromPath(path string) string {
-	return "invoke_" + strings.ReplaceAll(strings.TrimPrefix(path, "/"), "/", "_")
+	s := strings.TrimPrefix(path, "/")
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	return "invoke_" + s
 }
 
 // validateRouteDescriptor panics on invalid RouteDescriptor fields.

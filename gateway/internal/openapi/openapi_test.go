@@ -164,7 +164,7 @@ func TestBuild_InvokeRouteDerived(t *testing.T) {
 			},
 			wantPaths:  []string{"/v1/custom-op"},
 			wantAbsent: []string{"/v1/echo"},
-			wantOpIDs:  map[string]string{"/v1/custom-op": "invoke_custom-op"},
+			wantOpIDs:  map[string]string{"/v1/custom-op": "invoke_custom_op"},
 		},
 		{
 			name: "hyphenated path like validate-vat",
@@ -172,7 +172,7 @@ func TestBuild_InvokeRouteDerived(t *testing.T) {
 				{Path: "/validate-vat", Operation: "validate-vat", Summary: "Validate VAT number"},
 			},
 			wantPaths: []string{"/v1/validate-vat"},
-			wantOpIDs: map[string]string{"/v1/validate-vat": "invoke_validate-vat"},
+			wantOpIDs: map[string]string{"/v1/validate-vat": "invoke_validate_vat"},
 		},
 		{
 			name: "multiple routes",
