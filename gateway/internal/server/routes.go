@@ -40,10 +40,6 @@ import (
 // The gateway is the trust boundary; revalidating here prevents DB probing via arbitrary plan IDs.
 var planIDRE = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
-// unknownWorkerCode is the synthetic Prometheus label used when a worker returns
-// an error with an empty Code field. It is metric-only — never sent to customers.
-const unknownWorkerCode = "unknown"
-
 // HealthChecker wraps a dependency that can be pinged for connectivity verification.
 type HealthChecker interface {
 	Ping(ctx context.Context) error
@@ -208,6 +204,8 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		key := auth.FromContext(r.Context())
 
 		var payload json.RawMessage
+		// r.Body is already wrapped by http.MaxBytesReader via mw.BodyLimit at the router level;
+		// reads beyond cfg.BodyLimitBytes return an error the decoder propagates here as BAD_REQUEST.
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
 			return
@@ -234,10 +232,11 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
 			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
-			// an empty Code would open an unlabelled code="" series.
+			// an empty Code would open an unlabelled code="" series. Use WORKER_BAD_RESPONSE
+			// so the metric label matches the code the customer receives on this path.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
-				metricCode = unknownWorkerCode
+				metricCode = apierror.WORKER_BAD_RESPONSE
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			// In full mode, pass the worker's error through verbatim — but only when Code
