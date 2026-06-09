@@ -305,11 +305,10 @@ func TestMiddleware_PostgresMissColdPath(t *testing.T) {
 	}
 }
 
-// TestMiddleware_StoreErrorReturnsInternal verifies that when the auth store returns a
-// transient (non-ErrKeyNotFound) error, the middleware emits 500 INTERNAL with retryable:true
-// and echoes the request-id. Uses a pre-cancelled request context so all store operations
-// (Redis + Postgres) fail with context.Canceled rather than ErrKeyNotFound, activating the
-// INTERNAL 500 branch without closing the pool or any cleanup conflict.
+// TestMiddleware_StoreErrorReturnsInternal verifies that when the auth store returns
+// context.Canceled (pre-cancelled request context), the middleware emits 500 INTERNAL
+// with retryable:false and echoes the request-id. context.Canceled is not retryable:
+// the client already gave up, so retrying the same request won't help.
 func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
 	db := newTestPostgres(t)
 	t.Cleanup(db.Close)
@@ -354,8 +353,8 @@ func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
 	if got.Error.Code != "INTERNAL" {
 		t.Errorf("error.code = %q, want INTERNAL", got.Error.Code)
 	}
-	if !got.Error.Retryable {
-		t.Error("error.retryable = false, want true; transient store errors must be retryable")
+	if got.Error.Retryable {
+		t.Error("error.retryable = true, want false; context.Canceled is not retryable")
 	}
 	if got.Error.RequestID != wantRID {
 		t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, wantRID)

@@ -36,7 +36,12 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "invalid api key", false)
 					return
 				}
-				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", true) // conservative: most pgx errors are transient; context.Canceled/DeadlineExceeded included for simplicity — the marginal cost of a spurious retry guide is lower than misclassifying a real connection failure as permanent
+				// context.Canceled/DeadlineExceeded are not retryable: the client already
+				// gave up or the deadline passed; retrying the same request won't help.
+				// All other errors are treated as transient (pool exhausted, connection
+				// reset, etc.) where a retry could succeed.
+				retryable := !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", retryable)
 				return
 			}
 			ctx := context.WithValue(r.Context(), keyCtxKey, key)

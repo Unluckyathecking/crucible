@@ -84,13 +84,10 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			// in production for string/bool fields.
 			codeB, _ := json.Marshal(code)
 			msgB, _ := json.Marshal(message)
+			retryB, _ := json.Marshal(retryable)
 			ridB, _ := json.Marshal(requestID)
-			retryStr := "false"
-			if retryable {
-				retryStr = "true"
-			}
 			b = []byte(`{"error":{"code":` + string(codeB) + `,"message":` + string(msgB) +
-				`,"retryable":` + retryStr + `,"request_id":` + string(ridB) + `}}`)
+				`,"retryable":` + string(retryB) + `,"request_id":` + string(ridB) + `}}`)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
