@@ -1,14 +1,24 @@
 // Package openapi builds and serves the gateway's OpenAPI 3.1 document.
 // Zero third-party dependencies: uses only encoding/json, net/http, and sync.
-// The document is derived from the static route table; no DB or Redis needed.
+// The document is derived from the route descriptor table; no DB or Redis needed.
 package openapi
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 )
+
+// RouteDescriptor describes a single per-product /v1 invoke endpoint.
+// It is the sole authoritative source of which /v1 paths exist and which
+// opaque worker operation string each maps to.
+type RouteDescriptor struct {
+	Path      string // path segment after /v1, e.g. "/echo"
+	Operation string // opaque string forwarded to the worker
+	Summary   string // human-readable; appears in the OpenAPI document
+}
 
 // --- structural types --------------------------------------------------------
 
@@ -166,9 +176,138 @@ func errResp(desc string) Response {
 	}
 }
 
-// Build constructs and returns the gateway's OpenAPI 3.1 document.
+// invokeOperation builds the standard Operation for a per-product /v1 invoke endpoint.
+func invokeOperation(operationID, summary string) *Operation {
+	return &Operation{
+		OperationID: operationID,
+		Summary:     summary,
+		Tags:        []string{"invoke"},
+		Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+		Parameters: []Parameter{
+			{
+				Name:        "Idempotency-Key",
+				In:          "header",
+				Description: "Optional deduplication key (max 255 chars). Identical-key retries within 24 h replay the stored response without re-invoking the worker or re-billing.",
+				Schema:      &Schema{Type: "string"},
+			},
+		},
+		RequestBody: &RequestBody{
+			Required: true,
+			Content: map[string]MediaType{
+				contentTypeJSON: {Schema: &Schema{Type: "object"}},
+			},
+		},
+		Responses: map[string]Response{
+			"200": {
+				Description: "Successful invocation",
+				Headers:     rateLimitAndQuotaHeaders(),
+				Content: map[string]MediaType{
+					contentTypeJSON: {Schema: &Schema{Type: "object"}},
+				},
+			},
+			"400": errResp("Bad request — invalid JSON body"),
+			"401": errResp("Unauthorized — missing or invalid API key"),
+			"409": errResp("Idempotency conflict — concurrent request with same key"),
+			"422": errResp("Idempotency key reused with a different request body"),
+			"429": {
+				Description: "Rate limited or quota exceeded. " +
+					"RateLimit-*/X-RateLimit-* headers are always present. " +
+					"X-Quota-* headers are present only on quota-triggered 429s.",
+				Headers: rateLimitAndQuotaHeaders(),
+				Content: map[string]MediaType{
+					contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
+				},
+			},
+			"500": errResp("Internal server error"),
+			"502": errResp("Worker unavailable"),
+		},
+	}
+}
+
+// Build constructs the gateway's OpenAPI 3.1 document from the given invoke route descriptors.
 // It is a pure function with no I/O; safe to call multiple times.
-func Build() Document {
+func Build(invokeRoutes []RouteDescriptor) Document {
+	paths := map[string]PathItem{
+		"/healthz": {
+			Get: &Operation{
+				OperationID: "healthz",
+				Summary:     "Liveness check",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Service is alive",
+						Content: map[string]MediaType{
+							contentTypeJSON: {
+								Schema: &Schema{
+									Type: "object",
+									Properties: map[string]*Schema{
+										"status": {Type: "string"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"/readyz": {
+			Get: &Operation{
+				OperationID: "readyz",
+				Summary:     "Readiness check — reports dependency health",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Dependency health report",
+						Content: map[string]MediaType{
+							contentTypeJSON: {
+								Schema: &Schema{
+									Type: "object",
+									Properties: map[string]*Schema{
+										"status": {Type: "string"},
+										"checks": {
+											Type:                 "object",
+											AdditionalProperties: &Schema{Type: "string"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"/metrics": {
+			Get: &Operation{
+				OperationID: "metrics",
+				Summary:     "Prometheus metrics",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Prometheus exposition format",
+						Content: map[string]MediaType{
+							"text/plain": {Schema: &Schema{Type: "string"}},
+						},
+					},
+				},
+			},
+		},
+		"/webhooks/stripe": {
+			Post: &Operation{
+				OperationID: "stripe_webhook",
+				Summary:     "Stripe billing webhook receiver (unauthenticated)",
+				Tags:        []string{"billing"},
+				Responses: map[string]Response{
+					"200": {Description: "Webhook processed"},
+				},
+			},
+		},
+	}
+
+	for _, rt := range invokeRoutes {
+		opID := "invoke_" + strings.TrimPrefix(rt.Path, "/")
+		paths["/v1"+rt.Path] = PathItem{Post: invokeOperation(opID, rt.Summary)}
+	}
+
 	return Document{
 		OpenAPI: "3.1.0",
 		Info: Info{
@@ -207,152 +346,29 @@ func Build() Document {
 				},
 			},
 		},
-		Paths: map[string]PathItem{
-			"/healthz": {
-				Get: &Operation{
-					OperationID: "healthz",
-					Summary:     "Liveness check",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Service is alive",
-							Content: map[string]MediaType{
-								contentTypeJSON: {
-									Schema: &Schema{
-										Type: "object",
-										Properties: map[string]*Schema{
-											"status": {Type: "string"},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/readyz": {
-				Get: &Operation{
-					OperationID: "readyz",
-					Summary:     "Readiness check — reports dependency health",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Dependency health report",
-							Content: map[string]MediaType{
-								contentTypeJSON: {
-									Schema: &Schema{
-										Type: "object",
-										Properties: map[string]*Schema{
-											"status": {Type: "string"},
-											"checks": {
-												Type:                 "object",
-												AdditionalProperties: &Schema{Type: "string"},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/metrics": {
-				Get: &Operation{
-					OperationID: "metrics",
-					Summary:     "Prometheus metrics",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Prometheus exposition format",
-							Content: map[string]MediaType{
-								"text/plain": {Schema: &Schema{Type: "string"}},
-							},
-						},
-					},
-				},
-			},
-			"/webhooks/stripe": {
-				Post: &Operation{
-					OperationID: "stripe_webhook",
-					Summary:     "Stripe billing webhook receiver (unauthenticated)",
-					Tags:        []string{"billing"},
-					Responses: map[string]Response{
-						"200": {Description: "Webhook processed"},
-					},
-				},
-			},
-			"/v1/echo": {
-				Post: &Operation{
-					OperationID: "invoke_echo",
-					Summary:     "Invoke echo worker operation (authenticated)",
-					Tags:        []string{"invoke"},
-					Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
-					Parameters: []Parameter{
-						{
-							Name:        "Idempotency-Key",
-							In:          "header",
-							Description: "Optional deduplication key (max 255 chars). Identical-key retries within 24 h replay the stored response without re-invoking the worker or re-billing.",
-							Schema:      &Schema{Type: "string"},
-						},
-					},
-					RequestBody: &RequestBody{
-						Required: true,
-						Content: map[string]MediaType{
-							contentTypeJSON: {Schema: &Schema{Type: "object"}},
-						},
-					},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Successful invocation",
-							Headers:     rateLimitAndQuotaHeaders(),
-							Content: map[string]MediaType{
-								contentTypeJSON: {Schema: &Schema{Type: "object"}},
-							},
-						},
-						"400": errResp("Bad request — invalid JSON body"),
-						"401": errResp("Unauthorized — missing or invalid API key"),
-						"409": errResp("Idempotency conflict — concurrent request with same key"),
-						"422": errResp("Idempotency key reused with a different request body"),
-						"429": {
-							Description: "Rate limited or quota exceeded. " +
-								"RateLimit-*/X-RateLimit-* headers are always present. " +
-								"X-Quota-* headers are present only on quota-triggered 429s.",
-							Headers: rateLimitAndQuotaHeaders(),
-							Content: map[string]MediaType{
-								contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
-							},
-						},
-						"500": errResp("Internal server error"),
-						"502": errResp("Worker unavailable"),
-					},
-				},
-			},
-		},
+		Paths: paths,
 	}
 }
 
 // --- handler -----------------------------------------------------------------
 
-var (
-	documentJSON []byte
-	buildOnce    sync.Once
-)
-
-func buildDocument() {
-	b, err := json.Marshal(Build())
-	if err != nil {
-		panic("openapi: failed to marshal static document: " + err.Error())
-	}
-	documentJSON = b
-}
-
-// Handler returns an http.HandlerFunc that serves the static OpenAPI document.
+// Handler returns an http.HandlerFunc that serves the OpenAPI document built from invokeRoutes.
 // The document is built lazily on first request via sync.Once; no DB or Redis access.
-func Handler() http.HandlerFunc {
+func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
+	var (
+		doc  []byte
+		once sync.Once
+	)
 	return func(w http.ResponseWriter, r *http.Request) {
-		buildOnce.Do(buildDocument)
+		once.Do(func() {
+			b, err := json.Marshal(Build(invokeRoutes))
+			if err != nil {
+				panic("openapi: failed to marshal static document: " + err.Error())
+			}
+			doc = b
+		})
 		w.Header().Set("Content-Type", contentTypeJSON)
-		if _, err := w.Write(documentJSON); err != nil {
+		if _, err := w.Write(doc); err != nil {
 			log.Printf("openapi: write: %v", err)
 		}
 	}

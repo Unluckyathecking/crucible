@@ -106,7 +106,7 @@ func NewRouter(d *Deps) http.Handler {
 	// Public routes (no auth, no rate limit).
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Redis, d.PG))
-	r.Get("/openapi.json", openapi.Handler())
+	r.Get("/openapi.json", openapi.Handler(V1Routes))
 
 	// The Stripe webhook is mounted outside auth/quota gating, so it carries no
 	// per-customer rate limit. Add a lightweight IP-based limiter (60 req/min/IP,
@@ -156,7 +156,10 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
-		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
+		for _, rt := range V1Routes {
+			rt := rt
+			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
+		}
 	})
 
 	return r

@@ -12,15 +12,21 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 )
 
+// testRoutes mirrors the current V1Routes used in production (server/routes_table.go).
+// Tests use this to exercise openapi.Build() and openapi.Handler() end-to-end.
+var testRoutes = []openapi.RouteDescriptor{
+	{Path: "/echo", Operation: "echo", Summary: "Invoke echo worker operation (authenticated)"},
+}
+
 func TestBuild_Version(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	if doc.OpenAPI != "3.1.0" {
 		t.Errorf("openapi = %q; want 3.1.0", doc.OpenAPI)
 	}
 }
 
 func TestBuild_RequiredPaths(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
@@ -29,7 +35,7 @@ func TestBuild_RequiredPaths(t *testing.T) {
 }
 
 func TestBuild_SecurityScheme(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
 	if !ok {
 		t.Fatal("components.securitySchemes missing ApiKeyAuth")
@@ -49,7 +55,7 @@ func TestBuild_SecurityScheme(t *testing.T) {
 }
 
 func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	if _, ok := doc.Components.Schemas["Error"]; !ok {
 		t.Fatal("components.schemas missing Error")
 	}
@@ -57,7 +63,7 @@ func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
 
 func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	const wantRef = "#/components/schemas/Error"
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	echo, ok := doc.Paths["/v1/echo"]
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -90,7 +96,7 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 }
 
 func TestBuild_InvokeRouteSecured(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	echo := doc.Paths["/v1/echo"]
 	if echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -104,7 +110,7 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 }
 
 func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	unauthenticated := []struct {
 		path   string
 		method string
@@ -137,11 +143,43 @@ func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
 	}
 }
 
+func TestBuild_NoHardcodedV1EchoPath(t *testing.T) {
+	// Acceptance: no hard-coded Paths["/v1/echo"] literal remains in Build().
+	// Verify that Build() with an empty route list produces no /v1/* paths at all.
+	doc := openapi.Build([]openapi.RouteDescriptor{})
+	for path := range doc.Paths {
+		if strings.HasPrefix(path, "/v1/") {
+			t.Errorf("Build() with empty routes produced unexpected /v1 path %q", path)
+		}
+	}
+}
+
+func TestBuild_InvokeRouteDerivedFromDescriptor(t *testing.T) {
+	// Verify that Build() derives /v1/* paths from the descriptor, not hard-coded literals.
+	routes := []openapi.RouteDescriptor{
+		{Path: "/custom-op", Operation: "custom-op", Summary: "Custom operation"},
+	}
+	doc := openapi.Build(routes)
+	item, ok := doc.Paths["/v1/custom-op"]
+	if !ok {
+		t.Fatal("Build() did not produce /v1/custom-op from descriptor")
+	}
+	if item.Post == nil {
+		t.Fatal("/v1/custom-op has no POST operation")
+	}
+	if item.Post.OperationID != "invoke_custom-op" {
+		t.Errorf("operationId = %q; want invoke_custom-op", item.Post.OperationID)
+	}
+	if item.Post.Summary != "Custom operation" {
+		t.Errorf("summary = %q; want Custom operation", item.Post.Summary)
+	}
+}
+
 func TestHandler_Response(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 
-	openapi.Handler()(w, req)
+	openapi.Handler(testRoutes)(w, req)
 
 	res := w.Result()
 
@@ -190,13 +228,14 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 		wg       sync.WaitGroup
 		failures atomic.Int32
 	)
+	handler := openapi.Handler(testRoutes)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 			w := httptest.NewRecorder()
-			openapi.Handler()(w, req)
+			handler(w, req)
 			if w.Code != http.StatusOK {
 				failures.Add(1)
 			}

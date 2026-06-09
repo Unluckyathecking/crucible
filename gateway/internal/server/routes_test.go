@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
@@ -20,6 +21,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
@@ -999,6 +1001,61 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+// TestV1RoutesDriftGuard is the drift guard: it builds the real router, walks its
+// mounted /v1 POST patterns (excluding /v1/billing/*), and asserts that set equals
+// the /v1 paths produced by openapi.Build(V1Routes). The test fails if someone adds
+// a route directly to routes.go without V1Routes, or hard-codes a path in Build().
+func TestV1RoutesDriftGuard(t *testing.T) {
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:     &config.Config{BodyLimitBytes: 1048576},
+		Webhook: billing.NewWebhook("whsec_test", nil),
+		Redis:   healthy,
+		PG:      healthy,
+	}
+	router := NewRouter(d)
+
+	// The underlying chi.Mux implements chi.Routes; type-assert to walk patterns.
+	chiRoutes, ok := router.(chi.Routes)
+	if !ok {
+		t.Fatal("NewRouter did not return a chi.Routes value; cannot walk mounted patterns")
+	}
+
+	mounted := make(map[string]struct{})
+	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if method == http.MethodPost &&
+			strings.HasPrefix(route, "/v1/") &&
+			!strings.HasPrefix(route, "/v1/billing/") {
+			mounted[route] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+
+	// Collect /v1/* POST paths from the OpenAPI document (excluding /v1/billing/*).
+	doc := openapi.Build(V1Routes)
+	documented := make(map[string]struct{})
+	for path, item := range doc.Paths {
+		if strings.HasPrefix(path, "/v1/") &&
+			!strings.HasPrefix(path, "/v1/billing/") &&
+			item.Post != nil {
+			documented[path] = struct{}{}
+		}
+	}
+
+	for path := range mounted {
+		if _, ok := documented[path]; !ok {
+			t.Errorf("route %s is mounted in router but absent from openapi.Build(V1Routes)", path)
+		}
+	}
+	for path := range documented {
+		if _, ok := mounted[path]; !ok {
+			t.Errorf("path %s is in openapi.Build(V1Routes) but not mounted in router", path)
+		}
 	}
 }
 
