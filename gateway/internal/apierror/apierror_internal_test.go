@@ -111,6 +111,9 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		if got.Error.Message != "fallback-msg" {
 			t.Errorf("error.message = %q, want %q", got.Error.Message, "fallback-msg")
 		}
+		if got.Error.Retryable {
+			t.Error("error.retryable = true, want false; caller passed retryable=false")
+		}
 		if got.Error.RequestID != "rid-fallback" {
 			t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, "rid-fallback")
 		}
