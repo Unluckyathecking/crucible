@@ -10,15 +10,6 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
-func TestWriteJSONErrorCacheControlNoStore(t *testing.T) {
-	w := httptest.NewRecorder()
-	writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid input", false)
-
-	if got := w.Header().Get("Cache-Control"); got != "no-store" {
-		t.Errorf("Cache-Control = %q, want \"no-store\"", got)
-	}
-}
-
 func TestInvokeSuccessCacheControlNoStore(t *testing.T) {
 	worker := successWorker(1, "op")
 	defer worker.Close()

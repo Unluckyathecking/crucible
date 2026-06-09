@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
@@ -37,10 +39,9 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"rate limit exceeded","retryable":true}}`))
+				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return
 			}
 			// Emit rate-limit headers only when the count is reliable (not an unlimited

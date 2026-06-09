@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
 
 type ctxKey string
@@ -17,6 +19,7 @@ const keyCtxKey ctxKey = "auth.key"
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 			authz := r.Header.Get("Authorization")
 			// HTTP auth schemes are case-insensitive per RFC 7235; accept "Bearer ", "bearer ", etc.
 			token := ""
@@ -24,25 +27,18 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				token = authz[7:]
 			}
 			if token == "" {
-				writeUnauthorized(w, "missing or malformed Authorization header")
+				apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "missing or malformed Authorization header", false)
 				return
 			}
 			key, err := store.Lookup(r.Context(), strings.TrimSpace(token))
 			if err != nil {
 				if errors.Is(err, ErrKeyNotFound) {
-					writeUnauthorized(w, "invalid api key")
+					apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "invalid api key", false)
 					return
 				}
 				// Log the internal error for operational visibility before returning generic response
 				// TODO: wire structured logger (see github.com/org/repo/issues/XXX).
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error": map[string]any{
-						"code":    "INTERNAL",
-						"message": "auth lookup failed",
-					},
-				})
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", false)
 				return
 			}
 			ctx := context.WithValue(r.Context(), keyCtxKey, key)
@@ -55,20 +51,4 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 func FromContext(ctx context.Context) *Key {
 	k, _ := ctx.Value(keyCtxKey).(*Key)
 	return k
-}
-
-func writeUnauthorized(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	// json.Encoder over string-concat — the current callers only pass literals,
-	// but encoding eliminates the footgun if a future call site forwards user input
-	// (which would break the envelope and could enable response-splitting).
-	// We ignore the error here: the payload is a simple map[string]any with only string values,
-	// so encoding cannot fail for type reasons, and write failures mean the client has disconnected.
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"code":    "UNAUTHORIZED",
-			"message": msg,
-		},
-	})
 }

@@ -21,6 +21,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
@@ -204,7 +205,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 
 		var payload json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json body", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
 			return
 		}
 
@@ -221,7 +222,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker invocation failed")
-			writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			return
 		}
 
@@ -236,9 +237,9 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(errCode).Inc()
 			if errorExposure == "full" {
-				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
+				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
 			} else {
-				writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			}
 			return
 		}
@@ -251,7 +252,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker returned success with billable_units<1 — rejecting")
-			writeJSONError(w, http.StatusBadGateway, "WORKER_BAD_RESPONSE", "worker contract violation", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker contract violation", false)
 			return
 		}
 
@@ -279,13 +280,14 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 // Response: {"url":"https://checkout.stripe.com/..."}
 func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		if d.Checkout == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return
 		}
 		key := auth.FromContext(r.Context())
 		if key == nil {
-			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
 		}
 
@@ -293,22 +295,22 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 			PlanID string `json:"plan_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PlanID == "" {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "plan_id required", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "plan_id required", false)
 			return
 		}
 		if !planIDRE.MatchString(body.PlanID) {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid plan_id", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid plan_id", false)
 			return
 		}
 
 		redirectURL, err := d.Checkout.CreateCheckoutSession(r.Context(), key.Customer.ID.String(), body.PlanID)
 		if err != nil {
 			if errors.Is(err, billing.ErrPlanNotFound) {
-				writeJSONError(w, http.StatusUnprocessableEntity, "PLAN_NOT_FOUND", "plan not found or not upgradeable", false)
+				apierror.Write(w, rid, http.StatusUnprocessableEntity, apierror.PLAN_NOT_FOUND, "plan not found or not upgradeable", false)
 				return
 			}
 			log.Error().Err(err).Msg("create checkout session failed")
-			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.STRIPE_ERROR, "billing unavailable", false)
 			return
 		}
 
@@ -322,31 +324,32 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 // Response: {"url":"https://billing.stripe.com/..."}
 func billingPortalHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		if d.Checkout == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return
 		}
 		key := auth.FromContext(r.Context())
 		if key == nil {
-			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
 		}
 
 		stripeCustomerID, err := d.Checkout.LookupStripeCustomerID(r.Context(), key.Customer.ID.String())
 		if err != nil {
 			log.Error().Err(err).Msg("lookup stripe customer id failed")
-			writeJSONError(w, http.StatusInternalServerError, "INTERNAL", "lookup failed", false)
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
 			return
 		}
 		if stripeCustomerID == "" {
-			writeJSONError(w, http.StatusPaymentRequired, "NO_STRIPE_CUSTOMER", "complete checkout first", false)
+			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "complete checkout first", false)
 			return
 		}
 
 		redirectURL, err := d.Checkout.CreatePortalSession(r.Context(), stripeCustomerID)
 		if err != nil {
 			log.Error().Err(err).Msg("create portal session failed")
-			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.STRIPE_ERROR, "billing unavailable", false)
 			return
 		}
 
@@ -355,15 +358,3 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 	}
 }
 
-func writeJSONError(w http.ResponseWriter, status int, code, msg string, retryable bool) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"code":      code,
-			"message":   msg,
-			"retryable": retryable,
-		},
-	})
-}

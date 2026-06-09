@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -780,65 +779,3 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestWriteJSONError(t *testing.T) {
-	cases := []struct {
-		name      string
-		status    int
-		code      string
-		msg       string
-		retryable bool
-	}{
-		{"bad_request", http.StatusBadRequest, "BAD_INPUT", "invalid payload", false},
-		{"rate_limited", http.StatusTooManyRequests, "RATE_LIMITED", "too many requests", true},
-		{"service_unavailable", http.StatusServiceUnavailable, "WORKER_UNAVAILABLE", "worker unreachable", true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			writeJSONError(w, tc.status, tc.code, tc.msg, tc.retryable)
-
-			if w.Code != tc.status {
-				t.Errorf("got HTTP status %d, want %d", w.Code, tc.status)
-			}
-			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-				t.Errorf("Content-Type %q, want application/json", ct)
-			}
-
-			// Verify top-level has exactly one key: "error".
-			var top map[string]json.RawMessage
-			if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
-				t.Fatalf("failed to decode body: %v", err)
-			}
-			if len(top) != 1 {
-				t.Fatalf("body has %d top-level keys, want 1 (\"error\")", len(top))
-			}
-			errRaw, ok := top["error"]
-			if !ok {
-				t.Fatal("body missing top-level \"error\" key")
-			}
-
-			// Verify error object has exactly three fields with correct values.
-			type errorObj struct {
-				Code      string `json:"code"`
-				Message   string `json:"message"`
-				Retryable bool   `json:"retryable"`
-			}
-			dec := json.NewDecoder(bytes.NewReader(errRaw))
-			dec.DisallowUnknownFields()
-			var obj errorObj
-			if err := dec.Decode(&obj); err != nil {
-				t.Fatalf("failed to decode error object (unexpected field?): %v", err)
-			}
-			if obj.Code != tc.code {
-				t.Errorf("error.code %q, want %q", obj.Code, tc.code)
-			}
-			if obj.Message != tc.msg {
-				t.Errorf("error.message %q, want %q", obj.Message, tc.msg)
-			}
-			if obj.Retryable != tc.retryable {
-				t.Errorf("error.retryable %v, want %v", obj.Retryable, tc.retryable)
-			}
-		})
-	}
-}

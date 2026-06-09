@@ -194,14 +194,12 @@ func Build() Document {
 						"error": {
 							Type: "object",
 							Properties: map[string]*Schema{
-								"code":    {Type: "string"},
-								"message": {Type: "string"},
-								// retryable is always present in gateway-generated errors
-								// (writeJSONError always includes it), but may be omitted
-								// by upstream/auth layers, so it is not required in the schema.
-								"retryable": {Type: "boolean"},
+								"code":       {Type: "string"},
+								"message":    {Type: "string"},
+								"retryable":  {Type: "boolean"},
+								"request_id": {Type: "string"},
 							},
-							Required: []string{"code", "message"},
+							Required: []string{"code", "message", "retryable"},
 						},
 					},
 					Required: []string{"error"},
