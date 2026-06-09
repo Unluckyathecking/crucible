@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
 
 // okHandler is the downstream handler that Middleware wraps in tests.
@@ -354,5 +356,39 @@ func TestMiddleware_InvalidKeyReturnsUnauthorized(t *testing.T) {
 	}
 	if code := bodyError(t, body); code != "UNAUTHORIZED" {
 		t.Errorf("invalid key: error.code = %q, want UNAUTHORIZED", code)
+	}
+}
+
+func TestMiddleware_ErrorEnvelopeRequestID(t *testing.T) {
+	s, _ := newMiddlewareStore(t)
+	h := Middleware(s)(okHandler)
+
+	const wantRID = "test-req-id-auth-mw"
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), mwpkg.RequestIDKey, wantRID)
+	req = req.WithContext(ctx)
+	// No Authorization header — triggers the missing-token 401 path without a store lookup.
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	var got struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if got.Error.RequestID != wantRID {
+		t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, wantRID)
+	}
+	if got.Error.Code != "UNAUTHORIZED" {
+		t.Errorf("error.code = %q, want UNAUTHORIZED", got.Error.Code)
 	}
 }
