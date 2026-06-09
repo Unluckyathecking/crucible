@@ -752,6 +752,62 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
 		}
 	})
+
+	t.Run("sanitized mode empty worker error code returns WORKER_BAD_RESPONSE", func(t *testing.T) {
+		// In sanitized mode a worker that returns an empty error code (buggy non-SDK
+		// worker) must receive WORKER_BAD_RESPONSE — not the empty string that full
+		// mode passes verbatim. This verifies the customer-facing code on this path.
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "",
+					"message":   "malformed error from worker",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "sanitized", "echo")
+		const rid = "test-rid-sanitized-bad-code"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(top["error"]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&obj); err != nil {
+			t.Fatalf("parse error object: %v", err)
+		}
+		if obj.Code != "WORKER_BAD_RESPONSE" {
+			t.Errorf("sanitized empty code: error.code = %q, want WORKER_BAD_RESPONSE", obj.Code)
+		}
+		if obj.Message != "worker returned malformed error" {
+			t.Errorf("sanitized empty code: error.message = %q, want %q", obj.Message, "worker returned malformed error")
+		}
+		if obj.Retryable {
+			t.Error("sanitized empty code: error.retryable = true, want false")
+		}
+		if obj.RequestID != rid {
+			t.Errorf("sanitized empty code: error.request_id = %q, want %q", obj.RequestID, rid)
+		}
+	})
 }
 
 // --- Billing route tests ---
