@@ -16,8 +16,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
@@ -608,4 +610,86 @@ func TestMiddleware_RefundsWhenNoUsageRecorded_Concurrent(t *testing.T) {
 	if got != 0 {
 		t.Errorf("counter after %d refunded requests = %d, want 0", n, got)
 	}
+}
+
+// TestMiddleware_QUOTA_EXCEEDED_ErrorEnvelopeShape verifies that the 429 QUOTA_EXCEEDED
+// response carries the standard four-field envelope (code, message, retryable, request_id)
+// with Cache-Control: no-store — the same contract as every other apierror.Write call site.
+// Prior quota tests checked code and retryable only; this test covers the full shape and
+// confirms that the request_id planted in context reaches the response body.
+func TestMiddleware_QUOTA_EXCEEDED_ErrorEnvelopeShape(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	tr := New(rdb)
+	key := testKeyForPlan("free")
+	cust := key.Customer
+
+	freeCap := plans.MonthlyCap(context.Background(), "free")
+	if freeCap == 0 {
+		t.Skip("free plan has unlimited cap in this environment; skipping envelope shape test")
+	}
+
+	redisKey := monthKey(cust.ID, time.Now().UTC())
+	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
+
+	// Pre-fill the counter to the plan cap so the next request is rejected by Reserve.
+	for i := int64(0); i < freeCap; i++ {
+		ok, _, _, _, err := tr.Reserve(context.Background(), cust.ID, freeCap)
+		if err != nil || !ok {
+			t.Fatalf("pre-fill reserve %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+
+	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called when quota is exceeded")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	const wantRID = "test-rid-quota-envelope-shape"
+	ctx := auth.WithTestKey(context.Background(), key)
+	ctx = context.WithValue(ctx, mwpkg.RequestIDKey, wantRID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	// apierror.Write unconditionally sets Cache-Control: no-store on every error response.
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+
+	var body struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Error.Code != apierror.QUOTA_EXCEEDED {
+		t.Errorf("error.code = %q, want %q", body.Error.Code, apierror.QUOTA_EXCEEDED)
+	}
+	if body.Error.Message == "" {
+		t.Error("error.message must not be empty")
+	}
+	if body.Error.Retryable {
+		t.Error("error.retryable must be false for quota exhaustion (cap resets monthly, not via retry)")
+	}
+	// request_id must be the value we planted in context — not empty, not a different ID.
+	if body.Error.RequestID != wantRID {
+		t.Errorf("error.request_id = %q, want %q", body.Error.RequestID, wantRID)
+	}
+
+	// X-Quota-* headers must still be set with Remaining=0 on the deny path.
+	checkQuotaHeaders(t, rec.Header(), freeCap, 0)
 }
