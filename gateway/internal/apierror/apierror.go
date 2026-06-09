@@ -4,6 +4,7 @@ package apierror
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -73,12 +74,13 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			Error fallback `json:"error"`
 		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
 		if ferr != nil {
-			// marshalJSON is overridden to fail (test injection only). Call the real
-			// json.Marshal directly — it cannot fail for plain string/bool fields,
-			// and it preserves the caller's values including requestID.
-			b, _ = json.Marshal(struct {
-				Error fallback `json:"error"`
-			}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
+			// Both marshalJSON calls failed (only reachable via test injection).
+			// fmt.Sprintf with %q escapes JSON-special characters and cannot itself
+			// fail, so b is always a non-nil, valid-JSON body preserving caller values.
+			b = []byte(fmt.Sprintf(
+				`{"error":{"code":%q,"message":%q,"retryable":%t,"request_id":%q}}`,
+				code, message, retryable, requestID,
+			))
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

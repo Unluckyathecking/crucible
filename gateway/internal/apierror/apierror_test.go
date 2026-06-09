@@ -42,20 +42,19 @@ func TestWrite_StatusAndHeaders(t *testing.T) {
 				Error apierror.Error `json:"error"`
 			}
 			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-				t.Errorf("body is not valid JSON: %v", err)
-			} else {
-				if got.Error.Code != tt.code {
-					t.Errorf("error.code = %q, want %q", got.Error.Code, tt.code)
-				}
-				if got.Error.Message != tt.message {
-					t.Errorf("error.message = %q, want %q", got.Error.Message, tt.message)
-				}
-				if got.Error.Retryable != tt.retryable {
-					t.Errorf("error.retryable = %v, want %v", got.Error.Retryable, tt.retryable)
-				}
-				if got.Error.RequestID != tt.requestID {
-					t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, tt.requestID)
-				}
+				t.Fatalf("body is not valid JSON: %v", err)
+			}
+			if got.Error.Code != tt.code {
+				t.Errorf("error.code = %q, want %q", got.Error.Code, tt.code)
+			}
+			if got.Error.Message != tt.message {
+				t.Errorf("error.message = %q, want %q", got.Error.Message, tt.message)
+			}
+			if got.Error.Retryable != tt.retryable {
+				t.Errorf("error.retryable = %v, want %v", got.Error.Retryable, tt.retryable)
+			}
+			if got.Error.RequestID != tt.requestID {
+				t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, tt.requestID)
 			}
 		})
 	}
