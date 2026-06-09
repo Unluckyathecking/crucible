@@ -116,6 +116,31 @@ func TestWrite_AllFieldsPresent(t *testing.T) {
 	}
 }
 
+// TestWrite_EmptyRequestIDEmittedAsEmptyString verifies that an empty-string
+// requestID is serialised as "request_id":"" (key present, value empty) and
+// not omitted. The OpenAPI schema marks request_id as required, so omitempty
+// would be a schema violation.
+func TestWrite_EmptyRequestIDEmittedAsEmptyString(t *testing.T) {
+	w := httptest.NewRecorder()
+	apierror.Write(w, "", http.StatusInternalServerError, apierror.INTERNAL, "err", false)
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(top["error"], &inner); err != nil {
+		t.Fatalf("unmarshal error object: %v", err)
+	}
+	rid, ok := inner["request_id"]
+	if !ok {
+		t.Fatal("request_id field missing from error object")
+	}
+	if string(rid) != `""` {
+		t.Errorf("request_id = %s, want empty string \"\"", rid)
+	}
+}
+
 func TestWrite_RequestIDWithJSONSpecialCharsRoundTrips(t *testing.T) {
 	// json.Marshal on the envelope struct escapes JSON-special chars in requestID
 	// so the body remains valid JSON and the decoded value equals the original string.

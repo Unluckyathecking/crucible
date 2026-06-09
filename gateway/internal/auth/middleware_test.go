@@ -391,4 +391,7 @@ func TestMiddleware_ErrorEnvelopeRequestID(t *testing.T) {
 	if got.Error.Code != "UNAUTHORIZED" {
 		t.Errorf("error.code = %q, want UNAUTHORIZED", got.Error.Code)
 	}
+	if got.Error.Retryable {
+		t.Error("error.retryable = true, want false; missing-token 401 must not be retryable")
+	}
 }

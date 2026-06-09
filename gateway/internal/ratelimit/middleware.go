@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
@@ -12,6 +13,11 @@ import (
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
+
+// retryAfterSeconds is the RFC 7231 Retry-After value sent on 429 responses.
+// Must stay equal to windowSeconds in bucket.go — both express the same 60 s
+// sliding window enforced by the Lua script.
+const retryAfterSeconds = windowSeconds
 
 // Middleware enforces per-customer rate limits based on their plan and sets
 // RateLimit-* / X-RateLimit-* headers on every response where the count is known.
@@ -39,7 +45,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				w.Header().Set("Retry-After", "60")
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return

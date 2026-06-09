@@ -40,6 +40,10 @@ import (
 // The gateway is the trust boundary; revalidating here prevents DB probing via arbitrary plan IDs.
 var planIDRE = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
+// unknownWorkerCode is the synthetic Prometheus label used when a worker returns
+// an error with an empty Code field. It is metric-only — never sent to customers.
+const unknownWorkerCode = "unknown"
+
 // HealthChecker wraps a dependency that can be pinged for connectivity verification.
 type HealthChecker interface {
 	Ping(ctx context.Context) error
@@ -236,7 +240,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// preserve the exact bytes the worker returned.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
-				metricCode = "unknown"
+				metricCode = unknownWorkerCode
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			if errorExposure == "full" {
