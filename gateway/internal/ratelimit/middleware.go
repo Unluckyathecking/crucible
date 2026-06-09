@@ -40,8 +40,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				// Retry-After in seconds; must equal the sliding-window duration above.
-				w.Header().Set("Retry-After", strconv.Itoa(int(time.Minute.Seconds())))
+				w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
 				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return

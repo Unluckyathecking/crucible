@@ -69,7 +69,7 @@ func TestWrite_DoubleFallbackPreservesCallerValues(t *testing.T) {
 		Error Error `json:"error"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("triple-fallback body not valid JSON: %v", err)
+		t.Fatalf("double-fallback body not valid JSON: %v", err)
 	}
 	if got.Error.Code != RATE_LIMITED {
 		t.Errorf("error.code = %q, want %q", got.Error.Code, RATE_LIMITED)
