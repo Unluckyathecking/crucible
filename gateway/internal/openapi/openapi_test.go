@@ -94,6 +94,18 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 			t.Errorf("response %s: want schema.$ref=%q, got %v", code, wantRef, media.Schema)
 		}
 	}
+
+	// Lock idempotency response descriptions so a 409↔422 description swap is caught.
+	if resp, ok := echo.Post.Responses["409"]; !ok {
+		t.Fatal("POST /v1/echo missing 409 response")
+	} else if resp.Description != "Idempotency conflict — concurrent request with same key" {
+		t.Errorf("409 description = %q; want idempotency-conflict description", resp.Description)
+	}
+	if resp, ok := echo.Post.Responses["422"]; !ok {
+		t.Fatal("POST /v1/echo missing 422 response")
+	} else if resp.Description != "Idempotency key reused with a different request body" {
+		t.Errorf("422 description = %q; want idempotency-reuse description", resp.Description)
+	}
 }
 
 func TestBuild_InvokeRouteSecured(t *testing.T) {
@@ -294,36 +306,29 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 }
 
 func TestHandler_DefensiveCopy(t *testing.T) {
-	// Verify Handler copies the slice at construction time, so subsequent mutation
-	// of the caller's slice does not affect the served document.
+	// Verify Handler copies the slice at construction time. Mutating the caller's
+	// slice before any request proves it is the copy() in Handler() that protects
+	// the document, not sync.Once caching.
 	routes := []openapi.RouteDescriptor{
 		{Path: "/echo", Operation: "echo", Summary: "Echo"},
 	}
 
 	handler := openapi.Handler(routes)
 
-	// Trigger sync.Once with a first request before mutating the backing slice.
-	req1 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w1 := httptest.NewRecorder()
-	handler(w1, req1)
-	if w1.Code != http.StatusOK {
-		t.Fatalf("first request: status = %d; want 200", w1.Code)
-	}
-
-	// Mutate the caller's slice after the document has been built.
+	// Mutate before any request: if Handler did not copy, the served document
+	// would reflect "/mutated" rather than "/echo".
 	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
 
-	// Second request must still serve the original (pre-mutation) document.
-	req2 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w2 := httptest.NewRecorder()
-	handler(w2, req2)
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
 
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second request: status = %d; want 200", w2.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
 	}
 
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(w2.Body.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	var paths map[string]json.RawMessage

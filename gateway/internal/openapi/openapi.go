@@ -246,8 +246,10 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	if rt.Path[len(rt.Path)-1] == '/' {
 		panic("openapi: RouteDescriptor.Path must not end with /: " + rt.Path)
 	}
-	if strings.Contains(rt.Path, "//") {
-		panic("openapi: RouteDescriptor.Path must not contain empty segments: " + rt.Path)
+	for _, seg := range strings.Split(rt.Path[1:], "/") {
+		if seg == "" {
+			panic("openapi: RouteDescriptor.Path must not contain empty segments: " + rt.Path)
+		}
 	}
 	if strings.Contains(rt.Path, "_") {
 		// OperationIDFromPath uses _ as its escape character (replacing / and -).

@@ -1014,7 +1014,7 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 	healthy := &mockChecker{}
 	d := &Deps{
 		Cfg:     &config.Config{BodyLimitBytes: 1048576},
-		Webhook: billing.NewWebhook("whsec_test", nil),
+		Webhook: billing.NewWebhook("whsec_test", nil), // must be non-nil: NewRouter mounts d.Webhook.Handle at construction time
 		Redis:   healthy,
 		PG:      healthy,
 		// Proxy, Recorder, Bucket, Plans, Quota, Auth, and DB are intentionally nil:
