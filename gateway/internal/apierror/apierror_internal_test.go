@@ -132,7 +132,7 @@ func TestWrite_FallbackPathPreservesCallerValues(t *testing.T) {
 	orig := marshalJSON
 	defer func() { marshalJSON = orig }()
 
-	// First call (envelope) fails; second call (fallback struct) uses real json.Marshal.
+	// marshalJSON fails on the first call; Write falls back to real json.Marshal directly.
 	calls := 0
 	marshalJSON = func(v any) ([]byte, error) {
 		calls++
@@ -172,8 +172,8 @@ func TestWrite_DoubleFallbackPreservesCallerValues(t *testing.T) {
 	orig := marshalJSON
 	defer func() { marshalJSON = orig }()
 
-	// Both marshalJSON calls fail; Write falls through to real json.Marshal on the
-	// fallback struct, which bypasses the injected marshalJSON and cannot fail.
+	// marshalJSON fails; Write falls through to real json.Marshal on the same
+	// envelope, which bypasses the injected marshalJSON and cannot fail.
 	marshalJSON = func(v any) ([]byte, error) {
 		return nil, errors.New("forced marshal failure")
 	}

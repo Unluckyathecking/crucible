@@ -62,27 +62,17 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	if err != nil {
 		// Unreachable with current field types (all string/bool). Guard so a body is
 		// always emitted if Error ever gains a failing json.Marshaler field.
-		// Use an anonymous struct (not Error) to bypass such a field while preserving
-		// the caller's values; requestID escaping is handled by json.Marshal, not
-		// string concatenation.
-		type fallback struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			Retryable bool   `json:"retryable"`
-			RequestID string `json:"request_id"`
-		}
-		var ferr error
-		b, ferr = marshalJSON(struct {
-			Error fallback `json:"error"`
-		}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
-		if ferr != nil {
-			// Both marshalJSON calls failed (only reachable via test injection).
-			// Use the real json.Marshal directly — it bypasses the injected marshalJSON
-			// and cannot fail for a struct with only string/bool fields.
-			b, _ = json.Marshal(struct {
-				Error fallback `json:"error"`
-			}{Error: fallback{Code: code, Message: message, Retryable: retryable, RequestID: requestID}})
-		}
+		// Use real json.Marshal directly to bypass any injected marshalJSON that may
+		// itself be failing (only reachable via test injection of marshalJSON).
+		// json.Marshal on a struct of strings and bools cannot fail.
+		b, _ = json.Marshal(envelope{
+			Error: Error{
+				Code:      code,
+				Message:   message,
+				Retryable: retryable,
+				RequestID: requestID,
+			},
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
