@@ -41,10 +41,8 @@ type envelope struct {
 // status, and encodes the standard error envelope. requestID is passed as a plain
 // string by each call site so this package needs no context or middleware import.
 // Uses json.Marshal (not json.Encoder) so the body has no trailing newline.
+// Marshal runs before WriteHeader so no status is committed on a marshal failure.
 func Write(w http.ResponseWriter, requestID string, status int, code, message string, retryable bool) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
 	b, err := json.Marshal(envelope{
 		Error: Error{
 			Code:      code,
@@ -57,8 +55,10 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 		// Only reachable if Error gains a field whose type implements json.Marshaler
 		// and returns an error. Guard here so the response is never silently empty.
 		// requestID (a UUID) is safe to embed verbatim — no JSON special characters.
-		_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":"` + requestID + `"}}`))
-		return
+		b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":"` + requestID + `"}}`)
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }

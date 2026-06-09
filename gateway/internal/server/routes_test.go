@@ -614,6 +614,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
