@@ -644,6 +644,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 	if obj.Message == "" {
 		t.Error("error.message must not be empty")
 	}
+	if obj.Retryable {
+		t.Error("error.retryable = true, want false for BAD_REQUEST")
+	}
 	if obj.RequestID != testRID {
 		t.Errorf("error.request_id = %q, want %q", obj.RequestID, testRID)
 	}

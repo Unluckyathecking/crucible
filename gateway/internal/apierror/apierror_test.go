@@ -141,6 +141,9 @@ func TestWrite_CodeConstantsUnique(t *testing.T) {
 		apierror.NOT_CONFIGURED,
 		apierror.PLAN_NOT_FOUND,
 		apierror.NO_STRIPE_CUSTOMER,
+		apierror.IDEMPOTENCY_CONFLICT,
+		apierror.IDEMPOTENCY_KEY_REUSE,
+		apierror.IDEMPOTENCY_KEY_INVALID,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {

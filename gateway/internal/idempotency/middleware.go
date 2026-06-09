@@ -91,7 +91,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				return
 			}
 			if len(key) > maxKeyLen {
-				apierror.Write(w, rid, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", fmt.Sprintf("Idempotency-Key too long (max %d characters)", maxKeyLen), false)
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.IDEMPOTENCY_KEY_INVALID, fmt.Sprintf("Idempotency-Key too long (max %d characters)", maxKeyLen), false)
 				return
 			}
 
@@ -143,7 +143,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 						return
 					}
 					if !claimed {
-						apierror.Write(w, rid, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "concurrent request with same key", false)
+						apierror.Write(w, rid, http.StatusConflict, apierror.IDEMPOTENCY_CONFLICT, "concurrent request with same key", false)
 						return
 					}
 					// Fall through: we now own the key.
@@ -153,10 +153,10 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					// re-execute the worker — exactly the double-billing this module prevents.
 					// 422 permanently prevents the mismatched body from executing; the
 					// original fingerprint's replay remains available and is always safe.
-					apierror.Write(w, rid, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSE", "key reused with different request body", false)
+					apierror.Write(w, rid, http.StatusUnprocessableEntity, apierror.IDEMPOTENCY_KEY_REUSE, "key reused with different request body", false)
 					return
 				} else if entry.StatusCode == nil {
-					apierror.Write(w, rid, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "concurrent request with same key", false)
+					apierror.Write(w, rid, http.StatusConflict, apierror.IDEMPOTENCY_CONFLICT, "concurrent request with same key", false)
 					return
 				} else {
 					// Completed entry: replay stored response without invoking the worker.

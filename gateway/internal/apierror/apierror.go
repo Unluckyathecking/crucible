@@ -9,17 +9,20 @@ import (
 
 // Error code constants — byte-identical to the strings customers receive.
 const (
-	UNAUTHORIZED        = "UNAUTHORIZED"
-	INTERNAL            = "INTERNAL"
-	RATE_LIMITED        = "RATE_LIMITED"
-	QUOTA_EXCEEDED      = "QUOTA_EXCEEDED"
-	BAD_REQUEST         = "BAD_REQUEST"
-	WORKER_UNREACHABLE  = "WORKER_UNREACHABLE"
-	WORKER_BAD_RESPONSE = "WORKER_BAD_RESPONSE"
-	STRIPE_ERROR        = "STRIPE_ERROR"
-	NOT_CONFIGURED      = "NOT_CONFIGURED"
-	PLAN_NOT_FOUND      = "PLAN_NOT_FOUND"
-	NO_STRIPE_CUSTOMER  = "NO_STRIPE_CUSTOMER"
+	UNAUTHORIZED           = "UNAUTHORIZED"
+	INTERNAL               = "INTERNAL"
+	RATE_LIMITED           = "RATE_LIMITED"
+	QUOTA_EXCEEDED         = "QUOTA_EXCEEDED"
+	BAD_REQUEST            = "BAD_REQUEST"
+	WORKER_UNREACHABLE     = "WORKER_UNREACHABLE"
+	WORKER_BAD_RESPONSE    = "WORKER_BAD_RESPONSE"
+	STRIPE_ERROR           = "STRIPE_ERROR"
+	NOT_CONFIGURED         = "NOT_CONFIGURED"
+	PLAN_NOT_FOUND         = "PLAN_NOT_FOUND"
+	NO_STRIPE_CUSTOMER     = "NO_STRIPE_CUSTOMER"
+	IDEMPOTENCY_CONFLICT   = "IDEMPOTENCY_CONFLICT"
+	IDEMPOTENCY_KEY_REUSE  = "IDEMPOTENCY_KEY_REUSE"
+	IDEMPOTENCY_KEY_INVALID = "IDEMPOTENCY_KEY_INVALID"
 )
 
 // Error is the inner object inside the {"error":{...}} response envelope.
@@ -53,7 +56,8 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	if err != nil {
 		// Only reachable if Error gains a field whose type implements json.Marshaler
 		// and returns an error. Guard here so the response is never silently empty.
-		_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`))
+		// requestID (a UUID) is safe to embed verbatim — no JSON special characters.
+		_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":"` + requestID + `"}}`))
 		return
 	}
 	_, _ = w.Write(b)
