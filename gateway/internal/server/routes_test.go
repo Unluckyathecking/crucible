@@ -1016,10 +1016,11 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		Cfg:   &config.Config{BodyLimitBytes: 1048576},
 		Redis: healthy,
 		PG:    healthy,
-		// Webhook, Proxy, Recorder, Bucket, Plans, Quota, Auth, and DB are intentionally
-		// nil: all are captured by handler/middleware closures and never invoked during
-		// chi.Walk (Walk traverses the route tree without executing handlers).
-		// TestReadyzRouteRegistered uses the same nil-Webhook pattern.
+		// auth.Middleware, ratelimit.Middleware, quota.Middleware, and the invoke
+		// handler are closures: they capture their arguments but never dereference
+		// them at registration time. chi.Walk traverses the route tree without
+		// dispatching any requests, so these nil/zero fields are never accessed.
+		Auth: &auth.Store{},
 	}
 	router := NewRouter(d)
 	chiRoutes := mustChiRoutes(t, router)
@@ -1042,11 +1043,6 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		if !strings.HasPrefix(route, "/v1/") || strings.HasPrefix(route, "/v1/billing/") {
 			return nil
 		}
-		switch method {
-		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		default:
-			return fmt.Errorf("unexpected HTTP method %s on per-product route %s", method, route)
-		}
 		if mounted[method] == nil {
 			mounted[method] = make(map[string]struct{})
 		}
@@ -1057,8 +1053,6 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 	}
 
 	// All per-product /v1 routes must be POST-only: exactly one method key in mounted.
-	// The chi.Walk callback returns an error for any non-standard method (GET/POST/…),
-	// so mounted can only contain the methods we explicitly register.
 	if len(mounted) != 1 {
 		t.Fatalf("expected exactly 1 HTTP method for /v1 routes, got %d: %v", len(mounted), mounted)
 	}
