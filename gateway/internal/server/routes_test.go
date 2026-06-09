@@ -712,9 +712,10 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		}
 	})
 
-	t.Run("full mode empty worker error code falls back to UNKNOWN", func(t *testing.T) {
+	t.Run("full mode empty worker error code falls back to WORKER_BAD_RESPONSE", func(t *testing.T) {
 		// Full mode guards against empty Code from non-SDK workers: an empty code
-		// is not correlatable and would open an unlabelled series, so UNKNOWN is used.
+		// is not correlatable. UNKNOWN is reserved for Prometheus metric labels only;
+		// WORKER_BAD_RESPONSE is the correct customer-facing fallback.
 		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -749,8 +750,8 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 		if err := json.Unmarshal(top["error"], &obj); err != nil {
 			t.Fatalf("parse error object: %v", err)
 		}
-		if obj.Code != apierror.UNKNOWN {
-			t.Errorf("full mode empty worker code: error.code = %q, want %q", obj.Code, apierror.UNKNOWN)
+		if obj.Code != apierror.WORKER_BAD_RESPONSE {
+			t.Errorf("full mode empty worker code: error.code = %q, want %q", obj.Code, apierror.WORKER_BAD_RESPONSE)
 		}
 		if obj.RequestID != rid {
 			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)

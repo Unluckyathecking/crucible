@@ -246,7 +246,9 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			if errorExposure == "full" {
 				errCode = resp.Error.Code
 				if errCode == "" {
-					errCode = apierror.UNKNOWN // non-SDK workers may omit the code field
+					// UNKNOWN is reserved for Prometheus metric labels; WORKER_BAD_RESPONSE
+					// is the correct customer-facing fallback for a worker that omits the code.
+					errCode = apierror.WORKER_BAD_RESPONSE
 				}
 				errMsg, errRetryable = resp.Error.Message, resp.Error.Retryable
 			}
