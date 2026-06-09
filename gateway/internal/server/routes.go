@@ -242,9 +242,12 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			// In full mode, pass the worker's error through verbatim — but only when Code
 			// is non-empty. An empty Code violates the apierror contract (codes are stable
-			// identifiers), so fall through to WORKER_UNREACHABLE on that path too.
+			// identifiers); treat it as a bad response rather than unreachable, since the
+			// worker did respond but returned a malformed error object.
 			if errorExposure == "full" && resp.Error.Code != "" {
 				apierror.Write(w, rid, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
+			} else if resp.Error.Code == "" {
+				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker returned malformed error", false)
 			} else {
 				apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			}
@@ -350,7 +353,7 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 			return
 		}
 		if stripeCustomerID == "" {
-			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "complete checkout first", false)
+			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "no Stripe customer record for this account", false)
 			return
 		}
 

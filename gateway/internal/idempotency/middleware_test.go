@@ -646,8 +646,8 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	if obj.Message == "" {
 		t.Error("error.message must not be empty")
 	}
-	if obj.Retryable {
-		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
+	if obj.Retryable != false {
+		t.Errorf("error.retryable = %v, want false; IDEMPOTENCY_KEY_INVALID must not be retryable", obj.Retryable)
 	}
 	if obj.RequestID != "test-rid-envelope" {
 		t.Errorf("error.request_id = %q, want %q", obj.RequestID, "test-rid-envelope")
