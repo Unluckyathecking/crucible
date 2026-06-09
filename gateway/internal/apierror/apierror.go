@@ -25,8 +25,9 @@ const (
 	IDEMPOTENCY_KEY_INVALID = "IDEMPOTENCY_KEY_INVALID"
 
 	// UNKNOWN is used as a Prometheus metric label fallback when a worker error
-	// response omits the error code. Never emitted in customer-facing responses.
-	UNKNOWN = "UNKNOWN"
+	// response omits the error code. Lowercase to preserve existing dashboard queries.
+	// Never emitted in customer-facing responses.
+	UNKNOWN = "unknown"
 )
 
 // Error is the inner object inside the {"error":{...}} response envelope.
@@ -37,6 +38,7 @@ type Error struct {
 	RequestID string `json:"request_id"` // always emitted (empty string is valid per schema)
 }
 
+// envelope is the top-level JSON wrapper: {"error":{...}}.
 type envelope struct {
 	Error Error `json:"error"`
 }
@@ -66,10 +68,9 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	if err != nil {
 		// Unreachable with current field types (all string/bool). Guard so a body is
 		// always emitted if Error ever gains a failing json.Marshaler field.
-		// Use real json.Marshal directly to bypass any injected marshalJSON that may
-		// itself be failing (only reachable via test injection of marshalJSON).
-		// json.Marshal on a struct of strings and bools cannot fail.
-		b, _ = json.Marshal(envelope{
+		// Use real json.Marshal to bypass any injected marshalJSON (test-only path).
+		var ferr error
+		b, ferr = json.Marshal(envelope{
 			Error: Error{
 				Code:      code,
 				Message:   message,
@@ -77,6 +78,12 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 				RequestID: requestID,
 			},
 		})
+		if ferr != nil {
+			// Absolute last resort: hardcoded literal so b is never nil after WriteHeader.
+			// Only reachable if both marshalJSON AND real json.Marshal fail, which cannot
+			// happen in production for string/bool fields.
+			b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

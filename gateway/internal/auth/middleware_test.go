@@ -8,9 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
@@ -310,45 +307,33 @@ func TestMiddleware_PostgresMissColdPath(t *testing.T) {
 
 // TestMiddleware_StoreErrorReturnsInternal verifies that when the auth store returns a
 // transient (non-ErrKeyNotFound) error, the middleware emits 500 INTERNAL with retryable:true
-// and echoes the request-id. Creates a pgxpool directly (not via newTestPostgres) so that
-// no t.Cleanup is registered for the pool — we close it eagerly to force a connection error
-// on the Postgres cold path without any cleanup conflict.
+// and echoes the request-id. Uses a pre-cancelled request context so all store operations
+// (Redis + Postgres) fail with context.Canceled rather than ErrKeyNotFound, activating the
+// INTERNAL 500 branch without closing the pool or any cleanup conflict.
 func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
-	// Create the pool directly so we can close it before the test ends.
-	// No t.Cleanup(db.Close) is registered anywhere in this test.
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer dialCancel()
-	db, poolErr := pgxpool.New(dialCtx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
-	if poolErr != nil {
-		t.Skipf("postgres unavailable: %v", poolErr)
-	}
-	if pingErr := db.Ping(dialCtx); pingErr != nil {
-		db.Close()
-		t.Skipf("postgres ping failed: %v", pingErr)
-	}
-
+	db := newTestPostgres(t)
+	t.Cleanup(db.Close)
 	rdb := newTestRedis(t)
 	s := NewStore(db, rdb, testSalt)
 	t.Cleanup(s.Close)
 
-	// Build a fake key long enough to pass PrefixLen; no DB row or Redis entry
-	// for this prefix so Lookup reaches the Postgres cold path.
+	// Build a fake key with no DB row or Redis entry.
 	fakeKey := strings.Repeat("B", PrefixLen) + "FAKESTOREERR"
 	prefix := fakeKey[:PrefixLen]
-	ctx := context.Background()
-	rdb.Del(ctx, "auth:"+prefix)
-	rdb.Del(ctx, "auth:miss:"+prefix)
+	rdb.Del(context.Background(), "auth:"+prefix)
+	rdb.Del(context.Background(), "auth:miss:"+prefix)
 
-	// Close the pool so the Postgres cold-path query returns a pool-closed error,
-	// which is not ErrKeyNotFound and therefore activates the INTERNAL 500 branch.
-	// This is the only close of db — no t.Cleanup conflict.
-	db.Close()
-
+	// Pre-cancel the request context so all store operations (Redis + Postgres) return
+	// context.Canceled, which is not ErrKeyNotFound — the INTERNAL 500 branch fires.
 	const wantRID = "test-rid-auth-store-error"
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reqCtx := context.WithValue(cancelledCtx, mwpkg.RequestIDKey, wantRID)
+
 	h := Middleware(s)(okHandler)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+fakeKey)
-	req = req.WithContext(context.WithValue(req.Context(), mwpkg.RequestIDKey, wantRID))
+	req = req.WithContext(reqCtx)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 

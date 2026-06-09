@@ -80,6 +80,9 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		if w.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 		}
+		if w.Body.Len() == 0 {
+			t.Error("body is empty on both-marshals-fail fallback; expected non-empty JSON")
+		}
 	})
 }
 
