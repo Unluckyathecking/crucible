@@ -1002,3 +1002,48 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 	}
 }
 
+func TestInvokeFullModeEmptyWorkerCodeFallback(t *testing.T) {
+	// WORKER_ERROR_EXPOSURE=full with an empty error.code from the worker must
+	// substitute WORKER_BAD_RESPONSE. An empty code is not correlatable; UNKNOWN
+	// is reserved for Prometheus metric labels and must never reach the customer.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":      "",
+				"message":   "non-sdk worker omitted code",
+				"retryable": false,
+			},
+			"billable_units": 1,
+		})
+	}))
+	defer worker.Close()
+
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	h := invoke(p, nil, "full", "test")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", w.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", body["error"])
+	}
+	if errObj["code"] != apierror.WORKER_BAD_RESPONSE {
+		t.Errorf("error.code = %q, want %q", errObj["code"], apierror.WORKER_BAD_RESPONSE)
+	}
+	if errObj["message"] == "" {
+		t.Error("error.message must not be empty")
+	}
+}
+
