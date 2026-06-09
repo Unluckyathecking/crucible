@@ -207,7 +207,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		// r.Body is already wrapped by http.MaxBytesReader via mw.BodyLimit at the router level;
 		// reads beyond cfg.BodyLimitBytes return an error the decoder propagates here as BAD_REQUEST.
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false) // false: malformed JSON is permanent; retrying with the same body will not succeed
 			return
 		}
 
@@ -240,11 +240,15 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			// Sanitized mode always returns WORKER_UNREACHABLE — the customer-facing
 			// contract must not change regardless of what the worker sends.
-			// Full mode passes the worker's error verbatim (including empty Code) to
-			// preserve byte-identical behavior with the pre-refactor writeJSONError.
+			// Full mode passes the worker's error verbatim; guard empty Code so
+			// customers never receive "code":"" (an empty code is not correlatable).
 			errCode, errMsg, errRetryable := apierror.WORKER_UNREACHABLE, "worker unavailable", true
 			if errorExposure == "full" {
-				errCode, errMsg, errRetryable = resp.Error.Code, resp.Error.Message, resp.Error.Retryable
+				errCode = resp.Error.Code
+				if errCode == "" {
+					errCode = apierror.UNKNOWN // non-SDK workers may omit the code field
+				}
+				errMsg, errRetryable = resp.Error.Message, resp.Error.Retryable
 			}
 			apierror.Write(w, rid, http.StatusBadGateway, errCode, errMsg, errRetryable)
 			return

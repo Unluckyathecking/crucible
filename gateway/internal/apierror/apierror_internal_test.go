@@ -73,7 +73,7 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 			return nil, errors.New("forced")
 		}
 		w := &writeOrderRecorder{ResponseRecorder: httptest.NewRecorder()}
-		Write(w, "rid", http.StatusInternalServerError, INTERNAL, "err", false)
+		Write(w, "rid-fallback", http.StatusInternalServerError, INTERNAL, "fallback-msg", false)
 		if w.writeCalledBeforeHeader {
 			t.Error("Write was called before WriteHeader on both-marshals-fail fallback")
 		}
@@ -82,6 +82,22 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		}
 		if w.Body.Len() == 0 {
 			t.Error("body is empty on both-marshals-fail fallback; expected non-empty JSON")
+		}
+		// Verify the last-resort fmt.Sprintf fallback preserves the caller's values.
+		var got struct {
+			Error Error `json:"error"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("both-marshals-fail fallback body not valid JSON: %v", err)
+		}
+		if got.Error.Code != INTERNAL {
+			t.Errorf("error.code = %q, want %q", got.Error.Code, INTERNAL)
+		}
+		if got.Error.Message != "fallback-msg" {
+			t.Errorf("error.message = %q, want %q", got.Error.Message, "fallback-msg")
+		}
+		if got.Error.RequestID != "rid-fallback" {
+			t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, "rid-fallback")
 		}
 	})
 }

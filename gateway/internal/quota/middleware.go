@@ -83,8 +83,9 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 
 			if !admitted {
-				// Set all headers before writing the status code. Any Header().Set call after
-				// WriteHeader is silently ignored by http.ResponseWriter.
+				// SetQuotaHeaders only modifies the header map (no WriteHeader call);
+				// WriteHeader is committed by apierror.Write below. Headers must be set
+				// before WriteHeader or they are silently ignored by http.ResponseWriter.
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
 				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false) // false: cap is calendar-month, not time-windowed; retrying doesn't help

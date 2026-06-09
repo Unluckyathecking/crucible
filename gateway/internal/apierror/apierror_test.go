@@ -194,6 +194,12 @@ func TestWrite_CodeConstantsUnique(t *testing.T) {
 		if c == "" {
 			t.Errorf("constant must not be empty string")
 		}
+		// UNKNOWN is the Prometheus metric label fallback for empty worker error codes.
+		// A customer-facing constant equal to it would conflate real errors with the
+		// empty-code fallback on dashboards, breaking metric cardinality.
+		if c == apierror.UNKNOWN {
+			t.Errorf("constant %q must not equal the UNKNOWN metric fallback value %q", c, apierror.UNKNOWN)
+		}
 		if seen[c] {
 			t.Errorf("duplicate constant value %q", c)
 		}

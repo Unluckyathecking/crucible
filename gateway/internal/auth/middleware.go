@@ -36,7 +36,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "invalid api key", false)
 					return
 				}
-				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", true) // conservative: most pgx errors are transient connection issues
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", true) // conservative: most pgx errors are transient; context.Canceled/DeadlineExceeded included for simplicity — the marginal cost of a spurious retry guide is lower than misclassifying a real connection failure as permanent
 				return
 			}
 			ctx := context.WithValue(r.Context(), keyCtxKey, key)

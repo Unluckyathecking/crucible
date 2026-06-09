@@ -4,6 +4,7 @@ package apierror
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -46,6 +47,7 @@ type envelope struct {
 // marshalJSON is the JSON serialisation function used by Write.
 // Tests may replace it to exercise the defensive fallback path.
 // NOT safe for t.Parallel() — mutates package-level state.
+// Unexported: only code within this package (including apierror_internal_test.go) can mutate it.
 var marshalJSON = json.Marshal
 
 // Write unconditionally sets Content-Type: application/json and Cache-Control: no-store
@@ -79,10 +81,13 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			},
 		})
 		if ferr != nil {
-			// Absolute last resort: hardcoded literal so b is never nil after WriteHeader.
-			// Only reachable if both marshalJSON AND real json.Marshal fail, which cannot
-			// happen in production for string/bool fields.
-			b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`)
+			// Absolute last resort: preserve caller's values via fmt.Sprintf so b is
+			// never nil after WriteHeader. %q produces valid JSON string escaping for
+			// all practical inputs (error codes/messages are controlled ASCII). Only
+			// reachable if both marshalJSON AND real json.Marshal fail — impossible in
+			// production for string/bool fields.
+			b = []byte(fmt.Sprintf(`{"error":{"code":%q,"message":%q,"retryable":%t,"request_id":%q}}`,
+				code, message, retryable, requestID))
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
