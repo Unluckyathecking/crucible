@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 )
 
 // RouteDescriptor describes a single per-product /v1 invoke endpoint.
@@ -412,25 +411,20 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 // --- handler -----------------------------------------------------------------
 
 // Handler returns an http.HandlerFunc that serves the OpenAPI document built from invokeRoutes.
-// The document is built lazily on first request via sync.Once; no DB or Redis access.
+// The document is built eagerly at construction time so invalid descriptors panic at server
+// startup rather than on the first request. No DB or Redis access.
 func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// Defensive copy: the caller may mutate elements of the original slice after
 	// Handler returns. make+copy gives the closure its own backing array, isolating
 	// it from such mutations.
 	routes := make([]RouteDescriptor, len(invokeRoutes))
 	copy(routes, invokeRoutes)
-	var (
-		doc  []byte
-		once sync.Once
-	)
+	b, err := json.Marshal(Build(routes))
+	if err != nil {
+		panic("openapi: failed to marshal static document: " + err.Error())
+	}
+	doc := b
 	return func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() {
-			b, err := json.Marshal(Build(routes))
-			if err != nil {
-				panic("openapi: failed to marshal static document: " + err.Error())
-			}
-			doc = b
-		})
 		w.Header().Set("Content-Type", contentTypeJSON)
 		if _, err := w.Write(doc); err != nil {
 			log.Printf("openapi: write: %v", err)

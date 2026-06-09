@@ -1019,8 +1019,7 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		// auth.Middleware, ratelimit.Middleware, quota.Middleware, and the invoke
 		// handler are closures: they capture their arguments but never dereference
 		// them at registration time. chi.Walk traverses the route tree without
-		// dispatching any requests, so these nil/zero fields are never accessed.
-		Auth: &auth.Store{},
+		// dispatching any requests, so nil fields are never accessed.
 	}
 	router := NewRouter(d)
 	chiRoutes := mustChiRoutes(t, router)
@@ -1107,11 +1106,13 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		}
 	}
 
-	// Verify no V1Route has an empty Operation field — the opaque worker
-	// operation string is required for correct request dispatch.
+	// Verify no V1Route has empty required fields.
 	for _, rt := range V1Routes {
 		if rt.Operation == "" {
 			t.Errorf("V1Routes path %q has empty Operation field (opaque worker operation string required)", rt.Path)
+		}
+		if rt.Summary == "" {
+			t.Errorf("V1Routes path %q has empty Summary field (required for OpenAPI document)", rt.Path)
 		}
 	}
 }
