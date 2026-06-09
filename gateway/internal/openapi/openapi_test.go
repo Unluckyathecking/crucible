@@ -80,7 +80,8 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	}
 
 	// Verify each error code is present and uses the Error $ref (no inline duplication).
-	for _, code := range []string{"400", "401", "429", "500", "502"} {
+	// 409 = idempotency conflict, 422 = idempotency key reused with different body.
+	for _, code := range []string{"400", "401", "409", "422", "429", "500", "502"} {
 		resp, ok := echo.Post.Responses[code]
 		if !ok {
 			t.Fatalf("POST /v1/echo missing response %s", code)

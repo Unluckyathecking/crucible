@@ -331,7 +331,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 		validateRouteDescriptor(rt)
 		key := "/v1" + rt.Path
 		if _, exists := paths[key]; exists {
-			panic("openapi: duplicate RouteDescriptor.Path produces collision at: " + key)
+			panic("openapi: RouteDescriptor.Path collides with existing route at: " + key)
 		}
 		paths[key] = PathItem{Post: invokeOperation(OperationIDFromPath(rt.Path), rt.Summary)}
 	}

@@ -225,7 +225,7 @@ func TestReadyzDoesNotLeakInternals(t *testing.T) {
 		"redis://",
 	}
 	for _, f := range forbidden {
-		if contains(body, f) {
+		if strings.Contains(body, f) {
 			t.Errorf("readyz: response leaks internal detail %q", f)
 		}
 	}
@@ -277,7 +277,7 @@ func TestInvokeErrorExposureSanitized(t *testing.T) {
 	bodyStr := w.Body.String()
 	forbidden := []string{"SENSITIVE_DETAIL", "leaked internal secret"}
 	for _, f := range forbidden {
-		if contains(bodyStr, f) {
+		if strings.Contains(bodyStr, f) {
 			t.Errorf("sanitized response leaks worker detail %q", f)
 		}
 	}
@@ -367,7 +367,7 @@ func TestInvokeErrorExposureDefaultSanitized(t *testing.T) {
 	}
 
 	bodyStr := w.Body.String()
-	if contains(bodyStr, "DB_UNREACHABLE") || contains(bodyStr, "connection pool") {
+	if strings.Contains(bodyStr, "DB_UNREACHABLE") || strings.Contains(bodyStr, "connection pool") {
 		t.Error("default (sanitized) mode leaked worker internals")
 	}
 }
@@ -577,7 +577,7 @@ func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
 
 			bodyStr := w.Body.String()
 			for _, leak := range []string{"INTERNAL_STACK", "panic", "runtime error", "/srv/worker/db.go"} {
-				if contains(bodyStr, leak) {
+				if strings.Contains(bodyStr, leak) {
 					t.Errorf("mode %q leaked worker internal detail %q", mode, leak)
 				}
 			}
@@ -585,18 +585,6 @@ func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
 
 // TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
 // (top-level "error" key only, code/message/retryable/request_id present) on
@@ -1028,7 +1016,20 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		t.Fatal("NewRouter did not return a chi.Routes value; cannot walk mounted patterns")
 	}
 
+	// Verify V1Routes has no duplicate paths before walking the router.
+	// chi silently uses last-registration-wins for duplicate patterns; openapi.Build panics,
+	// so this check catches the gap on the router side.
+	seenPaths := make(map[string]struct{}, len(V1Routes))
+	for _, rt := range V1Routes {
+		if _, exists := seenPaths[rt.Path]; exists {
+			t.Errorf("duplicate Path in V1Routes: %q (chi would silently shadow the earlier handler)", rt.Path)
+		}
+		seenPaths[rt.Path] = struct{}{}
+	}
+
 	// mounted[method][path] for all /v1 non-billing routes.
+	// The trailing slash in "/v1/billing/" is intentional: it excludes /v1/billing/* sub-routes
+	// only, and would NOT exclude a hypothetical /v1/billing-v2/* route.
 	mounted := make(map[string]map[string]struct{})
 	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasPrefix(route, "/v1/") && !strings.HasPrefix(route, "/v1/billing/") {
