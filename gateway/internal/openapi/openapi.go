@@ -56,6 +56,7 @@ type SecurityScheme struct {
 type Schema struct {
 	Ref                  string             `json:"$ref,omitempty"`
 	Type                 string             `json:"type,omitempty"`
+	Description          string             `json:"description,omitempty"`
 	Properties           map[string]*Schema `json:"properties,omitempty"`
 	Required             []string           `json:"required,omitempty"`
 	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
@@ -197,7 +198,7 @@ func Build() Document {
 								"code":       {Type: "string"},
 								"message":    {Type: "string"},
 								"retryable":  {Type: "boolean"},
-								"request_id": {Type: "string"},
+								"request_id": {Type: "string", Description: "Mirrors the X-Request-ID response header; use for support correlation."},
 							},
 							Required: []string{"code", "message", "retryable", "request_id"},
 						},

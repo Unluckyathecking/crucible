@@ -133,9 +133,9 @@ func TestWrite_RequestIDPassthrough(t *testing.T) {
 	}
 }
 
-func TestWrite_RequestIDSpecialCharsAreEscaped(t *testing.T) {
-	// Exercises the normal (non-fallback) path: json.Marshal encodes the struct
-	// so JSON-special chars in requestID are escaped automatically.
+func TestWrite_RequestIDWithJSONSpecialCharsRoundTrips(t *testing.T) {
+	// json.Marshal on the envelope struct escapes JSON-special chars in requestID
+	// so the body remains valid JSON and the decoded value equals the original string.
 	rid := `req"with"quotes\and` + "\ttab"
 	w := httptest.NewRecorder()
 	apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "bad", false)

@@ -62,9 +62,13 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			Retryable bool   `json:"retryable"`
 			RequestID string `json:"request_id"`
 		}
-		b, _ = json.Marshal(struct {
+		var ferr error
+		b, ferr = json.Marshal(struct {
 			Error fallback `json:"error"`
 		}{Error: fallback{Code: INTERNAL, Message: "internal error", RequestID: requestID}})
+		if ferr != nil || b == nil {
+			b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":""}}`)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
