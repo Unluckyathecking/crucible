@@ -24,9 +24,10 @@ const (
 	IDEMPOTENCY_KEY_REUSE   = "IDEMPOTENCY_KEY_REUSE"
 	IDEMPOTENCY_KEY_INVALID = "IDEMPOTENCY_KEY_INVALID"
 
-	// UNKNOWN is used as a Prometheus metric label fallback when a worker error
-	// response omits the error code. Lowercase to preserve existing dashboard queries.
-	// Never emitted in customer-facing responses.
+	// UNKNOWN is the Prometheus metric label used when a worker error response omits
+	// the error code field. It is lowercase to preserve existing Grafana/dashboard
+	// queries. MUST NOT appear in customer-facing error responses — use
+	// WORKER_BAD_RESPONSE or another named constant for customer-visible codes.
 	UNKNOWN = "unknown"
 )
 
@@ -69,17 +70,12 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	if err != nil {
 		// Unreachable with current field types (all string/bool). Guard so a body is
 		// always emitted if Error ever gains a failing json.Marshaler field.
+		// Use a fresh variable (b2) so the assignment to b below is unambiguous.
 		// Use real json.Marshal to bypass any injected marshalJSON (test-only path).
-		var ferr error
-		b, ferr = json.Marshal(envelope{
-			Error: Error{
-				Code:      code,
-				Message:   message,
-				Retryable: retryable,
-				RequestID: requestID,
-			},
-		})
-		if ferr != nil {
+		env := envelope{Error: Error{Code: code, Message: message, Retryable: retryable, RequestID: requestID}}
+		if b2, ferr := json.Marshal(env); ferr == nil {
+			b = b2
+		} else {
 			// Absolute last resort: serialize each field individually via json.Marshal
 			// so b is never nil after WriteHeader and all values are properly escaped
 			// (covers any future control characters in requestID from X-Request-ID).
