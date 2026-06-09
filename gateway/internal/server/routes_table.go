@@ -1,5 +1,5 @@
-// Package server wires the HTTP router and per-route handlers for the Crucible gateway.
-// V1Routes (this file) is the single ADAPT edit point for per-product /v1 invoke endpoints.
+// routes_table.go is the per-product ADAPT edit point for /v1 invoke endpoints.
+// Add one RouteDescriptor per endpoint; NewRouter and openapi.Build() both consume this table.
 package server
 
 import "github.com/Unluckyathecking/crucible/gateway/internal/openapi"
