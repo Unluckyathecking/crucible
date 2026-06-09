@@ -249,6 +249,12 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	if strings.Contains(rt.Path, "//") {
 		panic("openapi: RouteDescriptor.Path must not contain empty segments: " + rt.Path)
 	}
+	if strings.Contains(rt.Path, "_") {
+		// OperationIDFromPath uses _ as its escape character (replacing / and -).
+		// A literal _ in the path produces ambiguous operationIds (e.g., /a_b and /a-b
+		// both map to invoke_a_b), which breaks SDK codegen. Use - for word separation.
+		panic("openapi: RouteDescriptor.Path must not contain underscore (use - for word separation): " + rt.Path)
+	}
 	if rt.Operation == "" {
 		panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
 	}
@@ -336,13 +342,19 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 		},
 	}
 
+	seenOpIDs := make(map[string]string, len(invokeRoutes)) // opID → first path that produced it
 	for _, rt := range invokeRoutes {
 		validateRouteDescriptor(rt)
 		key := "/v1" + rt.Path
 		if _, exists := paths[key]; exists {
 			panic("openapi: RouteDescriptor.Path collides with existing route at: " + key)
 		}
-		paths[key] = PathItem{Post: invokeOperation(OperationIDFromPath(rt.Path), rt.Summary)}
+		opID := OperationIDFromPath(rt.Path)
+		if firstPath, collision := seenOpIDs[opID]; collision {
+			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
+		}
+		seenOpIDs[opID] = key
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary)}
 	}
 
 	return Document{

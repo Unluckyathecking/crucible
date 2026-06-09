@@ -294,8 +294,8 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 }
 
 func TestHandler_DefensiveCopy(t *testing.T) {
-	// Verify Handler does not race if the caller mutates the slice after calling Handler.
-	// Use a dedicated slice so this test is self-contained and never panics on index 0.
+	// Verify Handler copies the slice at construction time, so subsequent mutation
+	// of the caller's slice does not affect the served document.
 	routes := []openapi.RouteDescriptor{
 		{Path: "/echo", Operation: "echo", Summary: "Echo"},
 	}
@@ -336,4 +336,33 @@ func TestHandler_DefensiveCopy(t *testing.T) {
 	if _, ok := paths["/v1/echo"]; !ok {
 		t.Error("Handler lost original /v1/echo after caller mutation — defensive copy not working")
 	}
+}
+
+// TestBuild_RejectsUnderscoreInPath verifies that validateRouteDescriptor rejects
+// paths containing underscores. OperationIDFromPath uses _ as its escape character
+// (replacing / and -), so a literal _ in the path would produce ambiguous operationIds
+// (e.g., /a_b and /a-b both map to invoke_a_b), breaking SDK codegen.
+func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Build with underscore path did not panic")
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "/my_path", Operation: "my_path", Summary: "Underscore path"},
+	})
+}
+
+// TestBuild_OperationIDUniqueness verifies that Build panics when two paths would
+// produce the same operationId after normalization (e.g., /a-b and /a/b).
+func TestBuild_OperationIDUniqueness(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Build with duplicate operationId paths did not panic")
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "/a-b", Operation: "a-b", Summary: "First"},
+		{Path: "/a/b", Operation: "a/b", Summary: "Second"},
+	})
 }

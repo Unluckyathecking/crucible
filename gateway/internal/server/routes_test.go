@@ -991,11 +991,25 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 	}
 }
 
+// mustChiRoutes asserts that h implements chi.Routes (required for chi.Walk) and
+// fails the test with a type-specific message if not. NewRouter returns *chi.Mux
+// which satisfies chi.Routes; this helper surfaces a clear failure if that changes.
+func mustChiRoutes(t *testing.T, h http.Handler) chi.Routes {
+	t.Helper()
+	cr, ok := h.(chi.Routes)
+	if !ok {
+		t.Fatalf("NewRouter returned %T which does not implement chi.Routes; chi.Walk unavailable", h)
+	}
+	return cr
+}
+
 // TestV1RoutesDriftGuard is the drift guard: it builds the real router, walks its
 // mounted /v1 patterns (excluding /v1/billing/*), and asserts that the POST set
 // equals the /v1 paths produced by openapi.Build(V1Routes). Also asserts:
 //   - all per-product /v1 routes are POST-only (spec invariant)
 //   - each route's OpenAPI operationId matches the expected "invoke_<segment>" pattern
+//   - V1Routes contains no duplicate paths
+//   - all generated operationIds are unique
 func TestV1RoutesDriftGuard(t *testing.T) {
 	healthy := &mockChecker{}
 	d := &Deps{
@@ -1008,11 +1022,17 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		// chi.Walk (Walk traverses the route tree without executing handlers).
 	}
 	router := NewRouter(d)
+	chiRoutes := mustChiRoutes(t, router)
 
-	// The underlying chi.Mux implements chi.Routes; type-assert to walk patterns.
-	chiRoutes, ok := router.(chi.Routes)
-	if !ok {
-		t.Fatal("NewRouter did not return a chi.Routes value; cannot walk mounted patterns")
+	// Verify V1Routes has no duplicate paths. chi silently uses last-registration-wins
+	// semantics; openapi.Build() panics on duplicates (caught below). This check
+	// produces a clear t.Error rather than a test-level panic.
+	seen := make(map[string]bool, len(V1Routes))
+	for _, rt := range V1Routes {
+		if seen[rt.Path] {
+			t.Errorf("duplicate Path in V1Routes: %q (chi would silently shadow the earlier handler)", rt.Path)
+		}
+		seen[rt.Path] = true
 	}
 
 	// mounted[method][path] for all /v1 non-billing routes.
@@ -1024,7 +1044,7 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		switch method {
 		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 		default:
-			return nil
+			return fmt.Errorf("unexpected HTTP method %s on per-product route %s", method, route)
 		}
 		if mounted[method] == nil {
 			mounted[method] = make(map[string]struct{})
@@ -1074,6 +1094,7 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 
 	// Verify the operationId in the OpenAPI document matches "invoke_<path-segment>"
 	// for every route the router actually mounted (derived from chi, not from V1Routes).
+	seenOpIDs := make(map[string]string, len(mountedPOST)) // opID → path
 	for path := range mountedPOST {
 		item, ok := doc.Paths[path]
 		if !ok || item.Post == nil {
@@ -1082,6 +1103,11 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		wantOpID := openapi.OperationIDFromPath(strings.TrimPrefix(path, "/v1"))
 		if item.Post.OperationID != wantOpID {
 			t.Errorf("path %s: openapi operationId = %q, want %q", path, item.Post.OperationID, wantOpID)
+		}
+		if firstPath, collision := seenOpIDs[item.Post.OperationID]; collision {
+			t.Errorf("duplicate operationId %q: shared by paths %s and %s", item.Post.OperationID, firstPath, path)
+		} else {
+			seenOpIDs[item.Post.OperationID] = path
 		}
 	}
 }
