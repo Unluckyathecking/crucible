@@ -31,6 +31,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			// Capture once after Allow returns so both 429 and success paths use the
 			// same instant for RateLimit-Reset — eliminates any split-millisecond drift
 			// between the two branches.
+			// windowSeconds is defined in bucket.go (const windowSeconds = 60).
 			resetAt := time.Now().Add(time.Duration(windowSeconds) * time.Second)
 			// Allow returns only nil or ErrLimited; errors.Is(nil, ErrLimited) is false.
 			if errors.Is(err, ErrLimited) {
