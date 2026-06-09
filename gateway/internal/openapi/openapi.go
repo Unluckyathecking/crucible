@@ -228,8 +228,9 @@ func invokeOperation(operationID, summary string) *Operation {
 // Both slashes and hyphens are replaced with _ so the result is a valid Go/TS identifier
 // for client SDK codegen (gen-clients.sh splits on _ to produce CamelCase names).
 func OperationIDFromPath(path string) string {
-	// path[1:] is safe: validateRouteDescriptor guarantees len(path) >= 2
-	// (starts with / and has at least one segment after it).
+	if len(path) < 2 || path[0] != '/' {
+		panic("openapi: OperationIDFromPath: path must start with / and have at least one segment: " + path)
+	}
 	s := path[1:]
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "-", "_")

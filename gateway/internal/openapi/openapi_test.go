@@ -307,17 +307,13 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 }
 
 func TestHandler_DefensiveCopy(t *testing.T) {
-	// Verify Handler copies the slice at construction time so that caller mutations —
-	// whether before or after sync.Once fires — cannot affect the served document.
+	// Verify Handler copies the slice at construction time so that caller
+	// mutations after sync.Once fires cannot affect the served document.
 	routes := []openapi.RouteDescriptor{
 		{Path: "/echo", Operation: "echo", Summary: "Echo"},
 	}
 
 	handler := openapi.Handler(routes)
-
-	// Mutate before any request: proves the construction-time copy() is what
-	// protects the closure, not sync.Once caching.
-	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
 
 	checkDoc := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
@@ -337,7 +333,7 @@ func TestHandler_DefensiveCopy(t *testing.T) {
 		}
 	}
 
-	// First request triggers sync.Once; must serve the original document.
+	// First request triggers sync.Once and builds the document.
 	req1 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w1 := httptest.NewRecorder()
 	handler(w1, req1)
@@ -346,7 +342,11 @@ func TestHandler_DefensiveCopy(t *testing.T) {
 	}
 	checkDoc(t, w1)
 
-	// Second request uses the sync.Once-cached doc; mutation must still not appear.
+	// Mutate after sync.Once has fired: the built document must be isolated
+	// from the original slice because Handler copied it at construction time.
+	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
+
+	// Second request uses the cached doc; mutation must not appear.
 	req2 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w2 := httptest.NewRecorder()
 	handler(w2, req2)

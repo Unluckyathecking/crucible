@@ -1111,5 +1111,13 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 			seenOpIDs[item.Post.OperationID] = path
 		}
 	}
+
+	// Verify no V1Route has an empty Operation field — the opaque worker
+	// operation string is required for correct request dispatch.
+	for _, rt := range V1Routes {
+		if rt.Operation == "" {
+			t.Errorf("V1Routes path %q has empty Operation field (opaque worker operation string required)", rt.Path)
+		}
+	}
 }
 
