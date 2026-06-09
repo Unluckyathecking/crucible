@@ -228,7 +228,9 @@ func invokeOperation(operationID, summary string) *Operation {
 // Both slashes and hyphens are replaced with _ so the result is a valid Go/TS identifier
 // for client SDK codegen (gen-clients.sh splits on _ to produce CamelCase names).
 func OperationIDFromPath(path string) string {
-	s := strings.TrimPrefix(path, "/")
+	// TrimLeft removes ALL leading slashes (not just one), so //path → path rather
+	// than /path → invoke__path with a leading double-underscore.
+	s := strings.TrimLeft(path, "/")
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "-", "_")
 	return "invoke_" + s

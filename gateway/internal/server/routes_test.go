@@ -1012,9 +1012,15 @@ func mustChiRoutes(t *testing.T, h http.Handler) chi.Routes {
 //   - all generated operationIds are unique
 func TestV1RoutesDriftGuard(t *testing.T) {
 	healthy := &mockChecker{}
+	// NewRouter dereferences d.Webhook.Handle at route-mount time (not handler time),
+	// so Webhook must be non-nil even though chi.Walk never executes handlers.
+	webhook := billing.NewWebhook("whsec_test", nil)
+	if webhook == nil {
+		t.Fatal("billing.NewWebhook returned nil; cannot build router for drift guard")
+	}
 	d := &Deps{
 		Cfg:     &config.Config{BodyLimitBytes: 1048576},
-		Webhook: billing.NewWebhook("whsec_test", nil), // must be non-nil: NewRouter mounts d.Webhook.Handle at construction time
+		Webhook: webhook,
 		Redis:   healthy,
 		PG:      healthy,
 		// Proxy, Recorder, Bucket, Plans, Quota, Auth, and DB are intentionally nil:
@@ -1055,13 +1061,14 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		t.Fatalf("chi.Walk: %v", err)
 	}
 
-	// All per-product /v1 routes must be POST-only and count must match V1Routes.
-	for method, paths := range mounted {
-		if method != http.MethodPost {
-			for path := range paths {
-				t.Errorf("non-POST /v1 route found: %s %s (per-product routes must be POST)", method, path)
-			}
-		}
+	// All per-product /v1 routes must be POST-only: exactly one method key in mounted.
+	// The chi.Walk callback returns an error for any non-standard method (GET/POST/…),
+	// so mounted can only contain the methods we explicitly register.
+	if len(mounted) != 1 {
+		t.Fatalf("expected exactly 1 HTTP method for /v1 routes, got %d: %v", len(mounted), mounted)
+	}
+	if _, ok := mounted[http.MethodPost]; !ok {
+		t.Fatalf("expected POST to be the only /v1 method, got: %v", mounted)
 	}
 	if got, want := len(mounted[http.MethodPost]), len(V1Routes); got != want {
 		t.Errorf("mounted %d /v1 POST routes, expected %d (V1Routes and routes.go are out of sync)", got, want)

@@ -2,6 +2,7 @@ package openapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -306,41 +307,53 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 }
 
 func TestHandler_DefensiveCopy(t *testing.T) {
-	// Verify Handler copies the slice at construction time. Mutating the caller's
-	// slice before any request proves it is the copy() in Handler() that protects
-	// the document, not sync.Once caching.
+	// Verify Handler copies the slice at construction time so that caller mutations —
+	// whether before or after sync.Once fires — cannot affect the served document.
 	routes := []openapi.RouteDescriptor{
 		{Path: "/echo", Operation: "echo", Summary: "Echo"},
 	}
 
 	handler := openapi.Handler(routes)
 
-	// Mutate before any request: if Handler did not copy, the served document
-	// would reflect "/mutated" rather than "/echo".
+	// Mutate before any request: proves the construction-time copy() is what
+	// protects the closure, not sync.Once caching.
 	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
 
-	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
-	w := httptest.NewRecorder()
-	handler(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200", w.Code)
+	checkDoc := func(t *testing.T, w *httptest.ResponseRecorder) {
+		t.Helper()
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var paths map[string]json.RawMessage
+		if err := json.Unmarshal(raw["paths"], &paths); err != nil {
+			t.Fatalf("decode paths: %v", err)
+		}
+		if _, ok := paths["/v1/mutated"]; ok {
+			t.Error("Handler served mutated route — defensive copy not working")
+		}
+		if _, ok := paths["/v1/echo"]; !ok {
+			t.Error("Handler lost original /v1/echo — defensive copy not working")
+		}
 	}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode: %v", err)
+	// First request triggers sync.Once; must serve the original document.
+	req1 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w1 := httptest.NewRecorder()
+	handler(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request: status = %d; want 200", w1.Code)
 	}
-	var paths map[string]json.RawMessage
-	if err := json.Unmarshal(raw["paths"], &paths); err != nil {
-		t.Fatalf("decode paths: %v", err)
+	checkDoc(t, w1)
+
+	// Second request uses the sync.Once-cached doc; mutation must still not appear.
+	req2 := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second request: status = %d; want 200", w2.Code)
 	}
-	if _, ok := paths["/v1/mutated"]; ok {
-		t.Error("Handler served mutated route — defensive copy not working")
-	}
-	if _, ok := paths["/v1/echo"]; !ok {
-		t.Error("Handler lost original /v1/echo after caller mutation — defensive copy not working")
-	}
+	checkDoc(t, w2)
 }
 
 // TestBuild_RejectsUnderscoreInPath verifies that validateRouteDescriptor rejects
@@ -349,8 +362,13 @@ func TestHandler_DefensiveCopy(t *testing.T) {
 // (e.g., /a_b and /a-b both map to invoke_a_b), breaking SDK codegen.
 func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
+		r := recover()
+		if r == nil {
 			t.Error("Build with underscore path did not panic")
+			return
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "underscore") {
+			t.Errorf("panic message does not mention underscore: %v", r)
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
@@ -362,8 +380,13 @@ func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
 // produce the same operationId after normalization (e.g., /a-b and /a/b).
 func TestBuild_OperationIDUniqueness(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
+		r := recover()
+		if r == nil {
 			t.Error("Build with duplicate operationId paths did not panic")
+			return
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "operationId") {
+			t.Errorf("panic message does not mention operationId: %v", r)
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
