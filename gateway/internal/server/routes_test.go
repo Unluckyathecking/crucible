@@ -1106,13 +1106,16 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		}
 	}
 
-	// Verify no V1Route has empty required fields.
+	// Verify no V1Route has empty required fields or reserved path prefixes.
 	for _, rt := range V1Routes {
 		if rt.Operation == "" {
 			t.Errorf("V1Routes path %q has empty Operation field (opaque worker operation string required)", rt.Path)
 		}
 		if rt.Summary == "" {
 			t.Errorf("V1Routes path %q has empty Summary field (required for OpenAPI document)", rt.Path)
+		}
+		if strings.HasPrefix(rt.Path, "/billing/") {
+			t.Errorf("V1Routes must not contain billing paths (handled separately in NewRouter): %q", rt.Path)
 		}
 	}
 }

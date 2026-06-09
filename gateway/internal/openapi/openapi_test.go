@@ -379,7 +379,9 @@ func TestBuild_RejectsEmptyPath(t *testing.T) {
 }
 
 // TestBuild_OperationIDUniqueness verifies that Build panics when two paths would
-// produce the same operationId after normalization (e.g., /a-b and /a/b).
+// produce the same operationId after normalization. With the current scheme (/ → __, - → _),
+// a double-hyphen segment and a slash produce the same escape: /a--b and /a/b both
+// yield invoke_a__b.
 func TestBuild_OperationIDUniqueness(t *testing.T) {
 	defer func() {
 		r := recover()
@@ -391,7 +393,7 @@ func TestBuild_OperationIDUniqueness(t *testing.T) {
 		}
 	}()
 	openapi.Build([]openapi.RouteDescriptor{
-		{Path: "/a-b", Operation: "a-b", Summary: "First"},
+		{Path: "/a--b", Operation: "a--b", Summary: "First"},
 		{Path: "/a/b", Operation: "a/b", Summary: "Second"},
 	})
 }

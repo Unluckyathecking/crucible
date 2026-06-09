@@ -224,8 +224,10 @@ func invokeOperation(operationID, summary string) *Operation {
 }
 
 // OperationIDFromPath derives the OpenAPI operationId for a per-product /v1 invoke route.
-// Both slashes and hyphens are replaced with _ so the result is a valid Go/TS identifier
-// for client SDK codegen (gen-clients.sh splits on _ to produce CamelCase names).
+// Hyphens are replaced with _ and path separators (/) are replaced with __ (double underscore)
+// so the result is a valid Go/TS identifier and multi-segment paths cannot collide with
+// hyphenated single-segment paths (e.g., /a-b → invoke_a_b, /a/b → invoke_a__b).
+// gen-clients.sh uses _ as a split boundary to produce CamelCase SDK method names.
 func OperationIDFromPath(path string) string {
 	if len(path) < 2 || path[0] != '/' {
 		panic("openapi: OperationIDFromPath: path must start with / and have at least one segment: " + path)
@@ -234,7 +236,7 @@ func OperationIDFromPath(path string) string {
 		panic("openapi: OperationIDFromPath: path must not end with /: " + path)
 	}
 	s := path[1:]
-	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "/", "__")
 	s = strings.ReplaceAll(s, "-", "_")
 	return "invoke_" + s
 }
@@ -259,9 +261,9 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 		}
 	}
 	if strings.Contains(rt.Path, "_") {
-		// OperationIDFromPath uses _ as its escape character (replacing / and -).
-		// A literal _ in the path produces ambiguous operationIds (e.g., /a_b and /a-b
-		// both map to invoke_a_b), which breaks SDK codegen. Use - for word separation.
+		// OperationIDFromPath escapes - as _ and / as __.
+		// A literal _ in the path would collide with a hyphen escape (e.g., /a_b and /a-b
+		// both map to invoke_a_b), breaking SDK codegen. Use - for word separation.
 		panic("openapi: RouteDescriptor.Path must not contain underscore (use - for word separation): " + rt.Path)
 	}
 	if rt.Operation == "" {
