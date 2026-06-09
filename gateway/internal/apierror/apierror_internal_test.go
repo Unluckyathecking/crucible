@@ -10,6 +10,79 @@ import (
 	"testing"
 )
 
+// writeOrderRecorder wraps ResponseRecorder to detect if Write is called before WriteHeader.
+// http.ResponseWriter requires WriteHeader to precede Write; reversing this triggers an
+// implicit WriteHeader(200) which corrupts the response status.
+type writeOrderRecorder struct {
+	*httptest.ResponseRecorder
+	headerWritten           bool
+	writeCalledBeforeHeader bool
+}
+
+func (r *writeOrderRecorder) WriteHeader(code int) {
+	r.headerWritten = true
+	r.ResponseRecorder.WriteHeader(code)
+}
+
+func (r *writeOrderRecorder) Write(b []byte) (int, error) {
+	if !r.headerWritten {
+		r.writeCalledBeforeHeader = true
+	}
+	return r.ResponseRecorder.Write(b)
+}
+
+// TestWrite_WriteHeaderBeforeWrite verifies the http.ResponseWriter contract on the normal
+// path and on every fallback path: WriteHeader must be called before Write.
+func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
+	t.Run("normal path", func(t *testing.T) {
+		w := &writeOrderRecorder{ResponseRecorder: httptest.NewRecorder()}
+		Write(w, "rid", http.StatusUnauthorized, UNAUTHORIZED, "invalid key", false)
+		if w.writeCalledBeforeHeader {
+			t.Error("Write was called before WriteHeader on normal path")
+		}
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("first-marshal-fails fallback", func(t *testing.T) {
+		orig := marshalJSON
+		defer func() { marshalJSON = orig }()
+		calls := 0
+		marshalJSON = func(v any) ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("forced")
+			}
+			return json.Marshal(v)
+		}
+		w := &writeOrderRecorder{ResponseRecorder: httptest.NewRecorder()}
+		Write(w, "rid", http.StatusTooManyRequests, RATE_LIMITED, "rate limited", true)
+		if w.writeCalledBeforeHeader {
+			t.Error("Write was called before WriteHeader on first-marshal-fails fallback")
+		}
+		if w.Code != http.StatusTooManyRequests {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+		}
+	})
+
+	t.Run("both-marshals-fail fallback", func(t *testing.T) {
+		orig := marshalJSON
+		defer func() { marshalJSON = orig }()
+		marshalJSON = func(v any) ([]byte, error) {
+			return nil, errors.New("forced")
+		}
+		w := &writeOrderRecorder{ResponseRecorder: httptest.NewRecorder()}
+		Write(w, "rid", http.StatusInternalServerError, INTERNAL, "err", false)
+		if w.writeCalledBeforeHeader {
+			t.Error("Write was called before WriteHeader on both-marshals-fail fallback")
+		}
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+		}
+	})
+}
+
 // TestWrite_OverwritesContentTypeAndCacheControl documents that Write takes
 // unconditional ownership of Content-Type and Cache-Control. Any pre-existing
 // values for those two headers are replaced; this is intentional — error
