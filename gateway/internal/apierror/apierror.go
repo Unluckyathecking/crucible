@@ -50,27 +50,28 @@ type envelope struct {
 // Unexported: only code within this package (including apierror_internal_test.go) can mutate it.
 var marshalJSON = json.Marshal
 
-// Write unconditionally sets Content-Type: application/json and Cache-Control: no-store
-// (overriding any pre-existing values for those two headers), writes status, and
-// encodes the standard error envelope. All other response headers already set by the
-// caller are not modified. requestID is passed as a plain string by each call site so
-// this package needs no context or middleware import.
+// Write unconditionally sets Content-Type: application/json, Cache-Control: no-store,
+// and X-Request-ID (when requestID is non-empty), overriding any pre-existing values for
+// those headers. All other response headers already set by the caller are not modified.
+// requestID is passed as a plain string by each call site so this package needs no context
+// or middleware import.
 // Uses json.Marshal (not json.Encoder) so the body has no trailing newline.
-// Marshal and fallback both run before WriteHeader so a body is always available
-// when the status is committed; callers never see a headers-only response.
+// Marshal and all fallbacks run before WriteHeader so a body is always available when the
+// status is committed; callers never see a headers-only response.
 func Write(w http.ResponseWriter, requestID string, status int, code, message string, retryable bool) {
-	b, err := marshalJSON(envelope{
+	var b []byte
+	if raw, merr := marshalJSON(envelope{
 		Error: Error{
 			Code:      code,
 			Message:   message,
 			Retryable: retryable,
 			RequestID: requestID,
 		},
-	})
-	if err != nil {
+	}); merr == nil {
+		b = raw
+	} else {
 		// Unreachable with current field types (all string/bool). Guard so a body is
 		// always emitted if Error ever gains a failing json.Marshaler field.
-		// Use a fresh variable (b2) so the assignment to b below is unambiguous.
 		// Use real json.Marshal to bypass any injected marshalJSON (test-only path).
 		env := envelope{Error: Error{Code: code, Message: message, Retryable: retryable, RequestID: requestID}}
 		if b2, ferr := json.Marshal(env); ferr == nil {
@@ -92,6 +93,9 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	if requestID != "" {
+		w.Header().Set("X-Request-ID", requestID)
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(b) // client may have disconnected; net/http handles connection cleanup
 }

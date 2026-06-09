@@ -36,7 +36,7 @@ every clone.
 
 ## Decomposition (7 subunits)
 
-1. **`internal/apierror` package skeleton** — `Error` struct, `Write`/`Respond`
+1. **`internal/apierror` package skeleton** — `Error` struct, `Write`
    func `(w, requestID, status, code, message, retryable)`, and exported code
    constants (`UNAUTHORIZED`, `INTERNAL`, `RATE_LIMITED`, `QUOTA_EXCEEDED`,
    `BAD_REQUEST`, `WORKER_UNREACHABLE`, `WORKER_BAD_RESPONSE`, `STRIPE_ERROR`,

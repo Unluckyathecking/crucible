@@ -15,7 +15,8 @@ type ctxKey string
 const keyCtxKey ctxKey = "auth.key"
 
 // Middleware gates downstream handlers behind Bearer-token API key auth.
-// /healthz must be mounted outside this middleware so liveness checks still work.
+// /healthz must be mounted outside this middleware: liveness probes send no
+// Authorization header, so this middleware would reject them with 401.
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

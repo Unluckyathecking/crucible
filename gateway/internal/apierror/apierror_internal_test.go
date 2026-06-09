@@ -10,17 +10,20 @@ import (
 	"testing"
 )
 
-// writeOrderRecorder wraps ResponseRecorder to detect if Write is called before WriteHeader.
+// writeOrderRecorder wraps ResponseRecorder to detect if Write is called before WriteHeader
+// and to count WriteHeader invocations (must be exactly 1 per http.ResponseWriter contract).
 // http.ResponseWriter requires WriteHeader to precede Write; reversing this triggers an
 // implicit WriteHeader(200) which corrupts the response status.
 type writeOrderRecorder struct {
 	*httptest.ResponseRecorder
 	headerWritten           bool
+	headerWriteCount        int
 	writeCalledBeforeHeader bool
 }
 
 func (r *writeOrderRecorder) WriteHeader(code int) {
 	r.headerWritten = true
+	r.headerWriteCount++
 	r.ResponseRecorder.WriteHeader(code)
 }
 
@@ -40,8 +43,14 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		if w.writeCalledBeforeHeader {
 			t.Error("Write was called before WriteHeader on normal path")
 		}
+		if w.headerWriteCount != 1 {
+			t.Errorf("WriteHeader called %d times, want exactly 1", w.headerWriteCount)
+		}
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+		}
+		if got := w.Header().Get("X-Request-ID"); got != "rid" {
+			t.Errorf("X-Request-ID = %q, want %q", got, "rid")
 		}
 	})
 
@@ -61,6 +70,9 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		if w.writeCalledBeforeHeader {
 			t.Error("Write was called before WriteHeader on first-marshal-fails fallback")
 		}
+		if w.headerWriteCount != 1 {
+			t.Errorf("WriteHeader called %d times, want exactly 1", w.headerWriteCount)
+		}
 		if w.Code != http.StatusTooManyRequests {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
 		}
@@ -76,6 +88,9 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		Write(w, "rid-fallback", http.StatusInternalServerError, INTERNAL, "fallback-msg", false)
 		if w.writeCalledBeforeHeader {
 			t.Error("Write was called before WriteHeader on both-marshals-fail fallback")
+		}
+		if w.headerWriteCount != 1 {
+			t.Errorf("WriteHeader called %d times, want exactly 1", w.headerWriteCount)
 		}
 		if w.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
@@ -122,10 +137,9 @@ func TestWrite_OverwritesContentTypeAndCacheControl(t *testing.T) {
 }
 
 // TestWrite_DoesNotClobberOtherResponseHeaders verifies that Write's unconditional
-// setting of Content-Type and Cache-Control does not disturb any other headers the
-// caller has already set. In practice this protects the Retry-After and X-RateLimit-*
-// headers written by ratelimit.Middleware immediately before it calls Write.
-// Write takes ownership of Content-Type and Cache-Control only.
+// setting of Content-Type, Cache-Control, and X-Request-ID does not disturb any other
+// headers the caller has already set. In practice this protects the Retry-After and
+// X-RateLimit-* headers written by ratelimit.Middleware immediately before it calls Write.
 func TestWrite_DoesNotClobberOtherResponseHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	w.Header().Set("Retry-After", "60")
@@ -144,6 +158,20 @@ func TestWrite_DoesNotClobberOtherResponseHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := w.Header().Get("X-Request-ID"); got != "rid" {
+		t.Errorf("X-Request-ID = %q, want %q; Write must echo requestID as response header", got, "rid")
+	}
+}
+
+// TestWrite_EmptyRequestIDOmitsXRequestIDHeader verifies that Write does not emit an
+// empty X-Request-ID header when requestID is "". The header is only set when a
+// non-empty requestID is available; an empty header value would confuse clients.
+func TestWrite_EmptyRequestIDOmitsXRequestIDHeader(t *testing.T) {
+	w := httptest.NewRecorder()
+	Write(w, "", http.StatusInternalServerError, INTERNAL, "error", false)
+	if got := w.Header().Get("X-Request-ID"); got != "" {
+		t.Errorf("X-Request-ID = %q, want empty; Write must not set header when requestID is empty", got)
 	}
 }
 

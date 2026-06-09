@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
@@ -358,6 +359,55 @@ func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
 	}
 	if got.Error.RequestID != wantRID {
 		t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, wantRID)
+	}
+}
+
+// TestMiddleware_DeadlineExceededNotRetryable verifies that context.DeadlineExceeded
+// (distinct from context.Canceled) is also treated as non-retryable. Both are checked
+// via errors.Is in middleware.go; this test ensures a future refactor to err == context.Canceled
+// would be caught.
+func TestMiddleware_DeadlineExceededNotRetryable(t *testing.T) {
+	db := newTestPostgres(t)
+	t.Cleanup(db.Close)
+	rdb := newTestRedis(t)
+	s := NewStore(db, rdb, testSalt)
+	t.Cleanup(s.Close)
+
+	fakeKey := strings.Repeat("C", PrefixLen) + "DEADLINETEST"
+	prefix := fakeKey[:PrefixLen]
+	rdb.Del(context.Background(), "auth:"+prefix)
+	rdb.Del(context.Background(), "auth:miss:"+prefix)
+
+	// Use a context that has already exceeded its deadline.
+	const wantRID = "test-rid-deadline-exceeded"
+	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Time{}) // zero time = already expired
+	defer cancel()
+	reqCtx := context.WithValue(deadlineCtx, mwpkg.RequestIDKey, wantRID)
+
+	h := Middleware(s)(okHandler)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+fakeKey)
+	req = req.WithContext(reqCtx)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Error struct {
+			Code      string `json:"code"`
+			Retryable bool   `json:"retryable"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if got.Error.Code != "INTERNAL" {
+		t.Errorf("error.code = %q, want INTERNAL", got.Error.Code)
+	}
+	if got.Error.Retryable {
+		t.Error("error.retryable = true, want false; context.DeadlineExceeded is not retryable")
 	}
 }
 
