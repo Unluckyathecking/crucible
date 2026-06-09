@@ -305,6 +305,61 @@ func TestMiddleware_PostgresMissColdPath(t *testing.T) {
 	}
 }
 
+// TestMiddleware_StoreErrorReturnsInternal verifies that when the auth store returns a
+// transient (non-ErrKeyNotFound) error, the middleware emits 500 INTERNAL with retryable:true
+// and echoes the request-id. Uses a closed pgxpool to force a connection error on the
+// Postgres cold path without requiring a custom mock.
+func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
+	db := newTestPostgres(t)
+	rdb := newTestRedis(t)
+	s := NewStore(db, rdb, testSalt)
+	t.Cleanup(s.Close)
+
+	// Build a fake key long enough to pass PrefixLen; no DB row or Redis entry
+	// for this prefix so Lookup reaches the Postgres cold path.
+	fakeKey := strings.Repeat("B", PrefixLen) + "FAKESTOREERR"
+	prefix := fakeKey[:PrefixLen]
+	ctx := context.Background()
+	rdb.Del(ctx, "auth:"+prefix)
+	rdb.Del(ctx, "auth:miss:"+prefix)
+
+	// Close the pool so the Postgres cold-path query returns a pool-closed error,
+	// which is not ErrKeyNotFound and therefore activates the INTERNAL 500 branch.
+	db.Close()
+
+	const wantRID = "test-rid-auth-store-error"
+	h := Middleware(s)(okHandler)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+fakeKey)
+	req = req.WithContext(context.WithValue(req.Context(), mwpkg.RequestIDKey, wantRID))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if got.Error.Code != "INTERNAL" {
+		t.Errorf("error.code = %q, want INTERNAL", got.Error.Code)
+	}
+	if !got.Error.Retryable {
+		t.Error("error.retryable = false, want true; transient store errors must be retryable")
+	}
+	if got.Error.RequestID != wantRID {
+		t.Errorf("error.request_id = %q, want %q", got.Error.RequestID, wantRID)
+	}
+}
+
 func TestFromContext_NilWhenAbsent(t *testing.T) {
 	k := FromContext(context.Background())
 	if k != nil {

@@ -188,13 +188,15 @@ func readyz(redis, pg HealthChecker) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(readyzResponse{
+		if err := json.NewEncoder(w).Encode(readyzResponse{
 			Status: overall,
 			Checks: map[string]string{
 				"redis":    redisStatus,
 				"postgres": pgStatus,
 			},
-		})
+		}); err != nil {
+			return // client disconnected after headers committed
+		}
 	}
 }
 
@@ -278,7 +280,9 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		if resp.UnitsLabel != "" {
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
 		}
-		_ = json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			return // client disconnected after headers committed
+		}
 	}
 }
 
@@ -322,7 +326,9 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
+			return // client disconnected after headers committed
+		}
 	}
 }
 
@@ -361,7 +367,9 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
+			return // client disconnected after headers committed
+		}
 	}
 }
 
