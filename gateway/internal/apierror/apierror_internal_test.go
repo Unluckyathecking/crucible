@@ -52,8 +52,8 @@ func TestWrite_DoubleFallbackPreservesCallerValues(t *testing.T) {
 	orig := marshalJSON
 	defer func() { marshalJSON = orig }()
 
-	// Both marshalJSON calls fail; Write falls through to real json.Marshal which
-	// cannot fail for string/bool fields and must still preserve caller's values.
+	// Both marshalJSON calls fail; Write falls through to fmt.Sprintf with %q,
+	// which cannot fail and preserves all caller values including requestID.
 	marshalJSON = func(v any) ([]byte, error) {
 		return nil, errors.New("forced marshal failure")
 	}

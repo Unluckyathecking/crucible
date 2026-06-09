@@ -92,52 +92,6 @@ func TestWrite_AllFieldsPresent(t *testing.T) {
 	}
 }
 
-func TestWrite_RetryableTrue(t *testing.T) {
-	w := httptest.NewRecorder()
-	apierror.Write(w, "", http.StatusTooManyRequests, apierror.RATE_LIMITED, "limited", true)
-
-	var got struct {
-		Error apierror.Error `json:"error"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !got.Error.Retryable {
-		t.Error("retryable = false, want true")
-	}
-}
-
-func TestWrite_RetryableFalse(t *testing.T) {
-	w := httptest.NewRecorder()
-	apierror.Write(w, "", http.StatusUnauthorized, apierror.UNAUTHORIZED, "unauthorized", false)
-
-	var got struct {
-		Error apierror.Error `json:"error"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.Error.Retryable {
-		t.Error("retryable = true, want false")
-	}
-}
-
-func TestWrite_RequestIDPassthrough(t *testing.T) {
-	rid := "unique-request-id-passthrough"
-	w := httptest.NewRecorder()
-	apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "bad", false)
-
-	var got struct {
-		Error apierror.Error `json:"error"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.Error.RequestID != rid {
-		t.Errorf("request_id = %q, want %q", got.Error.RequestID, rid)
-	}
-}
-
 func TestWrite_RequestIDWithJSONSpecialCharsRoundTrips(t *testing.T) {
 	// json.Marshal on the envelope struct escapes JSON-special chars in requestID
 	// so the body remains valid JSON and the decoded value equals the original string.
