@@ -20,6 +20,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
 
 // testInfra groups the real Postgres + Redis dependencies needed by integration tests.
@@ -601,6 +602,7 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	longKey := strings.Repeat("k", 256)
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
 	req.Header.Set("Idempotency-Key", longKey)
+	req = req.WithContext(context.WithValue(req.Context(), mwpkg.RequestIDKey, "test-rid-envelope"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -634,6 +636,9 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	}
 	if obj.Retryable {
 		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
+	}
+	if obj.RequestID == "" {
+		t.Error("error.request_id must not be empty when RequestIDKey is set in context")
 	}
 }
 

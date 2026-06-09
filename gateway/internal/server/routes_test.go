@@ -18,6 +18,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
@@ -604,7 +605,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 	p := proxy.New(worker.URL, 5*time.Second, 0)
 	h := invoke(p, nil, "sanitized", "echo")
 
+	const testRID = "test-rid-routes"
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
+	req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, testRID))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -640,6 +643,9 @@ func TestInvokeErrorEnvelopeShape(t *testing.T) {
 	}
 	if obj.Message == "" {
 		t.Error("error.message must not be empty")
+	}
+	if obj.RequestID != testRID {
+		t.Errorf("error.request_id = %q, want %q", obj.RequestID, testRID)
 	}
 }
 

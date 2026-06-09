@@ -36,8 +36,6 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "invalid api key", false)
 					return
 				}
-				// Log the internal error for operational visibility before returning generic response
-				// TODO: wire structured logger (see github.com/org/repo/issues/XXX).
 				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "auth lookup failed", false)
 				return
 			}
