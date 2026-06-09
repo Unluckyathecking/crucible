@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
@@ -196,7 +198,12 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 			}
 		}
 
-		ctx := auth.WithTestKey(context.Background(), key)
+		const testRID = "test-rid-ratelimit-429"
+		ctx := context.WithValue(
+			auth.WithTestKey(context.Background(), key),
+			mwpkg.RequestIDKey,
+			testRID,
+		)
 		req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
 		rec := httptest.NewRecorder()
 
@@ -212,6 +219,33 @@ func TestMiddleware_EmitsRateLimitHeaders(t *testing.T) {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 		checkRateLimitHeaders(t, rec.Header(), planLimit, 0)
+
+		// Verify the 429 body is the canonical four-field error envelope.
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("429 body not valid JSON: %v", err)
+		}
+		var errObj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(envelope["error"], &errObj); err != nil {
+			t.Fatalf("error object decode failed: %v", err)
+		}
+		if errObj.Code != "RATE_LIMITED" {
+			t.Errorf("error.code = %q, want RATE_LIMITED", errObj.Code)
+		}
+		if errObj.Message == "" {
+			t.Error("error.message must not be empty")
+		}
+		if !errObj.Retryable {
+			t.Error("error.retryable = false, want true; rate-limit 429 must be retryable")
+		}
+		if errObj.RequestID != testRID {
+			t.Errorf("error.request_id = %q, want %q", errObj.RequestID, testRID)
+		}
 	})
 }
 
@@ -352,5 +386,16 @@ func TestMiddleware_FailOpenOnRedisError(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d (fail-open on Redis error)", rec.Code, http.StatusOK)
+	}
+}
+
+// TestRetryAfterMatchesWindowSeconds guards the invariant that retryAfterSeconds == windowSeconds.
+// Both constants represent the same 60 s fixed window; divergence would send clients a Retry-After
+// value that does not match the actual window expiry, making retry guidance incorrect.
+// The const retryAfterSeconds = windowSeconds assignment already guarantees this at compile time,
+// but an explicit test makes the coupling visible and prevents future refactors from breaking it.
+func TestRetryAfterMatchesWindowSeconds(t *testing.T) {
+	if retryAfterSeconds != windowSeconds {
+		t.Errorf("retryAfterSeconds (%d) != windowSeconds (%d); Retry-After must match the actual window", retryAfterSeconds, windowSeconds)
 	}
 }

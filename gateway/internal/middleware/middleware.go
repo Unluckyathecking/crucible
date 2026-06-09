@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 )
 
@@ -54,9 +55,7 @@ func Recovery(next http.Handler) http.Handler {
 					Str("request_id", rid).
 					Interface("panic", rec).
 					Msg("panic in handler")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL","message":"internal error"}}`))
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "internal error", false)
 			}
 		}()
 		next.ServeHTTP(w, r)

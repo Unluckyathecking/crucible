@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +12,9 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
 
 const (
@@ -77,6 +78,8 @@ func (c *captureWriter) flush(w http.ResponseWriter) {
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+
 			if store == nil || r.Method != http.MethodPost {
 				next.ServeHTTP(w, r)
 				return
@@ -88,7 +91,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 				return
 			}
 			if len(key) > maxKeyLen {
-				writeIDError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID", fmt.Sprintf("Idempotency-Key too long (max %d characters)", maxKeyLen), false)
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.IDEMPOTENCY_KEY_INVALID, fmt.Sprintf("Idempotency-Key too long (max %d characters)", maxKeyLen), false)
 				return
 			}
 
@@ -110,7 +113,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 			origBody.Close()
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			if err != nil {
-				writeIDError(w, http.StatusBadRequest, "BAD_REQUEST", "could not read body", false)
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "could not read body", false)
 				return
 			}
 			fp := fingerprint(r.Method, bodyBytes, r.URL.RequestURI())
@@ -140,7 +143,7 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 						return
 					}
 					if !claimed {
-						writeIDError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "concurrent request with same key", false)
+						apierror.Write(w, rid, http.StatusConflict, apierror.IDEMPOTENCY_CONFLICT, "concurrent request with same key", false)
 						return
 					}
 					// Fall through: we now own the key.
@@ -150,10 +153,10 @@ func Middleware(store *Store) func(http.Handler) http.Handler {
 					// re-execute the worker — exactly the double-billing this module prevents.
 					// 422 permanently prevents the mismatched body from executing; the
 					// original fingerprint's replay remains available and is always safe.
-					writeIDError(w, http.StatusUnprocessableEntity, "IDEMPOTENCY_KEY_REUSE", "key reused with different request body", false)
+					apierror.Write(w, rid, http.StatusUnprocessableEntity, apierror.IDEMPOTENCY_KEY_REUSE, "key reused with different request body", false)
 					return
 				} else if entry.StatusCode == nil {
-					writeIDError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "concurrent request with same key", false)
+					apierror.Write(w, rid, http.StatusConflict, apierror.IDEMPOTENCY_CONFLICT, "concurrent request with same key", false)
 					return
 				} else {
 					// Completed entry: replay stored response without invoking the worker.
@@ -249,15 +252,3 @@ func fingerprint(method string, body []byte, requestURI string) []byte {
 	return h.Sum(nil)
 }
 
-// writeIDError writes a JSON error envelope matching the gateway's stable shape.
-func writeIDError(w http.ResponseWriter, status int, code, msg string, retryable bool) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"code":      code,
-			"message":   msg,
-			"retryable": retryable,
-		},
-	})
-}

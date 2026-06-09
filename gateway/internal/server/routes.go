@@ -21,6 +21,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
@@ -203,12 +204,15 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		key := auth.FromContext(r.Context())
 
 		var payload json.RawMessage
+		// r.Body is already wrapped by http.MaxBytesReader via mw.BodyLimit at the router level;
+		// reads beyond cfg.BodyLimitBytes return an error the decoder propagates here as BAD_REQUEST.
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json body", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false) // false: malformed JSON is permanent; retrying with the same body will not succeed
 			return
 		}
 
 		req := &proxy.InvokeRequest{RequestID: rid, Operation: operation, Payload: payload}
+		// key is nil in tests that bypass auth.Middleware; skip customer fields safely.
 		if key != nil {
 			req.CustomerID = key.Customer.ID.String()
 			req.Plan = key.Customer.Plan
@@ -221,25 +225,34 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker invocation failed")
-			writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			return
 		}
 
 		// Worker structured errors: expose or sanitize based on config.
 		if resp.Error != nil {
 			// Guard the metric label against an empty Code from a buggy or non-SDK worker:
-			// an empty Code would open an unlabelled code="" series. Mirrors the
-			// path=="unmatched" fallback used by the request middleware.
-			errCode := resp.Error.Code
-			if errCode == "" {
-				errCode = "unknown"
+			// an empty Code would open an unlabelled code="" series.
+			metricCode := resp.Error.Code
+			if metricCode == "" {
+				metricCode = apierror.UNKNOWN
 			}
-			observability.WorkerErrorsTotal.WithLabelValues(errCode).Inc()
+			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
+			// Sanitized mode always returns WORKER_UNREACHABLE — the customer-facing
+			// contract must not change regardless of what the worker sends.
+			// Full mode passes the worker's error verbatim; guard empty Code so
+			// customers never receive "code":"" (an empty code is not correlatable).
+			errCode, errMsg, errRetryable := apierror.WORKER_UNREACHABLE, "worker unavailable", true
 			if errorExposure == "full" {
-				writeJSONError(w, http.StatusBadGateway, resp.Error.Code, resp.Error.Message, resp.Error.Retryable)
-			} else {
-				writeJSONError(w, http.StatusBadGateway, "WORKER_UNREACHABLE", "worker unavailable", true)
+				errCode = resp.Error.Code
+				if errCode == "" {
+					// UNKNOWN is reserved for Prometheus metric labels; WORKER_BAD_RESPONSE
+					// is the correct customer-facing fallback for a worker that omits the code.
+					errCode = apierror.WORKER_BAD_RESPONSE
+				}
+				errMsg, errRetryable = resp.Error.Message, resp.Error.Retryable
 			}
+			apierror.Write(w, rid, http.StatusBadGateway, errCode, errMsg, errRetryable)
 			return
 		}
 
@@ -251,11 +264,12 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker returned success with billable_units<1 — rejecting")
-			writeJSONError(w, http.StatusBadGateway, "WORKER_BAD_RESPONSE", "worker contract violation", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker contract violation", false)
 			return
 		}
 
 		// Record usage on successful (non-error) responses. Best-effort; do not fail the customer on write error.
+		// key is nil in tests that bypass auth.Middleware; skip customer fields safely.
 		if key != nil {
 			if err := recorder.Record(r.Context(), key.Customer.ID, key.ID, operation, rid, resp.BillableUnits); err != nil {
 				log.Warn().Err(err).Str("request_id", rid).Msg("usage record failed")
@@ -279,13 +293,14 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 // Response: {"url":"https://checkout.stripe.com/..."}
 func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		if d.Checkout == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return
 		}
 		key := auth.FromContext(r.Context())
 		if key == nil {
-			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
 		}
 
@@ -293,22 +308,22 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 			PlanID string `json:"plan_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PlanID == "" {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "plan_id required", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "plan_id required", false)
 			return
 		}
 		if !planIDRE.MatchString(body.PlanID) {
-			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid plan_id", false)
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid plan_id", false)
 			return
 		}
 
 		redirectURL, err := d.Checkout.CreateCheckoutSession(r.Context(), key.Customer.ID.String(), body.PlanID)
 		if err != nil {
 			if errors.Is(err, billing.ErrPlanNotFound) {
-				writeJSONError(w, http.StatusUnprocessableEntity, "PLAN_NOT_FOUND", "plan not found or not upgradeable", false)
+				apierror.Write(w, rid, http.StatusUnprocessableEntity, apierror.PLAN_NOT_FOUND, "plan not found or not upgradeable", false)
 				return
 			}
 			log.Error().Err(err).Msg("create checkout session failed")
-			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.STRIPE_ERROR, "billing unavailable", false)
 			return
 		}
 
@@ -322,31 +337,32 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 // Response: {"url":"https://billing.stripe.com/..."}
 func billingPortalHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		if d.Checkout == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "billing not configured", false)
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return
 		}
 		key := auth.FromContext(r.Context())
 		if key == nil {
-			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "no auth context", false)
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
 		}
 
 		stripeCustomerID, err := d.Checkout.LookupStripeCustomerID(r.Context(), key.Customer.ID.String())
 		if err != nil {
 			log.Error().Err(err).Msg("lookup stripe customer id failed")
-			writeJSONError(w, http.StatusInternalServerError, "INTERNAL", "lookup failed", false)
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
 			return
 		}
 		if stripeCustomerID == "" {
-			writeJSONError(w, http.StatusPaymentRequired, "NO_STRIPE_CUSTOMER", "complete checkout first", false)
+			apierror.Write(w, rid, http.StatusPaymentRequired, apierror.NO_STRIPE_CUSTOMER, "complete checkout first", false)
 			return
 		}
 
 		redirectURL, err := d.Checkout.CreatePortalSession(r.Context(), stripeCustomerID)
 		if err != nil {
 			log.Error().Err(err).Msg("create portal session failed")
-			writeJSONError(w, http.StatusBadGateway, "STRIPE_ERROR", "billing unavailable", false)
+			apierror.Write(w, rid, http.StatusBadGateway, apierror.STRIPE_ERROR, "billing unavailable", false)
 			return
 		}
 
@@ -355,15 +371,3 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 	}
 }
 
-func writeJSONError(w http.ResponseWriter, status int, code, msg string, retryable bool) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"code":      code,
-			"message":   msg,
-			"retryable": retryable,
-		},
-	})
-}

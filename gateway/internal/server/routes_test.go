@@ -15,9 +15,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
@@ -594,6 +596,226 @@ func searchSubstring(s, substr string) bool {
 	return false
 }
 
+// TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
+// (top-level "error" key only, code/message/retryable/request_id present) on
+// two invoke error paths: retryable=false (400 bad JSON body) and
+// retryable=true (502 worker unreachable).
+func TestInvokeErrorEnvelopeShape(t *testing.T) {
+	assertShape := func(t *testing.T, w *httptest.ResponseRecorder, wantStatus int, wantRetryable bool, rid string) {
+		t.Helper()
+		if w.Code != wantStatus {
+			t.Fatalf("expected %d, got %d", wantStatus, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", cc)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse envelope: %v", err)
+		}
+		if len(top) != 1 {
+			t.Errorf("envelope has %d top-level keys, want 1 (\"error\")", len(top))
+		}
+		errRaw, ok := top["error"]
+		if !ok {
+			t.Fatal("envelope missing top-level \"error\" key")
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(errRaw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&obj); err != nil {
+			t.Fatalf("error object has unexpected field or missing field: %v", err)
+		}
+		if obj.Code == "" {
+			t.Error("error.code must not be empty")
+		}
+		if obj.Message == "" {
+			t.Error("error.message must not be empty")
+		}
+		if obj.Retryable != wantRetryable {
+			t.Errorf("error.retryable = %v, want %v", obj.Retryable, wantRetryable)
+		}
+		if obj.RequestID != rid {
+			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
+		}
+	}
+
+	t.Run("retryable=false (400 bad JSON body)", func(t *testing.T) {
+		worker := successWorker(1, "")
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "sanitized", "echo")
+
+		const rid = "test-rid-routes-400"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadRequest, false, rid)
+	})
+
+	t.Run("retryable=true (502 worker unreachable)", func(t *testing.T) {
+		// Close the worker before the request so the proxy gets connection refused,
+		// which triggers WORKER_UNREACHABLE (retryable=true).
+		worker := successWorker(1, "")
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		worker.Close()
+
+		h := invoke(p, nil, "sanitized", "echo")
+		const rid = "test-rid-routes-502"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadGateway, true, rid)
+	})
+
+	t.Run("full mode worker error passes through with four-field envelope", func(t *testing.T) {
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "INVALID_INPUT",
+					"message":   "field required",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "full", "echo")
+		const rid = "test-rid-routes-full"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		assertShape(t, w, http.StatusBadGateway, false, rid)
+		// In full mode the worker's own code must be forwarded, not WORKER_UNREACHABLE.
+		var top map[string]json.RawMessage
+		_ = json.Unmarshal(w.Body.Bytes(), &top)
+		var obj struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(top["error"], &obj)
+		if obj.Code != "INVALID_INPUT" {
+			t.Errorf("full mode: error.code = %q, want INVALID_INPUT", obj.Code)
+		}
+	})
+
+	t.Run("full mode empty worker error code falls back to WORKER_BAD_RESPONSE", func(t *testing.T) {
+		// Full mode guards against empty Code from non-SDK workers: an empty code
+		// is not correlatable. UNKNOWN is reserved for Prometheus metric labels only;
+		// WORKER_BAD_RESPONSE is the correct customer-facing fallback.
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "",
+					"message":   "malformed error from worker",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "full", "echo")
+		const rid = "test-rid-routes-bad-code"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(top["error"], &obj); err != nil {
+			t.Fatalf("parse error object: %v", err)
+		}
+		if obj.Code != apierror.WORKER_BAD_RESPONSE {
+			t.Errorf("full mode empty worker code: error.code = %q, want %q", obj.Code, apierror.WORKER_BAD_RESPONSE)
+		}
+		if obj.RequestID != rid {
+			t.Errorf("error.request_id = %q, want %q", obj.RequestID, rid)
+		}
+	})
+
+	t.Run("sanitized mode empty worker error code still returns WORKER_UNREACHABLE", func(t *testing.T) {
+		// Sanitized mode must return WORKER_UNREACHABLE for ALL worker errors — including
+		// the edge case where the worker returns an empty error code. The customer-facing
+		// contract (code=WORKER_UNREACHABLE, retryable=true) must not vary by whether the
+		// worker's code field is empty or non-empty.
+		worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":      "",
+					"message":   "malformed error from worker",
+					"retryable": false,
+				},
+				"billable_units": 1,
+			})
+		}))
+		defer worker.Close()
+		p := proxy.New(worker.URL, 5*time.Second, 0)
+		h := invoke(p, nil, "sanitized", "echo")
+		const rid = "test-rid-sanitized-bad-code"
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(context.WithValue(req.Context(), mw.RequestIDKey, rid))
+		w := httptest.NewRecorder()
+		h(w, req)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+		var obj struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(top["error"]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&obj); err != nil {
+			t.Fatalf("parse error object: %v", err)
+		}
+		if obj.Code != "WORKER_UNREACHABLE" {
+			t.Errorf("sanitized empty code: error.code = %q, want WORKER_UNREACHABLE", obj.Code)
+		}
+		if obj.Message != "worker unavailable" {
+			t.Errorf("sanitized empty code: error.message = %q, want %q", obj.Message, "worker unavailable")
+		}
+		if !obj.Retryable {
+			t.Error("sanitized empty code: error.retryable = false, want true (WORKER_UNREACHABLE is retryable)")
+		}
+		if obj.RequestID != rid {
+			t.Errorf("sanitized empty code: error.request_id = %q, want %q", obj.RequestID, rid)
+		}
+	})
+}
+
 // --- Billing route tests ---
 
 // mockBillingService is a stub BillingService for billing route tests.
@@ -780,65 +1002,3 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestWriteJSONError(t *testing.T) {
-	cases := []struct {
-		name      string
-		status    int
-		code      string
-		msg       string
-		retryable bool
-	}{
-		{"bad_request", http.StatusBadRequest, "BAD_INPUT", "invalid payload", false},
-		{"rate_limited", http.StatusTooManyRequests, "RATE_LIMITED", "too many requests", true},
-		{"service_unavailable", http.StatusServiceUnavailable, "WORKER_UNAVAILABLE", "worker unreachable", true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			writeJSONError(w, tc.status, tc.code, tc.msg, tc.retryable)
-
-			if w.Code != tc.status {
-				t.Errorf("got HTTP status %d, want %d", w.Code, tc.status)
-			}
-			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-				t.Errorf("Content-Type %q, want application/json", ct)
-			}
-
-			// Verify top-level has exactly one key: "error".
-			var top map[string]json.RawMessage
-			if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
-				t.Fatalf("failed to decode body: %v", err)
-			}
-			if len(top) != 1 {
-				t.Fatalf("body has %d top-level keys, want 1 (\"error\")", len(top))
-			}
-			errRaw, ok := top["error"]
-			if !ok {
-				t.Fatal("body missing top-level \"error\" key")
-			}
-
-			// Verify error object has exactly three fields with correct values.
-			type errorObj struct {
-				Code      string `json:"code"`
-				Message   string `json:"message"`
-				Retryable bool   `json:"retryable"`
-			}
-			dec := json.NewDecoder(bytes.NewReader(errRaw))
-			dec.DisallowUnknownFields()
-			var obj errorObj
-			if err := dec.Decode(&obj); err != nil {
-				t.Fatalf("failed to decode error object (unexpected field?): %v", err)
-			}
-			if obj.Code != tc.code {
-				t.Errorf("error.code %q, want %q", obj.Code, tc.code)
-			}
-			if obj.Message != tc.msg {
-				t.Errorf("error.message %q, want %q", obj.Message, tc.msg)
-			}
-			if obj.Retryable != tc.retryable {
-				t.Errorf("error.retryable %v, want %v", obj.Retryable, tc.retryable)
-			}
-		})
-	}
-}

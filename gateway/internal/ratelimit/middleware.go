@@ -6,11 +6,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
+
+// retryAfterSeconds is the RFC 7231 Retry-After value sent on 429 responses.
+// Must stay equal to windowSeconds in bucket.go — both express the same 60 s
+// sliding window enforced by the Lua script.
+const retryAfterSeconds = windowSeconds
 
 // Middleware enforces per-customer rate limits based on their plan and sets
 // RateLimit-* / X-RateLimit-* headers on every response where the count is known.
@@ -28,19 +35,19 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 			remaining, err := bucket.Allow(r.Context(), key.Customer.ID.String(), limit)
 			// Capture once after Allow returns so both 429 and success paths use the
 			// same instant for RateLimit-Reset — eliminates any split-millisecond drift
-			// between the two branches.
+			// between the two branches. time.Minute matches the 60 s sliding window
+			// used by the Lua script in bucket.go.
 			resetAt := time.Now().Add(time.Minute)
-			// Allow returns only nil or ErrLimited; errors.Is(nil, ErrLimited) is false.
+			// errors.Is handles wrapped errors correctly if Allow ever wraps ErrLimited.
 			if errors.Is(err, ErrLimited) {
 				observability.RateLimitedTotal.Inc()
 				// limit > 0 is guaranteed here (unlimited skips Allow), but guard anyway.
 				if limit > 0 {
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", strconv.Itoa(windowSeconds))
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"rate limit exceeded","retryable":true}}`))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return
 			}
 			// Emit rate-limit headers only when the count is reliable (not an unlimited

@@ -20,6 +20,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
 
 // testInfra groups the real Postgres + Redis dependencies needed by integration tests.
@@ -584,8 +585,8 @@ func TestMiddleware_Panic_ReleasesKey(t *testing.T) {
 	}
 }
 
-// TestMiddleware_ErrorEnvelope verifies acceptance criterion 8:
-// error envelopes have the stable shape (code + message + retryable).
+// TestMiddleware_ErrorEnvelope verifies that idempotency error responses
+// carry all four canonical fields: code, message, retryable, and request_id.
 func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	pool := newTestPool(t)
 	if err := db.Apply(context.Background(), pool); err != nil {
@@ -601,6 +602,7 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	longKey := strings.Repeat("k", 256)
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
 	req.Header.Set("Idempotency-Key", longKey)
+	req = req.WithContext(context.WithValue(req.Context(), mwpkg.RequestIDKey, "test-rid-envelope"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -615,10 +617,23 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	if !ok {
 		t.Fatal("envelope missing 'error' key")
 	}
+	// Verify all four canonical fields are present in the JSON (DisallowUnknownFields
+	// only catches extra fields, not absent ones, so check presence explicitly).
+	var objMap map[string]any
+	if err := json.Unmarshal(errRaw, &objMap); err != nil {
+		t.Fatalf("decode error object as map: %v", err)
+	}
+	for _, field := range []string{"code", "message", "retryable", "request_id"} {
+		if _, ok := objMap[field]; !ok {
+			t.Errorf("field %q missing from error object", field)
+		}
+	}
+
 	var obj struct {
 		Code      string `json:"code"`
 		Message   string `json:"message"`
 		Retryable bool   `json:"retryable"`
+		RequestID string `json:"request_id"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(errRaw))
 	dec.DisallowUnknownFields()
@@ -631,8 +646,11 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 	if obj.Message == "" {
 		t.Error("error.message must not be empty")
 	}
-	if obj.Retryable {
-		t.Error("IDEMPOTENCY_KEY_INVALID must not be retryable")
+	if obj.Retryable != false {
+		t.Errorf("error.retryable = %v, want false; IDEMPOTENCY_KEY_INVALID must not be retryable", obj.Retryable)
+	}
+	if obj.RequestID != "test-rid-envelope" {
+		t.Errorf("error.request_id = %q, want %q", obj.RequestID, "test-rid-envelope")
 	}
 }
 

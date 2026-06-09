@@ -7,9 +7,11 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
+	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
@@ -44,6 +46,7 @@ import (
 func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 			key := auth.FromContext(r.Context())
 			if key == nil {
 				next.ServeHTTP(w, r)
@@ -80,13 +83,12 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 			}
 
 			if !admitted {
-				// Set all headers before writing the status code. Any Header().Set call after
-				// WriteHeader is silently ignored by http.ResponseWriter.
+				// SetQuotaHeaders only modifies the header map (no WriteHeader call);
+				// WriteHeader is committed by apierror.Write below. Headers must be set
+				// before WriteHeader or they are silently ignored by http.ResponseWriter.
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
 				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":{"code":"QUOTA_EXCEEDED","message":"monthly usage quota reached","retryable":false}}`))
+				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false) // false: cap is calendar-month, not time-windowed; retrying doesn't help
 				return
 			}
 

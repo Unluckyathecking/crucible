@@ -56,6 +56,7 @@ type SecurityScheme struct {
 type Schema struct {
 	Ref                  string             `json:"$ref,omitempty"`
 	Type                 string             `json:"type,omitempty"`
+	Description          string             `json:"description,omitempty"`
 	Properties           map[string]*Schema `json:"properties,omitempty"`
 	Required             []string           `json:"required,omitempty"`
 	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
@@ -194,14 +195,12 @@ func Build() Document {
 						"error": {
 							Type: "object",
 							Properties: map[string]*Schema{
-								"code":    {Type: "string"},
-								"message": {Type: "string"},
-								// retryable is always present in gateway-generated errors
-								// (writeJSONError always includes it), but may be omitted
-								// by upstream/auth layers, so it is not required in the schema.
-								"retryable": {Type: "boolean"},
+								"code":       {Type: "string"},
+								"message":    {Type: "string"},
+								"retryable":  {Type: "boolean"},
+								"request_id": {Type: "string", Description: "X-Request-ID value echoed from the request; always present in error responses (value may be empty string if no request ID was generated). Use for support correlation."},
 							},
-							Required: []string{"code", "message"},
+							Required: []string{"code", "message", "retryable", "request_id"},
 						},
 					},
 					Required: []string{"error"},
