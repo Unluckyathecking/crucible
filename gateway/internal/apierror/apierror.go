@@ -93,7 +93,5 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	if _, werr := w.Write(b); werr != nil {
-		return // client disconnected; net/http handles connection cleanup
-	}
+	_, _ = w.Write(b) // client may have disconnected; net/http handles connection cleanup
 }
