@@ -41,8 +41,10 @@ func TestWrite_StatusAndHeaders(t *testing.T) {
 			var got struct {
 				Error apierror.Error `json:"error"`
 			}
-			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-				t.Fatalf("body is not valid JSON: %v", err)
+			dec := json.NewDecoder(w.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&got); err != nil {
+				t.Fatalf("body is not valid JSON or has unexpected fields: %v", err)
 			}
 			if got.Error.Code != tt.code {
 				t.Errorf("error.code = %q, want %q", got.Error.Code, tt.code)
