@@ -1016,6 +1016,9 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		Webhook: billing.NewWebhook("whsec_test", nil),
 		Redis:   healthy,
 		PG:      healthy,
+		// Proxy, Recorder, Bucket, Plans, Quota, Auth, and DB are intentionally nil:
+		// all are captured by handler/middleware closures but never invoked during
+		// chi.Walk (Walk traverses the route tree without executing handlers).
 	}
 	router := NewRouter(d)
 
@@ -1039,13 +1042,16 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		t.Fatalf("chi.Walk: %v", err)
 	}
 
-	// All per-product /v1 routes must be POST-only — the spec forbids GET/PUT/DELETE here.
+	// All per-product /v1 routes must be POST-only and count must match V1Routes.
 	for method, paths := range mounted {
 		if method != http.MethodPost {
 			for path := range paths {
 				t.Errorf("non-POST /v1 route found: %s %s (per-product routes must be POST)", method, path)
 			}
 		}
+	}
+	if got, want := len(mounted[http.MethodPost]), len(V1Routes); got != want {
+		t.Errorf("mounted %d /v1 POST routes, expected %d (V1Routes and routes.go are out of sync)", got, want)
 	}
 
 	// Collect /v1/* POST paths from the OpenAPI document (excluding /v1/billing/*).
@@ -1073,16 +1079,16 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		}
 	}
 
-	// Verify the operationId in the OpenAPI document matches "invoke_<path-segment>".
-	for _, rt := range V1Routes {
-		fullPath := "/v1" + rt.Path
-		item, ok := doc.Paths[fullPath]
+	// Verify the operationId in the OpenAPI document matches "invoke_<path-segment>"
+	// for every route the router actually mounted (derived from chi, not from V1Routes).
+	for path := range mountedPOST {
+		item, ok := doc.Paths[path]
 		if !ok || item.Post == nil {
-			continue // already reported above
+			continue // already reported in parity check above
 		}
-		wantOpID := openapi.OperationIDFromPath(rt.Path)
+		wantOpID := openapi.OperationIDFromPath(strings.TrimPrefix(path, "/v1"))
 		if item.Post.OperationID != wantOpID {
-			t.Errorf("path %s: openapi operationId = %q, want %q", fullPath, item.Post.OperationID, wantOpID)
+			t.Errorf("path %s: openapi operationId = %q, want %q", path, item.Post.OperationID, wantOpID)
 		}
 	}
 }

@@ -1,5 +1,5 @@
 // Package openapi builds and serves the gateway's OpenAPI 3.1 document.
-// Zero third-party dependencies: uses only encoding/json, net/http, and sync.
+// Zero third-party dependencies: uses only the Go standard library.
 // The document is derived from the route descriptor table; no DB or Redis needed.
 package openapi
 
@@ -239,6 +239,9 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	if rt.Operation == "" {
 		panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
 	}
+	if rt.Summary == "" {
+		panic("openapi: RouteDescriptor.Summary must not be empty for path: " + rt.Path)
+	}
 }
 
 // Build constructs the gateway's OpenAPI 3.1 document from the given invoke route descriptors.
@@ -324,7 +327,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 		validateRouteDescriptor(rt)
 		key := "/v1" + rt.Path
 		if _, exists := paths[key]; exists {
-			panic("openapi: duplicate RouteDescriptor.Path: " + rt.Path)
+			panic("openapi: duplicate RouteDescriptor.Path produces collision at: " + key)
 		}
 		paths[key] = PathItem{Post: invokeOperation(OperationIDFromPath(rt.Path), rt.Summary)}
 	}
