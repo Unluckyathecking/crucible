@@ -78,12 +78,12 @@ func (c *captureWriter) flush(w http.ResponseWriter) {
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+
 			if store == nil || r.Method != http.MethodPost {
 				next.ServeHTTP(w, r)
 				return
 			}
-
-			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 
 			key := r.Header.Get("Idempotency-Key")
 			if key == "" {
