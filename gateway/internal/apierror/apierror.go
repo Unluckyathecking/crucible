@@ -23,6 +23,10 @@ const (
 	IDEMPOTENCY_CONFLICT    = "IDEMPOTENCY_CONFLICT"
 	IDEMPOTENCY_KEY_REUSE   = "IDEMPOTENCY_KEY_REUSE"
 	IDEMPOTENCY_KEY_INVALID = "IDEMPOTENCY_KEY_INVALID"
+
+	// UNKNOWN is used as a Prometheus metric label fallback when a worker error
+	// response omits the error code. Never emitted in customer-facing responses.
+	UNKNOWN = "UNKNOWN"
 )
 
 // Error is the inner object inside the {"error":{...}} response envelope.

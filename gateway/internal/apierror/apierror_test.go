@@ -1,3 +1,6 @@
+// Tests in this file are in the external apierror_test package and do NOT mutate
+// the package-level marshalJSON var, so they are safe for t.Parallel(). The
+// sibling file apierror_internal_test.go documents the opposite constraint.
 package apierror_test
 
 import (

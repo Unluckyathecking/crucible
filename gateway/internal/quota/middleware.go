@@ -87,7 +87,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				// WriteHeader is silently ignored by http.ResponseWriter.
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
 				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
-				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false)
+				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false) // false: cap is calendar-month, not time-windowed; retrying doesn't help
 				return
 			}
 

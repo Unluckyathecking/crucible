@@ -235,7 +235,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// an empty Code would open an unlabelled code="" series.
 			metricCode := resp.Error.Code
 			if metricCode == "" {
-				metricCode = "unknown"
+				metricCode = apierror.UNKNOWN
 			}
 			observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
 			// Sanitized mode always returns WORKER_UNREACHABLE — the customer-facing

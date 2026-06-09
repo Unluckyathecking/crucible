@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 )
@@ -307,10 +310,23 @@ func TestMiddleware_PostgresMissColdPath(t *testing.T) {
 
 // TestMiddleware_StoreErrorReturnsInternal verifies that when the auth store returns a
 // transient (non-ErrKeyNotFound) error, the middleware emits 500 INTERNAL with retryable:true
-// and echoes the request-id. Uses a closed pgxpool to force a connection error on the
-// Postgres cold path without requiring a custom mock.
+// and echoes the request-id. Creates a pgxpool directly (not via newTestPostgres) so that
+// no t.Cleanup is registered for the pool — we close it eagerly to force a connection error
+// on the Postgres cold path without any cleanup conflict.
 func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
-	db := newTestPostgres(t)
+	// Create the pool directly so we can close it before the test ends.
+	// No t.Cleanup(db.Close) is registered anywhere in this test.
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dialCancel()
+	db, poolErr := pgxpool.New(dialCtx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	if poolErr != nil {
+		t.Skipf("postgres unavailable: %v", poolErr)
+	}
+	if pingErr := db.Ping(dialCtx); pingErr != nil {
+		db.Close()
+		t.Skipf("postgres ping failed: %v", pingErr)
+	}
+
 	rdb := newTestRedis(t)
 	s := NewStore(db, rdb, testSalt)
 	t.Cleanup(s.Close)
@@ -325,6 +341,7 @@ func TestMiddleware_StoreErrorReturnsInternal(t *testing.T) {
 
 	// Close the pool so the Postgres cold-path query returns a pool-closed error,
 	// which is not ErrKeyNotFound and therefore activates the INTERNAL 500 branch.
+	// This is the only close of db — no t.Cleanup conflict.
 	db.Close()
 
 	const wantRID = "test-rid-auth-store-error"
