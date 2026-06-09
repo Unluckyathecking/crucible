@@ -54,8 +54,10 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 	if err != nil {
 		// Only reachable if Error gains a field whose type implements json.Marshaler
 		// and returns an error. Guard here so the response is never silently empty.
-		// requestID (a UUID) is safe to embed verbatim — no JSON special characters.
-		b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":"` + requestID + `"}}`)
+		// requestID may be a user-supplied X-Request-ID header value; escape it
+		// via json.Marshal rather than embedding it verbatim to prevent JSON injection.
+		ridJSON, _ := json.Marshal(requestID)
+		b = []byte(`{"error":{"code":"INTERNAL","message":"internal error","retryable":false,"request_id":` + string(ridJSON) + `}}`)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
