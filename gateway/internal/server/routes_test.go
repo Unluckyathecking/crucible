@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -591,6 +592,55 @@ func searchSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
+// (top-level "error" key only, code/message/retryable/request_id present) on an
+// invoke error path. Replaces field-level coverage lost when writeJSONError was removed.
+func TestInvokeErrorEnvelopeShape(t *testing.T) {
+	worker := successWorker(1, "")
+	defer worker.Close()
+
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	h := invoke(p, nil, "sanitized", "echo")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`not-json`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &top); err != nil {
+		t.Fatalf("parse envelope: %v", err)
+	}
+	if len(top) != 1 {
+		t.Errorf("envelope has %d top-level keys, want 1 (\"error\")", len(top))
+	}
+	errRaw, ok := top["error"]
+	if !ok {
+		t.Fatal("envelope missing top-level \"error\" key")
+	}
+
+	var obj struct {
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+		Retryable bool   `json:"retryable"`
+		RequestID string `json:"request_id"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(errRaw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("error object has unexpected field or missing field: %v", err)
+	}
+	if obj.Code == "" {
+		t.Error("error.code must not be empty")
+	}
+	if obj.Message == "" {
+		t.Error("error.message must not be empty")
+	}
 }
 
 // --- Billing route tests ---

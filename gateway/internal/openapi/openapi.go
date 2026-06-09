@@ -199,7 +199,7 @@ func Build() Document {
 								"retryable":  {Type: "boolean"},
 								"request_id": {Type: "string"},
 							},
-							Required: []string{"code", "message", "retryable"},
+							Required: []string{"code", "message", "retryable", "request_id"},
 						},
 					},
 					Required: []string{"error"},

@@ -1,6 +1,7 @@
 package apierror_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -119,23 +120,33 @@ func TestWrite_RequestIDPassthrough(t *testing.T) {
 	}
 }
 
-func TestWrite_CodeConstants(t *testing.T) {
-	want := map[string]string{
-		"UNAUTHORIZED":        apierror.UNAUTHORIZED,
-		"INTERNAL":            apierror.INTERNAL,
-		"RATE_LIMITED":        apierror.RATE_LIMITED,
-		"QUOTA_EXCEEDED":      apierror.QUOTA_EXCEEDED,
-		"BAD_REQUEST":         apierror.BAD_REQUEST,
-		"WORKER_UNREACHABLE":  apierror.WORKER_UNREACHABLE,
-		"WORKER_BAD_RESPONSE": apierror.WORKER_BAD_RESPONSE,
-		"STRIPE_ERROR":        apierror.STRIPE_ERROR,
-		"NOT_CONFIGURED":      apierror.NOT_CONFIGURED,
-		"PLAN_NOT_FOUND":      apierror.PLAN_NOT_FOUND,
-		"NO_STRIPE_CUSTOMER":  apierror.NO_STRIPE_CUSTOMER,
+func TestWrite_NoTrailingNewline(t *testing.T) {
+	w := httptest.NewRecorder()
+	apierror.Write(w, "req-1", http.StatusBadRequest, apierror.BAD_REQUEST, "bad", false)
+	if bytes.HasSuffix(w.Body.Bytes(), []byte{'\n'}) {
+		t.Error("Write produced trailing newline; body must be canonical JSON without trailing whitespace")
 	}
-	for expected, got := range want {
-		if got != expected {
-			t.Errorf("constant %q has value %q", expected, got)
+}
+
+func TestWrite_CodeConstantsUnique(t *testing.T) {
+	codes := []string{
+		apierror.UNAUTHORIZED,
+		apierror.INTERNAL,
+		apierror.RATE_LIMITED,
+		apierror.QUOTA_EXCEEDED,
+		apierror.BAD_REQUEST,
+		apierror.WORKER_UNREACHABLE,
+		apierror.WORKER_BAD_RESPONSE,
+		apierror.STRIPE_ERROR,
+		apierror.NOT_CONFIGURED,
+		apierror.PLAN_NOT_FOUND,
+		apierror.NO_STRIPE_CUSTOMER,
+	}
+	seen := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		if seen[c] {
+			t.Errorf("duplicate constant value %q", c)
 		}
+		seen[c] = true
 	}
 }

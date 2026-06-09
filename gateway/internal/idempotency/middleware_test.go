@@ -619,6 +619,7 @@ func TestMiddleware_ErrorEnvelope(t *testing.T) {
 		Code      string `json:"code"`
 		Message   string `json:"message"`
 		Retryable bool   `json:"retryable"`
+		RequestID string `json:"request_id"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(errRaw))
 	dec.DisallowUnknownFields()

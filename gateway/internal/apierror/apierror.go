@@ -37,11 +37,16 @@ type envelope struct {
 // Write sets Content-Type: application/json and Cache-Control: no-store, writes
 // status, and encodes the standard error envelope. requestID is passed as a plain
 // string by each call site so this package needs no context or middleware import.
+//
+// Uses json.Marshal rather than json.Encoder to produce canonical output without
+// a trailing newline; strict clients doing byte-level comparison will see the same
+// bytes regardless of how they consume the response.
 func Write(w http.ResponseWriter, requestID string, status int, code, message string, retryable bool) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(envelope{
+	// Marshaling a struct with string/bool fields cannot fail; ignore the error.
+	b, _ := json.Marshal(envelope{
 		Error: Error{
 			Code:      code,
 			Message:   message,
@@ -49,4 +54,5 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			RequestID: requestID,
 		},
 	})
+	_, _ = w.Write(b)
 }
