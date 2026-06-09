@@ -85,6 +85,11 @@ type Deps struct {
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
 func NewRouter(d *Deps) http.Handler {
+	// Snapshot V1Routes once so both openapi.Handler and the registration loop
+	// see the same stable slice for the lifetime of this router.
+	routes := make([]openapi.RouteDescriptor, len(V1Routes))
+	copy(routes, V1Routes)
+
 	r := chi.NewRouter()
 
 	r.Use(mw.RequestID)
@@ -106,7 +111,7 @@ func NewRouter(d *Deps) http.Handler {
 	// Public routes (no auth, no rate limit).
 	r.Get("/healthz", healthz)
 	r.Get("/readyz", readyz(d.Redis, d.PG))
-	r.Get("/openapi.json", openapi.Handler())
+	r.Get("/openapi.json", openapi.Handler(routes))
 
 	// The Stripe webhook is mounted outside auth/quota gating, so it carries no
 	// per-customer rate limit. Add a lightweight IP-based limiter (60 req/min/IP,
@@ -156,7 +161,9 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
-		r.Post("/echo", invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, "echo"))
+		for _, rt := range routes {
+			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
+		}
 	})
 
 	return r

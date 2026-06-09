@@ -1,14 +1,23 @@
 // Package openapi builds and serves the gateway's OpenAPI 3.1 document.
-// Zero third-party dependencies: uses only encoding/json, net/http, and sync.
-// The document is derived from the static route table; no DB or Redis needed.
+// Zero third-party dependencies: uses only the Go standard library.
+// The document is derived from the route descriptor table; no DB or Redis needed.
 package openapi
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"sync"
+	"strings"
 )
+
+// RouteDescriptor describes a single per-product /v1 invoke endpoint.
+// It is the sole authoritative source of which /v1 paths exist and which
+// opaque worker operation string each maps to.
+type RouteDescriptor struct {
+	Path      string // path segment after /v1, e.g. "/echo"
+	Operation string // opaque string forwarded to the worker
+	Summary   string // human-readable; appears in the OpenAPI document
+}
 
 // --- structural types --------------------------------------------------------
 
@@ -166,9 +175,199 @@ func errResp(desc string) Response {
 	}
 }
 
-// Build constructs and returns the gateway's OpenAPI 3.1 document.
+// invokeOperation builds the standard Operation for a per-product /v1 invoke endpoint.
+func invokeOperation(operationID, summary string) *Operation {
+	return &Operation{
+		OperationID: operationID,
+		Summary:     summary,
+		Tags:        []string{"invoke"},
+		Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+		Parameters: []Parameter{
+			{
+				Name:        "Idempotency-Key",
+				In:          "header",
+				Description: "Optional deduplication key (max 255 chars). Identical-key retries within 24 h replay the stored response without re-invoking the worker or re-billing.",
+				Schema:      &Schema{Type: "string"},
+			},
+		},
+		RequestBody: &RequestBody{
+			Required: true,
+			Content: map[string]MediaType{
+				contentTypeJSON: {Schema: &Schema{Type: "object"}},
+			},
+		},
+		Responses: map[string]Response{
+			"200": {
+				Description: "Successful invocation",
+				Headers:     rateLimitAndQuotaHeaders(),
+				Content: map[string]MediaType{
+					contentTypeJSON: {Schema: &Schema{Type: "object"}},
+				},
+			},
+			"400": errResp("Bad request — invalid JSON body"),
+			"401": errResp("Unauthorized — missing or invalid API key"),
+			"409": errResp("Idempotency conflict — concurrent request with same key"),
+			"422": errResp("Idempotency key reused with a different request body"),
+			"429": {
+				Description: "Rate limited or quota exceeded. " +
+					"RateLimit-*/X-RateLimit-* headers are always present. " +
+					"X-Quota-* headers are present only on quota-triggered 429s.",
+				Headers: rateLimitAndQuotaHeaders(),
+				Content: map[string]MediaType{
+					contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
+				},
+			},
+			"500": errResp("Internal server error"),
+			"502": errResp("Worker unavailable"),
+		},
+	}
+}
+
+// OperationIDFromPath derives the OpenAPI operationId for a per-product /v1 invoke route.
+// Hyphens are replaced with _ and path separators (/) are replaced with __ (double underscore)
+// so the result is a valid Go/TS identifier and multi-segment paths cannot collide with
+// hyphenated single-segment paths (e.g., /a-b → invoke_a_b, /a/b → invoke_a__b).
+// gen-clients.sh uses _ as a split boundary to produce CamelCase SDK method names.
+func OperationIDFromPath(path string) string {
+	if len(path) < 2 || path[0] != '/' {
+		panic("openapi: OperationIDFromPath: path must start with / and have at least one segment: " + path)
+	}
+	if path[len(path)-1] == '/' {
+		panic("openapi: OperationIDFromPath: path must not end with /: " + path)
+	}
+	s := path[1:]
+	s = strings.ReplaceAll(s, "/", "__")
+	s = strings.ReplaceAll(s, "-", "_")
+	return "invoke_" + s
+}
+
+// validateRouteDescriptor panics on invalid RouteDescriptor fields.
+// Panics surface at program startup (route registration), not at HTTP request time.
+func validateRouteDescriptor(rt RouteDescriptor) {
+	if rt.Path == "" || rt.Path[0] != '/' {
+		panic("openapi: RouteDescriptor.Path must start with /: " + rt.Path)
+	}
+	if rt.Path == "/" {
+		// "/" is the only 1-character path that passes the rt.Path[0]=='/' check above.
+		// It would mount at /v1, colliding with the /v1 route group itself.
+		panic("openapi: RouteDescriptor.Path must have at least one segment after /: " + rt.Path)
+	}
+	if rt.Path[len(rt.Path)-1] == '/' {
+		panic("openapi: RouteDescriptor.Path must not end with /: " + rt.Path)
+	}
+	for _, seg := range strings.Split(rt.Path[1:], "/") {
+		if seg == "" {
+			panic("openapi: RouteDescriptor.Path must not contain empty segments: " + rt.Path)
+		}
+	}
+	if strings.Contains(rt.Path, "_") {
+		// OperationIDFromPath escapes - as _ and / as __.
+		// A literal _ in the path would collide with a hyphen escape (e.g., /a_b and /a-b
+		// both map to invoke_a_b), breaking SDK codegen. Use - for word separation.
+		panic("openapi: RouteDescriptor.Path must not contain underscore (use - for word separation): " + rt.Path)
+	}
+	if rt.Operation == "" {
+		panic("openapi: RouteDescriptor.Operation must not be empty for path: " + rt.Path)
+	}
+	if rt.Summary == "" {
+		panic("openapi: RouteDescriptor.Summary must not be empty for path: " + rt.Path)
+	}
+}
+
+// Build constructs the gateway's OpenAPI 3.1 document from the given invoke route descriptors.
 // It is a pure function with no I/O; safe to call multiple times.
-func Build() Document {
+func Build(invokeRoutes []RouteDescriptor) Document {
+	paths := map[string]PathItem{
+		"/healthz": {
+			Get: &Operation{
+				OperationID: "healthz",
+				Summary:     "Liveness check",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Service is alive",
+						Content: map[string]MediaType{
+							contentTypeJSON: {
+								Schema: &Schema{
+									Type: "object",
+									Properties: map[string]*Schema{
+										"status": {Type: "string"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"/readyz": {
+			Get: &Operation{
+				OperationID: "readyz",
+				Summary:     "Readiness check — reports dependency health",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Dependency health report",
+						Content: map[string]MediaType{
+							contentTypeJSON: {
+								Schema: &Schema{
+									Type: "object",
+									Properties: map[string]*Schema{
+										"status": {Type: "string"},
+										"checks": {
+											Type:                 "object",
+											AdditionalProperties: &Schema{Type: "string"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"/metrics": {
+			Get: &Operation{
+				OperationID: "metrics",
+				Summary:     "Prometheus metrics",
+				Tags:        []string{"system"},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Prometheus exposition format",
+						Content: map[string]MediaType{
+							"text/plain": {Schema: &Schema{Type: "string"}},
+						},
+					},
+				},
+			},
+		},
+		"/webhooks/stripe": {
+			Post: &Operation{
+				OperationID: "stripe_webhook",
+				Summary:     "Stripe billing webhook receiver (unauthenticated)",
+				Tags:        []string{"billing"},
+				Responses: map[string]Response{
+					"200": {Description: "Webhook processed"},
+				},
+			},
+		},
+	}
+
+	seenOpIDs := make(map[string]string, len(invokeRoutes)) // opID → first path that produced it
+	for _, rt := range invokeRoutes {
+		validateRouteDescriptor(rt)
+		key := "/v1" + rt.Path
+		if _, exists := paths[key]; exists {
+			panic("openapi: RouteDescriptor.Path collides with existing route at: " + key)
+		}
+		opID := OperationIDFromPath(rt.Path)
+		if firstPath, collision := seenOpIDs[opID]; collision {
+			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
+		}
+		seenOpIDs[opID] = key
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary)}
+	}
+
 	return Document{
 		OpenAPI: "3.1.0",
 		Info: Info{
@@ -207,152 +406,29 @@ func Build() Document {
 				},
 			},
 		},
-		Paths: map[string]PathItem{
-			"/healthz": {
-				Get: &Operation{
-					OperationID: "healthz",
-					Summary:     "Liveness check",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Service is alive",
-							Content: map[string]MediaType{
-								contentTypeJSON: {
-									Schema: &Schema{
-										Type: "object",
-										Properties: map[string]*Schema{
-											"status": {Type: "string"},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/readyz": {
-				Get: &Operation{
-					OperationID: "readyz",
-					Summary:     "Readiness check — reports dependency health",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Dependency health report",
-							Content: map[string]MediaType{
-								contentTypeJSON: {
-									Schema: &Schema{
-										Type: "object",
-										Properties: map[string]*Schema{
-											"status": {Type: "string"},
-											"checks": {
-												Type:                 "object",
-												AdditionalProperties: &Schema{Type: "string"},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/metrics": {
-				Get: &Operation{
-					OperationID: "metrics",
-					Summary:     "Prometheus metrics",
-					Tags:        []string{"system"},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Prometheus exposition format",
-							Content: map[string]MediaType{
-								"text/plain": {Schema: &Schema{Type: "string"}},
-							},
-						},
-					},
-				},
-			},
-			"/webhooks/stripe": {
-				Post: &Operation{
-					OperationID: "stripe_webhook",
-					Summary:     "Stripe billing webhook receiver (unauthenticated)",
-					Tags:        []string{"billing"},
-					Responses: map[string]Response{
-						"200": {Description: "Webhook processed"},
-					},
-				},
-			},
-			"/v1/echo": {
-				Post: &Operation{
-					OperationID: "invoke_echo",
-					Summary:     "Invoke echo worker operation (authenticated)",
-					Tags:        []string{"invoke"},
-					Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
-					Parameters: []Parameter{
-						{
-							Name:        "Idempotency-Key",
-							In:          "header",
-							Description: "Optional deduplication key (max 255 chars). Identical-key retries within 24 h replay the stored response without re-invoking the worker or re-billing.",
-							Schema:      &Schema{Type: "string"},
-						},
-					},
-					RequestBody: &RequestBody{
-						Required: true,
-						Content: map[string]MediaType{
-							contentTypeJSON: {Schema: &Schema{Type: "object"}},
-						},
-					},
-					Responses: map[string]Response{
-						"200": {
-							Description: "Successful invocation",
-							Headers:     rateLimitAndQuotaHeaders(),
-							Content: map[string]MediaType{
-								contentTypeJSON: {Schema: &Schema{Type: "object"}},
-							},
-						},
-						"400": errResp("Bad request — invalid JSON body"),
-						"401": errResp("Unauthorized — missing or invalid API key"),
-						"409": errResp("Idempotency conflict — concurrent request with same key"),
-						"422": errResp("Idempotency key reused with a different request body"),
-						"429": {
-							Description: "Rate limited or quota exceeded. " +
-								"RateLimit-*/X-RateLimit-* headers are always present. " +
-								"X-Quota-* headers are present only on quota-triggered 429s.",
-							Headers: rateLimitAndQuotaHeaders(),
-							Content: map[string]MediaType{
-								contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
-							},
-						},
-						"500": errResp("Internal server error"),
-						"502": errResp("Worker unavailable"),
-					},
-				},
-			},
-		},
+		Paths: paths,
 	}
 }
 
 // --- handler -----------------------------------------------------------------
 
-var (
-	documentJSON []byte
-	buildOnce    sync.Once
-)
-
-func buildDocument() {
-	b, err := json.Marshal(Build())
+// Handler returns an http.HandlerFunc that serves the OpenAPI document built from invokeRoutes.
+// The document is built eagerly at construction time so invalid descriptors panic at server
+// startup rather than on the first request. No DB or Redis access.
+func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
+	// Defensive copy: the caller may mutate elements of the original slice after
+	// Handler returns. make+copy gives the closure its own backing array, isolating
+	// it from such mutations.
+	routes := make([]RouteDescriptor, len(invokeRoutes))
+	copy(routes, invokeRoutes)
+	b, err := json.Marshal(Build(routes))
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
 	}
-	documentJSON = b
-}
-
-// Handler returns an http.HandlerFunc that serves the static OpenAPI document.
-// The document is built lazily on first request via sync.Once; no DB or Redis access.
-func Handler() http.HandlerFunc {
+	doc := b
 	return func(w http.ResponseWriter, r *http.Request) {
-		buildOnce.Do(buildDocument)
 		w.Header().Set("Content-Type", contentTypeJSON)
-		if _, err := w.Write(documentJSON); err != nil {
+		if _, err := w.Write(doc); err != nil {
 			log.Printf("openapi: write: %v", err)
 		}
 	}

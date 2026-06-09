@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
@@ -20,6 +21,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
@@ -223,7 +225,7 @@ func TestReadyzDoesNotLeakInternals(t *testing.T) {
 		"redis://",
 	}
 	for _, f := range forbidden {
-		if contains(body, f) {
+		if strings.Contains(body, f) {
 			t.Errorf("readyz: response leaks internal detail %q", f)
 		}
 	}
@@ -275,7 +277,7 @@ func TestInvokeErrorExposureSanitized(t *testing.T) {
 	bodyStr := w.Body.String()
 	forbidden := []string{"SENSITIVE_DETAIL", "leaked internal secret"}
 	for _, f := range forbidden {
-		if contains(bodyStr, f) {
+		if strings.Contains(bodyStr, f) {
 			t.Errorf("sanitized response leaks worker detail %q", f)
 		}
 	}
@@ -365,7 +367,7 @@ func TestInvokeErrorExposureDefaultSanitized(t *testing.T) {
 	}
 
 	bodyStr := w.Body.String()
-	if contains(bodyStr, "DB_UNREACHABLE") || contains(bodyStr, "connection pool") {
+	if strings.Contains(bodyStr, "DB_UNREACHABLE") || strings.Contains(bodyStr, "connection pool") {
 		t.Error("default (sanitized) mode leaked worker internals")
 	}
 }
@@ -575,25 +577,12 @@ func TestInvokeDefaultExposureNeverLeaksWorkerInternals(t *testing.T) {
 
 			bodyStr := w.Body.String()
 			for _, leak := range []string{"INTERNAL_STACK", "panic", "runtime error", "/srv/worker/db.go"} {
-				if contains(bodyStr, leak) {
+				if strings.Contains(bodyStr, leak) {
 					t.Errorf("mode %q leaked worker internal detail %q", mode, leak)
 				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // TestInvokeErrorEnvelopeShape verifies the full four-field error envelope shape
@@ -999,6 +988,135 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+// mustChiRoutes asserts that h implements chi.Routes (required for chi.Walk) and
+// fails the test with a type-specific message if not. NewRouter returns *chi.Mux
+// which satisfies chi.Routes; this helper surfaces a clear failure if that changes.
+func mustChiRoutes(t *testing.T, h http.Handler) chi.Routes {
+	t.Helper()
+	cr, ok := h.(chi.Routes)
+	if !ok {
+		t.Fatalf("NewRouter returned %T which does not implement chi.Routes; chi.Walk unavailable", h)
+	}
+	return cr
+}
+
+// TestV1RoutesDriftGuard is the drift guard: it builds the real router, walks its
+// mounted /v1 patterns (excluding /v1/billing/*), and asserts that the POST set
+// equals the /v1 paths produced by openapi.Build(V1Routes). Also asserts:
+//   - all per-product /v1 routes are POST-only (spec invariant)
+//   - each route's OpenAPI operationId matches the expected "invoke_<segment>" pattern
+//   - V1Routes contains no duplicate paths
+//   - all generated operationIds are unique
+func TestV1RoutesDriftGuard(t *testing.T) {
+	healthy := &mockChecker{}
+	d := &Deps{
+		Cfg:   &config.Config{BodyLimitBytes: 1048576},
+		Redis: healthy,
+		PG:    healthy,
+		// auth.Middleware, ratelimit.Middleware, quota.Middleware, and the invoke
+		// handler are closures: they capture their arguments but never dereference
+		// them at registration time. chi.Walk traverses the route tree without
+		// dispatching any requests, so nil fields are never accessed.
+	}
+	router := NewRouter(d)
+	chiRoutes := mustChiRoutes(t, router)
+
+	// Verify V1Routes has no duplicate paths. NewRouter calls openapi.Handler(V1Routes)
+	// which calls openapi.Build(), and Build panics on duplicate full paths (/v1+Path).
+	// This check produces a clear t.Error rather than a test-level panic from Build.
+	seen := make(map[string]bool, len(V1Routes))
+	for _, rt := range V1Routes {
+		key := "/v1" + rt.Path
+		if seen[key] {
+			t.Errorf("duplicate Path in V1Routes: %q (chi would silently shadow the earlier handler)", rt.Path)
+		}
+		seen[key] = true
+	}
+
+	// mounted[method][path] for all /v1 non-billing routes.
+	mounted := make(map[string]map[string]struct{})
+	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if !strings.HasPrefix(route, "/v1/") || strings.HasPrefix(route, "/v1/billing/") {
+			return nil
+		}
+		if mounted[method] == nil {
+			mounted[method] = make(map[string]struct{})
+		}
+		mounted[method][route] = struct{}{}
+		return nil
+	}); err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+
+	// All per-product /v1 routes must be POST-only: exactly one method key in mounted.
+	if len(mounted) != 1 {
+		t.Fatalf("expected exactly 1 HTTP method for /v1 routes, got %d: %v", len(mounted), mounted)
+	}
+	if _, ok := mounted[http.MethodPost]; !ok {
+		t.Fatalf("expected POST to be the only /v1 method, got: %v", mounted)
+	}
+	if got, want := len(mounted[http.MethodPost]), len(V1Routes); got != want {
+		t.Errorf("mounted %d /v1 POST routes, expected %d (V1Routes and routes.go are out of sync)", got, want)
+	}
+
+	// Collect /v1/* POST paths from the OpenAPI document (excluding /v1/billing/*).
+	doc := openapi.Build(V1Routes)
+	documented := make(map[string]struct{})
+	for path, item := range doc.Paths {
+		if strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/v1/billing/") {
+			if item.Post == nil {
+				t.Errorf("openapi path %s has no POST operation (per-product routes must have POST)", path)
+				continue
+			}
+			documented[path] = struct{}{}
+		}
+	}
+
+	mountedPOST := mounted[http.MethodPost]
+	for path := range mountedPOST {
+		if _, ok := documented[path]; !ok {
+			t.Errorf("route %s is mounted in router but absent from openapi.Build(V1Routes)", path)
+		}
+	}
+	for path := range documented {
+		if _, ok := mountedPOST[path]; !ok {
+			t.Errorf("path %s is in openapi.Build(V1Routes) but not mounted in router", path)
+		}
+	}
+
+	// Verify the operationId in the OpenAPI document matches "invoke_<path-segment>"
+	// for every route the router actually mounted (derived from chi, not from V1Routes).
+	seenOpIDs := make(map[string]string, len(mountedPOST)) // opID → path
+	for path := range mountedPOST {
+		item, ok := doc.Paths[path]
+		if !ok || item.Post == nil {
+			continue // already reported in parity check above
+		}
+		wantOpID := openapi.OperationIDFromPath(strings.TrimPrefix(path, "/v1"))
+		if item.Post.OperationID != wantOpID {
+			t.Errorf("path %s: openapi operationId = %q, want %q", path, item.Post.OperationID, wantOpID)
+		}
+		if firstPath, collision := seenOpIDs[item.Post.OperationID]; collision {
+			t.Errorf("duplicate operationId %q: shared by paths %s and %s", item.Post.OperationID, firstPath, path)
+		} else {
+			seenOpIDs[item.Post.OperationID] = path
+		}
+	}
+
+	// Verify no V1Route has empty required fields or reserved path prefixes.
+	for _, rt := range V1Routes {
+		if rt.Operation == "" {
+			t.Errorf("V1Routes path %q has empty Operation field (opaque worker operation string required)", rt.Path)
+		}
+		if rt.Summary == "" {
+			t.Errorf("V1Routes path %q has empty Summary field (required for OpenAPI document)", rt.Path)
+		}
+		if strings.HasPrefix(rt.Path, "/billing/") {
+			t.Errorf("V1Routes must not contain billing paths (handled separately in NewRouter): %q", rt.Path)
+		}
 	}
 }
 

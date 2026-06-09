@@ -235,7 +235,7 @@ func TestInvokeWorker5xxAlwaysSanitized(t *testing.T) {
 
 			bodyStr := w.Body.String()
 			for _, leak := range []string{"internal", "secret error details"} {
-				if contains(bodyStr, leak) {
+				if strings.Contains(bodyStr, leak) {
 					t.Errorf("5xx worker [mode=%s]: response leaks worker body %q", mode, leak)
 				}
 			}
@@ -328,7 +328,7 @@ func TestInvokeInternalErrorNeverLeaked(t *testing.T) {
 
 	bodyStr := w.Body.String()
 	for _, s := range sensitiveStrings {
-		if contains(bodyStr, s) {
+		if strings.Contains(bodyStr, s) {
 			t.Errorf("sanitized mode leaked sensitive string %q in response body", s)
 		}
 	}

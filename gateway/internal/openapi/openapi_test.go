@@ -2,6 +2,7 @@ package openapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,15 +13,21 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 )
 
+// testRoutes is a fixed set for unit-testing the OpenAPI builder.
+// Production sync is enforced by TestV1RoutesDriftGuard in gateway/internal/server/routes_test.go.
+var testRoutes = []openapi.RouteDescriptor{
+	{Path: "/echo", Operation: "echo", Summary: "Invoke echo worker operation (authenticated)"},
+}
+
 func TestBuild_Version(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	if doc.OpenAPI != "3.1.0" {
 		t.Errorf("openapi = %q; want 3.1.0", doc.OpenAPI)
 	}
 }
 
 func TestBuild_RequiredPaths(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/v1/echo"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Errorf("missing required path %q", path)
@@ -29,7 +36,7 @@ func TestBuild_RequiredPaths(t *testing.T) {
 }
 
 func TestBuild_SecurityScheme(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
 	if !ok {
 		t.Fatal("components.securitySchemes missing ApiKeyAuth")
@@ -49,7 +56,7 @@ func TestBuild_SecurityScheme(t *testing.T) {
 }
 
 func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	if _, ok := doc.Components.Schemas["Error"]; !ok {
 		t.Fatal("components.schemas missing Error")
 	}
@@ -57,7 +64,7 @@ func TestBuild_ErrorComponentDeclaredOnce(t *testing.T) {
 
 func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	const wantRef = "#/components/schemas/Error"
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	echo, ok := doc.Paths["/v1/echo"]
 	if !ok || echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -74,7 +81,8 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 	}
 
 	// Verify each error code is present and uses the Error $ref (no inline duplication).
-	for _, code := range []string{"400", "401", "429", "500", "502"} {
+	// 409 = idempotency conflict, 422 = idempotency key reused with different body.
+	for _, code := range []string{"400", "401", "409", "422", "429", "500", "502"} {
 		resp, ok := echo.Post.Responses[code]
 		if !ok {
 			t.Fatalf("POST /v1/echo missing response %s", code)
@@ -87,10 +95,22 @@ func TestBuild_ErrorResponsesUseRef(t *testing.T) {
 			t.Errorf("response %s: want schema.$ref=%q, got %v", code, wantRef, media.Schema)
 		}
 	}
+
+	// Lock idempotency response descriptions so a 409↔422 description swap is caught.
+	if resp, ok := echo.Post.Responses["409"]; !ok {
+		t.Fatal("POST /v1/echo missing 409 response")
+	} else if resp.Description != "Idempotency conflict — concurrent request with same key" {
+		t.Errorf("409 description = %q; want idempotency-conflict description", resp.Description)
+	}
+	if resp, ok := echo.Post.Responses["422"]; !ok {
+		t.Fatal("POST /v1/echo missing 422 response")
+	} else if resp.Description != "Idempotency key reused with a different request body" {
+		t.Errorf("422 description = %q; want idempotency-reuse description", resp.Description)
+	}
 }
 
 func TestBuild_InvokeRouteSecured(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	echo := doc.Paths["/v1/echo"]
 	if echo.Post == nil {
 		t.Fatal("missing POST /v1/echo")
@@ -104,7 +124,7 @@ func TestBuild_InvokeRouteSecured(t *testing.T) {
 }
 
 func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
-	doc := openapi.Build()
+	doc := openapi.Build(testRoutes)
 	unauthenticated := []struct {
 		path   string
 		method string
@@ -137,11 +157,88 @@ func TestBuild_UnauthenticatedRoutesHaveNoSecurity(t *testing.T) {
 	}
 }
 
+func TestBuild_InvokeRouteDerived(t *testing.T) {
+	// Verify Build() derives /v1/* paths from descriptors (no hard-coded literals).
+	cases := []struct {
+		name          string
+		routes        []openapi.RouteDescriptor
+		wantPaths     []string
+		wantAbsent    []string
+		wantOpIDs     map[string]string // path → operationId
+	}{
+		{
+			name:       "empty routes produces no /v1 paths",
+			routes:     []openapi.RouteDescriptor{},
+			wantAbsent: []string{"/v1/echo"},
+		},
+		{
+			name: "single route",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/custom-op", Operation: "custom-op", Summary: "Custom operation"},
+			},
+			wantPaths:  []string{"/v1/custom-op"},
+			wantAbsent: []string{"/v1/echo"},
+			wantOpIDs:  map[string]string{"/v1/custom-op": "invoke_custom_op"},
+		},
+		{
+			name: "hyphenated path like validate-vat",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/validate-vat", Operation: "validate-vat", Summary: "Validate VAT number"},
+			},
+			wantPaths: []string{"/v1/validate-vat"},
+			wantOpIDs: map[string]string{"/v1/validate-vat": "invoke_validate_vat"},
+		},
+		{
+			name: "multiple routes",
+			routes: []openapi.RouteDescriptor{
+				{Path: "/echo", Operation: "echo", Summary: "Echo"},
+				{Path: "/summarise", Operation: "summarise", Summary: "Summarise"},
+			},
+			wantPaths: []string{"/v1/echo", "/v1/summarise"},
+			wantOpIDs: map[string]string{
+				"/v1/echo":      "invoke_echo",
+				"/v1/summarise": "invoke_summarise",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := openapi.Build(tc.routes)
+
+			for _, p := range tc.wantPaths {
+				item, ok := doc.Paths[p]
+				if !ok {
+					t.Errorf("missing expected path %q", p)
+					continue
+				}
+				if item.Post == nil {
+					t.Errorf("path %q has no POST operation", p)
+				}
+			}
+			for _, p := range tc.wantAbsent {
+				if _, ok := doc.Paths[p]; ok {
+					t.Errorf("path %q should be absent", p)
+				}
+			}
+			for path, wantID := range tc.wantOpIDs {
+				item, ok := doc.Paths[path]
+				if !ok || item.Post == nil {
+					continue // already reported above
+				}
+				if item.Post.OperationID != wantID {
+					t.Errorf("path %q: operationId = %q, want %q", path, item.Post.OperationID, wantID)
+				}
+			}
+		})
+	}
+}
+
 func TestHandler_Response(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 
-	openapi.Handler()(w, req)
+	openapi.Handler(testRoutes)(w, req)
 
 	res := w.Result()
 
@@ -190,13 +287,14 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 		wg       sync.WaitGroup
 		failures atomic.Int32
 	)
+	handler := openapi.Handler(testRoutes)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 			w := httptest.NewRecorder()
-			openapi.Handler()(w, req)
+			handler(w, req)
 			if w.Code != http.StatusOK {
 				failures.Add(1)
 			}
@@ -206,4 +304,96 @@ func TestHandler_ConcurrentAccess(t *testing.T) {
 	if n := failures.Load(); n > 0 {
 		t.Errorf("%d concurrent calls returned non-200", n)
 	}
+}
+
+func TestHandler_DefensiveCopy(t *testing.T) {
+	// Verify Handler copies the slice at construction time so that caller
+	// mutations between Handler() and the first request cannot affect the document.
+	routes := []openapi.RouteDescriptor{
+		{Path: "/echo", Operation: "echo", Summary: "Echo"},
+	}
+
+	handler := openapi.Handler(routes)
+
+	// Mutate BEFORE the first request: the copy made in Handler() must isolate
+	// the built document from the original slice.
+	routes[0] = openapi.RouteDescriptor{Path: "/mutated", Operation: "mutated", Summary: "Should not appear"}
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", w.Code)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var paths map[string]json.RawMessage
+	if err := json.Unmarshal(raw["paths"], &paths); err != nil {
+		t.Fatalf("decode paths: %v", err)
+	}
+	if _, ok := paths["/v1/mutated"]; ok {
+		t.Error("Handler served mutated route — defensive copy not working")
+	}
+	if _, ok := paths["/v1/echo"]; !ok {
+		t.Error("Handler lost original /v1/echo — defensive copy not working")
+	}
+}
+
+// TestBuild_RejectsUnderscoreInPath verifies that validateRouteDescriptor rejects
+// paths containing underscores. OperationIDFromPath uses _ as its escape character
+// (replacing / and -), so a literal _ in the path would produce ambiguous operationIds
+// (e.g., /a_b and /a-b both map to invoke_a_b), breaking SDK codegen.
+func TestBuild_RejectsUnderscoreInPath(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Build with underscore path did not panic")
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "underscore") {
+			t.Fatalf("panic message does not mention underscore: %v", r)
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "/my_path", Operation: "my_path", Summary: "Underscore path"},
+	})
+}
+
+// TestBuild_RejectsEmptyPath verifies that validateRouteDescriptor panics when
+// Path is the empty string.
+func TestBuild_RejectsEmptyPath(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Build with empty path did not panic")
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "must start with /") {
+			t.Fatalf("panic message does not mention 'must start with /': %v", r)
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "", Operation: "empty", Summary: "Empty path"},
+	})
+}
+
+// TestBuild_OperationIDUniqueness verifies that Build panics when two paths would
+// produce the same operationId after normalization. With the current scheme (/ → __, - → _),
+// a double-hyphen segment and a slash produce the same escape: /a--b and /a/b both
+// yield invoke_a__b.
+func TestBuild_OperationIDUniqueness(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Build with duplicate operationId paths did not panic")
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "operationId") {
+			t.Fatalf("panic message does not mention operationId: %v", r)
+		}
+	}()
+	openapi.Build([]openapi.RouteDescriptor{
+		{Path: "/a--b", Operation: "a--b", Summary: "First"},
+		{Path: "/a/b", Operation: "a/b", Summary: "Second"},
+	})
 }
