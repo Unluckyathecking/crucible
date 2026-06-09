@@ -4,7 +4,6 @@ package apierror
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
@@ -81,13 +80,21 @@ func Write(w http.ResponseWriter, requestID string, status int, code, message st
 			},
 		})
 		if ferr != nil {
-			// Absolute last resort: preserve caller's values via fmt.Sprintf so b is
-			// never nil after WriteHeader. %q produces valid JSON string escaping for
-			// all practical inputs (error codes/messages are controlled ASCII). Only
-			// reachable if both marshalJSON AND real json.Marshal fail — impossible in
-			// production for string/bool fields.
-			b = []byte(fmt.Sprintf(`{"error":{"code":%q,"message":%q,"retryable":%t,"request_id":%q}}`,
-				code, message, retryable, requestID))
+			// Absolute last resort: serialize each field individually via json.Marshal
+			// so b is never nil after WriteHeader and all values are properly escaped
+			// (covers any future control characters in requestID from X-Request-ID).
+			// json.Marshal on string/bool cannot fail, so these _ discards are safe.
+			// Only reachable if both marshalJSON AND real json.Marshal fail — impossible
+			// in production for string/bool fields.
+			codeB, _ := json.Marshal(code)
+			msgB, _ := json.Marshal(message)
+			ridB, _ := json.Marshal(requestID)
+			retryStr := "false"
+			if retryable {
+				retryStr = "true"
+			}
+			b = []byte(`{"error":{"code":` + string(codeB) + `,"message":` + string(msgB) +
+				`,"retryable":` + retryStr + `,"request_id":` + string(ridB) + `}}`)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

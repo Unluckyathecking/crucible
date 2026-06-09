@@ -83,7 +83,7 @@ func TestWrite_WriteHeaderBeforeWrite(t *testing.T) {
 		if w.Body.Len() == 0 {
 			t.Error("body is empty on both-marshals-fail fallback; expected non-empty JSON")
 		}
-		// Verify the last-resort fmt.Sprintf fallback preserves the caller's values.
+		// Verify the last-resort per-field json.Marshal fallback preserves the caller's values.
 		var got struct {
 			Error Error `json:"error"`
 		}
