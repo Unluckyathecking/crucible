@@ -388,3 +388,14 @@ func TestMiddleware_FailOpenOnRedisError(t *testing.T) {
 		t.Errorf("status = %d, want %d (fail-open on Redis error)", rec.Code, http.StatusOK)
 	}
 }
+
+// TestRetryAfterMatchesWindowSeconds guards the invariant that retryAfterSeconds == windowSeconds.
+// Both constants represent the same 60 s fixed window; divergence would send clients a Retry-After
+// value that does not match the actual window expiry, making retry guidance incorrect.
+// The const retryAfterSeconds = windowSeconds assignment already guarantees this at compile time,
+// but an explicit test makes the coupling visible and prevents future refactors from breaking it.
+func TestRetryAfterMatchesWindowSeconds(t *testing.T) {
+	if retryAfterSeconds != windowSeconds {
+		t.Errorf("retryAfterSeconds (%d) != windowSeconds (%d); Retry-After must match the actual window", retryAfterSeconds, windowSeconds)
+	}
+}
