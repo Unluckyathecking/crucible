@@ -90,8 +90,9 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [todayUTC, setTodayUTC] = useState(initialTo);
   useEffect(() => {
     const now = new Date();
-    setTodayUTC(toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))));
-  }, []);
+    const computed = toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+    if (computed !== initialTo) setTodayUTC(computed);
+  }, [initialTo]);
 
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef<number>(0);

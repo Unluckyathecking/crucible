@@ -139,14 +139,12 @@ func (c *Capture) WriteHeader(code int) {
 }
 
 // Write forwards b and buffers it when status >= 400.
-// When called before WriteHeader (implicit 200), WriteHeader is forwarded
-// explicitly so Capture's state and the underlying writer's state stay in
-// sync for any caller that inspects them after Write returns.
+// The underlying http.ResponseWriter.Write handles the implicit 200 WriteHeader
+// if no status has been set; Capture mirrors that state without double-calling.
 func (c *Capture) Write(b []byte) (int, error) {
 	if !c.wrote {
 		c.status = http.StatusOK
 		c.wrote = true
-		c.ResponseWriter.WriteHeader(c.status)
 	}
 	if c.status >= 400 {
 		c.body.Write(b)

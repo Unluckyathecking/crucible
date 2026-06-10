@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/httprate"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
@@ -321,13 +322,13 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 				next.ServeHTTP(w, r)
 				return
 			}
-			cap := errorlog.NewCapture(w)
-			next.ServeHTTP(cap, r)
-			if cap.Status() < 400 {
+			capture := errorlog.NewCapture(w)
+			next.ServeHTTP(capture, r)
+			if capture.Status() < 400 {
 				return
 			}
 			key := auth.FromContext(r.Context())
-			if key == nil || key.Customer == (auth.Customer{}) {
+			if key == nil || key.Customer.ID == uuid.Nil {
 				return
 			}
 			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
@@ -335,8 +336,8 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			if op == "" {
 				op = r.URL.Path
 			}
-			errCode, errMsg := cap.ParseErrorFields()
-			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, cap.Status())
+			errCode, errMsg := capture.ParseErrorFields()
+			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
 		})
 	}
 }
