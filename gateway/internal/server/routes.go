@@ -327,7 +327,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 				return
 			}
 			key := auth.FromContext(r.Context())
-			if key == nil {
+			if key == nil || key.Customer == (auth.Customer{}) {
 				return
 			}
 			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
@@ -381,9 +381,7 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
-			log.Warn().Err(err).Str("request_id", rid).Msg("encode checkout response failed")
-		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
 
@@ -422,9 +420,7 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
-			log.Warn().Err(err).Str("request_id", rid).Msg("encode portal response failed")
-		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
 

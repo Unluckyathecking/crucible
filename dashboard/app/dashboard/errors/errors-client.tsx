@@ -93,7 +93,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   }, []);
 
   const abortRef = useRef<AbortController | null>(null);
-  const generationRef = useRef(0);
+  const generationRef = useRef<number>(0);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -140,7 +140,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       setRangeError("'From' must not be after 'To'");
       return;
     }
-    if (toMs - fromMs > MAX_RANGE_DAYS * MS_PER_DAY) {
+    if (toMs - fromMs > (MAX_RANGE_DAYS - 1) * MS_PER_DAY) {
       setRangeError(`Max date range is ${MAX_RANGE_DAYS} days`);
       return;
     }

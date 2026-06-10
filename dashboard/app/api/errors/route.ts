@@ -45,32 +45,28 @@ async function listErrorEvents(
 ): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
   const offset = (page - 1) * limit;
   // customerEmail comes from the authenticated session — not user input.
-  // The subquery (SELECT id FROM customers WHERE email = $1) binds the query to the
-  // authenticated user at the DB level, so no row from another customer can leak.
-  // All $N placeholders use params.length evaluated immediately after each push.
-  const params: unknown[] = [customerEmail, from, toExclusive];
-  let filter = "";
-  if (operation) {
-    params.push(operation);
-    filter += ` AND operation = $${params.length}`;
-  }
-  if (code) {
-    // error_code values are always uppercase (RATE_LIMITED, etc.) in the store.
-    params.push(code.toUpperCase());
-    filter += ` AND error_code = $${params.length}`;
-  }
-  // Fetch one extra row to determine has_more without a separate COUNT query.
-  params.push(limit + 1, offset);
+  // The subquery binds the query to the authenticated user at the DB level.
+  // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
+  // dynamic placeholder construction is needed.
   const r = await pool.query<ErrorEventRow>(
     `SELECT id::text AS id, operation, error_code, http_status, message, request_id, created_at
      FROM error_events
      WHERE customer_id = (SELECT id FROM customers WHERE email = $1 LIMIT 1)
        AND created_at >= $2
        AND created_at < $3
-       ${filter}
+       AND ($4::text IS NULL OR operation = $4)
+       AND ($5::text IS NULL OR error_code = $5)
      ORDER BY created_at DESC
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params,
+     LIMIT $6 OFFSET $7`,
+    [
+      customerEmail,
+      from,
+      toExclusive,
+      operation ?? null,
+      code ? code.toUpperCase() : null,
+      limit + 1,
+      offset,
+    ],
   );
   const hasMore = r.rows.length > limit;
   const rows = r.rows.slice(0, limit).map((row) => ({
@@ -110,7 +106,7 @@ export async function GET(request: Request): Promise<Response> {
     // This is identical to the /api/usage default: 30 calendar days inclusive.
     const now = new Date();
     const tomorrowMidnight = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + MS_PER_DAY,
     );
     let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
     // toExclusive is the exclusive upper DB bound.  Callers pass an inclusive
