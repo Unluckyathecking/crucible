@@ -40,14 +40,15 @@ async function listErrorEvents(
   toExclusive: Date,
   operation: string | undefined,
   code: string | undefined,
-  page: number,
+  offset: number,
   limit: number,
 ): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
-  const offset = (page - 1) * limit;
   // customerEmail comes from the authenticated session — not user input.
   // The subquery binds the query to the authenticated user at the DB level.
   // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
   // dynamic placeholder construction is needed.
+  // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
+  const sqlLimit = limit + 1;
   const r = await pool.query<ErrorEventRow>(
     `SELECT id::text AS id, operation, error_code, http_status, message, request_id, created_at
      FROM error_events
@@ -64,7 +65,7 @@ async function listErrorEvents(
       toExclusive,
       operation ?? null,
       code ?? null,
-      limit + 1,
+      sqlLimit,
       offset,
     ],
   );
@@ -188,7 +189,7 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
-    const result = await listErrorEvents(session.user.email, from, toExclusive, operation, code, page, limit);
+    const result = await listErrorEvents(session.user.email, from, toExclusive, operation, code, offset, limit);
     return new Response(
       JSON.stringify({ ...result, page, limit }),
       { headers: noStore },

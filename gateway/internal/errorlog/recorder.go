@@ -87,7 +87,12 @@ func (r *ErrorRecorder) Record(
 	cid, kid := customerID, apiKeyID
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
 	go func() {
-		defer func() { <-sem }()
+		defer func() {
+			if p := recover(); p != nil {
+				log.Error().Str("request_id", rid).Interface("panic", p).Msg("error event goroutine panicked")
+			}
+			<-sem
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 		defer cancel()
 		// api_key_id is nullable; pass nil for the zero UUID to avoid a spurious FK reference.
