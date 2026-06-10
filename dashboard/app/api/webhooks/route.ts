@@ -14,6 +14,38 @@ function csrfCheck(request: Request): boolean {
 }
 
 /**
+ * Returns true if the hostname resolves to a private, loopback, or link-local
+ * address that should not receive outbound webhook deliveries (SSRF protection).
+ * Only the hostname portion of the URL is checked here; actual DNS resolution
+ * happens at delivery time in the Go worker, but we reject obviously bad inputs
+ * at registration to give the customer immediate feedback.
+ */
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+
+  // Loopback names
+  if (h === "localhost") return true;
+
+  // IPv6 loopback
+  if (h === "::1" || h === "[::1]") return true;
+
+  // IPv4: match dotted-decimal notation
+  const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b, c] = [ipv4[1], ipv4[2], ipv4[3]].map(Number);
+    if (a === 10) return true;                         // 10.0.0.0/8
+    if (a === 127) return true;                        // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return true;           // 169.254.0.0/16 link-local (includes AWS metadata)
+    if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;           // 192.168.0.0/16
+    if (a === 0) return true;                          // 0.0.0.0/8 "this" network
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 shared address space
+  }
+
+  return false;
+}
+
+/**
  * GET /api/webhooks
  * Returns the authenticated customer's active webhook endpoints (no secrets).
  */
@@ -102,6 +134,19 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (parsedUrl.protocol !== "https:") {
     return new Response("URL must use HTTPS", { status: 400 });
+  }
+
+  // Reject embedded credentials — they would be forwarded to the customer's
+  // server in the Authorization header and may leak in logs.
+  if (parsedUrl.username || parsedUrl.password) {
+    return new Response("URL must not contain credentials", { status: 400 });
+  }
+
+  // SSRF protection: reject private/loopback/link-local hostnames.
+  // DNS rebinding attacks are handled by the Go delivery worker's HTTP client;
+  // this check provides early feedback for obviously disallowed targets.
+  if (isPrivateHostname(parsedUrl.hostname)) {
+    return new Response("URL hostname not allowed", { status: 400 });
   }
 
   try {

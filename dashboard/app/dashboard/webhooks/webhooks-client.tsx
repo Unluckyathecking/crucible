@@ -83,6 +83,7 @@ export function WebhooksFormClient() {
 export function RevokeEndpointButton({ endpointId }: { endpointId: string }) {
   const [loading, setLoading] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleRevoke() {
     if (
@@ -90,6 +91,7 @@ export function RevokeEndpointButton({ endpointId }: { endpointId: string }) {
     )
       return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`/api/webhooks/${endpointId}`, {
         method: "DELETE",
@@ -98,8 +100,10 @@ export function RevokeEndpointButton({ endpointId }: { endpointId: string }) {
       if (res.ok) {
         setRevoked(true);
       } else {
-        alert(`Failed to revoke endpoint: HTTP ${res.status}`);
+        setError(`Failed to revoke endpoint: HTTP ${res.status}`);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
     } finally {
       setLoading(false);
     }
@@ -107,12 +111,15 @@ export function RevokeEndpointButton({ endpointId }: { endpointId: string }) {
 
   if (revoked) return <span className="text-xs text-zinc-400">Revoked</span>;
   return (
-    <button
-      onClick={handleRevoke}
-      disabled={loading}
-      className="shrink-0 rounded border border-red-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-    >
-      {loading ? "…" : "Revoke"}
-    </button>
+    <div className="shrink-0 flex flex-col items-end gap-1">
+      <button
+        onClick={handleRevoke}
+        disabled={loading}
+        className="rounded border border-red-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+      >
+        {loading ? "…" : "Revoke"}
+      </button>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
   );
 }

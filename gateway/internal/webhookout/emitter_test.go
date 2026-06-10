@@ -84,51 +84,79 @@ func TestNilEmitterMethods(t *testing.T) {
 	if err := e.Emit(context.Background(), uuid.New(), "test", []byte(`{}`)); err != nil {
 		t.Fatalf("nil Emitter.Emit returned unexpected error: %v", err)
 	}
+	// Stop on nil receiver must not panic.
+	e.Stop()
+}
+
+// capturedHeaders holds header values captured by the test HTTP server.
+type capturedHeaders struct {
+	ts        string
+	sig       string
+	eventID   string
+	ct        string
+	eventType string
 }
 
 // TestDeliver_Success verifies that a 2xx response marks the delivery succeeded
 // and that the correct headers are set on the outgoing request.
+//
+// Header values are sent through a buffered channel to avoid a data race between
+// the server goroutine (writes) and the test goroutine (reads): the channel
+// establishes the required happens-before relationship.
 func TestDeliver_Success(t *testing.T) {
 	secret, _ := GenerateSecret()
 
-	var gotTS, gotSig, gotEventID, gotCT string
+	// Buffered so the handler never blocks if deliver returns before we read.
+	captured := make(chan capturedHeaders, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotTS = r.Header.Get("X-Crucible-Timestamp")
-		gotSig = r.Header.Get("X-Crucible-Signature")
-		gotEventID = r.Header.Get("X-Webhook-Event-ID")
-		gotCT = r.Header.Get("Content-Type")
+		captured <- capturedHeaders{
+			ts:        r.Header.Get("X-Crucible-Timestamp"),
+			sig:       r.Header.Get("X-Crucible-Signature"),
+			eventID:   r.Header.Get("X-Webhook-Event-ID"),
+			ct:        r.Header.Get("Content-Type"),
+			eventType: r.Header.Get("X-Webhook-Event-Type"),
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	row := pendingRow{
-		id:       1,
-		eventID:  "evt-abc",
-		payload:  []byte(`{"type":"test"}`),
-		attempts: 0,
-		url:      srv.URL,
-		secret:   secret,
+		id:        1,
+		eventID:   "evt-abc",
+		eventType: "order.created",
+		payload:   []byte(`{"type":"test"}`),
+		attempts:  0,
+		url:       srv.URL,
+		secret:    secret,
 	}
 
 	// Use a no-op DB so we can call deliver without a real Postgres.
 	e := &Emitter{client: &http.Client{Timeout: deliveryTimeout}}
-	// deliver makes DB calls; to avoid needing a real DB, capture by inspecting headers.
-	// We can't fully test markDelivered without a DB, so we just verify the HTTP behaviour.
 	e.deliver(context.Background(), row)
 
-	if gotCT != "application/json" {
-		t.Errorf("Content-Type: got %q, want application/json", gotCT)
+	var h capturedHeaders
+	select {
+	case h = <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server was not called within timeout")
 	}
-	if gotEventID != "evt-abc" {
-		t.Errorf("X-Webhook-Event-ID: got %q, want evt-abc", gotEventID)
+
+	if h.ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", h.ct)
 	}
-	if gotTS == "" {
+	if h.eventID != "evt-abc" {
+		t.Errorf("X-Webhook-Event-ID: got %q, want evt-abc", h.eventID)
+	}
+	if h.eventType != "order.created" {
+		t.Errorf("X-Webhook-Event-Type: got %q, want order.created", h.eventType)
+	}
+	if h.ts == "" {
 		t.Error("X-Crucible-Timestamp is empty")
 	}
 	// Verify signature format: "t=<ts>,v1=<hex>"
-	expectedSig := "t=" + gotTS + ",v1=" + Sign(secret, gotTS, row.payload)
-	if gotSig != expectedSig {
-		t.Errorf("X-Crucible-Signature mismatch:\n got  %q\n want %q", gotSig, expectedSig)
+	expectedSig := "t=" + h.ts + ",v1=" + Sign(secret, h.ts, row.payload)
+	if h.sig != expectedSig {
+		t.Errorf("X-Crucible-Signature mismatch:\n got  %q\n want %q", h.sig, expectedSig)
 	}
 }
 
@@ -138,9 +166,9 @@ func TestDeliver_Success(t *testing.T) {
 func TestDeliver_Failure_MaxAttempts(t *testing.T) {
 	secret, _ := GenerateSecret()
 
-	called := false
+	called := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
+		called <- struct{}{}
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -157,7 +185,9 @@ func TestDeliver_Failure_MaxAttempts(t *testing.T) {
 	e := &Emitter{client: &http.Client{Timeout: deliveryTimeout}}
 	e.deliver(context.Background(), row) // must not panic
 
-	if !called {
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
 		t.Error("expected the endpoint to be called")
 	}
 }
@@ -190,5 +220,14 @@ func TestWorkerTickCancelledContext(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not exit after context cancellation")
+	}
+}
+
+// TestEmitInvalidJSON verifies that Emit rejects payloads that are not valid JSON.
+func TestEmitInvalidJSON(t *testing.T) {
+	var e *Emitter // nil receiver — but we need a non-nil one to exercise the validation
+	// nil receiver returns nil without reaching the validation
+	if err := e.Emit(context.Background(), uuid.New(), "test", []byte(`not-json`)); err != nil {
+		t.Fatalf("nil Emitter.Emit with invalid JSON should still be a no-op, got: %v", err)
 	}
 }

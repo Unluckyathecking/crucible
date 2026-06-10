@@ -370,13 +370,13 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 // GET /v1/webhooks/deliveries
 func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 	type item struct {
-		ID               int64      `json:"id"`
-		EventID          string     `json:"event_id"`
-		EndpointURL      string     `json:"endpoint_url"`
-		Status           string     `json:"status"`
-		Attempts         int        `json:"attempts"`
-		LastResponseCode *int       `json:"last_response_code,omitempty"`
-		CreatedAt        time.Time  `json:"created_at"`
+		ID               string    `json:"id"`
+		EventID          string    `json:"event_id"`
+		EndpointURL      string    `json:"endpoint_url"`
+		Status           string    `json:"status"`
+		Attempts         int       `json:"attempts"`
+		LastResponseCode *int      `json:"last_response_code,omitempty"`
+		CreatedAt        time.Time `json:"created_at"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
@@ -386,7 +386,7 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		rows, err := db.Query(r.Context(), `
-			SELECT d.id, d.event_id, we.url, d.status, d.attempts,
+			SELECT d.id::text, d.event_id, we.url, d.status, d.attempts,
 			       d.last_response_code, d.created_at
 			FROM webhook_deliveries d
 			JOIN webhook_endpoints we ON we.id = d.endpoint_id

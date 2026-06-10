@@ -17,16 +17,21 @@ CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_customer
   ON webhook_endpoints(customer_id, created_at DESC);
 
 -- webhook_deliveries: outbox table for at-least-once delivery.
--- status values: 'pending', 'delivering' (claimed by worker), 'delivered', 'dead_letter'.
--- Rows with status='delivering' that are older than 2×deliveryTimeout are reset to
--- 'pending' at the next worker tick (crash recovery without a separate cleanup job).
+-- status values are enforced by the CHECK constraint below.
+-- claimed_at is set when the worker claims a row (status = 'delivering'); the recovery
+-- query uses it to reset rows abandoned by a crashed process, which is the correct
+-- measure of how long a row has been in-flight (next_attempt_at is the scheduled time,
+-- not the claim time, so it cannot serve this role).
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id                 BIGSERIAL PRIMARY KEY,
   event_id           TEXT NOT NULL,
+  event_type         TEXT NOT NULL DEFAULT '',
   endpoint_id        UUID NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
   payload            JSONB NOT NULL,
-  status             TEXT NOT NULL DEFAULT 'pending',
-  attempts           INTEGER NOT NULL DEFAULT 0,
+  status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'delivering', 'delivered', 'dead_letter')),
+  attempts           INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  claimed_at         TIMESTAMPTZ,
   next_attempt_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_response_code INTEGER,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()

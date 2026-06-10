@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -41,6 +42,10 @@ const (
 	// stuckDeliveryAge is the threshold past which a 'delivering' row is
 	// considered abandoned (process crash) and reset to 'pending'.
 	stuckDeliveryAge = 2 * deliveryTimeout
+	// dbWriteTimeout caps DB state-update calls that happen after HTTP delivery.
+	// The worker context may already be cancelled at shutdown; using a fresh
+	// background-derived context ensures we still record the delivery outcome.
+	dbWriteTimeout = 5 * time.Second
 )
 
 // backoffSchedule maps attempt index (0-based) to the delay before the next attempt.
@@ -56,10 +61,12 @@ var backoffSchedule = []time.Duration{
 }
 
 // Emitter queues outbound events into webhook_deliveries for all active endpoints
-// of a customer. The background delivery worker runs until ctx is canceled.
+// of a customer. The background delivery worker runs until Stop is called or the
+// parent context passed to NewEmitter is cancelled.
 type Emitter struct {
 	db     *pgxpool.Pool
 	client *http.Client
+	cancel context.CancelFunc
 }
 
 // NewEmitter constructs an Emitter and starts the background delivery worker.
@@ -68,28 +75,42 @@ func NewEmitter(ctx context.Context, db *pgxpool.Pool) *Emitter {
 	if db == nil {
 		return nil
 	}
+	workerCtx, cancel := context.WithCancel(ctx)
 	e := &Emitter{
 		db:     db,
 		client: &http.Client{Timeout: deliveryTimeout},
+		cancel: cancel,
 	}
-	go e.run(ctx)
+	go e.run(workerCtx)
 	return e
+}
+
+// Stop signals the background delivery worker to exit. Safe to call on a nil Emitter.
+func (e *Emitter) Stop() {
+	if e == nil {
+		return
+	}
+	e.cancel()
 }
 
 // Emit fans an event out to all active endpoints registered by customerID by
 // inserting one webhook_deliveries row per endpoint in a single INSERT…SELECT.
 // A nil Emitter or a customer with no active endpoints is a safe no-op.
+// payload must be valid JSON; an error is returned otherwise.
 func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType string, payload []byte) error {
 	if e == nil {
 		return nil
 	}
+	if !json.Valid(payload) {
+		return fmt.Errorf("webhookout: emit: payload is not valid JSON")
+	}
 	eventID := uuid.New().String()
 	_, err := e.db.Exec(ctx, `
-		INSERT INTO webhook_deliveries (event_id, endpoint_id, payload)
-		SELECT $1, we.id, $2::jsonb
+		INSERT INTO webhook_deliveries (event_id, event_type, endpoint_id, payload)
+		SELECT $1, $2, we.id, $3::jsonb
 		FROM webhook_endpoints we
-		WHERE we.customer_id = $3 AND we.active = TRUE
-	`, eventID, string(payload), customerID)
+		WHERE we.customer_id = $4 AND we.active = TRUE
+	`, eventID, eventType, string(payload), customerID)
 	return err
 }
 
@@ -131,23 +152,26 @@ func (e *Emitter) run(ctx context.Context) {
 }
 
 type pendingRow struct {
-	id       int64
-	eventID  string
-	payload  []byte
-	attempts int
-	url      string
-	secret   []byte
+	id        int64
+	eventID   string
+	eventType string
+	payload   []byte
+	attempts  int
+	url       string
+	secret    []byte
 }
 
 func (e *Emitter) processDue(ctx context.Context) error {
-	// Recover rows that were claimed ('delivering') before a crash.
-	// stuckDeliveryAge (2 × deliveryTimeout = 20 s) is safely beyond any
-	// in-progress HTTP call, so no live delivery is mistakenly reset.
+	// Recover rows abandoned by a crashed process: 'delivering' rows where
+	// claimed_at (set when the row was locked) is older than stuckDeliveryAge.
+	// next_attempt_at is the scheduled retry time and must NOT be used here —
+	// it reflects when delivery should run, not how long the row has been in-flight.
 	_, _ = e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
-		SET status = 'pending'
+		SET status = 'pending', claimed_at = NULL
 		WHERE status = 'delivering'
-		  AND next_attempt_at < NOW() - ($1 * INTERVAL '1 second')
+		  AND claimed_at IS NOT NULL
+		  AND claimed_at < NOW() - ($1 * INTERVAL '1 second')
 	`, stuckDeliveryAge.Seconds())
 
 	tx, err := e.db.Begin(ctx)
@@ -159,7 +183,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 	// SELECT … FOR UPDATE SKIP LOCKED claims due rows; concurrent worker instances
 	// (multi-replica deployments) skip locked rows rather than blocking.
 	rows, err := tx.Query(ctx, `
-		SELECT d.id, d.event_id, d.payload, d.attempts, we.url, we.secret
+		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret
 		FROM webhook_deliveries d
 		JOIN webhook_endpoints we ON we.id = d.endpoint_id
 		WHERE d.status = 'pending'
@@ -176,7 +200,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 	var due []pendingRow
 	for rows.Next() {
 		var r pendingRow
-		if err := rows.Scan(&r.id, &r.eventID, &r.payload, &r.attempts, &r.url, &r.secret); err != nil {
+		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret); err != nil {
 			rows.Close()
 			return fmt.Errorf("webhookout: scan: %w", err)
 		}
@@ -191,14 +215,14 @@ func (e *Emitter) processDue(ctx context.Context) error {
 		return nil
 	}
 
-	// Mark claimed rows 'delivering' inside the same transaction.
-	// Commit is fast (no I/O); locks are held only for DB round-trips.
+	// Mark claimed rows 'delivering' inside the same transaction, recording when
+	// each row was claimed so crash-recovery can identify stuck rows correctly.
 	ids := make([]int64, len(due))
 	for i, r := range due {
 		ids[i] = r.id
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE webhook_deliveries SET status = 'delivering' WHERE id = ANY($1)
+		UPDATE webhook_deliveries SET status = 'delivering', claimed_at = NOW() WHERE id = ANY($1)
 	`, ids); err != nil {
 		return fmt.Errorf("webhookout: mark delivering: %w", err)
 	}
@@ -223,13 +247,14 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, r.url, bytes.NewReader(r.payload))
 	if err != nil {
 		// URL is permanently malformed; dead-letter immediately.
-		e.markDeadLetter(ctx, r.id, r.attempts+1, 0)
+		e.markDeadLetter(r.id, r.attempts+1, 0)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Crucible-Timestamp", ts)
 	req.Header.Set("X-Crucible-Signature", "t="+ts+",v1="+sig)
 	req.Header.Set("X-Webhook-Event-ID", r.eventID)
+	req.Header.Set("X-Webhook-Event-Type", r.eventType)
 
 	resp, doErr := e.client.Do(req)
 	if doErr == nil {
@@ -238,7 +263,7 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 
 	newAttempts := r.attempts + 1
 	if doErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		e.markDelivered(ctx, r.id, newAttempts, resp.StatusCode)
+		e.markDelivered(r.id, newAttempts, resp.StatusCode)
 		return
 	}
 
@@ -248,19 +273,24 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 	}
 
 	if newAttempts >= maxAttempts {
-		e.markDeadLetter(ctx, r.id, newAttempts, statusCode)
+		e.markDeadLetter(r.id, newAttempts, statusCode)
 		return
 	}
-	e.scheduleRetry(ctx, r.id, newAttempts, statusCode)
+	e.scheduleRetry(r.id, newAttempts, statusCode)
 }
 
-func (e *Emitter) markDelivered(ctx context.Context, id int64, attempts, statusCode int) {
+// markDelivered, markDeadLetter, scheduleRetry use a fresh background-derived context
+// so a shutting-down worker context does not prevent recording the delivery outcome.
+
+func (e *Emitter) markDelivered(id int64, attempts, statusCode int) {
 	if e.db == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
+	defer cancel()
 	_, err := e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
-		SET status = 'delivered', attempts = $2, last_response_code = $3
+		SET status = 'delivered', attempts = $2, last_response_code = $3, claimed_at = NULL
 		WHERE id = $1
 	`, id, attempts, statusCode)
 	if err != nil {
@@ -268,17 +298,19 @@ func (e *Emitter) markDelivered(ctx context.Context, id int64, attempts, statusC
 	}
 }
 
-func (e *Emitter) markDeadLetter(ctx context.Context, id int64, attempts, statusCode int) {
+func (e *Emitter) markDeadLetter(id int64, attempts, statusCode int) {
 	if e.db == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
+	defer cancel()
 	var scPtr *int
 	if statusCode != 0 {
 		scPtr = &statusCode
 	}
 	_, err := e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
-		SET status = 'dead_letter', attempts = $2, last_response_code = $3
+		SET status = 'dead_letter', attempts = $2, last_response_code = $3, claimed_at = NULL
 		WHERE id = $1
 	`, id, attempts, scPtr)
 	if err != nil {
@@ -286,10 +318,12 @@ func (e *Emitter) markDeadLetter(ctx context.Context, id int64, attempts, status
 	}
 }
 
-func (e *Emitter) scheduleRetry(ctx context.Context, id int64, newAttempts, statusCode int) {
+func (e *Emitter) scheduleRetry(id int64, newAttempts, statusCode int) {
 	if e.db == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
+	defer cancel()
 	// backoffSchedule index is the 0-based attempt count that JUST failed.
 	// newAttempts = failedAttempts + 1, so the index is newAttempts - 1.
 	idx := newAttempts - 1
@@ -304,7 +338,7 @@ func (e *Emitter) scheduleRetry(ctx context.Context, id int64, newAttempts, stat
 	}
 	_, err := e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
-		SET status = 'pending', attempts = $2, next_attempt_at = $3, last_response_code = $4
+		SET status = 'pending', attempts = $2, next_attempt_at = $3, last_response_code = $4, claimed_at = NULL
 		WHERE id = $1
 	`, id, newAttempts, nextAt, scPtr)
 	if err != nil {
