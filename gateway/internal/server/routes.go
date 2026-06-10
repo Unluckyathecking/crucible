@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/httprate"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -81,6 +83,12 @@ type Deps struct {
 	Checkout BillingService
 	// TracerProvider is optional. When nil, a noop tracer is used (default-off).
 	TracerProvider oteltrace.TracerProvider
+	// ErrorRecorder is optional. When set, non-2xx responses on /v1 worker routes
+	// are recorded asynchronously into error_events for the customer error-history view.
+	// Billing routes (/v1/billing/*) are registered in a separate subrouter and are
+	// intentionally excluded — they are framework infrastructure, not worker calls.
+	// When nil (default when main.go is unmodified), events are silently dropped.
+	ErrorRecorder *errorlog.ErrorRecorder
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -158,6 +166,9 @@ func NewRouter(d *Deps) http.Handler {
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
+		// Capture errors after auth (so customer context is populated) but before
+		// ratelimit/quota so their 429s are recorded with the correct status.
+		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
@@ -292,6 +303,44 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// v1ErrorCapture returns a middleware that wraps /v1 responses with an
+// errorlog.Capture recorder. After the inner handler chain returns, if the
+// status is >= 400 and an authenticated key is present, it fires an async
+// error_events insert via rec. A nil rec is a safe no-op.
+//
+// Operation is derived from chi.RouteContext(r).RoutePattern(), which chi
+// populates before any middleware runs. For all /v1 worker routes that is
+// the registered path pattern (e.g. "/v1/echo"), which matches the operation
+// label used in usage_events for per-product endpoints.
+func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if rec == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Capture route pattern before handler runs; chi populates it at
+			// dispatch time and the value is stable for the lifetime of the request.
+			op := chi.RouteContext(r.Context()).RoutePattern()
+			if op == "" {
+				op = r.URL.Path
+			}
+			capture := errorlog.NewCapture(w)
+			next.ServeHTTP(capture, r)
+			if capture.Status() < 400 {
+				return
+			}
+			key := auth.FromContext(r.Context())
+			if key == nil || key.Customer.ID == uuid.Nil {
+				return
+			}
+			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+			errCode, errMsg := capture.ParseErrorFields()
+			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
+		})
 	}
 }
 
