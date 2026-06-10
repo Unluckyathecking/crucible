@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -41,7 +42,9 @@ const (
 	claimPageSize = 50
 	// stuckDeliveryAge is the threshold past which a 'delivering' row is
 	// considered abandoned (process crash) and reset to 'pending'.
-	stuckDeliveryAge = 2 * deliveryTimeout
+	// Must comfortably exceed deliveryTimeout + workerPeriod + scheduling jitter
+	// so that in-flight deliveries are never reclaimed as stuck.
+	stuckDeliveryAge = 60 * time.Second
 	// dbWriteTimeout caps DB state-update calls that happen after HTTP delivery.
 	// The worker context may already be cancelled at shutdown; using a fresh
 	// background-derived context ensures we still record the delivery outcome.
@@ -196,17 +199,16 @@ func (e *Emitter) processDue(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("webhookout: claim: %w", err)
 	}
+	defer rows.Close()
 
 	var due []pendingRow
 	for rows.Next() {
 		var r pendingRow
 		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret); err != nil {
-			rows.Close()
 			return fmt.Errorf("webhookout: scan: %w", err)
 		}
 		due = append(due, r)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("webhookout: rows: %w", err)
 	}
@@ -241,7 +243,7 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 	reqCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
 	defer cancel()
 
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	ts := strconv.FormatInt(time.Now().UTC().Unix(), 10)
 	sig := Sign(r.secret, ts, r.payload)
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, r.url, bytes.NewReader(r.payload))
@@ -258,6 +260,8 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 
 	resp, doErr := e.client.Do(req)
 	if doErr == nil {
+		// Drain before close so the transport can reuse the TCP connection.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
 

@@ -32,7 +32,8 @@ function isPrivateHostname(hostname: string): boolean {
   // IPv4: match dotted-decimal notation
   const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4) {
-    const [a, b, c] = [ipv4[1], ipv4[2], ipv4[3]].map(Number);
+    const [a, b, c, d] = [ipv4[1], ipv4[2], ipv4[3], ipv4[4]].map(Number);
+    if (a > 255 || b > 255 || c > 255 || d > 255) return true; // invalid octet — treat as disallowed
     if (a === 10) return true;                         // 10.0.0.0/8
     if (a === 127) return true;                        // 127.0.0.0/8 loopback
     if (a === 169 && b === 254) return true;           // 169.254.0.0/16 link-local (includes AWS metadata)

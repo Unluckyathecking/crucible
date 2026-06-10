@@ -224,10 +224,11 @@ func TestWorkerTickCancelledContext(t *testing.T) {
 }
 
 // TestEmitInvalidJSON verifies that Emit rejects payloads that are not valid JSON.
+// Uses a non-nil Emitter with a nil DB so the json.Valid check is reached but no
+// DB call is made.
 func TestEmitInvalidJSON(t *testing.T) {
-	var e *Emitter // nil receiver — but we need a non-nil one to exercise the validation
-	// nil receiver returns nil without reaching the validation
-	if err := e.Emit(context.Background(), uuid.New(), "test", []byte(`not-json`)); err != nil {
-		t.Fatalf("nil Emitter.Emit with invalid JSON should still be a no-op, got: %v", err)
+	e := &Emitter{db: nil}
+	if err := e.Emit(context.Background(), uuid.New(), "test", []byte(`not-json`)); err == nil {
+		t.Fatal("expected error for invalid JSON payload, got nil")
 	}
 }

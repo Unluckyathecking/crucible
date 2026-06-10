@@ -29,7 +29,7 @@ function statusBadge(status: string): string {
 }
 
 function formatDate(d: Date): string {
-  return new Date(d).toLocaleString("en-US", {
+  return d.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
