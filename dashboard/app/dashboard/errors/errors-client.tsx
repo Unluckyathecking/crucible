@@ -140,7 +140,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       setRangeError("'From' must not be after 'To'");
       return;
     }
-    if (toMs - fromMs > (MAX_RANGE_DAYS - 1) * MS_PER_DAY) {
+    if (toMs - fromMs > MAX_RANGE_DAYS * MS_PER_DAY) {
       setRangeError(`Max date range is ${MAX_RANGE_DAYS} days`);
       return;
     }
@@ -174,7 +174,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
             <input
               type="date"
               value={displayFrom}
-              max={displayTo || (todayUTC ?? initialTo)}
+              max={todayUTC ?? initialTo}
               onChange={(e) => { setDisplayFrom(e.target.value); setRangeError(null); }}
               className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white"
             />

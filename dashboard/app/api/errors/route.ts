@@ -176,6 +176,16 @@ export async function GET(request: Request): Promise<Response> {
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
         : DEFAULT_PAGE_SIZE;
 
+    // Guard against DoS via an extremely large OFFSET causing a full-table scan.
+    // page is unbounded by parseInt; cap via the computed offset.
+    const offset = (page - 1) * limit;
+    if (!Number.isSafeInteger(offset) || offset > 10_000_000) {
+      return new Response(JSON.stringify({ error: "page too large" }), {
+        status: 400,
+        headers: noStore,
+      });
+    }
+
     const result = await listErrorEvents(session.user.email, from, toExclusive, operation, code, page, limit);
     return new Response(
       JSON.stringify({ ...result, page, limit }),

@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -138,14 +139,13 @@ func (c *Capture) WriteHeader(code int) {
 }
 
 // Write forwards b and buffers it when status >= 400.
-// When called before WriteHeader (implicit 200), it explicitly forwards
-// WriteHeader(200) to the underlying writer so the wrapper's state stays
-// consistent with the underlying ResponseWriter.
+// When called before WriteHeader, we record the implicit 200 locally but do NOT
+// call WriteHeader on the underlying writer — the first underlying Write triggers
+// it automatically, preserving Content-Length / Transfer-Encoding negotiation.
 func (c *Capture) Write(b []byte) (int, error) {
 	if !c.wrote {
 		c.status = http.StatusOK
 		c.wrote = true
-		c.ResponseWriter.WriteHeader(c.status)
 	}
 	if c.status >= 400 {
 		c.body.Write(b)
@@ -196,7 +196,12 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 		code = "UNKNOWN"
 	}
 	if len(message) > maxMessageBytes {
-		message = message[:maxMessageBytes]
+		// Walk back to the last valid rune start so we never emit partial UTF-8.
+		i := maxMessageBytes
+		for i > 0 && !utf8.RuneStart(message[i]) {
+			i--
+		}
+		message = message[:i]
 	}
 	return code, message
 }
