@@ -10,7 +10,7 @@ declare global {
   var _crucible_pool: Pool | undefined;
 }
 
-const pool: Pool =
+export const pool: Pool =
   global._crucible_pool ?? new Pool({ connectionString: process.env.DATABASE_URL });
 if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
 

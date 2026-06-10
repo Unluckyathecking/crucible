@@ -82,10 +82,11 @@ type Deps struct {
 	Checkout BillingService
 	// TracerProvider is optional. When nil, a noop tracer is used (default-off).
 	TracerProvider oteltrace.TracerProvider
-	// ErrorRecorder is optional. When set, every non-2xx /v1 response is recorded
-	// asynchronously into error_events for the customer-facing error-history view.
-	// When nil (default when main.go is unmodified), error events are silently dropped
-	// — the rest of the gateway is unaffected.
+	// ErrorRecorder is optional. When set, non-2xx responses on /v1 worker routes
+	// are recorded asynchronously into error_events for the customer error-history view.
+	// Billing routes (/v1/billing/*) are registered in a separate subrouter and are
+	// intentionally excluded — they are framework infrastructure, not worker calls.
+	// When nil (default when main.go is unmodified), events are silently dropped.
 	ErrorRecorder *errorlog.ErrorRecorder
 }
 

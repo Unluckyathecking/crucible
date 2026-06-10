@@ -35,7 +35,7 @@ function toISODate(d: Date): string {
 
 async function fetchErrors(
   from: string,
-  to: string,
+  to: string,         // inclusive display date; the API adds one day for the exclusive DB bound
   operation: string,
   code: string,
   page: number,
@@ -73,11 +73,10 @@ function formatTs(iso: string): string {
 
 interface ErrorsClientProps {
   initialFrom: string;
-  initialTo: string;    // inclusive upper bound shown in the date picker
-  initialApiTo: string; // exclusive upper bound sent to the API (= initialTo + 1 day)
+  initialTo: string;  // inclusive upper bound — sent directly to the API as 'to'
 }
 
-export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsClientProps) {
+export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [displayFrom, setDisplayFrom] = useState(initialFrom);
   const [displayTo, setDisplayTo] = useState(initialTo);
   const [operationFilter, setOperationFilter] = useState("");
@@ -85,9 +84,8 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
   // todayUTC starts null so the server render and client first paint agree
-  // (avoiding hydration mismatch). The useEffect updates it to the live client
-  // date after hydration; the fallback ?? initialTo keeps the inputs functional
-  // during that brief window.
+  // (no hydration mismatch). The useEffect updates it after hydration;
+  // todayUTC ?? initialTo keeps the inputs functional during that window.
   const [todayUTC, setTodayUTC] = useState<string | null>(null);
   useEffect(() => {
     const now = new Date();
@@ -99,13 +97,13 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  // queryRef: exclusive API `to` bound used by the current main query.
+  // queryRef: inclusive 'to' date used by the current main query.
   // Updated synchronously in handleApply so handlePrev/handleNext always read
   // the correct range even if clicked before the next React render commits.
-  const queryRef = useRef({ from: initialFrom, apiTo: initialApiTo, op: "", code: "" });
+  const queryRef = useRef({ from: initialFrom, to: initialTo, op: "", code: "" });
 
   const load = useCallback(
-    async (from: string, apiTo: string, op: string, code: string, page: number) => {
+    async (from: string, to: string, op: string, code: string, page: number) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -114,7 +112,7 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
       // fetch is in-flight. The gen check after the await guarantees a stale
       // response from a superseded request can never overwrite state.
       setState({ status: "loading" });
-      const result = await fetchErrors(from, apiTo, op, code, page, ctrl.signal);
+      const result = await fetchErrors(from, to, op, code, page, ctrl.signal);
       if (result === null || gen !== generationRef.current || !mountedRef.current) return;
       if ("error" in result) {
         setState({ status: "error", message: result.error });
@@ -126,10 +124,10 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
   );
 
   useEffect(() => {
-    queryRef.current = { from: initialFrom, apiTo: initialApiTo, op: "", code: "" };
-    void load(initialFrom, initialApiTo, "", "", 1);
+    queryRef.current = { from: initialFrom, to: initialTo, op: "", code: "" };
+    void load(initialFrom, initialTo, "", "", 1);
     return () => { abortRef.current?.abort(); };
-  }, [initialFrom, initialApiTo, load]);
+  }, [initialFrom, initialTo, load]);
 
   const handleApply = useCallback(() => {
     if (!ISO_DATE_RE.test(displayFrom) || !ISO_DATE_RE.test(displayTo)) {
@@ -147,23 +145,22 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
       return;
     }
     setRangeError(null);
-    // The API uses half-open [from, to) intervals. Advance displayTo by one
-    // day to make the inclusive selected date fully included in the results.
-    const apiTo = toISODate(new Date(toMs + MS_PER_DAY));
-    queryRef.current = { from: displayFrom, apiTo, op: operationFilter, code: codeFilter };
-    void load(displayFrom, apiTo, operationFilter, codeFilter, 1);
+    // Pass the inclusive display date directly to the API; the API converts it
+    // to an exclusive midnight bound server-side (+1 day).
+    queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter };
+    void load(displayFrom, displayTo, operationFilter, codeFilter, 1);
   }, [displayFrom, displayTo, operationFilter, codeFilter, load]);
 
   const handlePrev = useCallback(() => {
     if (state.status !== "ok" || state.page <= 1) return;
-    const { from, apiTo, op, code } = queryRef.current;
-    void load(from, apiTo, op, code, state.page - 1);
+    const { from, to, op, code } = queryRef.current;
+    void load(from, to, op, code, state.page - 1);
   }, [state, load]);
 
   const handleNext = useCallback(() => {
     if (state.status !== "ok" || !state.has_more) return;
-    const { from, apiTo, op, code } = queryRef.current;
-    void load(from, apiTo, op, code, state.page + 1);
+    const { from, to, op, code } = queryRef.current;
+    void load(from, to, op, code, state.page + 1);
   }, [state, load]);
 
   return (

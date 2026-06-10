@@ -32,12 +32,14 @@ import (
 // Events that arrive when all slots are occupied are dropped rather than
 // blocking the gateway or opening unbounded DB connections.
 const (
-	maxConcurrent = 128
-	dbTimeout     = 2 * time.Second
+	maxConcurrent   = 128
+	dbTimeout       = 2 * time.Second
+	maxMessageBytes = 1024
 )
 
 // ErrorRecorder writes error_events rows asynchronously with a bounded
-// goroutine pool.
+// goroutine pool. Fields are immutable after New returns; goroutines capture
+// the receiver by pointer but never mutate it.
 type ErrorRecorder struct {
 	db  *pgxpool.Pool
 	sem chan struct{}
@@ -136,13 +138,14 @@ func (c *Capture) WriteHeader(code int) {
 }
 
 // Write forwards b and buffers it when status >= 400.
-// Per the http.ResponseWriter contract, callers must invoke WriteHeader before
-// Write for non-200 responses; all apierror.Write paths in this codebase follow
-// that ordering, so status is always committed before body bytes arrive.
+// When called before WriteHeader (implicit 200), it explicitly forwards
+// WriteHeader(200) to the underlying writer so the wrapper's state stays
+// consistent with the underlying ResponseWriter.
 func (c *Capture) Write(b []byte) (int, error) {
 	if !c.wrote {
 		c.status = http.StatusOK
 		c.wrote = true
+		c.ResponseWriter.WriteHeader(c.status)
 	}
 	if c.status >= 400 {
 		c.body.Write(b)
@@ -178,9 +181,8 @@ type errorEnvelope struct {
 
 // ParseErrorFields extracts the error code and message from a buffered apierror
 // response body. When JSON parsing fails but the body is non-empty, the raw body
-// (capped at 1024 bytes) is preserved as the message so diagnostic information
-// is not silently lost. Returns code="UNKNOWN" when the body is absent or the
-// JSON envelope contains no code.
+// is preserved (capped at maxMessageBytes) so diagnostic information is not lost.
+// Returns code="UNKNOWN" when the body is absent or the JSON envelope has no code.
 func (c *Capture) ParseErrorFields() (code, message string) {
 	body := c.body.Bytes()
 	var env errorEnvelope
@@ -189,12 +191,12 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 		message = env.Error.Message
 	} else if len(body) > 0 {
 		message = string(body)
-		if len(message) > 1024 {
-			message = message[:1024]
-		}
 	}
 	if code == "" {
 		code = "UNKNOWN"
+	}
+	if len(message) > maxMessageBytes {
+		message = message[:maxMessageBytes]
 	}
 	return code, message
 }

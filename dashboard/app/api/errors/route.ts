@@ -4,23 +4,8 @@
 // The API converts `to` to an exclusive midnight bound internally so the query
 // is [from-midnight, to+1-day-midnight) — consistent with the usage API pattern.
 import { randomUUID } from "crypto";
-import { Pool } from "pg";
 import { auth } from "@/auth";
-import { ensureCustomer } from "@/lib/db";
-
-// Re-use the singleton pool created by lib/db.ts when it has already been
-// imported in this process (which is always the case in practice, since
-// ensureCustomer above imports from lib/db). Falling back to a new Pool here
-// covers the cold-start edge-case where this route is hit before lib/db.ts
-// is initialised, while the global singleton prevents duplicate pools once
-// lib/db.ts has run.
-declare global {
-  // eslint-disable-next-line no-var
-  var _crucible_pool: Pool | undefined;
-}
-const pool: Pool =
-  global._crucible_pool ?? new Pool({ connectionString: process.env.DATABASE_URL });
-if (process.env.NODE_ENV !== "production") global._crucible_pool = pool;
+import { ensureCustomer, pool } from "@/lib/db";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -34,6 +19,7 @@ const MAX_FILTER_LENGTH = 128;
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
   const d = new Date(s + ISO_MIDNIGHT_SUFFIX);
+  // Round-trip check catches calendar overflow: "2023-02-30" parses to "2023-03-02".
   if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
   return d;
 }
@@ -45,7 +31,7 @@ interface ErrorEventRow {
   http_status: number;
   message: string;
   request_id: string;
-  created_at: string;
+  created_at: Date;
 }
 
 async function listErrorEvents(
@@ -56,37 +42,26 @@ async function listErrorEvents(
   code: string | undefined,
   page: number,
   limit: number,
-): Promise<{ data: ErrorEventRow[]; has_more: boolean }> {
+): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
   const offset = (page - 1) * limit;
-  // customerEmail comes from the auth session (not user input) and is used in a
-  // subquery so the DB enforces that returned rows belong to the authenticated user.
-  // paramIdx starts at 3 (after email=$1, from=$2, toExclusive=$3).
+  // customerEmail comes from the authenticated session — not user input.
+  // The subquery (SELECT id FROM customers WHERE email = $1) binds the query to the
+  // authenticated user at the DB level, so no row from another customer can leak.
+  // All $N placeholders use params.length evaluated immediately after each push.
   const params: unknown[] = [customerEmail, from, toExclusive];
-  let paramIdx = 3;
   let filter = "";
   if (operation) {
     params.push(operation);
-    filter += ` AND operation = $${++paramIdx}`;
+    filter += ` AND operation = $${params.length}`;
   }
   if (code) {
-    // Store error_code values are always uppercase (RATE_LIMITED, etc.).
-    // Exact match is intentional; the UI placeholder hints at the casing.
+    // error_code values are always uppercase (RATE_LIMITED, etc.) in the store.
     params.push(code.toUpperCase());
-    filter += ` AND error_code = $${++paramIdx}`;
+    filter += ` AND error_code = $${params.length}`;
   }
   // Fetch one extra row to determine has_more without a separate COUNT query.
   params.push(limit + 1, offset);
-  const limitIdx = ++paramIdx;
-  const offsetIdx = ++paramIdx;
-  const r = await pool.query<{
-    id: string;
-    operation: string;
-    error_code: string;
-    http_status: number;
-    message: string;
-    request_id: string;
-    created_at: Date;
-  }>(
+  const r = await pool.query<ErrorEventRow>(
     `SELECT id::text AS id, operation, error_code, http_status, message, request_id, created_at
      FROM error_events
      WHERE customer_id = (SELECT id FROM customers WHERE email = $1 LIMIT 1)
@@ -94,7 +69,7 @@ async function listErrorEvents(
        AND created_at < $3
        ${filter}
      ORDER BY created_at DESC
-     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
   const hasMore = r.rows.length > limit;
