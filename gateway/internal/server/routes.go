@@ -164,9 +164,19 @@ func NewRouter(d *Deps) http.Handler {
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
-		// errorCapture wraps the entire /v1 stack so it captures 4xx/5xx from
-		// every downstream middleware (rate-limit, quota, idempotency) and handler.
-		// Must run after auth.Middleware so auth context (customer/key) is available.
+		// v1ErrorCapture is registered here — second in the stack, after auth
+		// (so the auth context / customer key is populated) but BEFORE ratelimit,
+		// idempotency, and quota. This is intentional and correct:
+		//
+		// chi middleware runs outer-to-inner on the call stack and unwinds
+		// inner-to-outer. Registering v1ErrorCapture at position 2 means it
+		// passes errorlog.NewCapture(w) as the ResponseWriter to every subsequent
+		// middleware. When ratelimit or quota writes a 429 to its 'w' argument —
+		// which IS the Capture — and returns, execution unwinds back here and
+		// cap.Status() is 429, exactly what we want to record.
+		//
+		// This is the same pattern observability.Middleware uses at the router level
+		// to capture 429s from all route groups via its own StatusRecorder.
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
@@ -305,9 +315,6 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 	}
 }
 
-// billingCheckoutHandler creates a Stripe Checkout session and returns the redirect URL.
-// POST /v1/billing/checkout body: {"plan_id":"pro"}
-// Response: {"url":"https://checkout.stripe.com/..."}
 // v1ErrorCapture returns a middleware that wraps /v1 responses with an
 // errorlog.Capture recorder. After the inner handler chain returns, if the
 // status is >= 400 and an authenticated key is present, it fires an async
@@ -344,6 +351,9 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 	}
 }
 
+// billingCheckoutHandler creates a Stripe Checkout session and returns the redirect URL.
+// POST /v1/billing/checkout body: {"plan_id":"pro"}
+// Response: {"url":"https://checkout.stripe.com/..."}
 func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)

@@ -73,29 +73,47 @@ function formatTs(iso: string): string {
 
 interface ErrorsClientProps {
   initialFrom: string;
-  initialTo: string;
+  initialTo: string;    // inclusive upper bound shown in the date picker
+  initialApiTo: string; // exclusive upper bound sent to the API (= initialTo + 1 day)
 }
 
-export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
+export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsClientProps) {
   const [displayFrom, setDisplayFrom] = useState(initialFrom);
   const [displayTo, setDisplayTo] = useState(initialTo);
   const [operationFilter, setOperationFilter] = useState("");
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  // todayUTC is seeded from the server-computed initialTo so the max attribute
+  // of the date pickers is stable across renders and does not jitter if the
+  // browser clock crosses midnight between keystrokes.
+  const [todayUTC, setTodayUTC] = useState(initialTo);
+  useEffect(() => {
+    const now = new Date();
+    setTodayUTC(toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))));
+  }, []);
+
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
+  // queryRef: exclusive API `to` bound used by the current main query.
+  // Updated synchronously in handleApply so handlePrev/handleNext always read
+  // the correct range even if clicked before the next React render commits.
+  const queryRef = useRef({ from: initialFrom, apiTo: initialApiTo, op: "", code: "" });
+
   const load = useCallback(
-    async (from: string, to: string, op: string, code: string, page: number) => {
+    async (from: string, apiTo: string, op: string, code: string, page: number) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       const gen = ++generationRef.current;
+      // Set loading synchronously so the spinner appears immediately while the
+      // fetch is in-flight. The gen check after the await guarantees a stale
+      // response from a superseded request can never overwrite state.
       setState({ status: "loading" });
-      const result = await fetchErrors(from, to, op, code, page, ctrl.signal);
+      const result = await fetchErrors(from, apiTo, op, code, page, ctrl.signal);
       if (result === null || gen !== generationRef.current || !mountedRef.current) return;
       if ("error" in result) {
         setState({ status: "error", message: result.error });
@@ -107,9 +125,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   );
 
   useEffect(() => {
-    void load(initialFrom, initialTo, "", "", 1);
+    queryRef.current = { from: initialFrom, apiTo: initialApiTo, op: "", code: "" };
+    void load(initialFrom, initialApiTo, "", "", 1);
     return () => { abortRef.current?.abort(); };
-  }, [initialFrom, initialTo, load]);
+  }, [initialFrom, initialApiTo, load]);
 
   const handleApply = useCallback(() => {
     if (!ISO_DATE_RE.test(displayFrom) || !ISO_DATE_RE.test(displayTo)) {
@@ -127,21 +146,24 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       return;
     }
     setRangeError(null);
-    void load(displayFrom, displayTo, operationFilter, codeFilter, 1);
+    // The API uses half-open [from, to) intervals. Advance displayTo by one
+    // day to make the inclusive selected date fully included in the results.
+    const apiTo = toISODate(new Date(toMs + MS_PER_DAY));
+    queryRef.current = { from: displayFrom, apiTo, op: operationFilter, code: codeFilter };
+    void load(displayFrom, apiTo, operationFilter, codeFilter, 1);
   }, [displayFrom, displayTo, operationFilter, codeFilter, load]);
 
   const handlePrev = useCallback(() => {
     if (state.status !== "ok" || state.page <= 1) return;
-    void load(displayFrom, displayTo, operationFilter, codeFilter, state.page - 1);
-  }, [state, displayFrom, displayTo, operationFilter, codeFilter, load]);
+    const { from, apiTo, op, code } = queryRef.current;
+    void load(from, apiTo, op, code, state.page - 1);
+  }, [state, load]);
 
   const handleNext = useCallback(() => {
     if (state.status !== "ok" || !state.has_more) return;
-    void load(displayFrom, displayTo, operationFilter, codeFilter, state.page + 1);
-  }, [state, displayFrom, displayTo, operationFilter, codeFilter, load]);
-
-  const now = new Date();
-  const todayUTC = toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+    const { from, apiTo, op, code } = queryRef.current;
+    void load(from, apiTo, op, code, state.page + 1);
+  }, [state, load]);
 
   return (
     <div className="space-y-5">
@@ -187,7 +209,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
               value={codeFilter}
               placeholder="e.g. RATE_LIMITED"
               onChange={(e) => setCodeFilter(e.target.value)}
-              className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white w-36"
+              className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white w-40"
             />
           </label>
           <button
@@ -202,7 +224,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
         {rangeError && (
           <p className="mt-2 text-sm text-red-600" role="alert">{rangeError}</p>
         )}
-        <p className="mt-2 text-xs text-zinc-400">Max {MAX_RANGE_DAYS} days</p>
+        <p className="mt-2 text-xs text-zinc-400">Max {MAX_RANGE_DAYS} days · error codes are uppercase (e.g. RATE_LIMITED)</p>
       </section>
 
       {state.status === "error" && (

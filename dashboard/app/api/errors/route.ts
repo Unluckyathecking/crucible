@@ -1,13 +1,19 @@
 // GET /api/errors?from=&to=&operation=&code=&page=&limit=
 // Returns the authenticated customer's own error_events rows, newest-first,
-// paginated. All dates are interpreted as UTC midnight.
+// paginated. `from` and `to` are inclusive ISO 8601 dates (YYYY-MM-DD, UTC).
+// The API converts `to` to an exclusive midnight bound internally so the query
+// is [from-midnight, to+1-day-midnight) — consistent with the usage API pattern.
 import { randomUUID } from "crypto";
 import { Pool } from "pg";
 import { auth } from "@/auth";
 import { ensureCustomer } from "@/lib/db";
 
-// Reuse the same pool created by lib/db.ts when available to avoid duplicate
-// connection pools in the same process (important under Next.js dev HMR).
+// Re-use the singleton pool created by lib/db.ts when it has already been
+// imported in this process (which is always the case in practice, since
+// ensureCustomer above imports from lib/db). Falling back to a new Pool here
+// covers the cold-start edge-case where this route is hit before lib/db.ts
+// is initialised, while the global singleton prevents duplicate pools once
+// lib/db.ts has run.
 declare global {
   // eslint-disable-next-line no-var
   var _crucible_pool: Pool | undefined;
@@ -45,21 +51,23 @@ interface ErrorEventRow {
 async function listErrorEvents(
   customerId: string,
   from: Date,
-  to: Date,
+  toExclusive: Date,
   operation: string | undefined,
   code: string | undefined,
   page: number,
   limit: number,
 ): Promise<{ data: ErrorEventRow[]; has_more: boolean }> {
   const offset = (page - 1) * limit;
-  const params: unknown[] = [customerId, from, to];
+  const params: unknown[] = [customerId, from, toExclusive];
   let filter = "";
   if (operation) {
     params.push(operation);
     filter += ` AND operation = $${params.length}`;
   }
   if (code) {
-    params.push(code);
+    // Store error_code values are always uppercase (RATE_LIMITED, etc.).
+    // Exact match is intentional; the UI placeholder hints at the casing.
+    params.push(code.toUpperCase());
     filter += ` AND error_code = $${params.length}`;
   }
   // Fetch one extra row to determine has_more without a separate COUNT query.
@@ -117,13 +125,17 @@ export async function GET(request: Request): Promise<Response> {
     const customer = await ensureCustomer(session.user.email);
     const url = new URL(request.url);
 
-    // Date range defaults
+    // Date-range defaults: [tomorrowMidnight − 30 days, tomorrowMidnight).
+    // This is identical to the /api/usage default: 30 calendar days inclusive.
     const now = new Date();
     const tomorrowMidnight = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
     );
     let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
-    let to = tomorrowMidnight;
+    // toExclusive is the exclusive upper DB bound.  Callers pass an inclusive
+    // date (e.g. "today"); we add one day here so events from the entire named
+    // day are included in the results.
+    let toExclusive = tomorrowMidnight;
 
     const fromParam = url.searchParams.get("from");
     if (fromParam) {
@@ -145,15 +157,19 @@ export async function GET(request: Request): Promise<Response> {
           headers: { "content-type": "application/json" },
         });
       }
-      to = parsed;
+      // `to` is inclusive (the full named day is included); advance to the
+      // next midnight for the exclusive DB bound.
+      toExclusive = new Date(parsed.getTime() + MS_PER_DAY);
     }
-    if (from.getTime() > to.getTime()) {
+    // Range validation uses the user-visible window (from → toExclusive-1day).
+    if (from.getTime() >= toExclusive.getTime()) {
       return new Response(JSON.stringify({ error: "'from' must not be after 'to'" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     }
-    if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * MS_PER_DAY) {
+    const userVisibleRangeMs = toExclusive.getTime() - MS_PER_DAY - from.getTime();
+    if (userVisibleRangeMs > MAX_RANGE_DAYS * MS_PER_DAY) {
       return new Response(
         JSON.stringify({ error: `date range exceeds maximum of ${MAX_RANGE_DAYS} days` }),
         { status: 400, headers: { "content-type": "application/json" } },
@@ -183,7 +199,7 @@ export async function GET(request: Request): Promise<Response> {
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
         : DEFAULT_PAGE_SIZE;
 
-    const result = await listErrorEvents(customer.id, from, to, operation, code, page, limit);
+    const result = await listErrorEvents(customer.id, from, toExclusive, operation, code, page, limit);
     return new Response(
       JSON.stringify({ ...result, page, limit }),
       { headers: { "content-type": "application/json", "cache-control": "no-store" } },

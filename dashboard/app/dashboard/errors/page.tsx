@@ -20,8 +20,12 @@ export default async function ErrorsPage() {
 
   const now = new Date();
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const tomorrowUTC = new Date(todayUTC.getTime() + MS_PER_DAY);
+  // today − (ERRORS_WINDOW_DAYS − 1) gives an inclusive window of exactly
+  // ERRORS_WINDOW_DAYS calendar days: [today−29, today] = 30 days inclusive.
   const initialFrom = toISODate(new Date(todayUTC.getTime() - (ERRORS_WINDOW_DAYS - 1) * MS_PER_DAY));
-  const initialTo = toISODate(todayUTC);
+  const initialTo = toISODate(todayUTC);       // display-inclusive upper bound
+  const initialApiTo = toISODate(tomorrowUTC); // exclusive upper bound for the API call
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
@@ -35,7 +39,11 @@ export default async function ErrorsPage() {
           </Link>
           <h1 className="text-2xl sm:text-3xl font-bold">Error History</h1>
         </header>
-        <ErrorsClient initialFrom={initialFrom} initialTo={initialTo} />
+        <ErrorsClient
+          initialFrom={initialFrom}
+          initialTo={initialTo}
+          initialApiTo={initialApiTo}
+        />
       </div>
     </main>
   );

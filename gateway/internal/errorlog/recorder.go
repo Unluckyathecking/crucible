@@ -3,18 +3,23 @@
 //
 // Design invariants:
 //   - A nil *ErrorRecorder is always a safe no-op so callers need no nil guard.
-//   - Record fires a goroutine and returns immediately; it never alters the HTTP
-//     response already committed to the client.
-//   - The goroutine uses a fresh background context: a cancelled request context
-//     must not abort an in-flight insert.
+//   - Record is non-blocking: it queues work on a bounded semaphore channel and
+//     returns immediately, never blocking or altering the HTTP response path.
+//   - Goroutines are capped at maxConcurrent; when the cap is reached, the
+//     event is dropped with a warning log rather than blocking the gateway.
+//   - Each goroutine uses a fresh background context; a cancelled request context
+//     never aborts an in-flight insert.
 //   - Capture buffers only error response bodies (status >= 400) so successful
 //     large responses are not copied in memory.
 package errorlog
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -23,9 +28,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ErrorRecorder writes error_events rows asynchronously.
+// maxConcurrent caps the number of in-flight error-event insert goroutines.
+// Events that arrive when all slots are occupied are dropped rather than
+// blocking the gateway or opening unbounded DB connections.
+const maxConcurrent = 128
+
+// ErrorRecorder writes error_events rows asynchronously with a bounded
+// goroutine pool.
 type ErrorRecorder struct {
-	db *pgxpool.Pool
+	db  *pgxpool.Pool
+	sem chan struct{}
 }
 
 // New returns an ErrorRecorder backed by db. Returns nil when db is nil so
@@ -34,11 +46,14 @@ func New(db *pgxpool.Pool) *ErrorRecorder {
 	if db == nil {
 		return nil
 	}
-	return &ErrorRecorder{db: db}
+	return &ErrorRecorder{
+		db:  db,
+		sem: make(chan struct{}, maxConcurrent),
+	}
 }
 
-// Record asynchronously inserts one error_events row.
-// A nil receiver is a safe no-op.
+// Record queues an async error_events insert. A nil receiver is a safe no-op.
+// The call returns immediately regardless of DB load.
 // The ctx parameter is accepted for API symmetry but is not forwarded to the
 // goroutine — recording uses a fresh background context so a cancelled request
 // context does not abort the write.
@@ -51,13 +66,20 @@ func (r *ErrorRecorder) Record(
 	if r == nil {
 		return
 	}
-	// Capture all fields by value before the goroutine starts — the caller's
-	// stack frame may be gone before the goroutine runs.
-	cid := customerID
-	kid := apiKeyID
-	op, code, rid, msg := operation, errorCode, requestID, message
-	status := httpStatus
+	// Acquire a goroutine slot. Non-blocking: drop the event when at capacity
+	// rather than queuing unboundedly under a 4xx/5xx traffic spike.
+	select {
+	case r.sem <- struct{}{}:
+	default:
+		log.Warn().Str("request_id", requestID).Msg("error event dropped: concurrency limit reached")
+		return
+	}
+	// Copy all fields by value before launching the goroutine so the caller's
+	// stack frame is free to return without aliasing issues.
+	cid, kid := customerID, apiKeyID
+	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
 	go func() {
+		defer func() { <-r.sem }()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, err := r.db.Exec(ctx, `
@@ -75,6 +97,8 @@ func (r *ErrorRecorder) Record(
 // responses (status >= 400) so the caller can parse the apierror envelope.
 //
 // Not goroutine-safe — matches the http.ResponseWriter contract.
+// Preserves http.Flusher and http.Hijacker by delegating to the underlying
+// writer when those interfaces are supported.
 type Capture struct {
 	http.ResponseWriter
 	status int
@@ -82,8 +106,9 @@ type Capture struct {
 	wrote  bool
 }
 
-// Compile-time assertion: *Capture must implement http.Flusher.
+// Compile-time assertions: *Capture must implement optional ResponseWriter interfaces.
 var _ http.Flusher = (*Capture)(nil)
+var _ http.Hijacker = (*Capture)(nil)
 
 // NewCapture wraps w with a Capture recorder seeded to 200.
 func NewCapture(w http.ResponseWriter) *Capture {
@@ -123,6 +148,16 @@ func (c *Capture) Flush() {
 	}
 }
 
+// Hijack delegates to the underlying writer when it supports http.Hijacker.
+// Returns an error rather than panicking when the underlying writer does not
+// implement the interface.
+func (c *Capture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := c.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("errorlog: underlying ResponseWriter does not implement http.Hijacker")
+}
+
 // errorEnvelope mirrors the apierror package's JSON shape for unmarshalling only.
 type errorEnvelope struct {
 	Error struct {
@@ -132,12 +167,21 @@ type errorEnvelope struct {
 }
 
 // ParseErrorFields extracts the error code and message from a buffered apierror
-// response body. Returns ("UNKNOWN", "") when the body is absent or malformed.
+// response body. When JSON parsing fails but the body is non-empty, the raw body
+// (capped at 1024 bytes) is preserved as the message so diagnostic information
+// is not silently lost. Returns code="UNKNOWN" when the body is absent or the
+// JSON envelope contains no code.
 func (c *Capture) ParseErrorFields() (code, message string) {
+	body := c.body.Bytes()
 	var env errorEnvelope
-	if err := json.Unmarshal(c.body.Bytes(), &env); err == nil {
+	if err := json.Unmarshal(body, &env); err == nil {
 		code = env.Error.Code
 		message = env.Error.Message
+	} else if len(body) > 0 {
+		message = string(body)
+		if len(message) > 1024 {
+			message = message[:1024]
+		}
 	}
 	if code == "" {
 		code = "UNKNOWN"
