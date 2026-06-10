@@ -248,8 +248,8 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, r.url, bytes.NewReader(r.payload))
 	if err != nil {
-		// URL is permanently malformed; dead-letter immediately.
-		e.markDeadLetter(r.id, r.attempts+1, 0)
+		// URL is permanently malformed; dead-letter immediately, no HTTP status.
+		e.markDeadLetter(r.id, r.attempts+1, nil)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -271,9 +271,11 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 		return
 	}
 
-	var statusCode int
+	// nil means no HTTP response (network error); non-nil is the actual status code.
+	var statusCode *int
 	if doErr == nil {
-		statusCode = resp.StatusCode
+		sc := resp.StatusCode
+		statusCode = &sc
 	}
 
 	if newAttempts >= maxAttempts {
@@ -302,27 +304,23 @@ func (e *Emitter) markDelivered(id int64, attempts, statusCode int) {
 	}
 }
 
-func (e *Emitter) markDeadLetter(id int64, attempts, statusCode int) {
+func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
 	if e.db == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
 	defer cancel()
-	var scPtr *int
-	if statusCode != 0 {
-		scPtr = &statusCode
-	}
 	_, err := e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
 		SET status = 'dead_letter', attempts = $2, last_response_code = $3, claimed_at = NULL
 		WHERE id = $1
-	`, id, attempts, scPtr)
+	`, id, attempts, statusCode)
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark dead_letter failed")
 	}
 }
 
-func (e *Emitter) scheduleRetry(id int64, newAttempts, statusCode int) {
+func (e *Emitter) scheduleRetry(id int64, newAttempts int, statusCode *int) {
 	if e.db == nil {
 		return
 	}
@@ -335,16 +333,11 @@ func (e *Emitter) scheduleRetry(id int64, newAttempts, statusCode int) {
 		idx = len(backoffSchedule) - 1
 	}
 	nextAt := time.Now().Add(backoffSchedule[idx])
-
-	var scPtr *int
-	if statusCode != 0 {
-		scPtr = &statusCode
-	}
 	_, err := e.db.Exec(ctx, `
 		UPDATE webhook_deliveries
 		SET status = 'pending', attempts = $2, next_attempt_at = $3, last_response_code = $4, claimed_at = NULL
 		WHERE id = $1
-	`, id, newAttempts, nextAt, scPtr)
+	`, id, newAttempts, nextAt, statusCode)
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: schedule retry failed")
 	}
