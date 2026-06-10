@@ -5,8 +5,30 @@
 // exposes the raw event stream for programmatic clients who need per-event granularity.
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
-import { ensureCustomer, listUsageEvents, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
+import { ensureCustomer, listUsageEvents, UsageEventRow, MAX_USAGE_RANGE_DAYS, MAX_OPERATION_LENGTH } from "@/lib/db";
 import { MS_PER_DAY } from "@/lib/constants";
+
+// RFC 4180 CSV field escaping: wrap in double-quotes when the value contains a comma,
+// double-quote, CR, or LF; escape embedded double-quotes by doubling them.
+function csvField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return '"' + value.replace(/"/g, '""') + '"';
+  }
+  return value;
+}
+
+function rowsToCsv(rows: UsageEventRow[]): string {
+  const header = "id,operation,billable_units,created_at";
+  const lines = rows.map((row) =>
+    [
+      csvField(row.id),
+      csvField(row.operation),
+      String(row.billable_units),
+      csvField(row.created_at.toISOString()),
+    ].join(",")
+  );
+  return [header, ...lines].join("\r\n");
+}
 
 const DEFAULT_DAYS = 30;
 const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
@@ -136,6 +158,20 @@ export async function GET(request: Request): Promise<Response> {
     // Returns raw usage event rows (newest first, capped at MAX_USAGE_EVENTS_LIMIT).
     // The dashboard server component uses usageByOperation for per-operation aggregates.
     const rows = await listUsageEvents(customer.id, from, to, operationParam);
+
+    const formatParam = url.searchParams.get("format");
+    if (formatParam === "csv") {
+      const fromStr = from.toISOString().slice(0, 10);
+      const toStr = to.toISOString().slice(0, 10);
+      const filename = `usage-${fromStr}-${toStr}.csv`;
+      return new Response(rowsToCsv(rows), {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="${filename}"`,
+          "cache-control": "no-store",
+        },
+      });
+    }
 
     return new Response(JSON.stringify(rows), {
       headers: { "content-type": "application/json", "cache-control": "no-store" },

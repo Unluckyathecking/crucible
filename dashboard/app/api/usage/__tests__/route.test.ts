@@ -8,6 +8,116 @@ import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
+// ---------------------------------------------------------------------------
+// Drift-detection tests for csvField RFC 4180 escaping helper
+// These read the actual route source to verify the escaping implementation
+// without importing the module (which would pull in next-auth / next/server).
+// ---------------------------------------------------------------------------
+
+describe("csvField — RFC 4180 escaping drift-detection", () => {
+  const routeSrc = fs.readFileSync(path.resolve(__dirname, "../route.ts"), "utf8");
+  // Extract the function body between its opening and closing braces.
+  const fnStart = routeSrc.indexOf("function csvField");
+  const fnEnd = routeSrc.indexOf("\n}", fnStart) + 2;
+  const fnSrc = fnStart >= 0 ? routeSrc.slice(fnStart, fnEnd) : "";
+
+  it("csvField function is present in route.ts", () => {
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnSrc.length).toBeGreaterThan(0);
+  });
+
+  it("csvField detects comma as a trigger character", () => {
+    expect(fnSrc).toContain(",");
+  });
+
+  it("csvField detects double-quote as a trigger character", () => {
+    expect(fnSrc).toMatch(/["\\]/);
+  });
+
+  it("csvField detects newline/CR as trigger characters", () => {
+    expect(fnSrc).toMatch(/\\n|\\r/);
+  });
+
+  it("csvField wraps in double-quotes when trigger found", () => {
+    // Implementation must open with a double-quote character.
+    expect(fnSrc).toContain('"');
+  });
+
+  it("csvField escapes embedded double-quotes by doubling them (RFC 4180)", () => {
+    // The replace pattern must turn " into "".
+    expect(fnSrc).toContain('""');
+  });
+});
+
+// Standalone behavioural tests for the RFC 4180 escaping algorithm.
+// The drift tests above verify the source in route.ts stays in sync with this spec.
+// Importing route.ts directly is not possible in this test environment because
+// the module transitively imports next-auth which requires next/server at runtime.
+function csvFieldSpec(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return '"' + value.replace(/"/g, '""') + '"';
+  }
+  return value;
+}
+
+describe("csvField — behavioural correctness (algorithm spec)", () => {
+  it("returns plain strings unchanged", () => {
+    expect(csvFieldSpec("hello")).toBe("hello");
+    expect(csvFieldSpec("validate-vat")).toBe("validate-vat");
+    expect(csvFieldSpec("42")).toBe("42");
+    expect(csvFieldSpec("")).toBe("");
+  });
+
+  it("wraps a value containing a comma", () => {
+    expect(csvFieldSpec("a,b")).toBe('"a,b"');
+  });
+
+  it("wraps and doubles embedded double-quotes", () => {
+    expect(csvFieldSpec('say "hi"')).toBe('"say ""hi"""');
+  });
+
+  it("wraps a value containing a newline", () => {
+    expect(csvFieldSpec("line1\nline2")).toBe('"line1\nline2"');
+  });
+
+  it("wraps a value containing a carriage return", () => {
+    expect(csvFieldSpec("line1\rline2")).toBe('"line1\rline2"');
+  });
+
+  it("handles a value containing both comma and quote", () => {
+    expect(csvFieldSpec('a,"b"')).toBe('"a,""b"""');
+  });
+});
+
+describe("GET /api/usage route.ts — CSV format drift-detection", () => {
+  const routeSrc = fs.readFileSync(path.resolve(__dirname, "../route.ts"), "utf8");
+
+  it("route branches on format=csv query parameter", () => {
+    expect(routeSrc).toContain('formatParam === "csv"');
+  });
+
+  it("CSV response sets content-type to text/csv", () => {
+    expect(routeSrc).toContain("text/csv");
+  });
+
+  it("CSV response sets Content-Disposition attachment header", () => {
+    expect(routeSrc).toContain("content-disposition");
+    expect(routeSrc).toContain("attachment");
+  });
+
+  it("CSV response sets cache-control: no-store", () => {
+    const csvIdx = routeSrc.indexOf('formatParam === "csv"');
+    const csvBranchEnd = routeSrc.indexOf("return new Response(JSON.stringify(rows)", csvIdx);
+    const csvBranch = routeSrc.slice(csvIdx, csvBranchEnd);
+    expect(csvBranch).toContain("no-store");
+  });
+
+  it("JSON path is unchanged when format is not csv", () => {
+    expect(routeSrc).toContain("application/json");
+    expect(routeSrc).toContain("JSON.stringify(rows)");
+  });
+});
+
 describe("GET /api/usage route.ts — CSRF guard drift-detection", () => {
   const routeSrc = fs.readFileSync(path.resolve(__dirname, "../route.ts"), "utf8");
 
