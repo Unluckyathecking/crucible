@@ -29,11 +29,20 @@ function isPrivateHostname(hostname: string): boolean {
   // IPv6 loopback
   if (h === "::1" || h === "[::1]") return true;
 
-  // IPv4: match dotted-decimal notation
+  // Check for well-formed dotted-quad IPv4 first.
   const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+
+  // Reject any hostname that starts with a digit but is NOT a well-formed
+  // 4-part dotted-decimal IPv4. Partial notations (e.g., 1.2.3 / 1.2.3.4.5)
+  // and hex/octal forms may be interpreted as IP addresses by some platforms
+  // or DNS resolvers; rejecting them avoids any platform-dependent ambiguity.
+  if (/^\d/.test(h) && !ipv4) {
+    return true;
+  }
+
   if (ipv4) {
     const [a, b, c, d] = [ipv4[1], ipv4[2], ipv4[3], ipv4[4]].map(Number);
-    if (a > 255 || b > 255 || c > 255 || d > 255) return true; // invalid octet — treat as disallowed
+    if (a > 255 || b > 255 || c > 255 || d > 255) return true; // invalid octet
     if (a === 10) return true;                         // 10.0.0.0/8
     if (a === 127) return true;                        // 127.0.0.0/8 loopback
     if (a === 169 && b === 254) return true;           // 169.254.0.0/16 link-local (includes AWS metadata)

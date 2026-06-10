@@ -29,8 +29,19 @@ export function WebhooksFormClient() {
         setStatus({ type: "error", msg: text || `Error ${res.status}` });
         return;
       }
-      const data = (await res.json()) as { secret_hex: string };
-      setStatus({ type: "success", secret: data.secret_hex });
+      const data: unknown = await res.json();
+      if (
+        typeof data !== "object" ||
+        data === null ||
+        typeof (data as Record<string, unknown>).secret_hex !== "string"
+      ) {
+        setStatus({ type: "error", msg: "Invalid response from server" });
+        return;
+      }
+      setStatus({
+        type: "success",
+        secret: (data as Record<string, unknown>).secret_hex as string,
+      });
       setUrl("");
     } catch (err) {
       setStatus({
