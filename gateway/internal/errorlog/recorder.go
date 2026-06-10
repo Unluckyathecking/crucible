@@ -139,13 +139,14 @@ func (c *Capture) WriteHeader(code int) {
 }
 
 // Write forwards b and buffers it when status >= 400.
-// When called before WriteHeader, we record the implicit 200 locally but do NOT
-// call WriteHeader on the underlying writer — the first underlying Write triggers
-// it automatically, preserving Content-Length / Transfer-Encoding negotiation.
+// When called before WriteHeader (implicit 200), WriteHeader is forwarded
+// explicitly so Capture's state and the underlying writer's state stay in
+// sync for any caller that inspects them after Write returns.
 func (c *Capture) Write(b []byte) (int, error) {
 	if !c.wrote {
 		c.status = http.StatusOK
 		c.wrote = true
+		c.ResponseWriter.WriteHeader(c.status)
 	}
 	if c.status >= 400 {
 		c.body.Write(b)
@@ -180,8 +181,9 @@ type errorEnvelope struct {
 }
 
 // ParseErrorFields extracts the error code and message from a buffered apierror
-// response body. When JSON parsing fails but the body is non-empty, the raw body
-// is preserved (capped at maxMessageBytes) so diagnostic information is not lost.
+// response body. Only the apierror envelope fields are stored; non-JSON bodies
+// (HTML from upstreams, plain-text proxy errors, stack traces) are silently
+// discarded so customers never see internal diagnostic content.
 // Returns code="UNKNOWN" when the body is absent or the JSON envelope has no code.
 func (c *Capture) ParseErrorFields() (code, message string) {
 	body := c.body.Bytes()
@@ -189,8 +191,6 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 	if err := json.Unmarshal(body, &env); err == nil {
 		code = env.Error.Code
 		message = env.Error.Message
-	} else if len(body) > 0 {
-		message = string(body)
 	}
 	if code == "" {
 		code = "UNKNOWN"

@@ -83,10 +83,11 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  // todayUTC starts null so the server render and client first paint agree
-  // (no hydration mismatch). The useEffect updates it after hydration;
-  // todayUTC ?? initialTo keeps the inputs functional during that window.
-  const [todayUTC, setTodayUTC] = useState<string | null>(null);
+  // Initialised to server-provided initialTo so the first paint matches the
+  // server render (no hydration mismatch). The useEffect corrects to the
+  // actual client-side today after hydration in case midnight crossed between
+  // server render and client mount.
+  const [todayUTC, setTodayUTC] = useState(initialTo);
   useEffect(() => {
     const now = new Date();
     setTodayUTC(toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))));
@@ -174,7 +175,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
             <input
               type="date"
               value={displayFrom}
-              max={todayUTC ?? initialTo}
+              max={todayUTC}
               onChange={(e) => { setDisplayFrom(e.target.value); setRangeError(null); }}
               className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white"
             />
@@ -185,7 +186,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
               type="date"
               value={displayTo}
               min={displayFrom}
-              max={todayUTC ?? initialTo}
+              max={todayUTC}
               onChange={(e) => { setDisplayTo(e.target.value); setRangeError(null); }}
               className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white"
             />

@@ -63,7 +63,7 @@ async function listErrorEvents(
       from,
       toExclusive,
       operation ?? null,
-      code ? code.toUpperCase() : null,
+      code ?? null,
       limit + 1,
       offset,
     ],
