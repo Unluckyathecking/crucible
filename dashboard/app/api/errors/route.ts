@@ -35,7 +35,7 @@ interface ErrorEventRow {
 }
 
 async function listErrorEvents(
-  customerEmail: string,
+  customerId: string,
   from: Date,
   toExclusive: Date,
   operation: string | undefined,
@@ -43,8 +43,7 @@ async function listErrorEvents(
   offset: number,
   limit: number,
 ): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
-  // customerEmail comes from the authenticated session — not user input.
-  // The subquery binds the query to the authenticated user at the DB level.
+  // customerId is the UUID returned by ensureCustomer — never user input.
   // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
   // dynamic placeholder construction is needed.
   // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
@@ -52,7 +51,7 @@ async function listErrorEvents(
   const r = await pool.query<ErrorEventRow>(
     `SELECT id::text AS id, operation, error_code, http_status, message, request_id, created_at
      FROM error_events
-     WHERE customer_id = (SELECT id FROM customers WHERE email = $1 LIMIT 1)
+     WHERE customer_id = $1
        AND created_at >= $2
        AND created_at < $3
        AND ($4::text IS NULL OR operation = $4)
@@ -60,7 +59,7 @@ async function listErrorEvents(
      ORDER BY created_at DESC
      LIMIT $6 OFFSET $7`,
     [
-      customerEmail,
+      customerId,
       from,
       toExclusive,
       operation ?? null,
@@ -100,7 +99,7 @@ export async function GET(request: Request): Promise<Response> {
         headers: noStore,
       });
     }
-    await ensureCustomer(session.user.email);
+    const customer = await ensureCustomer(session.user.email);
     const url = new URL(request.url);
 
     // Date-range defaults: [tomorrowMidnight − 30 days, tomorrowMidnight).
@@ -189,7 +188,7 @@ export async function GET(request: Request): Promise<Response> {
       });
     }
 
-    const result = await listErrorEvents(session.user.email, from, toExclusive, operation, code, offset, limit);
+    const result = await listErrorEvents(customer.id, from, toExclusive, operation, code, offset, limit);
     return new Response(
       JSON.stringify({ ...result, page, limit }),
       { headers: noStore },

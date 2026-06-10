@@ -49,10 +49,22 @@ async function fetchErrors(
       headers: { "X-Requested-With": "XMLHttpRequest" },
       signal,
     });
-    const body = (await res.json()) as ApiResponse | { error: string };
+    const body = (await res.json()) as unknown;
     if (!res.ok) {
-      const msg = "error" in body ? body.error : `HTTP ${res.status}`;
+      const msg =
+        typeof body === "object" && body !== null && "error" in body &&
+        typeof (body as Record<string, unknown>).error === "string"
+          ? (body as { error: string }).error
+          : `HTTP ${res.status}`;
       return { error: msg };
+    }
+    if (
+      typeof body !== "object" || body === null ||
+      !Array.isArray((body as Record<string, unknown>).data) ||
+      typeof (body as Record<string, unknown>).has_more !== "boolean" ||
+      typeof (body as Record<string, unknown>).page !== "number"
+    ) {
+      return { error: "Invalid response format" };
     }
     return body as ApiResponse;
   } catch (err) {
