@@ -25,6 +25,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -81,6 +82,11 @@ type Deps struct {
 	Checkout BillingService
 	// TracerProvider is optional. When nil, a noop tracer is used (default-off).
 	TracerProvider oteltrace.TracerProvider
+	// ErrorRecorder is optional. When set, every non-2xx /v1 response is recorded
+	// asynchronously into error_events for the customer-facing error-history view.
+	// When nil (default when main.go is unmodified), error events are silently dropped
+	// — the rest of the gateway is unaffected.
+	ErrorRecorder *errorlog.ErrorRecorder
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -158,6 +164,10 @@ func NewRouter(d *Deps) http.Handler {
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
+		// errorCapture wraps the entire /v1 stack so it captures 4xx/5xx from
+		// every downstream middleware (rate-limit, quota, idempotency) and handler.
+		// Must run after auth.Middleware so auth context (customer/key) is available.
+		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
@@ -298,6 +308,42 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 // billingCheckoutHandler creates a Stripe Checkout session and returns the redirect URL.
 // POST /v1/billing/checkout body: {"plan_id":"pro"}
 // Response: {"url":"https://checkout.stripe.com/..."}
+// v1ErrorCapture returns a middleware that wraps /v1 responses with an
+// errorlog.Capture recorder. After the inner handler chain returns, if the
+// status is >= 400 and an authenticated key is present, it fires an async
+// error_events insert via rec. A nil rec is a safe no-op.
+//
+// Operation is derived from chi.RouteContext(r).RoutePattern(), which chi
+// populates before any middleware runs. For all /v1 worker routes that is
+// the registered path pattern (e.g. "/v1/echo"), which matches the operation
+// label used in usage_events for per-product endpoints.
+func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if rec == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			cap := errorlog.NewCapture(w)
+			next.ServeHTTP(cap, r)
+			if cap.Status() < 400 {
+				return
+			}
+			key := auth.FromContext(r.Context())
+			if key == nil {
+				return
+			}
+			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+			op := chi.RouteContext(r.Context()).RoutePattern()
+			if op == "" {
+				op = r.URL.Path
+			}
+			errCode, errMsg := cap.ParseErrorFields()
+			rec.Record(r.Context(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, cap.Status())
+		})
+	}
+}
+
 func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
