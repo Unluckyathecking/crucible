@@ -62,7 +62,8 @@ async function fetchErrors(
       typeof body !== "object" || body === null ||
       !Array.isArray((body as Record<string, unknown>).data) ||
       typeof (body as Record<string, unknown>).has_more !== "boolean" ||
-      typeof (body as Record<string, unknown>).page !== "number"
+      typeof (body as Record<string, unknown>).page !== "number" ||
+      typeof (body as Record<string, unknown>).limit !== "number"
     ) {
       return { error: "Invalid response format" };
     }

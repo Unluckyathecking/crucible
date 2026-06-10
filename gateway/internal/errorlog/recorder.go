@@ -204,10 +204,15 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 		code = "UNKNOWN"
 	}
 	if len(message) > maxMessageBytes {
-		// Walk back to the last valid rune start so we never emit partial UTF-8.
+		// Walk back to the last valid rune start, then confirm the prefix is
+		// valid UTF-8. Invalid bytes in the middle of the string (e.g. from a
+		// non-UTF-8 worker response) would otherwise produce an invalid slice.
 		i := maxMessageBytes
 		for i > 0 && !utf8.RuneStart(message[i]) {
 			i--
+		}
+		if !utf8.ValidString(message[:i]) {
+			i = 0
 		}
 		message = message[:i]
 	}

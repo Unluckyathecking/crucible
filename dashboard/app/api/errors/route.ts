@@ -105,8 +105,11 @@ export async function GET(request: Request): Promise<Response> {
     // Date-range defaults: [tomorrowMidnight − 30 days, tomorrowMidnight).
     // This is identical to the /api/usage default: 30 calendar days inclusive.
     const now = new Date();
+    // Date.UTC handles day-of-month overflow correctly (e.g. d+1 on the last
+    // day of a month rolls to the 1st of the next month), making this safer
+    // than adding a fixed 86_400_000ms offset.
     const tomorrowMidnight = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + MS_PER_DAY,
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
     );
     let from = new Date(tomorrowMidnight.getTime() - DEFAULT_DAYS * MS_PER_DAY);
     // toExclusive is the exclusive upper DB bound.  Callers pass an inclusive
@@ -135,8 +138,9 @@ export async function GET(request: Request): Promise<Response> {
         });
       }
       // `to` is inclusive (the full named day is included); advance to the
-      // next midnight for the exclusive DB bound.
-      toExclusive = new Date(parsed.getTime() + MS_PER_DAY);
+      // next midnight for the exclusive DB bound using date-overflow-safe math.
+      const d = parsed;
+      toExclusive = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
     }
     // Range validation compares the user-visible bounds directly.
     // userVisibleToMs is the inclusive `to` date (toExclusive minus one day).
