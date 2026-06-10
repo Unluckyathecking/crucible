@@ -49,7 +49,7 @@ interface ErrorEventRow {
 }
 
 async function listErrorEvents(
-  customerId: string,
+  customerEmail: string,
   from: Date,
   toExclusive: Date,
   operation: string | undefined,
@@ -58,22 +58,26 @@ async function listErrorEvents(
   limit: number,
 ): Promise<{ data: ErrorEventRow[]; has_more: boolean }> {
   const offset = (page - 1) * limit;
-  const params: unknown[] = [customerId, from, toExclusive];
+  // customerEmail comes from the auth session (not user input) and is used in a
+  // subquery so the DB enforces that returned rows belong to the authenticated user.
+  // paramIdx starts at 3 (after email=$1, from=$2, toExclusive=$3).
+  const params: unknown[] = [customerEmail, from, toExclusive];
+  let paramIdx = 3;
   let filter = "";
   if (operation) {
     params.push(operation);
-    filter += ` AND operation = $${params.length}`;
+    filter += ` AND operation = $${++paramIdx}`;
   }
   if (code) {
     // Store error_code values are always uppercase (RATE_LIMITED, etc.).
     // Exact match is intentional; the UI placeholder hints at the casing.
     params.push(code.toUpperCase());
-    filter += ` AND error_code = $${params.length}`;
+    filter += ` AND error_code = $${++paramIdx}`;
   }
   // Fetch one extra row to determine has_more without a separate COUNT query.
   params.push(limit + 1, offset);
-  const fetchParam = params.length - 1;
-  const offsetParam = params.length;
+  const limitIdx = ++paramIdx;
+  const offsetIdx = ++paramIdx;
   const r = await pool.query<{
     id: string;
     operation: string;
@@ -85,12 +89,12 @@ async function listErrorEvents(
   }>(
     `SELECT id::text AS id, operation, error_code, http_status, message, request_id, created_at
      FROM error_events
-     WHERE customer_id = $1
+     WHERE customer_id = (SELECT id FROM customers WHERE email = $1 LIMIT 1)
        AND created_at >= $2
        AND created_at < $3
        ${filter}
      ORDER BY created_at DESC
-     LIMIT $${fetchParam} OFFSET $${offsetParam}`,
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
     params,
   );
   const hasMore = r.rows.length > limit;
@@ -106,12 +110,14 @@ async function listErrorEvents(
   return { data: rows, has_more: hasMore };
 }
 
+const noStore = { "content-type": "application/json", "cache-control": "no-store" } as const;
+
 export async function GET(request: Request): Promise<Response> {
   const requestedWith = request.headers.get("X-Requested-With") ?? "";
   if (requestedWith.toLowerCase() !== "xmlhttprequest") {
     return new Response(JSON.stringify({ error: "Forbidden" }), {
       status: 403,
-      headers: { "content-type": "application/json" },
+      headers: noStore,
     });
   }
   try {
@@ -119,10 +125,10 @@ export async function GET(request: Request): Promise<Response> {
     if (!session?.user?.email) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
-        headers: { "content-type": "application/json" },
+        headers: noStore,
       });
     }
-    const customer = await ensureCustomer(session.user.email);
+    await ensureCustomer(session.user.email);
     const url = new URL(request.url);
 
     // Date-range defaults: [tomorrowMidnight − 30 days, tomorrowMidnight).
@@ -143,7 +149,7 @@ export async function GET(request: Request): Promise<Response> {
       if (!parsed) {
         return new Response(JSON.stringify({ error: "invalid 'from' date, expected ISO 8601" }), {
           status: 400,
-          headers: { "content-type": "application/json" },
+          headers: noStore,
         });
       }
       from = parsed;
@@ -154,7 +160,7 @@ export async function GET(request: Request): Promise<Response> {
       if (!parsed) {
         return new Response(JSON.stringify({ error: "invalid 'to' date, expected ISO 8601" }), {
           status: 400,
-          headers: { "content-type": "application/json" },
+          headers: noStore,
         });
       }
       // `to` is inclusive (the full named day is included); advance to the
@@ -165,14 +171,14 @@ export async function GET(request: Request): Promise<Response> {
     if (from.getTime() >= toExclusive.getTime()) {
       return new Response(JSON.stringify({ error: "'from' must not be after 'to'" }), {
         status: 400,
-        headers: { "content-type": "application/json" },
+        headers: noStore,
       });
     }
     const userVisibleRangeMs = toExclusive.getTime() - MS_PER_DAY - from.getTime();
     if (userVisibleRangeMs > MAX_RANGE_DAYS * MS_PER_DAY) {
       return new Response(
         JSON.stringify({ error: `date range exceeds maximum of ${MAX_RANGE_DAYS} days` }),
-        { status: 400, headers: { "content-type": "application/json" } },
+        { status: 400, headers: noStore },
       );
     }
 
@@ -199,10 +205,10 @@ export async function GET(request: Request): Promise<Response> {
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
         : DEFAULT_PAGE_SIZE;
 
-    const result = await listErrorEvents(customer.id, from, toExclusive, operation, code, page, limit);
+    const result = await listErrorEvents(session.user.email, from, toExclusive, operation, code, page, limit);
     return new Response(
       JSON.stringify({ ...result, page, limit }),
-      { headers: { "content-type": "application/json", "cache-control": "no-store" } },
+      { headers: noStore },
     );
   } catch (err) {
     const errorId = randomUUID();

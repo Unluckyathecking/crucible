@@ -84,10 +84,11 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  // todayUTC is seeded from the server-computed initialTo so the max attribute
-  // of the date pickers is stable across renders and does not jitter if the
-  // browser clock crosses midnight between keystrokes.
-  const [todayUTC, setTodayUTC] = useState(initialTo);
+  // todayUTC starts null so the server render and client first paint agree
+  // (avoiding hydration mismatch). The useEffect updates it to the live client
+  // date after hydration; the fallback ?? initialTo keeps the inputs functional
+  // during that brief window.
+  const [todayUTC, setTodayUTC] = useState<string | null>(null);
   useEffect(() => {
     const now = new Date();
     setTodayUTC(toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))));
@@ -176,7 +177,7 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
             <input
               type="date"
               value={displayFrom}
-              max={displayTo || todayUTC}
+              max={displayTo || (todayUTC ?? initialTo)}
               onChange={(e) => { setDisplayFrom(e.target.value); setRangeError(null); }}
               className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white"
             />
@@ -187,7 +188,7 @@ export function ErrorsClient({ initialFrom, initialTo, initialApiTo }: ErrorsCli
               type="date"
               value={displayTo}
               min={displayFrom}
-              max={todayUTC}
+              max={todayUTC ?? initialTo}
               onChange={(e) => { setDisplayTo(e.target.value); setRangeError(null); }}
               className="border border-zinc-200 rounded px-2 py-1 text-sm bg-white"
             />

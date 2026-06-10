@@ -31,7 +31,10 @@ import (
 // maxConcurrent caps the number of in-flight error-event insert goroutines.
 // Events that arrive when all slots are occupied are dropped rather than
 // blocking the gateway or opening unbounded DB connections.
-const maxConcurrent = 128
+const (
+	maxConcurrent = 128
+	dbTimeout     = 2 * time.Second
+)
 
 // ErrorRecorder writes error_events rows asynchronously with a bounded
 // goroutine pool.
@@ -80,13 +83,18 @@ func (r *ErrorRecorder) Record(
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
 	go func() {
 		defer func() { <-r.sem }()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 		defer cancel()
+		// api_key_id is nullable; pass nil for the zero UUID to avoid a spurious FK reference.
+		var apiKeyPtr *uuid.UUID
+		if kid != uuid.Nil {
+			apiKeyPtr = &kid
+		}
 		_, err := r.db.Exec(ctx, `
 			INSERT INTO error_events
 			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, cid, kid, op, code, status, msg, rid)
+		`, cid, apiKeyPtr, op, code, status, msg, rid)
 		if err != nil {
 			log.Warn().Err(err).Str("request_id", rid).Msg("error event record failed")
 		}
@@ -128,7 +136,9 @@ func (c *Capture) WriteHeader(code int) {
 }
 
 // Write forwards b and buffers it when status >= 400.
-// An implicit 200 is recorded if WriteHeader was never called.
+// Per the http.ResponseWriter contract, callers must invoke WriteHeader before
+// Write for non-200 responses; all apierror.Write paths in this codebase follow
+// that ordering, so status is always committed before body bytes arrive.
 func (c *Capture) Write(b []byte) (int, error) {
 	if !c.wrote {
 		c.status = http.StatusOK

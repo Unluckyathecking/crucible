@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS error_events (
   id          BIGSERIAL PRIMARY KEY,
-  customer_id UUID NOT NULL REFERENCES customers(id),
+  customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   api_key_id  UUID REFERENCES api_keys(id),
   operation   TEXT NOT NULL,
   error_code  TEXT NOT NULL,

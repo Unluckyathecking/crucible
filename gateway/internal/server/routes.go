@@ -164,19 +164,8 @@ func NewRouter(d *Deps) http.Handler {
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
-		// v1ErrorCapture is registered here — second in the stack, after auth
-		// (so the auth context / customer key is populated) but BEFORE ratelimit,
-		// idempotency, and quota. This is intentional and correct:
-		//
-		// chi middleware runs outer-to-inner on the call stack and unwinds
-		// inner-to-outer. Registering v1ErrorCapture at position 2 means it
-		// passes errorlog.NewCapture(w) as the ResponseWriter to every subsequent
-		// middleware. When ratelimit or quota writes a 429 to its 'w' argument —
-		// which IS the Capture — and returns, execution unwinds back here and
-		// cap.Status() is 429, exactly what we want to record.
-		//
-		// This is the same pattern observability.Middleware uses at the router level
-		// to capture 429s from all route groups via its own StatusRecorder.
+		// Capture errors after auth (so customer context is populated) but before
+		// ratelimit/quota so their 429s are recorded with the correct status.
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
@@ -346,7 +335,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 				op = r.URL.Path
 			}
 			errCode, errMsg := cap.ParseErrorFields()
-			rec.Record(r.Context(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, cap.Status())
+			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, cap.Status())
 		})
 	}
 }
@@ -391,7 +380,9 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
+			log.Warn().Err(err).Str("request_id", rid).Msg("encode checkout response failed")
+		}
 	}
 }
 
@@ -430,7 +421,9 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
+		if err := json.NewEncoder(w).Encode(map[string]string{"url": redirectURL}); err != nil {
+			log.Warn().Err(err).Str("request_id", rid).Msg("encode portal response failed")
+		}
 	}
 }
 
