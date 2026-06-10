@@ -97,7 +97,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef<number>(0);
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // queryRef: inclusive 'to' date used by the current main query.
   // Updated synchronously in handleApply so handlePrev/handleNext always read
@@ -242,12 +245,12 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-zinc-500 border-b border-zinc-200">
-                      <th className="pb-2 pr-3 font-medium">Time (UTC)</th>
-                      <th className="pb-2 pr-3 font-medium">Operation</th>
-                      <th className="pb-2 pr-3 font-medium">Code</th>
-                      <th className="pb-2 pr-3 font-medium text-right">Status</th>
-                      <th className="pb-2 pr-3 font-medium">Message</th>
-                      <th className="pb-2 font-medium">Request ID</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Time (UTC)</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Operation</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Code</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium text-right">Status</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Message</th>
+                      <th scope="col" className="pb-2 font-medium">Request ID</th>
                     </tr>
                   </thead>
                   <tbody>

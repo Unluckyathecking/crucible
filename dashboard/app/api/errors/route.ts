@@ -138,15 +138,17 @@ export async function GET(request: Request): Promise<Response> {
       // next midnight for the exclusive DB bound.
       toExclusive = new Date(parsed.getTime() + MS_PER_DAY);
     }
-    // Range validation uses the user-visible window (from → toExclusive-1day).
-    if (from.getTime() >= toExclusive.getTime()) {
+    // Range validation compares the user-visible bounds directly.
+    // userVisibleToMs is the inclusive `to` date (toExclusive minus one day).
+    const userVisibleToMs = toExclusive.getTime() - MS_PER_DAY;
+    if (from.getTime() > userVisibleToMs) {
       return new Response(JSON.stringify({ error: "'from' must not be after 'to'" }), {
         status: 400,
         headers: noStore,
       });
     }
-    const userVisibleRangeMs = toExclusive.getTime() - MS_PER_DAY - from.getTime();
-    if (userVisibleRangeMs > MAX_RANGE_DAYS * MS_PER_DAY) {
+    const userVisibleRangeMs = userVisibleToMs - from.getTime();
+    if (userVisibleRangeMs < 0 || userVisibleRangeMs > MAX_RANGE_DAYS * MS_PER_DAY) {
       return new Response(
         JSON.stringify({ error: `date range exceeds maximum of ${MAX_RANGE_DAYS} days` }),
         { status: 400, headers: noStore },

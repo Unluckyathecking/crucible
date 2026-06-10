@@ -80,12 +80,14 @@ func (r *ErrorRecorder) Record(
 		log.Warn().Str("request_id", requestID).Msg("error event dropped: concurrency limit reached")
 		return
 	}
-	// Copy all fields by value before launching the goroutine so the caller's
-	// stack frame is free to return without aliasing issues.
+	// Copy all fields by value — including receiver fields — before launching
+	// the goroutine. Explicit local copies of db and sem mean a future Close()
+	// method on ErrorRecorder can nil/close those fields without racing goroutines.
+	db, sem := r.db, r.sem
 	cid, kid := customerID, apiKeyID
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
 	go func() {
-		defer func() { <-r.sem }()
+		defer func() { <-sem }()
 		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 		defer cancel()
 		// api_key_id is nullable; pass nil for the zero UUID to avoid a spurious FK reference.
@@ -93,7 +95,7 @@ func (r *ErrorRecorder) Record(
 		if kid != uuid.Nil {
 			apiKeyPtr = &kid
 		}
-		_, err := r.db.Exec(ctx, `
+		_, err := db.Exec(ctx, `
 			INSERT INTO error_events
 			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -130,11 +132,14 @@ func NewCapture(w http.ResponseWriter) *Capture {
 func (c *Capture) Status() int { return c.status }
 
 // WriteHeader forwards code and records it on the first call.
+// Subsequent calls are silently dropped so the wrapper never triggers the
+// "superfluous response.WriteHeader" warning on the underlying writer.
 func (c *Capture) WriteHeader(code int) {
-	if !c.wrote {
-		c.status = code
-		c.wrote = true
+	if c.wrote {
+		return
 	}
+	c.status = code
+	c.wrote = true
 	c.ResponseWriter.WriteHeader(code)
 }
 

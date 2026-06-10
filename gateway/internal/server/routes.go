@@ -322,6 +322,12 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Capture route pattern before handler runs; chi populates it at
+			// dispatch time and the value is stable for the lifetime of the request.
+			op := chi.RouteContext(r.Context()).RoutePattern()
+			if op == "" {
+				op = r.URL.Path
+			}
 			capture := errorlog.NewCapture(w)
 			next.ServeHTTP(capture, r)
 			if capture.Status() < 400 {
@@ -332,10 +338,6 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 				return
 			}
 			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
-			op := chi.RouteContext(r.Context()).RoutePattern()
-			if op == "" {
-				op = r.URL.Path
-			}
 			errCode, errMsg := capture.ParseErrorFields()
 			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
 		})
