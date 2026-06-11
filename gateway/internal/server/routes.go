@@ -36,6 +36,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // planIDRE mirrors the dashboard's PLAN_ID_RE: lowercase alphanumeric + hyphens, max 32 chars.
@@ -92,7 +93,16 @@ type Deps struct {
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
+//
+// The outbound webhook emitter is constructed here from d.DB (nil-safe: no worker
+// is started and no routes are registered when d.DB is nil). This keeps cmd/gateway/main.go
+// byte-disjoint with PR #48 while still starting the worker as part of server setup.
 func NewRouter(d *Deps) http.Handler {
+	// Construct the outbound webhook emitter from the DB dep.
+	// context.Background() keeps the delivery worker alive for the process lifetime;
+	// process exit (SIGTERM/SIGKILL) stops the goroutine. The worker's per-delivery
+	// timeout (10 s) bounds how long an individual POST can hold a DB connection.
+	emitter := webhookout.NewEmitter(context.Background(), d.DB)
 	// Snapshot V1Routes once so both openapi.Handler and the registration loop
 	// see the same stable slice for the lifetime of this router.
 	routes := make([]openapi.RouteDescriptor, len(V1Routes))
@@ -156,6 +166,17 @@ func NewRouter(d *Deps) http.Handler {
 		r.Post("/checkout", billingCheckoutHandler(d))
 		r.Post("/portal", billingPortalHandler(d))
 	})
+
+	// === Outbound webhook delivery log (auth gated; active when DB is set) ===
+	// The emitter is wired above; the delivery-log route uses the DB directly so
+	// the handler is decoupled from the worker goroutine lifecycle.
+	_ = emitter // emitter drives the background worker; route uses d.DB directly
+	if d.DB != nil {
+		r.Route("/v1/webhooks", func(r chi.Router) {
+			r.Use(auth.Middleware(d.Auth))
+			r.Get("/deliveries", webhookDeliveriesHandler(d.DB))
+		})
+	}
 
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
@@ -341,6 +362,64 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			errCode, errMsg := capture.ParseErrorFields()
 			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
 		})
+	}
+}
+
+// webhookDeliveriesHandler returns the authenticated customer's 100 most recent
+// outbound webhook deliveries across all their registered endpoints.
+// GET /v1/webhooks/deliveries
+func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
+	type item struct {
+		ID               string    `json:"id"`
+		EventID          string    `json:"event_id"`
+		EndpointURL      string    `json:"endpoint_url"`
+		Status           string    `json:"status"`
+		Attempts         int       `json:"attempts"`
+		LastResponseCode *int      `json:"last_response_code,omitempty"`
+		CreatedAt        time.Time `json:"created_at"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+		rows, err := db.Query(r.Context(), `
+			SELECT d.id::text, d.event_id, we.url, d.status, d.attempts,
+			       d.last_response_code, d.created_at
+			FROM webhook_deliveries d
+			JOIN webhook_endpoints we ON we.id = d.endpoint_id
+			WHERE we.customer_id = $1
+			ORDER BY d.created_at DESC
+			LIMIT 100
+		`, key.Customer.ID)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries query failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
+			return
+		}
+		defer rows.Close()
+		var out []item
+		for rows.Next() {
+			var it item
+			if err := rows.Scan(&it.ID, &it.EventID, &it.EndpointURL, &it.Status,
+				&it.Attempts, &it.LastResponseCode, &it.CreatedAt); err != nil {
+				log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries scan failed")
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "scan failed", false)
+				return
+			}
+			out = append(out, it)
+		}
+		if err := rows.Err(); err != nil {
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "rows error", false)
+			return
+		}
+		if out == nil {
+			out = []item{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }
 
