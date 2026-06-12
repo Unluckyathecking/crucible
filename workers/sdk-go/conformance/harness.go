@@ -86,9 +86,6 @@ func checkContentType(header string) bool {
 // because *testing.T is not goroutine-safe (its internal state races).
 func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Helper()
-	if h == nil {
-		t.Fatalf("conformance.Harness: nil HandlerFunc")
-	}
 
 	srvMux, err := crucible.Handler(h)
 	if err != nil {
@@ -253,7 +250,7 @@ func assertBillableUnitsNormalization(t tb, client *http.Client) {
 		t.Fatalf("crucible.Handler(zeroH): %v", err)
 	}
 	normSrv := httptest.NewServer(normMux)
-	t.Cleanup(normSrv.Close)
+	defer normSrv.Close()
 	checkNormalizationResponse(t, normSrv, client)
 }
 
@@ -273,7 +270,7 @@ func assertHandlerStructuredError(t tb, client *http.Client) {
 		t.Fatalf("crucible.Handler(errH): %v", err)
 	}
 	errSrv := httptest.NewServer(errMux)
-	t.Cleanup(errSrv.Close)
+	defer errSrv.Close()
 
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {
