@@ -1161,21 +1161,25 @@ func TestCompileSchemaPatterns(t *testing.T) {
 	})
 }
 
-// TestPatternFailOpenForInvalidRegex verifies that an invalid RE2 pattern in a
-// schema does not return 400 to clients — the constraint is silently skipped
-// (fail-open). Clone authors should call CompileSchemaPatterns at startup to
-// catch this class of error early.
-func TestPatternFailOpenForInvalidRegex(t *testing.T) {
+// TestPatternInvalidRegexReturnsSchemaError verifies that an invalid RE2 pattern
+// in a schema returns a descriptive schema-authoring error rather than silently
+// skipping the constraint. CompileSchemaPatterns catches this at startup; if
+// somehow reached at request time, the error clearly blames the schema, not the
+// client's value.
+func TestPatternInvalidRegexReturnsSchemaError(t *testing.T) {
 	schema := &openapi.Schema{
 		Type: "object",
 		Properties: map[string]*openapi.Schema{
-			// Lookahead — valid ECMAScript, invalid RE2. Validate must pass through.
+			// Lookahead — valid ECMAScript, invalid RE2.
 			"s": {Type: "string", Pattern: `(?=.*\d)`},
 		},
 	}
-	// Any string should pass because the pattern constraint is skipped.
-	if err := validate.Validate(schema, map[string]any{"s": "hello"}); err != nil {
-		t.Errorf("invalid RE2 pattern should fail open (skip constraint), got: %v", err)
+	err := validate.Validate(schema, map[string]any{"s": "hello"})
+	if err == nil {
+		t.Fatal("invalid RE2 pattern should return a schema error")
+	}
+	if !strings.Contains(err.Error(), "invalid schema pattern") {
+		t.Errorf("error should describe schema error, got: %v", err)
 	}
 }
 

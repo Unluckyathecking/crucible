@@ -183,7 +183,9 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 		// Array values pass through; no array-specific constraints are implemented.
 		return nil
 	case nil:
-		// JSON null: only valid when the schema type is absent or explicitly "null".
+		// JSON null (any(nil)): reject when schema declares a non-null type.
+		// This case MUST be explicit — a missing case nil would allow null to
+		// bypass type constraints by falling to the default branch.
 		if s.Type != "" && s.Type != "null" {
 			return typeError(path, s.Type, value)
 		}
@@ -252,11 +254,16 @@ func validateString(s *openapi.Schema, v string, path string) error {
 	if s.Pattern != "" {
 		re, err := compiledPattern(s.Pattern)
 		if err != nil {
-			// Pattern is a schema authoring bug (e.g. ECMAScript-only syntax not
-			// supported by Go's RE2 engine). Fail open: skip the constraint rather
-			// than returning 400 to clients for schema issues beyond their control.
-			// Clone authors should catch this at startup via CompileSchemaPatterns.
-		} else if !re.MatchString(v) {
+			// The pattern is a schema authoring bug (e.g. ECMAScript-only syntax
+			// unsupported by Go's RE2). CompileSchemaPatterns is called at startup
+			// to catch this before traffic; reaching here at request time is a
+			// programming error in the clone, not a client error.
+			return &ValidationError{
+				Field:   path,
+				Message: fmt.Sprintf("invalid schema pattern %q", s.Pattern),
+			}
+		}
+		if !re.MatchString(v) {
 			return &ValidationError{
 				Field:   path,
 				Message: fmt.Sprintf("must match pattern %q", s.Pattern),
