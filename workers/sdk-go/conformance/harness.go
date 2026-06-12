@@ -33,12 +33,14 @@ const (
 // pooled connections cross between independent Harness calls. One client is created
 // per Harness call and shared across all assertions in that call for efficiency.
 func harnessClient() *http.Client {
-	return &http.Client{
+	c := &http.Client{
 		Timeout: harnessClientTimeout,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 		},
 	}
+	c.CloseIdleConnections()
+	return c
 }
 
 // tb is the subset of *testing.T used by all assertion helpers, including those that
@@ -134,18 +136,24 @@ func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 	}
 }
 
-// assertInvokeMethodNotAllowed checks that a non-POST request to /invoke is rejected
+// assertInvokeMethodNotAllowed checks that all non-POST methods on /invoke are rejected
 // with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
 func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	resp, err := client.Get(srv.URL + "/invoke")
-	if err != nil {
-		t.Fatalf("GET /invoke: %v", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /invoke: expected 405 Method Not Allowed, got %d", resp.StatusCode)
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead} {
+		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
+		if err != nil {
+			t.Fatalf("%s /invoke: build request: %v", method, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s /invoke: %v", method, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /invoke: expected 405 Method Not Allowed, got %d", method, resp.StatusCode)
+		}
 	}
 }
 
@@ -253,7 +261,7 @@ func assertBillableUnitsNormalization(t tb, client *http.Client) {
 		t.Fatalf("crucible.Handler(zeroH): %v", err)
 	}
 	normSrv := httptest.NewServer(normMux)
-	defer normSrv.Close()
+	t.Cleanup(normSrv.Close)
 	checkNormalizationResponse(t, normSrv, client)
 }
 
@@ -273,7 +281,7 @@ func assertHandlerStructuredError(t tb, client *http.Client) {
 		t.Fatalf("crucible.Handler(errH): %v", err)
 	}
 	errSrv := httptest.NewServer(errMux)
-	defer errSrv.Close()
+	t.Cleanup(errSrv.Close)
 
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {

@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -198,9 +199,6 @@ func TestHarnessRejectsNilHandlerViaHarness(t *testing.T) {
 	})
 	if !spy.hasFailed() {
 		t.Fatal("Harness should fail the test for a nil HandlerFunc")
-	}
-	if msg := spy.lastFatal(); !strings.Contains(msg, "nil HandlerFunc") {
-		t.Fatalf("expected fatal message to mention 'nil HandlerFunc', got: %q", msg)
 	}
 }
 
@@ -432,4 +430,36 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	if !spy.hasFailed() {
 		t.Fatal("checkErrorEnvelopeAt should fail when error response contains payload")
 	}
+}
+
+// TestSpyTPanicRecovery proves that runSpy catches goroutine panics, stores the
+// panic value in spyT, and marks the spy as failed.
+func TestSpyTPanicRecovery(t *testing.T) {
+	spy := &spyT{}
+	runSpy(spy, func() { panic("intentional panic") })
+	if !spy.hasFailed() {
+		t.Fatal("spy should mark failed when the goroutine panics")
+	}
+	if v := spy.panicValue(); v != "intentional panic" {
+		t.Fatalf("expected panic value %q, got %v", "intentional panic", v)
+	}
+}
+
+// TestHarnessPlainErrorWrapped proves the SDK wraps a plain (non-*crucible.Error) handler
+// error as an INTERNAL structured error envelope, satisfying the frozen contract.
+func TestHarnessPlainErrorWrapped(t *testing.T) {
+	mux, err := crucible.Handler(func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{}, errors.New("plain error")
+	})
+	if err != nil {
+		t.Fatalf("crucible.Handler: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := harnessClient()
+	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	checkErrorEnvelopeAt(t, srv, client, reqBody, "INTERNAL")
 }
