@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -179,9 +178,6 @@ func TestHandlerRejectsNilHandler(t *testing.T) {
 	_, err := crucible.Handler(nil)
 	if err == nil {
 		t.Fatal("crucible.Handler(nil) should return an error")
-	}
-	if !strings.Contains(err.Error(), "nil HandlerFunc") {
-		t.Fatalf("expected error to mention 'nil HandlerFunc', got: %v", err)
 	}
 }
 

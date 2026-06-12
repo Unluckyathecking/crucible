@@ -102,7 +102,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 
 	// One client shared across all assertions in this Harness call.
 	client := harnessClient()
-	defer client.CloseIdleConnections()
+	t.Cleanup(client.CloseIdleConnections)
 
 	assertHealthz(t, srv, client)
 	assertInvokeMethodNotAllowed(t, srv, client)
