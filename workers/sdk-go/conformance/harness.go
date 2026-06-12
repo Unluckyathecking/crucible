@@ -61,6 +61,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	}
 
 	srv := httptest.NewServer(crucible.Handler(h))
+	defer srv.Close()
 	t.Cleanup(srv.Close)
 
 	// errSrv wraps a handler that always returns *crucible.Error. It is used solely
@@ -70,6 +71,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
 	}
 	errSrv := httptest.NewServer(crucible.Handler(errH))
+	defer errSrv.Close()
 	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)
@@ -107,11 +109,14 @@ func assertHealthz(t tb, srv *httptest.Server) {
 // error envelope, never both, never billable_units < 1 on success.
 func assertInvokeContract(t tb, srv *httptest.Server) {
 	t.Helper()
-	reqBody, _ := json.Marshal(map[string]any{
+	reqBody, err := json.Marshal(map[string]any{
 		"request_id": "conformance-1",
 		"operation":  "conformance",
 		"payload":    map[string]string{"hello": "world"},
 	})
+	if err != nil {
+		t.Fatalf("marshal invoke request: %v", err)
+	}
 	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
@@ -161,7 +166,10 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 // bypasses normalization, proving the assertion detects the violation).
 func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	t.Helper()
-	reqBody, _ := json.Marshal(map[string]any{"operation": "norm"})
+	reqBody, err := json.Marshal(map[string]any{"operation": "norm"})
+	if err != nil {
+		t.Fatalf("marshal normalization request: %v", err)
+	}
 	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
@@ -202,7 +210,10 @@ func assertBillableUnitsNormalization(t *testing.T) {
 // the assertion detects violations.
 func assertHandlerStructuredError(t tb, srv *httptest.Server) {
 	t.Helper()
-	reqBody, _ := json.Marshal(map[string]any{"operation": "err"})
+	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
+	if err != nil {
+		t.Fatalf("marshal error-handler request: %v", err)
+	}
 	checkErrorEnvelopeAt(t, srv, reqBody)
 }
 
