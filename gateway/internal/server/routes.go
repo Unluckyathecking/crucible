@@ -190,11 +190,11 @@ func NewRouter(d *Deps) http.Handler {
 	//   quota          — only reached by genuine, well-formed, non-replay requests.
 
 	// Pre-compile every regex pattern in RequestSchemas to catch RE2-incompatible
-	// patterns (e.g. ECMAScript lookaheads) at startup. On error, log and continue:
-	// the middleware handles compile failures at request time with a 400 that names
-	// the offending schema pattern, so other routes are unaffected.
+	// patterns (e.g. ECMAScript lookaheads) at startup. An invalid pattern is a
+	// schema authoring bug in the clone; serving the route would reject every
+	// request with a pattern-leaking 400. Fail fast instead.
 	if err := validate.CompileSchemaPatterns(routes); err != nil {
-		log.Error().Err(err).Msg("invalid regex pattern in RequestSchema — schema validation disabled for affected route")
+		log.Fatal().Err(err).Msg("invalid regex pattern in RequestSchema — fix the pattern and redeploy")
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
