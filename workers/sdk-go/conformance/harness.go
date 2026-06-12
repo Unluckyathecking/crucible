@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,14 +44,28 @@ type invokeError struct {
 // the frozen tool.proto HTTP/JSON contract. Call from a product worker's go test:
 //
 //	func TestConformance(t *testing.T) { conformance.Harness(t, myHandler) }
+//
+// Harness is not safe to call concurrently from multiple goroutines with the same t.
 func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Helper()
+	if h == nil {
+		t.Fatalf("conformance.Harness: nil HandlerFunc")
+	}
+
 	srv := httptest.NewServer(crucible.Handler(h))
 	defer srv.Close()
+
+	// Fixture server for the structured-error-handler assertion: always returns *crucible.Error.
+	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
+	}
+	errSrv := httptest.NewServer(crucible.Handler(errH))
+	defer errSrv.Close()
+
 	assertHealthz(t, srv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
-	assertHandlerStructuredError(t)
+	assertHandlerStructuredError(t, errSrv)
 	assertErrorEnvelope(t, srv)
 }
 
@@ -58,21 +73,23 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 func assertHealthz(t tb, srv *httptest.Server) {
 	t.Helper()
 	resp, err := http.Get(srv.URL + "/healthz")
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz: expected 200, got %d", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("GET /healthz: expected Content-Type application/json, got %q", ct)
 	}
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		t.Fatalf("GET /healthz: read body: %v", err)
 	}
-	if got := strings.TrimSpace(buf.String()); got != `{"status":"ok"}` {
+	if got := strings.TrimSpace(string(body)); got != `{"status":"ok"}` {
 		t.Fatalf("GET /healthz: expected {\"status\":\"ok\"}, got %q", got)
 	}
 }
@@ -82,16 +99,18 @@ func assertHealthz(t tb, srv *httptest.Server) {
 // error envelope, never both, never billable_units < 1 on success.
 func assertInvokeContract(t tb, srv *httptest.Server) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{
+	reqBody, _ := json.Marshal(map[string]any{
 		"request_id": "conformance-1",
 		"operation":  "conformance",
 		"payload":    map[string]string{"hello": "world"},
 	})
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke: expected 200, got %d", resp.StatusCode)
 	}
@@ -136,12 +155,14 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 // bypasses normalization, proving the assertion detects the violation).
 func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"operation": "norm"})
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	reqBody, _ := json.Marshal(map[string]any{"operation": "norm"})
+	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
 	}
-	defer resp.Body.Close()
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke (normalization): decode: %v", err)
@@ -165,58 +186,35 @@ func assertBillableUnitsNormalization(t tb) {
 	checkNormalizationResponse(t, normSrv)
 }
 
-// assertHandlerStructuredError verifies that a handler returning *crucible.Error produces
-// the correct structured error envelope and no success fields.
-func assertHandlerStructuredError(t tb) {
+// assertHandlerStructuredError verifies that a server wrapping a handler returning
+// *crucible.Error produces the correct structured error envelope and no success fields.
+// Harness passes a fixture server; tests pass a raw server with a bad envelope to prove
+// the assertion detects violations.
+func assertHandlerStructuredError(t tb, srv *httptest.Server) {
 	t.Helper()
-	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
-		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
-	}
-	errSrv := httptest.NewServer(crucible.Handler(errH))
-	defer errSrv.Close()
-
-	body, _ := json.Marshal(map[string]any{"operation": "err"})
-	resp, err := http.Post(errSrv.URL+"/invoke", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /invoke (handler error): %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST /invoke (handler error): expected HTTP 200, got %d", resp.StatusCode)
-	}
-	var r invokeResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		t.Fatalf("POST /invoke (handler error): decode: %v", err)
-	}
-	if r.Error == nil {
-		t.Fatal("POST /invoke (handler error): expected error field")
-	}
-	if r.Error.Code == "" {
-		t.Fatal("POST /invoke (handler error): error.code must be non-empty")
-	}
-	if r.Error.Message == "" {
-		t.Fatal("POST /invoke (handler error): error.message must be non-empty")
-	}
-	if r.Error.Retryable == nil {
-		t.Fatal("POST /invoke (handler error): error.retryable must be present")
-	}
-	if len(r.Payload) > 0 && string(r.Payload) != "null" {
-		t.Fatalf("POST /invoke (handler error): must not contain payload, got %s", r.Payload)
-	}
-	if r.BillableUnits != nil {
-		t.Fatalf("POST /invoke (handler error): must not contain billable_units, got %d", *r.BillableUnits)
-	}
+	reqBody, _ := json.Marshal(map[string]any{"operation": "err"})
+	checkErrorEnvelopeAt(t, srv, reqBody)
 }
 
 // assertErrorEnvelope verifies that malformed JSON triggers the SDK's BAD_REQUEST
 // structured error and that the envelope contains no success fields.
 func assertErrorEnvelope(t tb, srv *httptest.Server) {
 	t.Helper()
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader([]byte(`{not valid json}`)))
+	checkErrorEnvelopeAt(t, srv, []byte(`{not valid json}`))
+}
+
+// checkErrorEnvelopeAt posts body to srv's /invoke and asserts the response is a valid
+// structured error envelope: error.code and error.message non-empty, error.retryable
+// present, no payload, no billable_units.
+func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
+	t.Helper()
+	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (error envelope): expected HTTP 200, got %d", resp.StatusCode)
 	}

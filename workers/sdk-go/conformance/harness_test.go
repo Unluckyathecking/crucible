@@ -14,13 +14,15 @@ import (
 
 // spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
 // real test. All three methods call runtime.Goexit() so the goroutine exits cleanly
-// with deferred functions run; the caller checks hasFailed() after the goroutine
-// completes via runSpy.
+// with deferred functions run; the caller checks hasFailed() after runSpy returns.
 type spyT struct {
 	mu     sync.Mutex
 	failed bool
 }
 
+// Helper is intentionally a no-op: spyT is not backed by a real *testing.T so
+// stack-trace frame skipping is not available. Callers should not rely on reported
+// line numbers from spy-based tests.
 func (s *spyT) Helper() {}
 
 func (s *spyT) Fatal(_ ...any) {
@@ -45,20 +47,28 @@ func (s *spyT) Errorf(_ string, _ ...any) {
 }
 
 // hasFailed reports whether the spy captured a failure. Safe to call after
-// runSpy returns because it holds mu, matching the mutex used during writes.
+// runSpy returns; uses mu to establish the same happens-before as the writes.
 func (s *spyT) hasFailed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.failed
 }
 
-// runSpy runs f in a dedicated goroutine and waits for it. Because spy.Fatal/Fatalf/Errorf
-// call runtime.Goexit(), defer wg.Done() still fires and runSpy always returns.
+// runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() calls
+// (from spy.Fatal/Fatalf/Errorf) and panics are both handled safely: deferred
+// wg.Done() fires in all cases, so runSpy always returns.
 func runSpy(spy *spyT, f func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				spy.mu.Lock()
+				spy.failed = true
+				spy.mu.Unlock()
+			}
+		}()
 		f()
 	}()
 	wg.Wait()
@@ -167,5 +177,31 @@ func TestHarnessRejectsNormalizationZero(t *testing.T) {
 	runSpy(spy, func() { checkNormalizationResponse(spy, srv) })
 	if !spy.hasFailed() {
 		t.Fatal("checkNormalizationResponse should fail for billable_units=0")
+	}
+}
+
+// TestHarnessRejectsErrorWithPayload proves assertHandlerStructuredError detects a
+// structured error response that incorrectly carries a payload.
+func TestHarnessRejectsErrorWithPayload(t *testing.T) {
+	retryable := true
+	units := uint64(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(invokeResp{
+			Payload:       json.RawMessage(`{"bad":"data"}`),
+			BillableUnits: &units,
+			Error: &invokeError{
+				Code:      "ERR_WITH_PAYLOAD",
+				Message:   "error should not have payload",
+				Retryable: &retryable,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertHandlerStructuredError(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertHandlerStructuredError should fail when error response contains payload")
 	}
 }
