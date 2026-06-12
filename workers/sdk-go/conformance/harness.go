@@ -37,6 +37,7 @@ type tb interface {
 	Helper()
 	Fatalf(format string, args ...any)
 	Fatal(args ...any)
+	Errorf(format string, args ...any)
 }
 
 // invokeResp is the frozen contract shape for /invoke responses (mirrors test/conformance).
@@ -117,6 +118,7 @@ func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server) {
 		t.Fatalf("GET /invoke: %v", err)
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /invoke: expected 405 Method Not Allowed, got %d", resp.StatusCode)
 	}

@@ -13,12 +13,15 @@ import (
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 )
 
+// Compile-time check: spyT must satisfy the tb interface.
+var _ tb = (*spyT)(nil)
+
 // spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
 // real test. Fatal and Fatalf call runtime.Goexit() to exit the goroutine cleanly;
 // Errorf sets failed without exiting, matching testing.T.Errorf semantics.
+// failed is an atomic.Bool so all operations are lock-free.
 type spyT struct {
-	mu     sync.Mutex
-	failed bool
+	failed atomic.Bool
 }
 
 // Helper is intentionally a no-op: spyT is not backed by a real *testing.T so
@@ -27,33 +30,25 @@ type spyT struct {
 func (s *spyT) Helper() {}
 
 func (s *spyT) Fatal(_ ...any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = true
+	s.failed.Store(true)
 	runtime.Goexit()
 }
 
 func (s *spyT) Fatalf(_ string, _ ...any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = true
+	s.failed.Store(true)
 	runtime.Goexit()
 }
 
 // Errorf marks the spy as failed without exiting the goroutine, matching
 // testing.T.Errorf semantics (non-fatal: execution continues after the call).
 func (s *spyT) Errorf(_ string, _ ...any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = true
+	s.failed.Store(true)
 }
 
 // hasFailed reports whether the spy captured a failure. Safe to call after
-// runSpy returns; uses mu to establish the same happens-before as the writes.
+// runSpy returns.
 func (s *spyT) hasFailed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.failed
+	return s.failed.Load()
 }
 
 // runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() (called
@@ -68,9 +63,7 @@ func runSpy(spy *spyT, f func()) {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				spy.mu.Lock()
-				spy.failed = true
-				spy.mu.Unlock()
+				spy.failed.Store(true)
 			}
 		}()
 		f()
@@ -328,7 +321,10 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	reqBody, _ := json.Marshal(map[string]any{"operation": "err"})
+	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
 	spy := &spyT{}
 	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, reqBody) })
 	if !spy.hasFailed() {
