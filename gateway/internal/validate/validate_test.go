@@ -460,10 +460,15 @@ func TestValidateBytes(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing garbage rejected", func(t *testing.T) {
+	t.Run("trailing garbage rejected with trailing message", func(t *testing.T) {
 		err := validate.ValidateBytes(schema, []byte(`{"x":"hello"}garbage`))
 		if err == nil {
 			t.Fatal("expected error for trailing garbage, got nil")
+		}
+		// Trailing garbage after a valid JSON value is still "trailing data",
+		// not "invalid JSON body" — the primary value was already decoded.
+		if !strings.Contains(err.Error(), "trailing") {
+			t.Errorf("trailing garbage error should say 'trailing data', got: %v", err)
 		}
 	})
 }
@@ -1008,16 +1013,18 @@ func TestValidateUnknownTypeRejected(t *testing.T) {
 	}
 }
 
-// TestMiddlewareTrailingSlashPassThrough documents that requests with a trailing
-// slash miss the schema map (key is /v1/test not /v1/test/) and are passed through
-// to chi, which returns 404 or 301 — not a spurious 400 from validation.
+// TestMiddlewareTrailingSlashPassThrough verifies that a trailing-slash request
+// misses the schema map and is not intercepted by validation. chi returns 404
+// because /v1/test/ does not match the registered /v1/test pattern.
 func TestMiddlewareTrailingSlashPassThrough(t *testing.T) {
 	schema := &openapi.Schema{
 		Type:     "object",
 		Required: []string{"name"},
 		Properties: map[string]*openapi.Schema{"name": {Type: "string"}},
 	}
+	reached := false
 	router := makeTestRouter(schema, func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -1025,9 +1032,84 @@ func TestMiddlewareTrailingSlashPassThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Validation must not produce a 400; chi handles trailing-slash routing.
 	if w.Code == http.StatusBadRequest {
-		t.Fatalf("trailing slash request returned 400 from validation — middleware should not intercept it")
+		t.Fatalf("trailing slash request returned 400 from validation — middleware must not intercept it")
+	}
+	// chi does not match /v1/test/ to /v1/test, so the handler is unreachable
+	// and chi returns 404.
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 from chi for trailing slash, got %d", w.Code)
+	}
+	if reached {
+		t.Error("inner handler must not be reached for trailing slash request")
+	}
+}
+
+// TestBoolFalseSchema verifies that a schema with BoolFalse:true rejects every
+// value when used as a property schema (not just via additionalProperties).
+func TestBoolFalseSchema(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"allowed": {Type: "string"},
+			"banned":  {BoolFalse: true},
+		},
+	}
+	// "banned" field present: should fail because schema is false.
+	if err := validate.Validate(schema, map[string]any{"allowed": "ok", "banned": "anything"}); err == nil {
+		t.Error("BoolFalse property schema should reject any value")
+	}
+	// Without "banned" field: passes.
+	if err := validate.Validate(schema, map[string]any{"allowed": "ok"}); err != nil {
+		t.Errorf("object without banned field should pass: %v", err)
+	}
+}
+
+// TestIntegerTypeLargeValues verifies that the integer type check accepts
+// integers beyond int64 range without rejecting due to int64 overflow, and
+// that fractions within float64 precision are still rejected.
+func TestIntegerTypeLargeValues(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"id": {Type: "integer"},
+		},
+	}
+	// 2^63+1 is beyond int64 range; the old int64-cast code overflows and
+	// incorrectly rejects this. The string-based check must accept it.
+	if err := validate.ValidateBytes(schema, []byte(`{"id":9223372036854775808}`)); err != nil {
+		t.Errorf("large integer beyond int64 should be accepted as integer type: %v", err)
+	}
+	// Decimal notation of the same large integer should also be accepted.
+	if err := validate.ValidateBytes(schema, []byte(`{"id":9223372036854775808.0}`)); err != nil {
+		t.Errorf("large integer with trailing .0 should be accepted: %v", err)
+	}
+	// A fraction within float64 precision must still be rejected.
+	if err := validate.ValidateBytes(schema, []byte(`{"id":1.5}`)); err == nil {
+		t.Error("fractional value 1.5 should be rejected as non-integer")
+	}
+}
+
+// TestCompositeEnumWithNumbers verifies that object/array enum values containing
+// numbers compare correctly regardless of whether the schema uses float64 literals
+// and the request is decoded with UseNumber (json.Number).
+func TestCompositeEnumWithNumbers(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"config": {Enum: []any{
+				map[string]any{"level": float64(1)},
+				map[string]any{"level": float64(2)},
+			}},
+		},
+	}
+	// Request value decoded via UseNumber produces json.Number("1"), not float64(1).
+	// normalizeNumbers must bridge this gap.
+	if err := validate.ValidateBytes(schema, []byte(`{"config":{"level":1}}`)); err != nil {
+		t.Errorf("composite enum with float64 literals should match json.Number from request: %v", err)
+	}
+	if err := validate.ValidateBytes(schema, []byte(`{"config":{"level":3}}`)); err == nil {
+		t.Error("value not in composite enum should fail")
 	}
 }
 
@@ -1099,7 +1181,8 @@ func TestPatternFailOpenForInvalidRegex(t *testing.T) {
 
 // TestNumericEnumHighPrecision verifies that integer enum values beyond float64's
 // 53-bit mantissa are compared without precision loss so that neighbouring
-// high-precision integers do NOT match each other.
+// high-precision integers do NOT match each other, and that decimal notation of
+// the same value (9007199254740993.0) correctly matches the integer enum entry.
 func TestNumericEnumHighPrecision(t *testing.T) {
 	// 9007199254740993 == 2^53+1; this and 2^53 both collapse to the same float64.
 	// The validator must distinguish them via integer comparison, not float64.
@@ -1116,8 +1199,21 @@ func TestNumericEnumHighPrecision(t *testing.T) {
 		t.Errorf("exact high-precision enum value should pass: %v", err)
 	}
 
-	// Neighbouring value must fail.
+	// Neighbouring value must fail (float64 precision loss would make them equal —
+	// the int64 comparison path must be taken instead).
 	if err := validate.ValidateBytes(schema, []byte(`{"id":9007199254740992}`)); err == nil {
 		t.Error("neighbouring high-precision integer should fail enum check (float64 precision loss bug)")
+	}
+
+	// Decimal notation of the same integer (9007199254740993.0) should also pass
+	// after normalizeJSONNumber strips the trailing ".0".
+	schemaWithDecimalEnum := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"id": {Enum: []any{json.Number("9007199254740993.0")}},
+		},
+	}
+	if err := validate.ValidateBytes(schemaWithDecimalEnum, []byte(`{"id":9007199254740993}`)); err != nil {
+		t.Errorf("decimal enum notation 9007199254740993.0 should match integer input: %v", err)
 	}
 }

@@ -182,19 +182,30 @@ func NewRouter(d *Deps) http.Handler {
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
 	//
-	// Middleware order matters: chi executes earlier-registered middleware outermost.
-	// idempotency is registered before quota, so replays exit before quota ever runs
-	// — replays must not reserve or refund quota.
+	// Middleware order: chi executes earlier-registered middleware outermost.
+	//   ratelimit  — counts every request including replays and later-rejected bodies.
+	//   idempotency — replays exit here; before validation and quota.
+	//   validate   — rejects malformed bodies before quota is reserved.
+	//   quota      — only reached by genuine, well-formed, non-replay requests.
+
+	// Fail fast if any RequestSchema contains a pattern with syntax unsupported
+	// by Go's RE2 engine (e.g. ECMAScript lookaheads). This catches schema
+	// authoring errors at startup rather than silently skipping constraints at
+	// request time.
+	if err := validate.CompileSchemaPatterns(routes); err != nil {
+		log.Fatal().Err(err).Msg("invalid regex pattern in RequestSchema; fix the schema before starting the gateway")
+	}
+
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		// Capture errors after auth (so customer context is populated) but before
 		// ratelimit/quota so their 429s are recorded with the correct status.
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
-		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))    // counts every HTTP request, including those later rejected by validation or idempotency replay
-		r.Use(idempotency.Middleware(idempStore))         // replays exit here — before quota and validation
-		r.Use(validate.Middleware(routes))                // rejects malformed bodies before quota is reserved
-		r.Use(quota.Middleware(d.Quota, d.Plans))         // only reached by genuine, well-formed requests
+		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
+		r.Use(idempotency.Middleware(idempStore))
+		r.Use(validate.Middleware(routes))
+		r.Use(quota.Middleware(d.Quota, d.Plans))
 		for _, rt := range routes {
 			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
 		}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -22,6 +23,8 @@ import (
 
 // patternCache stores compiled *regexp.Regexp values keyed by pattern string
 // so patterns are compiled at most once per unique regex across all requests.
+// Cache size is bounded by the number of unique patterns in statically-defined
+// schemas; no eviction is needed under normal operation.
 var patternCache sync.Map
 
 func compiledPattern(pattern string) (*regexp.Regexp, error) {
@@ -118,12 +121,11 @@ func ValidateBytes(schema *openapi.Schema, body []byte) error {
 		return &ValidationError{Message: "invalid JSON body"}
 	}
 	// Reject trailing tokens — a valid request body contains exactly one JSON value.
+	// Any non-EOF result (valid JSON, garbage, syntax error) means there is extra
+	// content after the primary value; the body is the client's fault either way.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return &ValidationError{Message: "trailing data after JSON value"}
-		}
-		return &ValidationError{Message: "invalid JSON body"}
+		return &ValidationError{Message: "trailing data after JSON value"}
 	}
 	return Validate(schema, data)
 }
@@ -133,6 +135,10 @@ func ValidateBytes(schema *openapi.Schema, body []byte) error {
 func validateValue(s *openapi.Schema, value any, path string) error {
 	if s == nil {
 		return nil
+	}
+	// BoolFalse is the JSON Schema boolean false — the schema rejects every value.
+	if s.BoolFalse {
+		return &ValidationError{Field: path, Message: "value is not allowed by schema (false)"}
 	}
 	// $ref schemas are not resolved by this validator — inline schemas only.
 	// A schema that is purely a $ref has no local constraints, so we pass through.
@@ -292,14 +298,12 @@ func checkType(typeName string, value any, path string) error {
 	case "integer":
 		switch v := value.(type) {
 		case float64:
-			if v != float64(int64(v)) {
+			// Use math.Trunc to avoid int64 overflow for values > math.MaxInt64.
+			if v != math.Trunc(v) {
 				return typeError(path, typeName, value)
 			}
 		case json.Number:
-			// JSON Schema treats any number with zero fractional part as integer,
-			// including notations like 1.0 or 1e3. Check via Float64.
-			f, err := v.Float64()
-			if err != nil || f != float64(int64(f)) {
+			if !isIntegerNumber(v) {
 				return typeError(path, typeName, value)
 			}
 		default:
@@ -354,12 +358,43 @@ func inEnum(enum []any, value any) bool {
 		}
 		return false
 	}
+	// For composite values (objects, arrays), json.Number in the decoded request
+	// and float64 in schema literals must compare equal. Normalize both sides so
+	// reflect.DeepEqual sees the same numeric type throughout the structure.
+	normValue := normalizeNumbers(value)
 	for _, e := range enum {
-		if reflect.DeepEqual(value, e) {
+		if reflect.DeepEqual(normValue, normalizeNumbers(e)) {
 			return true
 		}
 	}
 	return false
+}
+
+// normalizeNumbers walks a decoded JSON value and converts all json.Number
+// values to float64 so that reflect.DeepEqual can compare request values
+// (decoded with UseNumber) against schema enum literals (Go float64).
+func normalizeNumbers(v any) any {
+	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return v
+		}
+		return f
+	case map[string]any:
+		out := make(map[string]any, len(n))
+		for k, val := range n {
+			out[k] = normalizeNumbers(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(n))
+		for i, val := range n {
+			out[i] = normalizeNumbers(val)
+		}
+		return out
+	}
+	return v
 }
 
 func isNumeric(v any) bool {
@@ -372,17 +407,19 @@ func isNumeric(v any) bool {
 
 // numericEqual compares two numeric values (float64 or json.Number) for
 // JSON Schema numeric equality. Strategy:
-//  1. String equality: json.Number("1") == json.Number("1") — exact, no precision loss.
-//  2. Integer equality via int64: catches 1 vs 1.0 when both are exact integers,
-//     and avoids float64 precision loss for values up to ±2^63-1.
-//  3. Float64 fallback: handles general decimals like 1.5 vs 1.50.
+//  1. Normalize: strip trailing fractional zeros ("1.0" → "1", "1.50" → "1.5")
+//     so that integer-valued decimals enter the integer path, not float64.
+//  2. String equality fast path: normalized identical strings are equal.
+//  3. Integer equality via int64: precision-safe for values up to ±2^63-1.
+//  4. Float64 fallback: handles true decimals like 1.5 vs 1.50.
 func numericEqual(a, b any) bool {
 	na, aIsNum := toJSONNumber(a)
 	nb, bIsNum := toJSONNumber(b)
 	if !aIsNum || !bIsNum {
 		return false
 	}
-	// Fast path: identical string representation.
+	na = normalizeJSONNumber(na)
+	nb = normalizeJSONNumber(nb)
 	if na == nb {
 		return true
 	}
@@ -399,6 +436,43 @@ func numericEqual(a, b any) bool {
 		return false
 	}
 	return fa == fb
+}
+
+// normalizeJSONNumber strips trailing fractional zeros so that integer-valued
+// decimal notations ("1.0", "1.00") compare equal to their integer form ("1")
+// in string and ParseInt checks, without precision loss from float64.
+// Examples: "1.0" → "1", "1.50" → "1.5", "1e3" → "1e3" (no decimal, unchanged).
+func normalizeJSONNumber(n json.Number) json.Number {
+	s := string(n)
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 {
+		return n // no decimal point: integer or scientific notation without fractional part
+	}
+	end := len(s)
+	for end > dot+1 && s[end-1] == '0' {
+		end--
+	}
+	if end == dot+1 {
+		return json.Number(s[:dot]) // all zeros after '.': drop the decimal point too
+	}
+	return json.Number(s[:end])
+}
+
+// isIntegerNumber reports whether n represents a whole-number (integer) value.
+// After stripping trailing fractional zeros, if no decimal point remains the
+// value is an integer regardless of magnitude — this accepts integers beyond
+// int64 range (e.g. 2^63+1) that the int64 cast path would overflow.
+// Scientific notation without a remaining decimal (e.g. "1e3") is also accepted;
+// notation that retains a decimal after normalization (e.g. "1.5e2" = 150) is
+// checked via math.Trunc.
+func isIntegerNumber(n json.Number) bool {
+	norm := normalizeJSONNumber(n)
+	if !strings.ContainsRune(string(norm), '.') {
+		return true // no fractional part: plain integer or integer scientific notation
+	}
+	// Fractional part remains after normalization; verify via float64.
+	f, err := norm.Float64()
+	return err == nil && f == math.Trunc(f)
 }
 
 // toJSONNumber normalises float64 and json.Number to json.Number.
