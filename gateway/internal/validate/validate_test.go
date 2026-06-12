@@ -1339,44 +1339,40 @@ func TestNumericEnumHighPrecision(t *testing.T) {
 }
 
 // TestImplicitObjectTypeGuard verifies that a schema with Properties or Required
-// but no explicit Type rejects non-object values (including json.Number, string,
-// bool, and null) instead of silently skipping validateObject.
+// but no explicit Type validates objects against those constraints. Per JSON Schema
+// semantics, Properties and Required are object-specific keywords: when the value
+// is not an object, these keywords are vacuously satisfied (non-objects pass).
 func TestImplicitObjectTypeGuard(t *testing.T) {
 	schema := &openapi.Schema{
-		// No Type field — implicitly object-typed due to Properties/Required.
+		// No Type field — Properties and Required apply only to object instances.
 		Required: []string{"name"},
 		Properties: map[string]*openapi.Schema{
 			"name": {Type: "string"},
 		},
 	}
 
-	// A proper object satisfying Required must pass.
+	// A valid object satisfying Required must pass.
 	if err := validate.ValidateBytes(schema, []byte(`{"name":"alice"}`)); err != nil {
-		t.Errorf("valid object must pass implicit object guard: %v", err)
+		t.Errorf("valid object must pass: %v", err)
 	}
 
-	// An object missing a required field must still fail.
+	// An object missing a required field must fail — object keywords are enforced.
 	if err := validate.ValidateBytes(schema, []byte(`{}`)); err == nil {
 		t.Error("object missing required field must fail")
 	}
 
-	// A JSON number must be rejected (not silently pass as validateNumber).
-	if err := validate.ValidateBytes(schema, []byte(`42`)); err == nil {
-		t.Error("number value against implicit-object schema must fail")
+	// Non-object values vacuously satisfy object keywords (no Type declared).
+	// Per JSON Schema: Properties/Required are object constraints; non-objects pass.
+	if err := validate.ValidateBytes(schema, []byte(`42`)); err != nil {
+		t.Errorf("number vacuously satisfies object keywords (no type constraint): %v", err)
 	}
-
-	// A JSON string must be rejected.
-	if err := validate.ValidateBytes(schema, []byte(`"hello"`)); err == nil {
-		t.Error("string value against implicit-object schema must fail")
+	if err := validate.ValidateBytes(schema, []byte(`"hello"`)); err != nil {
+		t.Errorf("string vacuously satisfies object keywords (no type constraint): %v", err)
 	}
-
-	// A JSON boolean must be rejected.
-	if err := validate.ValidateBytes(schema, []byte(`true`)); err == nil {
-		t.Error("boolean value against implicit-object schema must fail")
+	if err := validate.ValidateBytes(schema, []byte(`true`)); err != nil {
+		t.Errorf("bool vacuously satisfies object keywords (no type constraint): %v", err)
 	}
-
-	// null must be rejected (schema is not nullable).
-	if err := validate.ValidateBytes(schema, []byte(`null`)); err == nil {
-		t.Error("null value against implicit-object schema must fail")
+	if err := validate.ValidateBytes(schema, []byte(`null`)); err != nil {
+		t.Errorf("null vacuously satisfies object keywords (no type constraint): %v", err)
 	}
 }

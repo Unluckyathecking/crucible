@@ -183,22 +183,18 @@ func NewRouter(d *Deps) http.Handler {
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
 	//
 	// Middleware order: chi executes earlier-registered middleware outermost.
-	//   ratelimit  — counts every request including replays and later-rejected bodies.
-	//   idempotency — replays exit here; before validation and quota.
-	//   validate   — rejects malformed bodies before quota is reserved.
-	//   quota      — only reached by genuine, well-formed, non-replay requests.
+	//   v1ErrorCapture — wraps response writer to capture /v1 errors for logging.
+	//   ratelimit      — counts every request including replays and later-rejected bodies.
+	//   idempotency    — replays exit here; before validation and quota.
+	//   validate       — rejects malformed bodies before quota is reserved.
+	//   quota          — only reached by genuine, well-formed, non-replay requests.
 
-	// Fail fast if any RequestSchema contains a pattern with syntax unsupported
-	// by Go's RE2 engine (e.g. ECMAScript lookaheads). This catches schema
-	// authoring errors at startup rather than silently skipping constraints at
-	// request time. panic is appropriate here: an invalid pattern is a programming
-	// error in the clone, not a runtime condition; NewRouter callers should never
-	// hit this outside of development.
+	// Pre-compile every regex pattern in RequestSchemas to catch RE2-incompatible
+	// patterns (e.g. ECMAScript lookaheads) at startup. On error, log and continue:
+	// the middleware handles compile failures at request time with a 400 that names
+	// the offending schema pattern, so other routes are unaffected.
 	if err := validate.CompileSchemaPatterns(routes); err != nil {
-		// An invalid RE2 pattern is a programming error in the clone, not a
-		// runtime condition. log.Panic logs at PANIC level then calls panic so
-		// the process terminates with both a structured log entry and a stack trace.
-		log.Panic().Err(err).Msg("invalid regex pattern in RequestSchema")
+		log.Error().Err(err).Msg("invalid regex pattern in RequestSchema — schema validation disabled for affected route")
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil

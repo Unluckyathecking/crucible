@@ -146,26 +146,16 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 		return nil
 	}
 
-	// Implicit object-type guard: MUST run before the type switch to catch ALL
-	// value types (including json.Number) when the schema declares Properties or
-	// Required but has no explicit Type (implicitly object-typed).
-	if s.Type == "" && (len(s.Properties) > 0 || len(s.Required) > 0) {
-		switch value.(type) {
-		case map[string]any:
-			// ok — proceed to validateObject below
-		default:
-			return typeError(path, "object", value)
-		}
-	}
-
-	// Type check.
+	// Type check — before enum so the error names the correct constraint first.
 	if s.Type != "" {
 		if err := checkType(s.Type, value, path); err != nil {
 			return err
 		}
 	}
 
-	// Enum check.
+	// Enum check — runs before structural (object) validation so that schemas
+	// combining enum with Properties/Required validate enum values of any Go type
+	// without incorrect rejection from the object-dispatch branch.
 	if len(s.Enum) > 0 {
 		if !inEnum(s.Enum, value) {
 			return &ValidationError{
@@ -177,6 +167,8 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 
 	switch v := value.(type) {
 	case map[string]any:
+		// Reaching this branch is the implicit object-type guard: only map[string]any
+		// values are routed to validateObject, which checks Properties and Required.
 		return validateObject(s, v, path)
 	case string:
 		return validateString(s, v, path)
