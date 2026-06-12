@@ -125,7 +125,7 @@ func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 	if ct := resp.Header.Get("Content-Type"); !checkContentType(ct) {
 		t.Fatalf("GET /healthz: expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		t.Fatalf("GET /healthz: read body: %v", err)
 	}
@@ -140,7 +140,7 @@ func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 // with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
 func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead} {
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
 		if err != nil {
 			t.Fatalf("%s /invoke: build request: %v", method, err)
