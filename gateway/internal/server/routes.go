@@ -36,6 +36,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/validate"
 	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
@@ -181,9 +182,21 @@ func NewRouter(d *Deps) http.Handler {
 	// === Per-product routes (auth + rate-limit gated) ===
 	// Each line maps an HTTP path to an opaque worker operation. Add a line per new endpoint.
 	//
-	// Middleware order matters: chi executes earlier-registered middleware outermost.
-	// idempotency is registered before quota, so replays exit before quota ever runs
-	// — replays must not reserve or refund quota.
+	// Middleware order: chi executes earlier-registered middleware outermost.
+	//   v1ErrorCapture — wraps response writer to capture /v1 errors for logging.
+	//   ratelimit      — counts every request including replays and later-rejected bodies.
+	//   idempotency    — replays exit here; before validation and quota.
+	//   validate       — rejects malformed bodies before quota is reserved.
+	//   quota          — only reached by genuine, well-formed, non-replay requests.
+
+	// Pre-compile every regex pattern in RequestSchemas to catch RE2-incompatible
+	// patterns (e.g. ECMAScript lookaheads) at startup. An invalid pattern is a
+	// schema authoring bug in the clone; serving the route would reject every
+	// request with a pattern-leaking 400. Fail fast instead.
+	if err := validate.CompileSchemaPatterns(routes); err != nil {
+		log.Fatal().Err(err).Str("hint", "check RequestSchema.Pattern in V1Routes").Msg("invalid regex pattern in RequestSchema")
+	}
+
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
@@ -191,8 +204,9 @@ func NewRouter(d *Deps) http.Handler {
 		// ratelimit/quota so their 429s are recorded with the correct status.
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
-		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
-		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
+		r.Use(idempotency.Middleware(idempStore))
+		r.Use(validate.Middleware(routes))
+		r.Use(quota.Middleware(d.Quota, d.Plans))
 		for _, rt := range routes {
 			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
 		}
@@ -412,6 +426,7 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			out = append(out, it)
 		}
 		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries rows error")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "rows error", false)
 			return
 		}

@@ -378,6 +378,45 @@ func TestBuild_RejectsEmptyPath(t *testing.T) {
 	})
 }
 
+// TestSchemaMarshalJSON_BoolFalse verifies that Schema{BoolFalse:true} marshals as
+// JSON false, and that a BoolFalse nested inside a parent schema also marshals
+// correctly as false. This exercises the custom MarshalJSON / schemaAlias approach
+// which relies on value-receiver promotion to avoid infinite recursion.
+func TestSchemaMarshalJSON_BoolFalse(t *testing.T) {
+	s := openapi.Schema{BoolFalse: true}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal Schema{BoolFalse:true}: %v", err)
+	}
+	if string(b) != "false" {
+		t.Errorf("BoolFalse schema marshaled to %q; want \"false\"", b)
+	}
+
+	// Nested BoolFalse inside additionalProperties must also marshal as false.
+	parent := openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"name": {Type: "string"},
+		},
+		AdditionalProperties: &openapi.Schema{BoolFalse: true},
+	}
+	pb, err := json.Marshal(parent)
+	if err != nil {
+		t.Fatalf("marshal parent schema: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(pb, &raw); err != nil {
+		t.Fatalf("unmarshal parent schema: %v", err)
+	}
+	ap, ok := raw["additionalProperties"]
+	if !ok {
+		t.Fatal("marshaled parent schema missing additionalProperties field")
+	}
+	if string(ap) != "false" {
+		t.Errorf("nested BoolFalse marshaled to %s; want false", ap)
+	}
+}
+
 // TestBuild_OperationIDUniqueness verifies that Build panics when two paths would
 // produce the same operationId after normalization. With the current scheme (/ → __, - → _),
 // a double-hyphen segment and a slash produce the same escape: /a--b and /a/b both
