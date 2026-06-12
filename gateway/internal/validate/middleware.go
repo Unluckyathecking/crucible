@@ -66,6 +66,9 @@ func Middleware(routes []openapi.RouteDescriptor) func(http.Handler) http.Handle
 			// Read the body; restore r.Body immediately so downstream handlers
 			// (including the error path) can still read it.
 			// Mirrors idempotency/middleware.go:111-114.
+			// Size invariant: mw.BodyLimit is registered earlier in the chain
+			// (routes.go) and caps the body before this middleware is reached,
+			// so io.ReadAll here is bounded.
 			orig := r.Body
 			bodyBytes, err := io.ReadAll(orig)
 			orig.Close()

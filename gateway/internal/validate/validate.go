@@ -23,7 +23,10 @@ var patternCache sync.Map
 
 func compiledPattern(pattern string) (*regexp.Regexp, error) {
 	if v, ok := patternCache.Load(pattern); ok {
-		return v.(*regexp.Regexp), nil
+		if re, ok := v.(*regexp.Regexp); ok {
+			return re, nil
+		}
+		// Corrupt cache entry (should never happen); fall through to recompile.
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -65,6 +68,9 @@ func Validate(schema *openapi.Schema, data any) error {
 func ValidateBytes(schema *openapi.Schema, body []byte) error {
 	if schema == nil {
 		return nil
+	}
+	if len(body) == 0 {
+		return &ValidationError{Message: "request body is empty"}
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -123,6 +129,12 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 	case []any:
 		// Array values pass through; no array-specific constraints are implemented.
 		return nil
+	case nil:
+		// JSON null: only valid when the schema type is absent or explicitly "null".
+		if s.Type != "" && s.Type != "null" {
+			return typeError(path, s.Type, value)
+		}
+		return nil
 	}
 
 	return nil
@@ -176,9 +188,14 @@ func validateString(s *openapi.Schema, v string, path string) error {
 	}
 	if s.Pattern != "" {
 		re, err := compiledPattern(s.Pattern)
-		// Treat an invalid pattern as a non-match so callers get a clear error
-		// rather than a silent pass. Invalid regexes are a schema authoring bug.
-		if err != nil || !re.MatchString(v) {
+		if err != nil {
+			// Invalid regex is a schema authoring bug; surface it clearly.
+			return &ValidationError{
+				Field:   path,
+				Message: fmt.Sprintf("invalid schema pattern %q", s.Pattern),
+			}
+		}
+		if !re.MatchString(v) {
 			return &ValidationError{
 				Field:   path,
 				Message: fmt.Sprintf("must match pattern %q", s.Pattern),
@@ -224,8 +241,10 @@ func checkType(typeName string, value any, path string) error {
 				return typeError(path, typeName, value)
 			}
 		case json.Number:
-			// UseNumber preserves the raw string; parse as int64 for exact check.
-			if _, err := v.Int64(); err != nil {
+			// JSON Schema treats any number with zero fractional part as integer,
+			// including notations like 1.0 or 1e3. Check via Float64.
+			f, err := v.Float64()
+			if err != nil || f != float64(int64(f)) {
 				return typeError(path, typeName, value)
 			}
 		default:
@@ -265,9 +284,19 @@ func joinPath(parent, child string) string {
 	return parent + "." + child
 }
 
-// inEnum checks whether value equals any element of enum using JSON-value
-// equality (json.Marshal of both sides, then byte comparison).
+// inEnum checks whether value is present in enum.
+// Numeric values are compared as float64 so that notations like 1, 1.0, and 1e0
+// are treated as equal (JSON Schema numeric equality). Non-numeric values fall
+// back to JSON-byte comparison (correct for strings, bools, null).
 func inEnum(enum []any, value any) bool {
+	if vf, ok := numericFloat(value); ok {
+		for _, e := range enum {
+			if ef, ok := numericFloat(e); ok && vf == ef {
+				return true
+			}
+		}
+		return false
+	}
 	vb, err := json.Marshal(value)
 	if err != nil {
 		return false
@@ -282,6 +311,18 @@ func inEnum(enum []any, value any) bool {
 		}
 	}
 	return false
+}
+
+// numericFloat extracts a float64 from float64 or json.Number values.
+func numericFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
 }
 
 func formatEnum(enum []any) string {

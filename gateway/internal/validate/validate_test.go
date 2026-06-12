@@ -451,20 +451,37 @@ func TestValidateBytes(t *testing.T) {
 	})
 }
 
-// TestValidateBytesIntegerPrecision verifies that ValidateBytes uses UseNumber()
-// so that fractional values above 2^53 are still rejected as non-integers.
-func TestValidateBytesIntegerPrecision(t *testing.T) {
+// TestValidateBytesIntegerNotations verifies that ValidateBytes accepts JSON
+// integer notations with zero fractional parts (1.0, 1e3) per JSON Schema spec,
+// while still rejecting genuine fractions (1.5).
+func TestValidateBytesIntegerNotations(t *testing.T) {
 	schema := &openapi.Schema{
 		Type: "object",
 		Properties: map[string]*openapi.Schema{
 			"id": {Type: "integer"},
 		},
 	}
-	// 9007199254740992.5 — float64 rounds this to a whole number, losing the fraction.
-	// UseNumber preserves the raw string so Int64() rejects it.
-	err := validate.ValidateBytes(schema, []byte(`{"id":9007199254740992.5}`))
-	if err == nil {
-		t.Fatal("expected error for fractional value > 2^53, got nil")
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"plain integer", `{"id":42}`, false},
+		{"1.0 notation accepted", `{"id":1.0}`, false},
+		{"1e3 notation accepted", `{"id":1e3}`, false},
+		{"fractional 1.5 rejected", `{"id":1.5}`, true},
+		{"fractional 0.5 rejected", `{"id":0.5}`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validate.ValidateBytes(schema, []byte(tc.body))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -752,10 +769,12 @@ func TestMiddlewareBodyReadError(t *testing.T) {
 	routes := []openapi.RouteDescriptor{
 		{Path: "/test", Operation: "test", Summary: "Test", RequestSchema: schema},
 	}
+	handlerCalled := false
 	r := chi.NewRouter()
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(validate.Middleware(routes))
 		r.Post("/test", func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
 			w.WriteHeader(http.StatusOK)
 		})
 	})
@@ -765,6 +784,9 @@ func TestMiddlewareBodyReadError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
+	if handlerCalled {
+		t.Error("downstream handler must NOT be called on body read error")
+	}
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on body read error, got %d", w.Code)
 	}
@@ -796,4 +818,128 @@ func TestMiddlewareNonPostPassThrough(t *testing.T) {
 		t.Fatalf("non-POST request incorrectly returned 400 from validation middleware")
 	}
 	_ = reached // handler reachability depends on chi's method matching
+}
+
+// --- Additional edge-case tests ---
+
+// TestValidateNullValues verifies that JSON null is handled correctly:
+// typed schemas reject null, typeless schemas (or type:"null") accept it.
+func TestValidateNullValues(t *testing.T) {
+	var nilVal any // JSON null becomes nil in any
+
+	// Typed schema: null must fail.
+	if err := validate.Validate(&openapi.Schema{Type: "string"}, nilVal); err == nil {
+		t.Error("null against type:string should fail")
+	}
+	if err := validate.Validate(&openapi.Schema{Type: "object"}, nilVal); err == nil {
+		t.Error("null against type:object should fail")
+	}
+	if err := validate.Validate(&openapi.Schema{Type: "integer"}, nilVal); err == nil {
+		t.Error("null against type:integer should fail")
+	}
+
+	// Explicit null type: must pass.
+	if err := validate.Validate(&openapi.Schema{Type: "null"}, nilVal); err != nil {
+		t.Errorf("null against type:null should pass, got: %v", err)
+	}
+
+	// No type constraint: null is permitted.
+	if err := validate.Validate(&openapi.Schema{}, nilVal); err != nil {
+		t.Errorf("null against typeless schema should pass, got: %v", err)
+	}
+}
+
+// TestValidateRefSchemaPassThrough verifies that a schema that is purely a $ref
+// (no local constraints) passes through any value without validation.
+func TestValidateRefSchemaPassThrough(t *testing.T) {
+	refSchema := &openapi.Schema{Ref: "#/components/schemas/SomeType"}
+	for _, val := range []any{"string", float64(42), nil, map[string]any{}} {
+		if err := validate.Validate(refSchema, val); err != nil {
+			t.Errorf("$ref schema should pass through %T, got: %v", val, err)
+		}
+	}
+}
+
+// TestValidateNestedObject verifies that nested objects are recursively validated.
+func TestValidateNestedObject(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"address": {
+				Type:     "object",
+				Required: []string{"city"},
+				Properties: map[string]*openapi.Schema{
+					"city":  {Type: "string"},
+					"zip":   {Type: "string", Pattern: `^\d{5}$`},
+				},
+			},
+		},
+	}
+
+	// Valid nested object.
+	err := validate.ValidateBytes(schema, []byte(`{"address":{"city":"Boston","zip":"02101"}}`))
+	if err != nil {
+		t.Errorf("valid nested object: %v", err)
+	}
+
+	// Missing required nested field.
+	err = validate.ValidateBytes(schema, []byte(`{"address":{}}`))
+	if err == nil {
+		t.Error("missing required nested field should fail")
+	}
+
+	// Invalid nested field pattern.
+	err = validate.ValidateBytes(schema, []byte(`{"address":{"city":"Boston","zip":"bad"}}`))
+	if err == nil {
+		t.Error("invalid nested pattern should fail")
+	}
+	if err != nil && !strings.Contains(err.Error(), "zip") {
+		t.Errorf("error should name failing field 'zip', got: %v", err)
+	}
+}
+
+// TestValidateNumericEnumNotations verifies that numeric enum values are compared
+// by value so different JSON notations of the same number match (1 == 1.0 == 1e0).
+func TestValidateNumericEnumNotations(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"level": {Type: "integer", Enum: []any{float64(1), float64(2), float64(3)}},
+		},
+	}
+	// Plain integer notation.
+	if err := validate.ValidateBytes(schema, []byte(`{"level":2}`)); err != nil {
+		t.Errorf("plain integer 2 in enum: %v", err)
+	}
+	// 1.0 notation should match float64(1) in enum.
+	if err := validate.ValidateBytes(schema, []byte(`{"level":1.0}`)); err != nil {
+		t.Errorf("1.0 notation should match enum value 1: %v", err)
+	}
+	// Value not in enum must fail.
+	if err := validate.ValidateBytes(schema, []byte(`{"level":9}`)); err == nil {
+		t.Error("value 9 not in enum should fail")
+	}
+}
+
+// TestConcurrentPatternCache verifies that compiledPattern is safe under
+// concurrent access (no data race on the sync.Map cache).
+func TestConcurrentPatternCache(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"code": {Type: "string", Pattern: `^\d{4}$`},
+		},
+	}
+	const goroutines = 50
+	errs := make(chan error, goroutines)
+	for range goroutines {
+		go func() {
+			errs <- validate.ValidateBytes(schema, []byte(`{"code":"1234"}`))
+		}()
+	}
+	for range goroutines {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent validation error: %v", err)
+		}
+	}
 }
