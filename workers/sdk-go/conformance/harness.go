@@ -45,6 +45,8 @@ type invokeError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	// Retryable is a pointer so the decoder can distinguish absent (nil) from false.
+	// The wire format always includes this field (crucible.Error uses bool, never omitted),
+	// but we decode with a pointer to detect malformed responses that omit it.
 	Retryable *bool `json:"retryable"`
 }
 
@@ -53,7 +55,8 @@ type invokeError struct {
 //
 //	func TestConformance(t *testing.T) { conformance.Harness(t, myHandler) }
 //
-// Harness is not safe to call concurrently from multiple goroutines with the same t.
+// Harness is not safe to call concurrently from multiple goroutines with the same t
+// because *testing.T is not goroutine-safe (its internal state races).
 func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Helper()
 	if h == nil {
@@ -61,7 +64,6 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	}
 
 	srv := httptest.NewServer(crucible.Handler(h))
-	defer srv.Close()
 	t.Cleanup(srv.Close)
 
 	// errSrv wraps a handler that always returns *crucible.Error. It is used solely
@@ -71,7 +73,6 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
 	}
 	errSrv := httptest.NewServer(crucible.Handler(errH))
-	defer errSrv.Close()
 	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)

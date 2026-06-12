@@ -55,9 +55,11 @@ func (s *spyT) hasFailed() bool {
 	return s.failed
 }
 
-// runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() calls
-// (from spy.Fatal/Fatalf) and panics are both handled safely: deferred
-// wg.Done() fires in all cases, so runSpy always returns.
+// runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() (called
+// by spy.Fatal/Fatalf) terminates the goroutine without unwinding the stack — it is
+// NOT recoverable by recover(). The deferred wg.Done() fires for both Goexit and
+// normal return, so runSpy always unblocks. The recover() block catches panics from
+// other sources (not from spy.Fatal/Fatalf) and marks the spy as failed.
 func runSpy(spy *spyT, f func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -76,10 +78,11 @@ func runSpy(spy *spyT, f func()) {
 }
 
 // conformantHandler is a fixture that satisfies every contract requirement.
+// BillableUnits is intentionally 0 to prove the SDK normalizes it to >= 1.
 func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 	return crucible.Response{
 		Payload:       map[string]string{"result": "ok"},
-		BillableUnits: 1,
+		BillableUnits: 0,
 	}, nil
 }
 
@@ -154,8 +157,8 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 // TestHarnessRejectsHealthzNon200 proves assertHealthz detects a non-200 /healthz status.
 func TestHarnessRejectsHealthzNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status":"down"}`))
 	}))
 	defer srv.Close()
