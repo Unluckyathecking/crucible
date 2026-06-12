@@ -14,9 +14,10 @@ import (
 // It is the sole authoritative source of which /v1 paths exist and which
 // opaque worker operation string each maps to.
 type RouteDescriptor struct {
-	Path      string // path segment after /v1, e.g. "/echo"
-	Operation string // opaque string forwarded to the worker
-	Summary   string // human-readable; appears in the OpenAPI document
+	Path          string  // path segment after /v1, e.g. "/echo"
+	Operation     string  // opaque string forwarded to the worker
+	Summary       string  // human-readable; appears in the OpenAPI document
+	RequestSchema *Schema // optional; when set, gateway validates request body against this schema
 }
 
 // --- structural types --------------------------------------------------------
@@ -62,6 +63,11 @@ type SecurityScheme struct {
 
 // Schema represents a JSON Schema node or a $ref pointer.
 // When Ref is non-empty, other fields should be zero (omitempty suppresses them).
+//
+// BoolFalse: when true this Schema marshals as the JSON boolean false rather
+// than an object. Set AdditionalProperties: &Schema{BoolFalse: true} to
+// express additionalProperties:false in the OpenAPI document and in the
+// gateway's request-body validator.
 type Schema struct {
 	Ref                  string             `json:"$ref,omitempty"`
 	Type                 string             `json:"type,omitempty"`
@@ -69,6 +75,31 @@ type Schema struct {
 	Properties           map[string]*Schema `json:"properties,omitempty"`
 	Required             []string           `json:"required,omitempty"`
 	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
+	// BoolFalse causes MarshalJSON to emit the JSON boolean false.
+	// Used only as AdditionalProperties: &Schema{BoolFalse: true}.
+	BoolFalse bool `json:"-"`
+	// JSON Schema validation constraints (subset supported by internal/validate).
+	Enum      []any    `json:"enum,omitempty"`
+	MinLength *int     `json:"minLength,omitempty"`
+	MaxLength *int     `json:"maxLength,omitempty"`
+	Pattern   string   `json:"pattern,omitempty"`
+	Minimum   *float64 `json:"minimum,omitempty"`
+	Maximum   *float64 `json:"maximum,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler.
+// When BoolFalse is true the schema marshals as the JSON boolean false,
+// allowing AdditionalProperties: &Schema{BoolFalse: true} to produce
+// "additionalProperties": false in the OpenAPI document.
+func (s Schema) MarshalJSON() ([]byte, error) {
+	if s.BoolFalse {
+		return []byte("false"), nil
+	}
+	// schemaAlias has the same fields but no MarshalJSON, so encoding/json uses
+	// standard struct marshaling. *Schema fields within Properties and
+	// AdditionalProperties still call Schema.MarshalJSON recursively.
+	type schemaAlias Schema
+	return json.Marshal(schemaAlias(s))
 }
 
 // PathItem holds the operations for a single URL path.
@@ -176,7 +207,13 @@ func errResp(desc string) Response {
 }
 
 // invokeOperation builds the standard Operation for a per-product /v1 invoke endpoint.
-func invokeOperation(operationID, summary string) *Operation {
+// schema is the route's RequestSchema; when nil the request body is documented as a
+// generic object ({"type":"object"}) preserving backwards-compatibility.
+func invokeOperation(operationID, summary string, schema *Schema) *Operation {
+	reqBodySchema := &Schema{Type: "object"}
+	if schema != nil {
+		reqBodySchema = schema
+	}
 	return &Operation{
 		OperationID: operationID,
 		Summary:     summary,
@@ -193,7 +230,7 @@ func invokeOperation(operationID, summary string) *Operation {
 		RequestBody: &RequestBody{
 			Required: true,
 			Content: map[string]MediaType{
-				contentTypeJSON: {Schema: &Schema{Type: "object"}},
+				contentTypeJSON: {Schema: reqBodySchema},
 			},
 		},
 		Responses: map[string]Response{
@@ -365,7 +402,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
 		}
 		seenOpIDs[opID] = key
-		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary)}
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema)}
 	}
 
 	return Document{

@@ -36,6 +36,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/validate"
 	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
@@ -192,6 +193,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore)) // outer: replays exit here, before quota
+		r.Use(validate.Middleware(routes))        // after idempotency: invalid bodies never reach quota
 		r.Use(quota.Middleware(d.Quota, d.Plans)) // inner: only reached on genuine first requests
 		for _, rt := range routes {
 			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
