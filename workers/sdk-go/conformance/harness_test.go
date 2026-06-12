@@ -196,6 +196,7 @@ func TestHarnessRejectsRawBillableUnitsZero(t *testing.T) {
 			BillableUnits: &zero,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	})
 	defer srv.Close()
@@ -225,6 +226,7 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 			},
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	})
 	defer srv.Close()
@@ -300,6 +302,7 @@ func TestHarnessRejectsInvokeNonPostMethod(t *testing.T) {
 			BillableUnits: &units,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	})
 	defer srv.Close()
@@ -320,6 +323,7 @@ func TestHarnessRejectsEmptyInvokeEnvelope(t *testing.T) {
 		// Empty envelope: neither payload nor error present.
 		if err := json.NewEncoder(w).Encode(invokeResp{}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	})
 	defer srv.Close()

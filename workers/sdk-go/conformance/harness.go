@@ -88,6 +88,9 @@ func checkContentType(header string) bool {
 // Harness is not safe to call concurrently from multiple goroutines with the same t
 // because *testing.T is not goroutine-safe (its internal state races).
 func Harness(t *testing.T, h crucible.HandlerFunc) {
+	if t == nil {
+		panic("conformance.Harness: nil *testing.T")
+	}
 	t.Helper()
 
 	srvMux, err := crucible.Handler(h)
@@ -145,6 +148,10 @@ func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Clien
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			if resp != nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
 			t.Fatalf("%s /invoke: %v", method, err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
