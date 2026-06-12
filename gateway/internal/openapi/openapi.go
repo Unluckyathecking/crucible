@@ -95,9 +95,11 @@ func (s Schema) MarshalJSON() ([]byte, error) {
 	if s.BoolFalse {
 		return []byte("false"), nil
 	}
-	// schemaAlias has the same fields but no MarshalJSON, so encoding/json uses
-	// standard struct marshaling. *Schema fields within Properties and
-	// AdditionalProperties still call Schema.MarshalJSON recursively.
+	// schemaAlias has the same fields but no MarshalJSON, breaking the recursion.
+	// encoding/json uses standard struct marshaling for the schemaAlias value;
+	// pointer fields (*Schema in Properties and AdditionalProperties) are encoded
+	// via their pointer method set, which includes Schema.MarshalJSON (value receiver
+	// methods are in both T and *T method sets), so BoolFalse propagates correctly.
 	type schemaAlias Schema
 	return json.Marshal(schemaAlias(s))
 }

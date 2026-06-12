@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -80,9 +81,11 @@ func ValidateBytes(schema *openapi.Schema, body []byte) error {
 		return &ValidationError{Message: "invalid JSON body"}
 	}
 	// Reject trailing tokens — a valid request body contains exactly one JSON value.
-	// A second Decode must return io.EOF; anything else means junk after the value.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return &ValidationError{Message: "trailing data after JSON value"}
+		}
 		return &ValidationError{Message: "invalid JSON body"}
 	}
 	return Validate(schema, data)
@@ -142,12 +145,22 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 			return typeError(path, s.Type, value)
 		}
 		return nil
+	case bool:
+		// bool has no constraints beyond type and enum, both handled above.
+		return nil
+	default:
+		// Any type that does not originate from standard JSON decoding is rejected.
+		return &ValidationError{
+			Field:   path,
+			Message: fmt.Sprintf("unsupported value type %T", value),
+		}
 	}
-
-	return nil
 }
 
 func validateObject(s *openapi.Schema, obj map[string]any, path string) error {
+	if s.Type != "" && s.Type != "object" {
+		return typeError(path, s.Type, obj)
+	}
 	// Required fields must be present.
 	for _, req := range s.Required {
 		if _, present := obj[req]; !present {
@@ -293,8 +306,8 @@ func joinPath(parent, child string) string {
 
 // inEnum checks whether value is present in enum.
 // Numeric values are compared as float64 so that notations like 1, 1.0, and 1e0
-// are treated as equal (JSON Schema numeric equality). Non-numeric values fall
-// back to JSON-byte comparison (correct for strings, bools, null).
+// are treated as equal per JSON Schema numeric equality. Non-numeric values use
+// reflect.DeepEqual which handles map key-ordering non-determinism correctly.
 func inEnum(enum []any, value any) bool {
 	if vf, ok := numericFloat(value); ok {
 		for _, e := range enum {
@@ -304,16 +317,8 @@ func inEnum(enum []any, value any) bool {
 		}
 		return false
 	}
-	vb, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
 	for _, e := range enum {
-		eb, err := json.Marshal(e)
-		if err != nil {
-			continue
-		}
-		if string(vb) == string(eb) {
+		if reflect.DeepEqual(value, e) {
 			return true
 		}
 	}

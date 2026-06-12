@@ -450,11 +450,13 @@ func TestValidateBytes(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing tokens rejected", func(t *testing.T) {
-		// Body with a second JSON value after the first must be rejected.
+	t.Run("trailing valid JSON rejected with specific message", func(t *testing.T) {
 		err := validate.ValidateBytes(schema, []byte(`{"x":"hello"}{}`))
 		if err == nil {
 			t.Fatal("expected error for trailing JSON tokens, got nil")
+		}
+		if !strings.Contains(err.Error(), "trailing") {
+			t.Errorf("error should mention trailing data, got: %v", err)
 		}
 	})
 
@@ -828,11 +830,15 @@ func TestMiddlewareNonPostPassThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// chi returns 405 for method-not-allowed; validation must not return 400.
+	// chi returns 405 for method-not-allowed; the validation middleware must not
+	// return a 400 before chi gets a chance to respond.
 	if w.Code == http.StatusBadRequest {
 		t.Fatalf("non-POST request incorrectly returned 400 from validation middleware")
 	}
-	_ = reached // handler reachability depends on chi's method matching
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 from chi, got %d", w.Code)
+	}
+	_ = reached
 }
 
 // --- Additional edge-case tests ---
@@ -956,5 +962,71 @@ func TestConcurrentPatternCache(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Errorf("concurrent validation error: %v", err)
 		}
+	}
+}
+
+// TestValidateBoolValue verifies that bool values are handled correctly:
+// accepted for type:boolean, rejected for other types, matched in enum.
+func TestValidateBoolValue(t *testing.T) {
+	// type:boolean accepts bool.
+	schema := &openapi.Schema{Type: "object", Properties: map[string]*openapi.Schema{
+		"active": {Type: "boolean"},
+	}}
+	if err := validate.Validate(schema, map[string]any{"active": true}); err != nil {
+		t.Errorf("bool with type:boolean should pass: %v", err)
+	}
+
+	// type:string rejects bool.
+	schema2 := &openapi.Schema{Type: "object", Properties: map[string]*openapi.Schema{
+		"active": {Type: "string"},
+	}}
+	if err := validate.Validate(schema2, map[string]any{"active": true}); err == nil {
+		t.Error("bool against type:string should fail")
+	}
+
+	// bool in enum matches correctly.
+	schema3 := &openapi.Schema{Type: "object", Properties: map[string]*openapi.Schema{
+		"flag": {Enum: []any{true, false}},
+	}}
+	if err := validate.Validate(schema3, map[string]any{"flag": true}); err != nil {
+		t.Errorf("bool true in enum [true,false] should pass: %v", err)
+	}
+	if err := validate.Validate(schema3, map[string]any{"flag": "yes"}); err == nil {
+		t.Error("string 'yes' not in bool enum should fail")
+	}
+}
+
+// TestValidateUnknownTypeRejected verifies that the default case in validateValue
+// rejects non-JSON-standard types passed directly to Validate.
+func TestValidateUnknownTypeRejected(t *testing.T) {
+	// A typeless schema with an unknown Go type should be rejected by the default case.
+	schema := &openapi.Schema{}
+	type customType struct{ X int }
+	err := validate.Validate(schema, customType{X: 1})
+	if err == nil {
+		t.Error("non-JSON Go type should be rejected by validateValue default case")
+	}
+}
+
+// TestMiddlewareTrailingSlashPassThrough documents that requests with a trailing
+// slash miss the schema map (key is /v1/test not /v1/test/) and are passed through
+// to chi, which returns 404 or 301 — not a spurious 400 from validation.
+func TestMiddlewareTrailingSlashPassThrough(t *testing.T) {
+	schema := &openapi.Schema{
+		Type:     "object",
+		Required: []string{"name"},
+		Properties: map[string]*openapi.Schema{"name": {Type: "string"}},
+	}
+	router := makeTestRouter(schema, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test/", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Validation must not produce a 400; chi handles trailing-slash routing.
+	if w.Code == http.StatusBadRequest {
+		t.Fatalf("trailing slash request returned 400 from validation — middleware should not intercept it")
 	}
 }

@@ -191,7 +191,7 @@ func NewRouter(d *Deps) http.Handler {
 		// Capture errors after auth (so customer context is populated) but before
 		// ratelimit/quota so their 429s are recorded with the correct status.
 		r.Use(v1ErrorCapture(d.ErrorRecorder))
-		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))    // counts every HTTP request, including invalid bodies
+		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))    // counts every HTTP request, including those later rejected by validation or idempotency replay
 		r.Use(idempotency.Middleware(idempStore))         // replays exit here — before quota and validation
 		r.Use(validate.Middleware(routes))                // rejects malformed bodies before quota is reserved
 		r.Use(quota.Middleware(d.Quota, d.Plans))         // only reached by genuine, well-formed requests
