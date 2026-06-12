@@ -12,9 +12,10 @@ import (
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 )
 
-// spyT captures calls to Fatal/Fatalf/Errorf without propagating them to the real test.
-// Fatal and Fatalf call runtime.Goexit() so the goroutine exits cleanly with all deferred
-// functions run; the caller checks spy.failed after the goroutine completes.
+// spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
+// real test. All three methods call runtime.Goexit() so the goroutine exits cleanly
+// with deferred functions run; the caller checks hasFailed() after the goroutine
+// completes via runSpy.
 type spyT struct {
 	mu     sync.Mutex
 	failed bool
@@ -40,9 +41,19 @@ func (s *spyT) Errorf(_ string, _ ...any) {
 	s.mu.Lock()
 	s.failed = true
 	s.mu.Unlock()
+	runtime.Goexit()
 }
 
-// runSpy runs f in a goroutine and waits for it. Handles runtime.Goexit() via defer.
+// hasFailed reports whether the spy captured a failure. Safe to call after
+// runSpy returns because it holds mu, matching the mutex used during writes.
+func (s *spyT) hasFailed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed
+}
+
+// runSpy runs f in a dedicated goroutine and waits for it. Because spy.Fatal/Fatalf/Errorf
+// call runtime.Goexit(), defer wg.Done() still fires and runSpy always returns.
 func runSpy(spy *spyT, f func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -53,7 +64,7 @@ func runSpy(spy *spyT, f func()) {
 	wg.Wait()
 }
 
-// conformantHandler is a fixture that satisfies the frozen contract.
+// conformantHandler is a fixture that satisfies every contract requirement.
 func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 	return crucible.Response{
 		Payload:       map[string]string{"result": "ok"},
@@ -61,14 +72,14 @@ func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response
 	}, nil
 }
 
-// TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a handler
-// that satisfies every contract requirement.
+// TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a well-formed
+// handler. Any failure inside Harness propagates to t and fails this test directly.
 func TestHarnessAcceptsConformantHandler(t *testing.T) {
 	Harness(t, conformantHandler)
 }
 
 // TestHarnessRejectsBillableUnitsZero proves assertInvokeContract detects billable_units=0
-// in a response that bypasses the SDK's normalization (raw server emitting 0 directly).
+// in a raw response that bypasses the SDK's normalization guard.
 func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 	zero := uint64(0)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +98,7 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 
 	spy := &spyT{}
 	runSpy(spy, func() { assertInvokeContract(spy, srv) })
-	if !spy.failed {
+	if !spy.hasFailed() {
 		t.Fatal("assertInvokeContract should fail for billable_units=0")
 	}
 }
@@ -118,7 +129,7 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 
 	spy := &spyT{}
 	runSpy(spy, func() { assertInvokeContract(spy, srv) })
-	if !spy.failed {
+	if !spy.hasFailed() {
 		t.Fatal("assertInvokeContract should fail when both payload and error are set")
 	}
 }
@@ -134,7 +145,27 @@ func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 
 	spy := &spyT{}
 	runSpy(spy, func() { assertHealthz(spy, srv) })
-	if !spy.failed {
+	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for a /healthz body that is not {\"status\":\"ok\"}")
+	}
+}
+
+// TestHarnessRejectsNormalizationZero proves checkNormalizationResponse detects
+// billable_units=0 in a raw response that bypasses the SDK's normalization guard.
+func TestHarnessRejectsNormalizationZero(t *testing.T) {
+	zero := uint64(0)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(invokeResp{
+			Payload:       json.RawMessage(`{"norm":"bypass"}`),
+			BillableUnits: &zero,
+		})
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { checkNormalizationResponse(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("checkNormalizationResponse should fail for billable_units=0")
 	}
 }

@@ -70,6 +70,9 @@ type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 // Handler returns an http.Handler that serves /healthz and /invoke for h.
 // Serve wires this to a real TCP listener; tests can drive it in-process via httptest.
 func Handler(h HandlerFunc) http.Handler {
+	if h == nil {
+		panic("crucible.Handler: nil HandlerFunc")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/invoke", invokeHandler(h))

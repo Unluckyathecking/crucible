@@ -50,6 +50,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	assertHealthz(t, srv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
+	assertHandlerStructuredError(t)
 	assertErrorEnvelope(t, srv)
 }
 
@@ -59,21 +60,17 @@ func assertHealthz(t tb, srv *httptest.Server) {
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
-		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz: expected 200, got %d", resp.StatusCode)
-		return
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("GET /healthz: expected Content-Type application/json, got %q", ct)
-		return
 	}
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(resp.Body); err != nil {
 		t.Fatalf("GET /healthz: read body: %v", err)
-		return
 	}
 	if got := strings.TrimSpace(buf.String()); got != `{"status":"ok"}` {
 		t.Fatalf("GET /healthz: expected {\"status\":\"ok\"}, got %q", got)
@@ -93,21 +90,17 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
-		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke: expected 200, got %d", resp.StatusCode)
-		return
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("POST /invoke: expected Content-Type application/json, got %q", ct)
-		return
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke: decode: %v", err)
-		return
 	}
 
 	hasPayload := len(r.Payload) > 0 && string(r.Payload) != "null"
@@ -115,11 +108,9 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 
 	if hasPayload && hasError {
 		t.Fatal("POST /invoke: response must not contain both payload and error")
-		return
 	}
 	if !hasPayload && !hasError {
 		t.Fatal("POST /invoke: response must contain payload+billable_units or error")
-		return
 	}
 	if hasPayload {
 		if r.BillableUnits == nil || *r.BillableUnits < 1 {
@@ -139,6 +130,27 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 	}
 }
 
+// checkNormalizationResponse verifies that the /invoke response at srv carries
+// billable_units >= 1. Used by assertBillableUnitsNormalization (with an internal
+// SDK-wrapped fixture) and by the package's own tests (with a raw fixture that
+// bypasses normalization, proving the assertion detects the violation).
+func checkNormalizationResponse(t tb, srv *httptest.Server) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"operation": "norm"})
+	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /invoke (normalization): %v", err)
+	}
+	defer resp.Body.Close()
+	var r invokeResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatalf("POST /invoke (normalization): decode: %v", err)
+	}
+	if r.BillableUnits == nil || *r.BillableUnits < 1 {
+		t.Fatalf("POST /invoke (normalization): expected billable_units >= 1, got %v", r.BillableUnits)
+	}
+}
+
 // assertBillableUnitsNormalization verifies that crucible.Handler normalizes a zero
 // BillableUnits to >= 1 (mirrors invokeHandler + the gateway trust boundary).
 // Uses an internal fixture handler to exercise the SDK normalization path directly.
@@ -150,21 +162,49 @@ func assertBillableUnitsNormalization(t tb) {
 	}
 	normSrv := httptest.NewServer(crucible.Handler(zeroH))
 	defer normSrv.Close()
+	checkNormalizationResponse(t, normSrv)
+}
 
-	body, _ := json.Marshal(map[string]any{"operation": "norm"})
-	resp, err := http.Post(normSrv.URL+"/invoke", "application/json", bytes.NewReader(body))
+// assertHandlerStructuredError verifies that a handler returning *crucible.Error produces
+// the correct structured error envelope and no success fields.
+func assertHandlerStructuredError(t tb) {
+	t.Helper()
+	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
+	}
+	errSrv := httptest.NewServer(crucible.Handler(errH))
+	defer errSrv.Close()
+
+	body, _ := json.Marshal(map[string]any{"operation": "err"})
+	resp, err := http.Post(errSrv.URL+"/invoke", "application/json", bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("POST /invoke (normalization): %v", err)
-		return
+		t.Fatalf("POST /invoke (handler error): %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /invoke (handler error): expected HTTP 200, got %d", resp.StatusCode)
+	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		t.Fatalf("POST /invoke (normalization): decode: %v", err)
-		return
+		t.Fatalf("POST /invoke (handler error): decode: %v", err)
 	}
-	if r.BillableUnits == nil || *r.BillableUnits < 1 {
-		t.Fatalf("POST /invoke (normalization): expected billable_units >= 1 after SDK normalization, got %v", r.BillableUnits)
+	if r.Error == nil {
+		t.Fatal("POST /invoke (handler error): expected error field")
+	}
+	if r.Error.Code == "" {
+		t.Fatal("POST /invoke (handler error): error.code must be non-empty")
+	}
+	if r.Error.Message == "" {
+		t.Fatal("POST /invoke (handler error): error.message must be non-empty")
+	}
+	if r.Error.Retryable == nil {
+		t.Fatal("POST /invoke (handler error): error.retryable must be present")
+	}
+	if len(r.Payload) > 0 && string(r.Payload) != "null" {
+		t.Fatalf("POST /invoke (handler error): must not contain payload, got %s", r.Payload)
+	}
+	if r.BillableUnits != nil {
+		t.Fatalf("POST /invoke (handler error): must not contain billable_units, got %d", *r.BillableUnits)
 	}
 }
 
@@ -175,25 +215,20 @@ func assertErrorEnvelope(t tb, srv *httptest.Server) {
 	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader([]byte(`{not valid json}`)))
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)
-		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (error envelope): expected HTTP 200, got %d", resp.StatusCode)
-		return
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("POST /invoke (error envelope): expected Content-Type application/json, got %q", ct)
-		return
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke (error envelope): decode: %v", err)
-		return
 	}
 	if r.Error == nil {
 		t.Fatal("POST /invoke (error envelope): expected error field in envelope")
-		return
 	}
 	if r.Error.Code == "" {
 		t.Fatal("POST /invoke (error envelope): error.code must be non-empty")
