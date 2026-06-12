@@ -263,6 +263,38 @@ func TestValidate(t *testing.T) {
 			},
 			input: `{"code":"hi"}`,
 		},
+		// pattern constraint
+		{
+			name: "pattern match passes",
+			schema: &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					"code": {Type: "string", Pattern: `^\d{4}$`},
+				},
+			},
+			input: `{"code":"1234"}`,
+		},
+		{
+			name: "pattern violation",
+			schema: &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					"code": {Type: "string", Pattern: `^\d{4}$`},
+				},
+			},
+			input:       `{"code":"abc"}`,
+			wantErr:     true,
+			errContains: "code",
+		},
+		// null body
+		{
+			name: "null body fails object type check",
+			schema: &openapi.Schema{
+				Type: "object",
+			},
+			input:   `null`,
+			wantErr: true,
+		},
 		// number constraints
 		{
 			name: "minimum violation",
@@ -330,6 +362,52 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- ValidateBytes edge cases ---
+
+func TestValidateBytes(t *testing.T) {
+	schema := &openapi.Schema{
+		Type:     "object",
+		Required: []string{"x"},
+		Properties: map[string]*openapi.Schema{
+			"x": {Type: "string"},
+		},
+	}
+
+	t.Run("nil schema passes empty body", func(t *testing.T) {
+		if err := validate.ValidateBytes(nil, []byte{}); err != nil {
+			t.Errorf("nil schema: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty body returns error", func(t *testing.T) {
+		err := validate.ValidateBytes(schema, []byte{})
+		if err == nil {
+			t.Fatal("expected error for empty body, got nil")
+		}
+	})
+
+	t.Run("null JSON body fails object type check", func(t *testing.T) {
+		err := validate.ValidateBytes(schema, []byte("null"))
+		if err == nil {
+			t.Fatal("expected error for null body against object schema, got nil")
+		}
+	})
+
+	t.Run("valid body passes", func(t *testing.T) {
+		err := validate.ValidateBytes(schema, []byte(`{"x":"hello"}`))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		err := validate.ValidateBytes(schema, []byte(`not json`))
+		if err == nil {
+			t.Fatal("expected error for invalid JSON, got nil")
+		}
+	})
 }
 
 // --- Middleware integration tests ---

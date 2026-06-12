@@ -2,12 +2,13 @@
 // Crucible gateway's request-body validation middleware.
 //
 // Supported constraints: type, required, properties, additionalProperties,
-// enum, minLength, maxLength, minimum, maximum.
+// enum, minLength, maxLength, pattern, minimum, maximum.
 package validate
 
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -127,6 +128,17 @@ func validateString(s *openapi.Schema, v string, path string) error {
 		return &ValidationError{
 			Field:   path,
 			Message: fmt.Sprintf("must be at most %d characters long", *s.MaxLength),
+		}
+	}
+	if s.Pattern != "" {
+		matched, err := regexp.MatchString(s.Pattern, v)
+		// Treat an invalid pattern as a non-match so callers get a clear error
+		// rather than a silent pass. Invalid regexes are a schema authoring bug.
+		if err != nil || !matched {
+			return &ValidationError{
+				Field:   path,
+				Message: fmt.Sprintf("must match pattern %q", s.Pattern),
+			}
 		}
 	}
 	return nil
