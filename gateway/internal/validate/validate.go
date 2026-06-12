@@ -436,7 +436,14 @@ func numericEqual(a, b any) bool {
 	if errA == nil && errB == nil {
 		return ia == ib
 	}
-	// Decimal fallback: compare as float64.
+	// Uint64 path: handles integers in [2^63, 2^64-1] without float64 rounding.
+	ua, errA := strconv.ParseUint(string(na), 10, 64)
+	ub, errB := strconv.ParseUint(string(nb), 10, 64)
+	if errA == nil && errB == nil {
+		return ua == ub
+	}
+	// Decimal fallback: compare as float64 (precision loss accepted for
+	// integers beyond uint64 range and for decimal values like 1.5).
 	fa, errA := na.Float64()
 	fb, errB := nb.Float64()
 	if errA != nil || errB != nil {
@@ -448,21 +455,31 @@ func numericEqual(a, b any) bool {
 // normalizeJSONNumber strips trailing fractional zeros so that integer-valued
 // decimal notations ("1.0", "1.00") compare equal to their integer form ("1")
 // in string and ParseInt checks, without precision loss from float64.
-// Examples: "1.0" → "1", "1.50" → "1.5", "1e3" → "1e3" (no decimal, unchanged).
+// Scientific notation is handled correctly: "2.0e3" → "2e3", "1.50e2" → "1.5e2".
+// Examples: "1.0" → "1", "1.50" → "1.5", "2.0e3" → "2e3", "1e3" → "1e3".
 func normalizeJSONNumber(n json.Number) json.Number {
 	s := string(n)
 	dot := strings.IndexByte(s, '.')
 	if dot < 0 {
-		return n // no decimal point: integer or scientific notation without fractional part
+		return n // no decimal point: plain integer or exponent-only scientific notation
 	}
-	end := len(s)
+	// Locate exponent ('e' or 'E') if present; only strip zeros before it.
+	expOff := strings.IndexAny(s[dot:], "eE")
+	var exp int
+	if expOff >= 0 {
+		exp = dot + expOff
+	} else {
+		exp = len(s)
+	}
+	end := exp
 	for end > dot+1 && s[end-1] == '0' {
 		end--
 	}
 	if end == dot+1 {
-		return json.Number(s[:dot]) // all zeros after '.': drop the decimal point too
+		// All zeros after '.': drop the decimal point; keep exponent if present.
+		return json.Number(s[:dot] + s[exp:])
 	}
-	return json.Number(s[:end])
+	return json.Number(s[:end] + s[exp:])
 }
 
 // isIntegerNumber reports whether n represents a whole-number (integer) value.

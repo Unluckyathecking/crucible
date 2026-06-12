@@ -654,7 +654,9 @@ func TestMiddlewareErrorHasRequestID(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
 	errObj, _ := resp["error"].(map[string]any)
 	if errObj["request_id"] != rid {
 		t.Errorf("error.request_id = %q, want %q", errObj["request_id"], rid)
@@ -688,7 +690,9 @@ func TestMiddlewareAdditionalPropertiesFalse(t *testing.T) {
 	}
 
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
 	errObj, _ := resp["error"].(map[string]any)
 	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "extra") {
 		t.Errorf("error message %q does not name field 'extra'", msg)
@@ -843,7 +847,9 @@ func TestMiddlewareNonPostPassThrough(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 from chi, got %d", w.Code)
 	}
-	_ = reached
+	if reached {
+		t.Error("handler must not be reached for non-POST request (chi returns 405 before routing)")
+	}
 }
 
 // --- Additional edge-case tests ---
@@ -1219,5 +1225,20 @@ func TestNumericEnumHighPrecision(t *testing.T) {
 	}
 	if err := validate.ValidateBytes(schemaWithDecimalEnum, []byte(`{"id":9007199254740993}`)); err != nil {
 		t.Errorf("decimal enum notation 9007199254740993.0 should match integer input: %v", err)
+	}
+
+	// Values in uint64 range [2^63, 2^64-1] must be compared via uint64, not
+	// float64 (which rounds both to the same imprecise value).
+	schemaUint64 := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"id": {Enum: []any{json.Number("9223372036854775809")}}, // 2^63+1
+		},
+	}
+	if err := validate.ValidateBytes(schemaUint64, []byte(`{"id":9223372036854775809}`)); err != nil {
+		t.Errorf("exact uint64 enum value should pass: %v", err)
+	}
+	if err := validate.ValidateBytes(schemaUint64, []byte(`{"id":9223372036854775808}`)); err == nil {
+		t.Error("neighbouring uint64 integer should fail enum check")
 	}
 }

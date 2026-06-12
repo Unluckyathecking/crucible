@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -191,9 +192,11 @@ func NewRouter(d *Deps) http.Handler {
 	// Fail fast if any RequestSchema contains a pattern with syntax unsupported
 	// by Go's RE2 engine (e.g. ECMAScript lookaheads). This catches schema
 	// authoring errors at startup rather than silently skipping constraints at
-	// request time.
+	// request time. panic is appropriate here: an invalid pattern is a programming
+	// error in the clone, not a runtime condition; NewRouter callers should never
+	// hit this outside of development.
 	if err := validate.CompileSchemaPatterns(routes); err != nil {
-		log.Fatal().Err(err).Msg("invalid regex pattern in RequestSchema; fix the schema before starting the gateway")
+		panic(fmt.Sprintf("invalid regex pattern in RequestSchema: %v", err))
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
