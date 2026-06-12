@@ -175,6 +175,9 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 		if r.Error.Retryable == nil {
 			t.Fatal("POST /invoke error.retryable must be present")
 		}
+		if r.BillableUnits != nil {
+			t.Fatalf("POST /invoke error: must not contain billable_units, got %d", *r.BillableUnits)
+		}
 	}
 }
 
@@ -226,9 +229,12 @@ func assertBillableUnitsNormalization(t *testing.T) {
 	checkNormalizationResponse(t, normSrv)
 }
 
-// assertHandlerStructuredError verifies that a handler returning *crucible.Error produces
-// the correct structured error envelope and no success fields. It creates and tears down
-// its own httptest.Server so Harness has no cross-assertion server dependencies.
+// assertHandlerStructuredError verifies that the SDK correctly serializes a *crucible.Error
+// into the structured error envelope. It intentionally uses a synthetic errH fixture rather
+// than the caller's handler because conformance tests what the SDK does with the error, not
+// whether the caller's handler ever returns one (which is handler-specific business logic).
+// It creates and tears down its own httptest.Server so Harness has no cross-assertion
+// server dependencies.
 func assertHandlerStructuredError(t *testing.T) {
 	t.Helper()
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {

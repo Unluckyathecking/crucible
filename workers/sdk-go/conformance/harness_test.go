@@ -44,8 +44,8 @@ func (s *spyT) Fatalf(_ string, _ ...any) {
 // testing.T.Errorf semantics (non-fatal: execution continues after the call).
 func (s *spyT) Errorf(_ string, _ ...any) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.failed = true
-	s.mu.Unlock()
 }
 
 // hasFailed reports whether the spy captured a failure. Safe to call after
