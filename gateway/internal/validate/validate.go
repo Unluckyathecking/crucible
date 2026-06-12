@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -76,6 +77,12 @@ func ValidateBytes(schema *openapi.Schema, body []byte) error {
 	dec.UseNumber()
 	var data any
 	if err := dec.Decode(&data); err != nil {
+		return &ValidationError{Message: "invalid JSON body"}
+	}
+	// Reject trailing tokens — a valid request body contains exactly one JSON value.
+	// A second Decode must return io.EOF; anything else means junk after the value.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
 		return &ValidationError{Message: "invalid JSON body"}
 	}
 	return Validate(schema, data)

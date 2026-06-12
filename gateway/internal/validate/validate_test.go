@@ -449,6 +449,21 @@ func TestValidateBytes(t *testing.T) {
 			t.Fatal("expected error for invalid JSON, got nil")
 		}
 	})
+
+	t.Run("trailing tokens rejected", func(t *testing.T) {
+		// Body with a second JSON value after the first must be rejected.
+		err := validate.ValidateBytes(schema, []byte(`{"x":"hello"}{}`))
+		if err == nil {
+			t.Fatal("expected error for trailing JSON tokens, got nil")
+		}
+	})
+
+	t.Run("trailing garbage rejected", func(t *testing.T) {
+		err := validate.ValidateBytes(schema, []byte(`{"x":"hello"}garbage`))
+		if err == nil {
+			t.Fatal("expected error for trailing garbage, got nil")
+		}
+	})
 }
 
 // TestValidateBytesIntegerNotations verifies that ValidateBytes accepts JSON
