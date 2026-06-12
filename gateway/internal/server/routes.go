@@ -194,7 +194,7 @@ func NewRouter(d *Deps) http.Handler {
 	// schema authoring bug in the clone; serving the route would reject every
 	// request with a pattern-leaking 400. Fail fast instead.
 	if err := validate.CompileSchemaPatterns(routes); err != nil {
-		log.Fatal().Err(err).Msg("invalid regex pattern in RequestSchema — fix the pattern and redeploy")
+		log.Fatal().Err(err).Str("hint", "check RequestSchema.Pattern in V1Routes").Msg("invalid regex pattern in RequestSchema")
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil

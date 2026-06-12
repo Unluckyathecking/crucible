@@ -1128,12 +1128,31 @@ func TestCompositeEnumWithNumbers(t *testing.T) {
 		},
 	}
 	// Request value decoded via UseNumber produces json.Number("1"), not float64(1).
-	// normalizeNumbers must bridge this gap.
+	// deepEqualJSON bridges this gap without converting to float64.
 	if err := validate.ValidateBytes(schema, []byte(`{"config":{"level":1}}`)); err != nil {
 		t.Errorf("composite enum with float64 literals should match json.Number from request: %v", err)
 	}
 	if err := validate.ValidateBytes(schema, []byte(`{"config":{"level":3}}`)); err == nil {
 		t.Error("value not in composite enum should fail")
+	}
+}
+
+// TestCompositeEnumPrecisionBoundary verifies that composite enum values containing
+// large integers beyond float64's 53-bit mantissa are compared without precision loss.
+// 2^53+1 = 9007199254740993 and 2^53+2 = 9007199254740994 both round to the same
+// float64 value, so float64-based comparison would confuse them.
+func TestCompositeEnumPrecisionBoundary(t *testing.T) {
+	schemaEnum := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"id": {Enum: []any{json.Number("9007199254740993")}},
+		},
+	}
+	if err := validate.ValidateBytes(schemaEnum, []byte(`{"id":9007199254740993}`)); err != nil {
+		t.Errorf("exact enum match at 2^53+1 should pass: %v", err)
+	}
+	if err := validate.ValidateBytes(schemaEnum, []byte(`{"id":9007199254740994}`)); err == nil {
+		t.Error("adjacent value 2^53+2 must not match enum at 2^53+1")
 	}
 }
 

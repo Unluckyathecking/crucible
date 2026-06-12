@@ -271,13 +271,20 @@ func validateString(s *openapi.Schema, v string, path string) error {
 	return nil
 }
 
-// cmpNumBound compares a normalized json.Number against a float64 bound.
-// Uses integer arithmetic when both are representable as int64 (precision-safe
-// for values beyond float64's 53-bit mantissa). Returns -1, 0, or +1.
+// cmpNumBound compares a json.Number value against a float64 bound.
+// Both are normalized to json.Number first, then compared via string fast path,
+// int64, uint64, and float64 fallback — the same strategy as numericEqual —
+// so large integers and negative bounds are handled precisely.
+// Returns -1 if v < bound, 0 if equal, +1 if v > bound.
 func cmpNumBound(v json.Number, bound float64) int {
-	ia, iaErr := strconv.ParseInt(string(v), 10, 64)
-	ib, ibErr := strconv.ParseInt(strconv.FormatFloat(bound, 'f', -1, 64), 10, 64)
-	if iaErr == nil && ibErr == nil {
+	nb := normalizeJSONNumber(json.Number(strconv.FormatFloat(bound, 'f', -1, 64)))
+	nv := normalizeJSONNumber(v)
+	if nv == nb {
+		return 0
+	}
+	ia, errA := strconv.ParseInt(string(nv), 10, 64)
+	ib, errB := strconv.ParseInt(string(nb), 10, 64)
+	if errA == nil && errB == nil {
 		if ia < ib {
 			return -1
 		}
@@ -286,11 +293,26 @@ func cmpNumBound(v json.Number, bound float64) int {
 		}
 		return 0
 	}
-	fv, _ := v.Float64()
-	if fv < bound {
+	ua, errA := strconv.ParseUint(string(nv), 10, 64)
+	ub, errB := strconv.ParseUint(string(nb), 10, 64)
+	if errA == nil && errB == nil {
+		if ua < ub {
+			return -1
+		}
+		if ua > ub {
+			return 1
+		}
+		return 0
+	}
+	fv, errA := nv.Float64()
+	fb, errB := nb.Float64()
+	if errA != nil || errB != nil {
+		return 0
+	}
+	if fv < fb {
 		return -1
 	}
-	if fv > bound {
+	if fv > fb {
 		return 1
 	}
 	return 0
@@ -375,57 +397,55 @@ func joinPath(parent, child string) string {
 }
 
 // inEnum checks whether value is present in enum.
-// Numeric values use numericEqual so that notations like 1, 1.0, and 1e0
-// are treated as equal per JSON Schema numeric equality while preserving
-// precision for integers beyond float64's 53-bit mantissa (e.g. 2^53+1).
-// Non-numeric values use reflect.DeepEqual which handles map key-ordering
-// non-determinism correctly.
+// Uses deepEqualJSON so numeric comparisons (json.Number vs float64) are handled
+// precisely via numericEqual without float64 precision loss for large integers.
 func inEnum(enum []any, value any) bool {
-	if isNumeric(value) {
-		for _, e := range enum {
-			if isNumeric(e) && numericEqual(value, e) {
-				return true
-			}
-		}
-		return false
-	}
-	// For composite values (objects, arrays), json.Number in the decoded request
-	// and float64 in schema literals must compare equal. Normalize both sides so
-	// reflect.DeepEqual sees the same numeric type throughout the structure.
-	normValue := normalizeNumbers(value)
 	for _, e := range enum {
-		if reflect.DeepEqual(normValue, normalizeNumbers(e)) {
+		if deepEqualJSON(value, e) {
 			return true
 		}
 	}
 	return false
 }
 
-// normalizeNumbers walks a decoded JSON value and converts all json.Number
-// values to float64 so that reflect.DeepEqual can compare request values
-// (decoded with UseNumber) against schema enum literals (Go float64).
-func normalizeNumbers(v any) any {
-	switch n := v.(type) {
-	case json.Number:
-		f, err := n.Float64()
-		if err != nil {
-			return v
+// deepEqualJSON compares two JSON-decoded values for equality.
+// Numbers (json.Number or float64) are compared via numericEqual, which uses
+// int64/uint64 paths for precision-safe integer comparison before falling back
+// to float64. Composite values (objects, arrays) recurse. All other types fall
+// back to reflect.DeepEqual.
+func deepEqualJSON(a, b any) bool {
+	if isNumeric(a) {
+		if isNumeric(b) {
+			return numericEqual(a, b)
 		}
-		return f
-	case map[string]any:
-		out := make(map[string]any, len(n))
-		for k, val := range n {
-			out[k] = normalizeNumbers(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(n))
-		for i, val := range n {
-			out[i] = normalizeNumbers(val)
-		}
-		return out
+		return false
 	}
-	return v
+	switch av := a.(type) {
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			if !deepEqualJSON(v, bv[k]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !deepEqualJSON(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 func isNumeric(v any) bool {
