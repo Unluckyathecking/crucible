@@ -430,6 +430,7 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			out = append(out, it)
 		}
 		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries rows error")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "rows error", false)
 			return
 		}

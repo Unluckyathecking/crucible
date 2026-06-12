@@ -816,6 +816,10 @@ func TestMiddlewareBodyReadError(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on body read error, got %d", w.Code)
 	}
+	body := w.Body.String()
+	if !strings.Contains(body, "BAD_REQUEST") {
+		t.Errorf("response body must contain BAD_REQUEST error code, got: %s", body)
+	}
 }
 
 // TestMiddlewareNonPostPassThrough verifies that non-POST requests to
@@ -1317,5 +1321,48 @@ func TestNumericEnumHighPrecision(t *testing.T) {
 	}
 	if err := validate.ValidateBytes(schemaUint64, []byte(`{"id":9223372036854775808}`)); err == nil {
 		t.Error("neighbouring uint64 integer should fail enum check")
+	}
+}
+
+// TestImplicitObjectTypeGuard verifies that a schema with Properties or Required
+// but no explicit Type rejects non-object values (including json.Number, string,
+// bool, and null) instead of silently skipping validateObject.
+func TestImplicitObjectTypeGuard(t *testing.T) {
+	schema := &openapi.Schema{
+		// No Type field — implicitly object-typed due to Properties/Required.
+		Required: []string{"name"},
+		Properties: map[string]*openapi.Schema{
+			"name": {Type: "string"},
+		},
+	}
+
+	// A proper object satisfying Required must pass.
+	if err := validate.ValidateBytes(schema, []byte(`{"name":"alice"}`)); err != nil {
+		t.Errorf("valid object must pass implicit object guard: %v", err)
+	}
+
+	// An object missing a required field must still fail.
+	if err := validate.ValidateBytes(schema, []byte(`{}`)); err == nil {
+		t.Error("object missing required field must fail")
+	}
+
+	// A JSON number must be rejected (not silently pass as validateNumber).
+	if err := validate.ValidateBytes(schema, []byte(`42`)); err == nil {
+		t.Error("number value against implicit-object schema must fail")
+	}
+
+	// A JSON string must be rejected.
+	if err := validate.ValidateBytes(schema, []byte(`"hello"`)); err == nil {
+		t.Error("string value against implicit-object schema must fail")
+	}
+
+	// A JSON boolean must be rejected.
+	if err := validate.ValidateBytes(schema, []byte(`true`)); err == nil {
+		t.Error("boolean value against implicit-object schema must fail")
+	}
+
+	// null must be rejected (schema is not nullable).
+	if err := validate.ValidateBytes(schema, []byte(`null`)); err == nil {
+		t.Error("null value against implicit-object schema must fail")
 	}
 }

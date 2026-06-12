@@ -164,6 +164,16 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 		}
 	}
 
+	// Implicit object-type guard: a schema that declares Properties or Required
+	// without an explicit Type is implicitly object-typed.  Reject any value that
+	// is not map[string]any early so that non-map types (json.Number, string, bool,
+	// nil) do not skip validateObject and its Required/Properties checks.
+	if s.Type == "" && (len(s.Properties) > 0 || len(s.Required) > 0) {
+		if _, ok := value.(map[string]any); !ok {
+			return typeError(path, "object", value)
+		}
+	}
+
 	switch v := value.(type) {
 	case map[string]any:
 		return validateObject(s, v, path)
