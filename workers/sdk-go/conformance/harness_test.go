@@ -186,6 +186,28 @@ func TestHarnessRejectsNormalizationZero(t *testing.T) {
 	}
 }
 
+// TestHarnessRejectsSuccessEnvelopeOnMalformedRequest proves assertErrorEnvelope detects
+// a server that returns a success envelope instead of a structured error for malformed JSON.
+func TestHarnessRejectsSuccessEnvelopeOnMalformedRequest(t *testing.T) {
+	units := uint64(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(invokeResp{
+			Payload:       json.RawMessage(`{"ok":true}`),
+			BillableUnits: &units,
+		}); err != nil {
+			panic(err)
+		}
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertErrorEnvelope(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertErrorEnvelope should fail when server returns success instead of error")
+	}
+}
+
 // TestHarnessRejectsErrorWithPayload proves assertHandlerStructuredError detects a
 // structured error response that incorrectly carries a payload.
 func TestHarnessRejectsErrorWithPayload(t *testing.T) {

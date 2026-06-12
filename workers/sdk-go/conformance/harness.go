@@ -73,12 +73,10 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 func assertHealthz(t tb, srv *httptest.Server) {
 	t.Helper()
 	resp, err := http.Get(srv.URL + "/healthz")
-	if resp != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz: expected 200, got %d", resp.StatusCode)
 	}
@@ -105,12 +103,10 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 		"payload":    map[string]string{"hello": "world"},
 	})
 	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
-	if resp != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke: expected 200, got %d", resp.StatusCode)
 	}
@@ -157,12 +153,10 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	t.Helper()
 	reqBody, _ := json.Marshal(map[string]any{"operation": "norm"})
 	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
-	if resp != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (normalization): expected 200, got %d", resp.StatusCode)
 	}
@@ -181,14 +175,14 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 // assertBillableUnitsNormalization verifies that crucible.Handler normalizes a zero
 // BillableUnits to >= 1 (mirrors invokeHandler + the gateway trust boundary).
 // Uses an internal fixture handler to exercise the SDK normalization path directly.
-func assertBillableUnitsNormalization(t tb) {
+func assertBillableUnitsNormalization(t *testing.T) {
 	t.Helper()
 	// Zero-units fixture: explicitly returns 0 to exercise the SDK's normalization guard.
 	zeroH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{Payload: map[string]string{"norm": "ok"}, BillableUnits: 0}, nil
 	}
 	normSrv := httptest.NewServer(crucible.Handler(zeroH))
-	defer normSrv.Close()
+	t.Cleanup(normSrv.Close)
 	checkNormalizationResponse(t, normSrv)
 }
 
@@ -215,12 +209,10 @@ func assertErrorEnvelope(t tb, srv *httptest.Server) {
 func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
 	t.Helper()
 	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
-	if resp != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (error envelope): expected HTTP 200, got %d", resp.StatusCode)
 	}
