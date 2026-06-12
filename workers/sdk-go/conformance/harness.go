@@ -33,6 +33,8 @@ type tb interface {
 }
 
 // invokeResp is the frozen contract shape for /invoke responses (mirrors test/conformance).
+// BillableUnits and Error are pointers so the decoder can distinguish an absent field
+// (nil) from a zero/false value, matching the proto oneof result semantics.
 type invokeResp struct {
 	Payload       json.RawMessage `json:"payload"`
 	BillableUnits *uint64         `json:"billable_units"`
@@ -42,7 +44,8 @@ type invokeResp struct {
 type invokeError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
-	Retryable *bool  `json:"retryable"`
+	// Retryable is a pointer so the decoder can distinguish absent (nil) from false.
+	Retryable *bool `json:"retryable"`
 }
 
 // Harness drives crucible.Handler(h) in-process via httptest.NewServer and asserts
