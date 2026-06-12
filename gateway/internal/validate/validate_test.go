@@ -143,7 +143,7 @@ func TestValidate(t *testing.T) {
 					"count": {Type: "integer"},
 				},
 			},
-			input: `{"count":42}`,
+			input: `{"count":42.0}`,
 		},
 		// additionalProperties: false
 		{
@@ -1009,6 +1009,20 @@ func TestValidateBoolValue(t *testing.T) {
 	if err := validate.Validate(schema3, map[string]any{"flag": "yes"}); err == nil {
 		t.Error("string 'yes' not in bool enum should fail")
 	}
+
+	// bool in enum with explicit type:boolean — the more realistic schema pattern.
+	schema4 := &openapi.Schema{Type: "object", Properties: map[string]*openapi.Schema{
+		"flag": {Type: "boolean", Enum: []any{true, false}},
+	}}
+	if err := validate.Validate(schema4, map[string]any{"flag": true}); err != nil {
+		t.Errorf("bool true in enum [true,false] with type:boolean should pass: %v", err)
+	}
+	if err := validate.Validate(schema4, map[string]any{"flag": false}); err != nil {
+		t.Errorf("bool false in enum [true,false] with type:boolean should pass: %v", err)
+	}
+	if err := validate.Validate(schema4, map[string]any{"flag": "yes"}); err == nil {
+		t.Error("string 'yes' not in bool enum with type:boolean should fail")
+	}
 }
 
 // TestValidateUnknownTypeRejected verifies that the default case in validateValue
@@ -1188,8 +1202,8 @@ func TestPatternInvalidRegexReturnsSchemaError(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid RE2 pattern should return a schema error")
 	}
-	if !strings.Contains(err.Error(), "invalid schema pattern") {
-		t.Errorf("error should describe schema error, got: %v", err)
+	if !strings.Contains(err.Error(), "internal schema validation error") {
+		t.Errorf("error should indicate internal validation error, got: %v", err)
 	}
 }
 

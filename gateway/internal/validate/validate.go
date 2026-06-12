@@ -173,15 +173,13 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 	case string:
 		return validateString(s, v, path)
 	case float64:
-		return validateNumber(s, v, path)
+		// Convert to json.Number so validateNumber can use precision-safe integer
+		// comparison for Minimum/Maximum checks.
+		return validateNumber(s, json.Number(strconv.FormatFloat(v, 'f', -1, 64)), path)
 	case json.Number:
-		// json.Number arrives when the caller decoded with UseNumber().
-		// The type check above already accepted it; convert for constraint checks.
-		f, err := v.Float64()
-		if err != nil {
-			return &ValidationError{Field: path, Message: "invalid number"}
-		}
-		return validateNumber(s, f, path)
+		// Pass json.Number directly — no float64 conversion here, preserving
+		// large-integer precision for Minimum/Maximum comparisons.
+		return validateNumber(s, v, path)
 	case []any:
 		// Array values pass through; no array-specific constraints are implemented.
 		return nil
@@ -259,12 +257,9 @@ func validateString(s *openapi.Schema, v string, path string) error {
 		if err != nil {
 			// The pattern is a schema authoring bug (e.g. ECMAScript-only syntax
 			// unsupported by Go's RE2). CompileSchemaPatterns is called at startup
-			// to catch this before traffic; reaching here at request time is a
-			// programming error in the clone, not a client error.
-			return &ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("invalid schema pattern %q", s.Pattern),
-			}
+			// to catch this; reaching here at request time is a server-side error.
+			// Return a generic message to avoid leaking schema internals to the client.
+			return &ValidationError{Field: path, Message: "internal schema validation error"}
 		}
 		if !re.MatchString(v) {
 			return &ValidationError{
@@ -276,14 +271,40 @@ func validateString(s *openapi.Schema, v string, path string) error {
 	return nil
 }
 
-func validateNumber(s *openapi.Schema, v float64, path string) error {
-	if s.Minimum != nil && v < *s.Minimum {
+// cmpNumBound compares a normalized json.Number against a float64 bound.
+// Uses integer arithmetic when both are representable as int64 (precision-safe
+// for values beyond float64's 53-bit mantissa). Returns -1, 0, or +1.
+func cmpNumBound(v json.Number, bound float64) int {
+	ia, iaErr := strconv.ParseInt(string(v), 10, 64)
+	ib, ibErr := strconv.ParseInt(strconv.FormatFloat(bound, 'f', -1, 64), 10, 64)
+	if iaErr == nil && ibErr == nil {
+		if ia < ib {
+			return -1
+		}
+		if ia > ib {
+			return 1
+		}
+		return 0
+	}
+	fv, _ := v.Float64()
+	if fv < bound {
+		return -1
+	}
+	if fv > bound {
+		return 1
+	}
+	return 0
+}
+
+func validateNumber(s *openapi.Schema, v json.Number, path string) error {
+	norm := normalizeJSONNumber(v)
+	if s.Minimum != nil && cmpNumBound(norm, *s.Minimum) < 0 {
 		return &ValidationError{
 			Field:   path,
 			Message: fmt.Sprintf("must be >= %v", *s.Minimum),
 		}
 	}
-	if s.Maximum != nil && v > *s.Maximum {
+	if s.Maximum != nil && cmpNumBound(norm, *s.Maximum) > 0 {
 		return &ValidationError{
 			Field:   path,
 			Message: fmt.Sprintf("must be <= %v", *s.Maximum),
