@@ -145,6 +145,15 @@ func newMockServer(invokeH http.HandlerFunc) *httptest.Server {
 	}))
 }
 
+// TestHarnessAcceptsRetryableFalse proves that a handler returning a structured error
+// with Retryable: false (the zero value) is accepted by Harness — the harness checks
+// retryable is present (non-nil on the wire), not that it is true.
+func TestHarnessAcceptsRetryableFalse(t *testing.T) {
+	Harness(t, func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{}, &crucible.Error{Code: "NOT_RETRYABLE", Message: "permanent failure", Retryable: false}
+	})
+}
+
 // TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a well-formed
 // handler. The invocation counter proves Harness actually called the handler, not just
 // that it completed without failing. BillableUnits:0 exercises the SDK normalization path.

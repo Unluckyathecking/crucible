@@ -24,6 +24,9 @@ const (
 	// harnessClientTimeout caps each HTTP round-trip; prevents a hung httptest.Server
 	// from stalling the test suite indefinitely.
 	harnessClientTimeout = 5 * time.Second
+	// maxResponseBytes caps the body read from any /invoke response to prevent a
+	// misbehaving handler from OOM-ing the test process.
+	maxResponseBytes = 10 << 20 // 10 MiB, mirrors crucible.go's invokeHandler cap
 )
 
 // harnessClient returns a fresh http.Client. DisableKeepAlives: true ensures no
@@ -171,7 +174,7 @@ func assertInvokeContract(t tb, srv *httptest.Server, client *http.Client) {
 		t.Fatalf("POST /invoke: expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke: decode: %v", err)
 	}
 
@@ -227,7 +230,7 @@ func checkNormalizationResponse(t tb, srv *httptest.Server, client *http.Client)
 		t.Fatalf("POST /invoke (normalization): expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke (normalization): decode: %v", err)
 	}
 	if r.BillableUnits == nil || *r.BillableUnits < 1 {
@@ -304,7 +307,7 @@ func checkErrorEnvelopeAt(t tb, srv *httptest.Server, client *http.Client, body 
 		t.Fatalf("POST /invoke (error envelope): expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&r); err != nil {
 		t.Fatalf("POST /invoke (error envelope): decode: %v", err)
 	}
 	if r.Error == nil {
