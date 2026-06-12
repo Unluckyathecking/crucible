@@ -71,17 +71,21 @@ func runSpy(spy *spyT, f func()) {
 	wg.Wait()
 }
 
-// newMockServer builds an httptest.Server that returns {"status":"ok"} on /healthz
-// and delegates /invoke to invokeH. Used by negative-case tests that need a raw server
-// bypassing the SDK to exercise specific assertion-detection paths.
+// newMockServer builds an httptest.Server that returns {"status":"ok"} on /healthz,
+// delegates /invoke to invokeH, and returns 404 for any other path. Used by
+// negative-case tests that need a raw server bypassing the SDK to exercise specific
+// assertion-detection paths.
 func newMockServer(invokeH http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		switch r.URL.Path {
+		case "/healthz":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
-			return
+		case "/invoke":
+			invokeH(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		invokeH(w, r)
 	}))
 }
 
@@ -326,7 +330,7 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 		t.Fatalf("marshal request body: %v", err)
 	}
 	spy := &spyT{}
-	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, reqBody) })
+	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, reqBody, "") })
 	if !spy.hasFailed() {
 		t.Fatal("checkErrorEnvelopeAt should fail when error response contains payload")
 	}
