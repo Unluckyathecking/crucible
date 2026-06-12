@@ -45,8 +45,11 @@ func Middleware(routes []openapi.RouteDescriptor) func(http.Handler) http.Handle
 			// chi sub-router middleware runs before the inner route is fully
 			// matched (RoutePattern returns "/v1/*" at this point), so we use
 			// r.URL.Path which Go's net/http has already cleaned and normalized.
-			// All Crucible /v1 routes are exact paths with no URL parameters,
+			// All Crucible /v1 routes are exact paths with no URL parameters
+			// (framework invariant — see CLAUDE.md §load-bearing invariants),
 			// so URL.Path == the registered route pattern ("/v1" + rt.Path).
+			// Routes with path parameters ({id} etc.) are not supported; if a
+			// clone author adds one it will simply miss schema validation.
 			// Only POST requests carry a request body worth validating.
 			// Non-POST requests to schema-bearing paths are passed through
 			// so chi can return the correct method-not-allowed response.

@@ -12,6 +12,7 @@ import (
 	"io"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -38,6 +39,42 @@ func compiledPattern(pattern string) (*regexp.Regexp, error) {
 	// are identical, and we return the freshly compiled one either way.
 	patternCache.Store(pattern, re)
 	return re, nil
+}
+
+// CompileSchemaPatterns pre-compiles every regex pattern reachable from the
+// given routes and returns an error describing the first one that fails.
+// Call this at gateway startup so RE2-incompatible patterns (e.g. ECMAScript
+// lookaheads) are caught during initialisation rather than silently skipped
+// at request time. Returns nil when all patterns compile successfully.
+func CompileSchemaPatterns(routes []openapi.RouteDescriptor) error {
+	for _, rt := range routes {
+		if rt.RequestSchema != nil {
+			if err := compileSchemaPatterns(rt.RequestSchema); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func compileSchemaPatterns(s *openapi.Schema) error {
+	if s == nil {
+		return nil
+	}
+	if s.Pattern != "" {
+		if _, err := compiledPattern(s.Pattern); err != nil {
+			return fmt.Errorf("schema pattern %q is not valid RE2 syntax: %w", s.Pattern, err)
+		}
+	}
+	for _, ps := range s.Properties {
+		if err := compileSchemaPatterns(ps); err != nil {
+			return err
+		}
+	}
+	if err := compileSchemaPatterns(s.AdditionalProperties); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ValidationError names the failing field and describes the constraint violation.
@@ -209,13 +246,11 @@ func validateString(s *openapi.Schema, v string, path string) error {
 	if s.Pattern != "" {
 		re, err := compiledPattern(s.Pattern)
 		if err != nil {
-			// Invalid regex is a schema authoring bug; surface it clearly.
-			return &ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("invalid schema pattern %q", s.Pattern),
-			}
-		}
-		if !re.MatchString(v) {
+			// Pattern is a schema authoring bug (e.g. ECMAScript-only syntax not
+			// supported by Go's RE2 engine). Fail open: skip the constraint rather
+			// than returning 400 to clients for schema issues beyond their control.
+			// Clone authors should catch this at startup via CompileSchemaPatterns.
+		} else if !re.MatchString(v) {
 			return &ValidationError{
 				Field:   path,
 				Message: fmt.Sprintf("must match pattern %q", s.Pattern),
@@ -305,13 +340,15 @@ func joinPath(parent, child string) string {
 }
 
 // inEnum checks whether value is present in enum.
-// Numeric values are compared as float64 so that notations like 1, 1.0, and 1e0
-// are treated as equal per JSON Schema numeric equality. Non-numeric values use
-// reflect.DeepEqual which handles map key-ordering non-determinism correctly.
+// Numeric values use numericEqual so that notations like 1, 1.0, and 1e0
+// are treated as equal per JSON Schema numeric equality while preserving
+// precision for integers beyond float64's 53-bit mantissa (e.g. 2^53+1).
+// Non-numeric values use reflect.DeepEqual which handles map key-ordering
+// non-determinism correctly.
 func inEnum(enum []any, value any) bool {
-	if vf, ok := numericFloat(value); ok {
+	if isNumeric(value) {
 		for _, e := range enum {
-			if ef, ok := numericFloat(e); ok && vf == ef {
+			if isNumeric(e) && numericEqual(value, e) {
 				return true
 			}
 		}
@@ -325,16 +362,54 @@ func inEnum(enum []any, value any) bool {
 	return false
 }
 
-// numericFloat extracts a float64 from float64 or json.Number values.
-func numericFloat(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
+func isNumeric(v any) bool {
+	switch v.(type) {
+	case float64, json.Number:
+		return true
 	}
-	return 0, false
+	return false
+}
+
+// numericEqual compares two numeric values (float64 or json.Number) for
+// JSON Schema numeric equality. Strategy:
+//  1. String equality: json.Number("1") == json.Number("1") — exact, no precision loss.
+//  2. Integer equality via int64: catches 1 vs 1.0 when both are exact integers,
+//     and avoids float64 precision loss for values up to ±2^63-1.
+//  3. Float64 fallback: handles general decimals like 1.5 vs 1.50.
+func numericEqual(a, b any) bool {
+	na, aIsNum := toJSONNumber(a)
+	nb, bIsNum := toJSONNumber(b)
+	if !aIsNum || !bIsNum {
+		return false
+	}
+	// Fast path: identical string representation.
+	if na == nb {
+		return true
+	}
+	// Integer path: parse both as int64 for precision-safe comparison.
+	ia, errA := strconv.ParseInt(string(na), 10, 64)
+	ib, errB := strconv.ParseInt(string(nb), 10, 64)
+	if errA == nil && errB == nil {
+		return ia == ib
+	}
+	// Decimal fallback: compare as float64.
+	fa, errA := na.Float64()
+	fb, errB := nb.Float64()
+	if errA != nil || errB != nil {
+		return false
+	}
+	return fa == fb
+}
+
+// toJSONNumber normalises float64 and json.Number to json.Number.
+func toJSONNumber(v any) (json.Number, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		return n, true
+	case float64:
+		return json.Number(strconv.FormatFloat(n, 'f', -1, 64)), true
+	}
+	return "", false
 }
 
 func formatEnum(enum []any) string {

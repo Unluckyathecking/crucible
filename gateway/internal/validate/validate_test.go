@@ -1030,3 +1030,94 @@ func TestMiddlewareTrailingSlashPassThrough(t *testing.T) {
 		t.Fatalf("trailing slash request returned 400 from validation — middleware should not intercept it")
 	}
 }
+
+// TestCompileSchemaPatterns verifies that CompileSchemaPatterns returns nil for
+// valid RE2 patterns and an error for patterns that fail Go's regexp.Compile.
+func TestCompileSchemaPatterns(t *testing.T) {
+	t.Run("valid patterns return nil", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{
+				Path: "/test", Operation: "test", Summary: "Test",
+				RequestSchema: &openapi.Schema{
+					Type: "object",
+					Properties: map[string]*openapi.Schema{
+						"code": {Type: "string", Pattern: `^\d{4}$`},
+					},
+				},
+			},
+		}
+		if err := validate.CompileSchemaPatterns(routes); err != nil {
+			t.Errorf("valid patterns should return nil, got: %v", err)
+		}
+	})
+
+	t.Run("invalid RE2 pattern returns error", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{
+				Path: "/test", Operation: "test", Summary: "Test",
+				RequestSchema: &openapi.Schema{
+					Type: "object",
+					Properties: map[string]*openapi.Schema{
+						// Go's RE2 does not support lookahead assertions.
+						"s": {Type: "string", Pattern: `(?=.*\d)`},
+					},
+				},
+			},
+		}
+		if err := validate.CompileSchemaPatterns(routes); err == nil {
+			t.Error("invalid RE2 pattern should return error")
+		}
+	})
+
+	t.Run("nil RequestSchema is skipped", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{Path: "/test", Operation: "test", Summary: "No schema"},
+		}
+		if err := validate.CompileSchemaPatterns(routes); err != nil {
+			t.Errorf("nil schema should be skipped, got: %v", err)
+		}
+	})
+}
+
+// TestPatternFailOpenForInvalidRegex verifies that an invalid RE2 pattern in a
+// schema does not return 400 to clients — the constraint is silently skipped
+// (fail-open). Clone authors should call CompileSchemaPatterns at startup to
+// catch this class of error early.
+func TestPatternFailOpenForInvalidRegex(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			// Lookahead — valid ECMAScript, invalid RE2. Validate must pass through.
+			"s": {Type: "string", Pattern: `(?=.*\d)`},
+		},
+	}
+	// Any string should pass because the pattern constraint is skipped.
+	if err := validate.Validate(schema, map[string]any{"s": "hello"}); err != nil {
+		t.Errorf("invalid RE2 pattern should fail open (skip constraint), got: %v", err)
+	}
+}
+
+// TestNumericEnumHighPrecision verifies that integer enum values beyond float64's
+// 53-bit mantissa are compared without precision loss so that neighbouring
+// high-precision integers do NOT match each other.
+func TestNumericEnumHighPrecision(t *testing.T) {
+	// 9007199254740993 == 2^53+1; this and 2^53 both collapse to the same float64.
+	// The validator must distinguish them via integer comparison, not float64.
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			// enum contains only 9007199254740993
+			"id": {Enum: []any{json.Number("9007199254740993")}},
+		},
+	}
+
+	// Exact value should pass.
+	if err := validate.ValidateBytes(schema, []byte(`{"id":9007199254740993}`)); err != nil {
+		t.Errorf("exact high-precision enum value should pass: %v", err)
+	}
+
+	// Neighbouring value must fail.
+	if err := validate.ValidateBytes(schema, []byte(`{"id":9007199254740992}`)); err == nil {
+		t.Error("neighbouring high-precision integer should fail enum check (float64 precision loss bug)")
+	}
+}
