@@ -70,23 +70,10 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	srv := httptest.NewServer(srvMux)
 	t.Cleanup(srv.Close)
 
-	// errSrv wraps a handler that always returns *crucible.Error. It is used solely
-	// by assertHandlerStructuredError to verify the error-envelope path; /healthz on
-	// errSrv is the same as srv's because crucible.Handler always serves both routes.
-	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
-		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
-	}
-	errMux, err := crucible.Handler(errH)
-	if err != nil {
-		t.Fatalf("crucible.Handler(errH): %v", err)
-	}
-	errSrv := httptest.NewServer(errMux)
-	t.Cleanup(errSrv.Close)
-
 	assertHealthz(t, srv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
-	assertHandlerStructuredError(t, errSrv)
+	assertHandlerStructuredError(t)
 	assertErrorEnvelope(t, srv)
 }
 
@@ -217,17 +204,26 @@ func assertBillableUnitsNormalization(t *testing.T) {
 	checkNormalizationResponse(t, normSrv)
 }
 
-// assertHandlerStructuredError verifies that a server wrapping a handler returning
-// *crucible.Error produces the correct structured error envelope and no success fields.
-// Harness passes a fixture server; tests pass a raw server with a bad envelope to prove
-// the assertion detects violations.
-func assertHandlerStructuredError(t tb, srv *httptest.Server) {
+// assertHandlerStructuredError verifies that a handler returning *crucible.Error produces
+// the correct structured error envelope and no success fields. It creates and tears down
+// its own httptest.Server so Harness has no cross-assertion server dependencies.
+func assertHandlerStructuredError(t tb) {
 	t.Helper()
+	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
+	}
+	errMux, err := crucible.Handler(errH)
+	if err != nil {
+		t.Fatalf("crucible.Handler(errH): %v", err)
+	}
+	errSrv := httptest.NewServer(errMux)
+	defer errSrv.Close()
+
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {
 		t.Fatalf("marshal error-handler request: %v", err)
 	}
-	checkErrorEnvelopeAt(t, srv, reqBody)
+	checkErrorEnvelopeAt(t, errSrv, reqBody)
 }
 
 // assertErrorEnvelope verifies that malformed JSON triggers the SDK's BAD_REQUEST

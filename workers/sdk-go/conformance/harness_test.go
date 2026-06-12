@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
@@ -77,9 +78,14 @@ func runSpy(spy *spyT, f func()) {
 	wg.Wait()
 }
 
+// conformantInvoked counts successful calls to conformantHandler so
+// TestHarnessAcceptsConformantHandler can verify Harness actually invoked the handler.
+var conformantInvoked int64
+
 // conformantHandler is a fixture that satisfies every contract requirement.
 // BillableUnits is intentionally 0 to prove the SDK normalizes it to >= 1.
 func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+	atomic.AddInt64(&conformantInvoked, 1)
 	return crucible.Response{
 		Payload:       map[string]string{"result": "ok"},
 		BillableUnits: 0,
@@ -89,7 +95,20 @@ func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response
 // TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a well-formed
 // handler. Any failure inside Harness propagates to t and fails this test directly.
 func TestHarnessAcceptsConformantHandler(t *testing.T) {
+	atomic.StoreInt64(&conformantInvoked, 0)
 	Harness(t, conformantHandler)
+	if atomic.LoadInt64(&conformantInvoked) == 0 {
+		t.Fatal("conformantHandler was never invoked by Harness")
+	}
+}
+
+// TestHarnessRejectsNilHandler proves that crucible.Handler returns an error for a nil
+// HandlerFunc rather than panicking, and that Harness fails fast on a nil handler.
+func TestHarnessRejectsNilHandler(t *testing.T) {
+	_, err := crucible.Handler(nil)
+	if err == nil {
+		t.Fatal("crucible.Handler(nil) should return an error")
+	}
 }
 
 // TestHarnessRejectsBillableUnitsZero proves assertInvokeContract detects billable_units=0
@@ -99,7 +118,7 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -128,7 +147,7 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -159,7 +178,7 @@ func TestHarnessRejectsHealthzNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"down"}`))
+		_, _ = w.Write([]byte(`{"status":"down"}`))
 	}))
 	defer srv.Close()
 
@@ -175,7 +194,7 @@ func TestHarnessRejectsHealthzNon200(t *testing.T) {
 func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"degraded"}`))
+		_, _ = w.Write([]byte(`{"status":"degraded"}`))
 	}))
 	defer srv.Close()
 
@@ -192,7 +211,7 @@ func TestHarnessRejectsEmptyInvokeEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -257,8 +276,9 @@ func TestHarnessRejectsSuccessEnvelopeOnMalformedRequest(t *testing.T) {
 	}
 }
 
-// TestHarnessRejectsErrorWithPayload proves assertHandlerStructuredError detects a
-// structured error response that incorrectly carries a payload.
+// TestHarnessRejectsErrorWithPayload proves checkErrorEnvelopeAt detects a structured
+// error response that incorrectly carries a payload. assertHandlerStructuredError delegates
+// to checkErrorEnvelopeAt, so this covers the shared detection path.
 func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	retryable := true
 	units := uint64(1)
@@ -279,9 +299,10 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	reqBody, _ := json.Marshal(map[string]any{"operation": "err"})
 	spy := &spyT{}
-	runSpy(spy, func() { assertHandlerStructuredError(spy, srv) })
+	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, reqBody) })
 	if !spy.hasFailed() {
-		t.Fatal("assertHandlerStructuredError should fail when error response contains payload")
+		t.Fatal("checkErrorEnvelopeAt should fail when error response contains payload")
 	}
 }
