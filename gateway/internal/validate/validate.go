@@ -146,8 +146,19 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 		return nil
 	}
 
-	// Type check — performed before property/enum checks so the error message
-	// names the correct constraint first.
+	// Implicit object-type guard: MUST run before the type switch to catch ALL
+	// value types (including json.Number) when the schema declares Properties or
+	// Required but has no explicit Type (implicitly object-typed).
+	if s.Type == "" && (len(s.Properties) > 0 || len(s.Required) > 0) {
+		switch value.(type) {
+		case map[string]any:
+			// ok — proceed to validateObject below
+		default:
+			return typeError(path, "object", value)
+		}
+	}
+
+	// Type check.
 	if s.Type != "" {
 		if err := checkType(s.Type, value, path); err != nil {
 			return err
@@ -161,16 +172,6 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 				Field:   path,
 				Message: fmt.Sprintf("must be one of: %s", formatEnum(s.Enum)),
 			}
-		}
-	}
-
-	// Implicit object-type guard: a schema that declares Properties or Required
-	// without an explicit Type is implicitly object-typed.  Reject any value that
-	// is not map[string]any early so that non-map types (json.Number, string, bool,
-	// nil) do not skip validateObject and its Required/Properties checks.
-	if s.Type == "" && (len(s.Properties) > 0 || len(s.Required) > 0) {
-		if _, ok := value.(map[string]any); !ok {
-			return typeError(path, "object", value)
 		}
 	}
 
@@ -542,8 +543,8 @@ func sciNotationToInt(s string) (string, bool) {
 		return "", false // exponent does not cover all fractional digits: not an integer
 	}
 	zeros := expVal - len(fracPart)
-	if len(sign)+len(intPart)+len(fracPart)+zeros > 20 {
-		return "", false // result too large for int64/uint64; float64 fallback handles it
+	if len(intPart)+len(fracPart)+zeros > 20 {
+		return "", false // result too large for uint64 range; float64 fallback handles it
 	}
 	result := strings.TrimLeft(intPart+fracPart+strings.Repeat("0", zeros), "0")
 	if result == "" {

@@ -1236,6 +1236,20 @@ func TestSciNotationEnumMatch(t *testing.T) {
 	}
 }
 
+// TestNullEnumMatch verifies that JSON null matches an enum containing nil.
+func TestNullEnumMatch(t *testing.T) {
+	schema := &openapi.Schema{Enum: []any{nil, "active"}}
+	if err := validate.ValidateBytes(schema, []byte(`null`)); err != nil {
+		t.Errorf("null must match nil in enum: %v", err)
+	}
+	if err := validate.ValidateBytes(schema, []byte(`"active"`)); err != nil {
+		t.Errorf(`"active" must match enum: %v`, err)
+	}
+	if err := validate.ValidateBytes(schema, []byte(`"other"`)); err == nil {
+		t.Error(`"other" must not match enum containing nil and "active"`)
+	}
+}
+
 // TestValidateRefSchemaWithConstraints documents the behaviour when a schema has
 // both a $ref and local constraints: the $ref short-circuits validation and the
 // local constraints are skipped (pass-through). This is intentional — this
