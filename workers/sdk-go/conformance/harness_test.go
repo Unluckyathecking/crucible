@@ -28,15 +28,15 @@ func (s *spyT) Helper() {}
 
 func (s *spyT) Fatal(_ ...any) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.failed = true
-	s.mu.Unlock()
 	runtime.Goexit()
 }
 
 func (s *spyT) Fatalf(_ string, _ ...any) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.failed = true
-	s.mu.Unlock()
 	runtime.Goexit()
 }
 
@@ -78,6 +78,20 @@ func runSpy(spy *spyT, f func()) {
 	wg.Wait()
 }
 
+// newMockServer builds an httptest.Server that returns {"status":"ok"} on /healthz
+// and delegates /invoke to invokeH. Used by negative-case tests that need a raw server
+// bypassing the SDK to exercise specific assertion-detection paths.
+func newMockServer(invokeH http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		invokeH(w, r)
+	}))
+}
+
 // TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a well-formed
 // handler. The invocation counter proves Harness actually called the handler, not just
 // that it completed without failing. BillableUnits:0 exercises the SDK normalization path.
@@ -109,21 +123,15 @@ func TestHarnessRejectsNilHandler(t *testing.T) {
 // in a raw response that bypasses the SDK's normalization guard.
 func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 	zero := uint64(0)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-			return
-		}
+	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"ok":true}`),
 			BillableUnits: &zero,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
 		}
-	}))
+	})
 	defer srv.Close()
 
 	spy := &spyT{}
@@ -138,12 +146,7 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 	retryable := false
 	units := uint64(1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-			return
-		}
+	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"ok":true}`),
@@ -155,9 +158,8 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 			},
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
 		}
-	}))
+	})
 	defer srv.Close()
 
 	spy := &spyT{}
@@ -215,22 +217,39 @@ func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 	}
 }
 
+// TestHarnessRejectsInvokeGetMethod proves assertInvokeMethodNotAllowed detects a server
+// that incorrectly accepts GET requests on /invoke (contract requires POST-only).
+func TestHarnessRejectsInvokeGetMethod(t *testing.T) {
+	// A raw server that returns 200 for all methods on /invoke (violates contract).
+	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		units := uint64(1)
+		if err := json.NewEncoder(w).Encode(invokeResp{
+			Payload:       json.RawMessage(`{"ok":true}`),
+			BillableUnits: &units,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertInvokeMethodNotAllowed(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertInvokeMethodNotAllowed should fail when GET /invoke returns 200 instead of 405")
+	}
+}
+
 // TestHarnessRejectsEmptyInvokeEnvelope proves assertInvokeContract detects a response
 // that carries neither payload nor error (empty envelope).
 func TestHarnessRejectsEmptyInvokeEnvelope(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
-			return
-		}
+	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// Empty envelope: neither payload nor error present.
 		if err := json.NewEncoder(w).Encode(invokeResp{}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
 		}
-	}))
+	})
 	defer srv.Close()
 
 	spy := &spyT{}

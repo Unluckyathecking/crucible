@@ -37,7 +37,6 @@ type tb interface {
 	Helper()
 	Fatalf(format string, args ...any)
 	Fatal(args ...any)
-	Errorf(format string, args ...any)
 }
 
 // invokeResp is the frozen contract shape for /invoke responses (mirrors test/conformance).
@@ -79,6 +78,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Cleanup(srv.Close)
 
 	assertHealthz(t, srv)
+	assertInvokeMethodNotAllowed(t, srv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
 	assertHandlerStructuredError(t)
@@ -105,6 +105,20 @@ func assertHealthz(t tb, srv *httptest.Server) {
 	}
 	if got := strings.TrimSpace(string(body)); got != `{"status":"ok"}` {
 		t.Fatalf("GET /healthz: expected {\"status\":\"ok\"}, got %q", got)
+	}
+}
+
+// assertInvokeMethodNotAllowed checks that a non-POST request to /invoke is rejected
+// with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
+func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server) {
+	t.Helper()
+	resp, err := httpClient.Get(srv.URL + "/invoke")
+	if err != nil {
+		t.Fatalf("GET /invoke: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /invoke: expected 405 Method Not Allowed, got %d", resp.StatusCode)
 	}
 }
 
