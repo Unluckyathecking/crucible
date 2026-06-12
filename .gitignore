@@ -30,6 +30,7 @@ tmp/
 .cache/
 
 # Stray bare-name binaries from `go build` without -o (binary name == parent dir name)
+/go
 workers/stubs/go/go
 workers/stubs/*/main
 

@@ -67,18 +67,31 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 // HandlerFunc is the worker's single entry point.
 type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 
+// Handler returns an http.Handler that serves /healthz and /invoke for h.
+// The returned handler can be used with httptest.NewServer or http.Server directly.
+// Returns an error only if h is nil.
+func Handler(h HandlerFunc) (http.Handler, error) {
+	if h == nil {
+		return nil, errors.New("crucible.Handler: nil HandlerFunc")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthHandler)
+	mux.HandleFunc("/invoke", invokeHandler(h))
+	return mux, nil
+}
+
 // Serve runs the worker HTTP server on the given port and blocks until SIGINT/SIGTERM,
 // then drains in-flight requests for up to 10s.
 func Serve(port int, h HandlerFunc) error {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/invoke", invokeHandler(h))
-
+	handler, err := Handler(h)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
