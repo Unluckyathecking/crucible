@@ -18,9 +18,17 @@ import (
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 )
 
-// httpClient is shared across all assertion helpers. The 5-second timeout
-// prevents a hung httptest.Server from stalling the test suite indefinitely.
-var httpClient = &http.Client{Timeout: 5 * time.Second}
+// httpClient is shared across all assertion helpers. The 5-second timeout prevents a hung
+// httptest.Server from stalling the test suite; Transport limits prevent port exhaustion
+// when Harness is called from many tests concurrently.
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
 
 // tb is the subset of *testing.T used by the assertion helpers. A recording shim
 // can implement this interface to verify the harness detects violations in the
@@ -207,7 +215,7 @@ func assertBillableUnitsNormalization(t *testing.T) {
 // assertHandlerStructuredError verifies that a handler returning *crucible.Error produces
 // the correct structured error envelope and no success fields. It creates and tears down
 // its own httptest.Server so Harness has no cross-assertion server dependencies.
-func assertHandlerStructuredError(t tb) {
+func assertHandlerStructuredError(t *testing.T) {
 	t.Helper()
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
@@ -217,7 +225,7 @@ func assertHandlerStructuredError(t tb) {
 		t.Fatalf("crucible.Handler(errH): %v", err)
 	}
 	errSrv := httptest.NewServer(errMux)
-	defer errSrv.Close()
+	t.Cleanup(errSrv.Close)
 
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {

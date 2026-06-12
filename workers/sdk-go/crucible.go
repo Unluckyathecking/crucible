@@ -67,7 +67,7 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 // HandlerFunc is the worker's single entry point.
 type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 
-// Handler returns an http.Handler that serves /healthz and /invoke for h.
+// Handler returns an (http.Handler, error) that serves /healthz and /invoke for h.
 // Serve wires this to a real TCP listener; tests can drive it in-process via httptest.
 // Returns an error if h is nil.
 func Handler(h HandlerFunc) (http.Handler, error) {

@@ -78,32 +78,26 @@ func runSpy(spy *spyT, f func()) {
 	wg.Wait()
 }
 
-// conformantInvoked counts successful calls to conformantHandler so
-// TestHarnessAcceptsConformantHandler can verify Harness actually invoked the handler.
-var conformantInvoked int64
-
-// conformantHandler is a fixture that satisfies every contract requirement.
-// BillableUnits is intentionally 0 to prove the SDK normalizes it to >= 1.
-func conformantHandler(_ context.Context, _ crucible.Request) (crucible.Response, error) {
-	atomic.AddInt64(&conformantInvoked, 1)
-	return crucible.Response{
-		Payload:       map[string]string{"result": "ok"},
-		BillableUnits: 0,
-	}, nil
-}
-
 // TestHarnessAcceptsConformantHandler proves Harness does not falsely reject a well-formed
-// handler. Any failure inside Harness propagates to t and fails this test directly.
+// handler. The invocation counter proves Harness actually called the handler, not just
+// that it completed without failing. BillableUnits:0 exercises the SDK normalization path.
 func TestHarnessAcceptsConformantHandler(t *testing.T) {
-	atomic.StoreInt64(&conformantInvoked, 0)
-	Harness(t, conformantHandler)
-	if atomic.LoadInt64(&conformantInvoked) == 0 {
-		t.Fatal("conformantHandler was never invoked by Harness")
+	var invoked int64
+	handler := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		atomic.AddInt64(&invoked, 1)
+		return crucible.Response{
+			Payload:       map[string]string{"result": "ok"},
+			BillableUnits: 0,
+		}, nil
+	}
+	Harness(t, handler)
+	if atomic.LoadInt64(&invoked) == 0 {
+		t.Fatal("handler was never invoked by Harness")
 	}
 }
 
-// TestHarnessRejectsNilHandler proves that crucible.Handler returns an error for a nil
-// HandlerFunc rather than panicking, and that Harness fails fast on a nil handler.
+// TestHarnessRejectsNilHandler proves that crucible.Handler(nil) returns an error rather
+// than panicking, documenting the nil boundary on the exported constructor.
 func TestHarnessRejectsNilHandler(t *testing.T) {
 	_, err := crucible.Handler(nil)
 	if err == nil {
@@ -186,6 +180,22 @@ func TestHarnessRejectsHealthzNon200(t *testing.T) {
 	runSpy(spy, func() { assertHealthz(spy, srv) })
 	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for non-200 /healthz status")
+	}
+}
+
+// TestHarnessRejectsHealthzWrongContentType proves assertHealthz detects a /healthz
+// response with the correct body and status but a non-JSON Content-Type.
+func TestHarnessRejectsHealthzWrongContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertHealthz(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertHealthz should fail for a /healthz response with non-JSON Content-Type")
 	}
 }
 
