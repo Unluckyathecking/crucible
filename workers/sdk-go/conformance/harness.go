@@ -49,6 +49,7 @@ type tb interface {
 	Fatalf(format string, args ...any)
 	Fatal(args ...any)
 	Errorf(format string, args ...any)
+	Cleanup(func())
 }
 
 // invokeResp is the frozen contract shape for /invoke responses (mirrors test/conformance).
@@ -178,7 +179,7 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 		t.Fatalf("POST /invoke: decode: %v", err)
 	}
 
-	hasPayload := len(r.Payload) > 0 && !bytes.Equal(r.Payload, []byte("null"))
+	hasPayload := r.Payload != nil && !bytes.Equal(bytes.TrimSpace(r.Payload), []byte("null"))
 	hasError := r.Error != nil
 
 	if hasPayload && hasError {
@@ -254,7 +255,7 @@ func assertBillableUnitsNormalization(t tb) {
 		t.Fatalf("crucible.Handler(zeroH): %v", err)
 	}
 	normSrv := httptest.NewServer(normMux)
-	defer normSrv.Close()
+	t.Cleanup(normSrv.Close)
 	checkNormalizationResponse(t, normSrv)
 }
 
@@ -274,7 +275,7 @@ func assertHandlerStructuredError(t tb) {
 		t.Fatalf("crucible.Handler(errH): %v", err)
 	}
 	errSrv := httptest.NewServer(errMux)
-	defer errSrv.Close()
+	t.Cleanup(errSrv.Close)
 
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {
@@ -327,7 +328,7 @@ func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte, wantCode stri
 	if r.Error.Retryable == nil {
 		t.Fatal("POST /invoke (error envelope): error.retryable must be present")
 	}
-	if len(r.Payload) > 0 && !bytes.Equal(r.Payload, []byte("null")) {
+	if r.Payload != nil && !bytes.Equal(bytes.TrimSpace(r.Payload), []byte("null")) {
 		t.Fatalf("POST /invoke (error envelope): must not contain payload, got %s", r.Payload)
 	}
 	if r.BillableUnits != nil {

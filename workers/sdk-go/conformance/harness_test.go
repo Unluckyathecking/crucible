@@ -19,9 +19,11 @@ var _ tb = (*spyT)(nil)
 // spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
 // real test. Fatal and Fatalf call runtime.Goexit() to exit the goroutine cleanly;
 // Errorf sets failed without exiting, matching testing.T.Errorf semantics.
-// failed is an atomic.Bool so all operations are lock-free.
+// failed is an atomic.Bool so reads and writes are lock-free; mu protects cleanups only.
 type spyT struct {
-	failed atomic.Bool
+	failed   atomic.Bool
+	mu       sync.Mutex
+	cleanups []func()
 }
 
 // Helper is intentionally a no-op: spyT is not backed by a real *testing.T so
@@ -43,6 +45,27 @@ func (s *spyT) Fatalf(_ string, _ ...any) {
 // testing.T.Errorf semantics (non-fatal: execution continues after the call).
 func (s *spyT) Errorf(_ string, _ ...any) {
 	s.failed.Store(true)
+}
+
+// Cleanup registers f to run after the spy's goroutine exits, in LIFO order,
+// matching *testing.T.Cleanup semantics. runSpy drains the list after wg.Wait().
+func (s *spyT) Cleanup(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanups = append(s.cleanups, f)
+}
+
+// runCleanups executes all registered Cleanup functions in LIFO order.
+// Called by runSpy after the spy goroutine exits.
+func (s *spyT) runCleanups() {
+	s.mu.Lock()
+	fns := make([]func(), len(s.cleanups))
+	copy(fns, s.cleanups)
+	s.cleanups = nil
+	s.mu.Unlock()
+	for i := len(fns) - 1; i >= 0; i-- {
+		fns[i]()
+	}
 }
 
 // hasFailed reports whether the spy captured a failure. Safe to call after
@@ -69,6 +92,7 @@ func runSpy(spy *spyT, f func()) {
 		f()
 	}()
 	wg.Wait()
+	spy.runCleanups()
 }
 
 // newMockServer builds an httptest.Server that returns {"status":"ok"} on /healthz,
