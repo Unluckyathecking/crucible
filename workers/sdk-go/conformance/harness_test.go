@@ -3,9 +3,11 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,10 +21,14 @@ var _ tb = (*spyT)(nil)
 // spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
 // real test. Fatal and Fatalf call runtime.Goexit() to exit the goroutine cleanly;
 // Errorf sets failed without exiting, matching testing.T.Errorf semantics.
-// failed is an atomic.Bool so reads and writes are lock-free; mu protects cleanups only.
+// failed is an atomic.Bool so reads and writes are lock-free; mu protects the
+// message slices and cleanups list.
 type spyT struct {
 	failed   atomic.Bool
 	mu       sync.Mutex
+	fatalMsg string   // last fatal message (only one, since Goexit stops further calls)
+	errMsgs  []string // accumulated Errorf messages
+	panicVal any      // value from recover(), non-nil if goroutine panicked
 	cleanups []func()
 }
 
@@ -31,19 +37,28 @@ type spyT struct {
 // line numbers from spy-based tests.
 func (s *spyT) Helper() {}
 
-func (s *spyT) Fatal(_ ...any) {
+func (s *spyT) Fatal(args ...any) {
+	s.mu.Lock()
+	s.fatalMsg = fmt.Sprint(args...)
+	s.mu.Unlock()
 	s.failed.Store(true)
 	runtime.Goexit()
 }
 
-func (s *spyT) Fatalf(_ string, _ ...any) {
+func (s *spyT) Fatalf(format string, args ...any) {
+	s.mu.Lock()
+	s.fatalMsg = fmt.Sprintf(format, args...)
+	s.mu.Unlock()
 	s.failed.Store(true)
 	runtime.Goexit()
 }
 
 // Errorf marks the spy as failed without exiting the goroutine, matching
 // testing.T.Errorf semantics (non-fatal: execution continues after the call).
-func (s *spyT) Errorf(_ string, _ ...any) {
+func (s *spyT) Errorf(format string, args ...any) {
+	s.mu.Lock()
+	s.errMsgs = append(s.errMsgs, fmt.Sprintf(format, args...))
+	s.mu.Unlock()
 	s.failed.Store(true)
 }
 
@@ -74,11 +89,25 @@ func (s *spyT) hasFailed() bool {
 	return s.failed.Load()
 }
 
+// lastFatal returns the last fatal message captured by Fatal or Fatalf.
+func (s *spyT) lastFatal() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fatalMsg
+}
+
+// panicValue returns the value passed to panic(), or nil if no panic occurred.
+func (s *spyT) panicValue() any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.panicVal
+}
+
 // runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() (called
 // by spy.Fatal/Fatalf) terminates the goroutine without unwinding the stack — it is
 // NOT recoverable by recover(). The deferred wg.Done() fires for both Goexit and
 // normal return, so runSpy always unblocks. The recover() block catches panics from
-// other sources (not from spy.Fatal/Fatalf) and marks the spy as failed.
+// other sources (not from spy.Fatal/Fatalf) and stores the panic value in spy.panicVal.
 func runSpy(spy *spyT, f func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -86,6 +115,9 @@ func runSpy(spy *spyT, f func()) {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
+				spy.mu.Lock()
+				spy.panicVal = r
+				spy.mu.Unlock()
 				spy.failed.Store(true)
 			}
 		}()
@@ -138,11 +170,14 @@ func TestHarnessRejectsNilHandler(t *testing.T) {
 	if err == nil {
 		t.Fatal("crucible.Handler(nil) should return an error")
 	}
+	if !strings.Contains(err.Error(), "nil HandlerFunc") {
+		t.Fatalf("expected error to mention 'nil HandlerFunc', got: %v", err)
+	}
 }
 
-// TestHarnessRejectsBillableUnitsZero proves assertInvokeContract detects billable_units=0
+// TestHarnessRejectsRawBillableUnitsZero proves assertInvokeContract detects billable_units=0
 // in a raw response that bypasses the SDK's normalization guard.
-func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
+func TestHarnessRejectsRawBillableUnitsZero(t *testing.T) {
 	zero := uint64(0)
 	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -156,7 +191,8 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertInvokeContract(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertInvokeContract(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertInvokeContract should fail for billable_units=0")
 	}
@@ -184,7 +220,8 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertInvokeContract(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertInvokeContract(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertInvokeContract should fail when both payload and error are set")
 	}
@@ -200,7 +237,8 @@ func TestHarnessRejectsHealthzNon200(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertHealthz(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertHealthz(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for non-200 /healthz status")
 	}
@@ -216,7 +254,8 @@ func TestHarnessRejectsHealthzWrongContentType(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertHealthz(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertHealthz(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for a /healthz response with non-JSON Content-Type")
 	}
@@ -232,7 +271,8 @@ func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertHealthz(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertHealthz(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for a /healthz body that is not {\"status\":\"ok\"}")
 	}
@@ -255,7 +295,8 @@ func TestHarnessRejectsInvokeGetMethod(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertInvokeMethodNotAllowed(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertInvokeMethodNotAllowed(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertInvokeMethodNotAllowed should fail when GET /invoke returns 200 instead of 405")
 	}
@@ -274,7 +315,8 @@ func TestHarnessRejectsEmptyInvokeEnvelope(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertInvokeContract(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertInvokeContract(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertInvokeContract should fail when response has neither payload nor error")
 	}
@@ -297,7 +339,8 @@ func TestHarnessRejectsNormalizationZero(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { checkNormalizationResponse(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { checkNormalizationResponse(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("checkNormalizationResponse should fail for billable_units=0")
 	}
@@ -320,7 +363,8 @@ func TestHarnessRejectsSuccessEnvelopeOnMalformedRequest(t *testing.T) {
 	defer srv.Close()
 
 	spy := &spyT{}
-	runSpy(spy, func() { assertErrorEnvelope(spy, srv) })
+	client := harnessClient()
+	runSpy(spy, func() { assertErrorEnvelope(spy, srv, client) })
 	if !spy.hasFailed() {
 		t.Fatal("assertErrorEnvelope should fail when server returns success instead of error")
 	}
@@ -354,7 +398,8 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 		t.Fatalf("marshal request body: %v", err)
 	}
 	spy := &spyT{}
-	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, reqBody, "") })
+	client := harnessClient()
+	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, client, reqBody, "") })
 	if !spy.hasFailed() {
 		t.Fatal("checkErrorEnvelopeAt should fail when error response contains payload")
 	}

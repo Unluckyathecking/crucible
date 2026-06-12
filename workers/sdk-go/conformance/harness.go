@@ -26,10 +26,9 @@ const (
 	harnessClientTimeout = 5 * time.Second
 )
 
-// harnessClient returns a fresh http.Client for each assertion sequence.
-// DisableKeepAlives ensures no pooled connections cross between independent
-// Harness calls; httptest.Server endpoints are all localhost so the overhead
-// is negligible compared to test runtime.
+// harnessClient returns a fresh http.Client. DisableKeepAlives: true ensures no
+// pooled connections cross between independent Harness calls. One client is created
+// per Harness call and shared across all assertions in that call for efficiency.
 func harnessClient() *http.Client {
 	return &http.Client{
 		Timeout: harnessClientTimeout,
@@ -98,19 +97,21 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	srv := httptest.NewServer(srvMux)
 	t.Cleanup(srv.Close)
 
-	assertHealthz(t, srv)
-	assertInvokeMethodNotAllowed(t, srv)
-	assertInvokeContract(t, srv)
-	assertBillableUnitsNormalization(t)
-	assertHandlerStructuredError(t)
-	assertErrorEnvelope(t, srv)
+	// One client shared across all assertions in this Harness call.
+	client := harnessClient()
+
+	assertHealthz(t, srv, client)
+	assertInvokeMethodNotAllowed(t, srv, client)
+	assertInvokeContract(t, srv, client)
+	assertBillableUnitsNormalization(t, client)
+	assertHandlerStructuredError(t, client)
+	assertErrorEnvelope(t, srv, client)
 }
 
 // assertHealthz checks GET /healthz returns 200, Content-Type application/json,
 // and body byte-exactly {"status":"ok"} with no extra whitespace.
-func assertHealthz(t tb, srv *httptest.Server) {
+func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	client := harnessClient()
 	resp, err := client.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
@@ -135,9 +136,8 @@ func assertHealthz(t tb, srv *httptest.Server) {
 
 // assertInvokeMethodNotAllowed checks that a non-POST request to /invoke is rejected
 // with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
-func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server) {
+func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	client := harnessClient()
 	resp, err := client.Get(srv.URL + "/invoke")
 	if err != nil {
 		t.Fatalf("GET /invoke: %v", err)
@@ -152,7 +152,7 @@ func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server) {
 // assertInvokeContract checks POST /invoke with a valid envelope returns 200 with a
 // valid shape: either success (payload present, billable_units >= 1) or a structured
 // error envelope, never both, never billable_units < 1 on success.
-func assertInvokeContract(t tb, srv *httptest.Server) {
+func assertInvokeContract(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
 	reqBody, err := json.Marshal(map[string]any{
 		"request_id": "conformance-1",
@@ -162,7 +162,6 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 	if err != nil {
 		t.Fatalf("marshal invoke request: %v", err)
 	}
-	client := harnessClient()
 	resp, err := client.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
@@ -213,13 +212,12 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 // billable_units >= 1. Used by assertBillableUnitsNormalization (with an internal
 // SDK-wrapped fixture) and by the package's own tests (with a raw fixture that
 // bypasses normalization, proving the assertion detects the violation).
-func checkNormalizationResponse(t tb, srv *httptest.Server) {
+func checkNormalizationResponse(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
 	reqBody, err := json.Marshal(map[string]any{"operation": "norm"})
 	if err != nil {
 		t.Fatalf("marshal normalization request: %v", err)
 	}
-	client := harnessClient()
 	resp, err := client.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
@@ -244,7 +242,7 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 // BillableUnits to >= 1 (mirrors invokeHandler + the gateway trust boundary).
 // Uses an internal fixture handler to exercise the SDK normalization path directly.
 // Accepts tb so the package's own negative tests can drive it through spyT.
-func assertBillableUnitsNormalization(t tb) {
+func assertBillableUnitsNormalization(t tb, client *http.Client) {
 	t.Helper()
 	// Zero-units fixture: explicitly returns 0 to exercise the SDK's normalization guard.
 	zeroH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
@@ -256,7 +254,7 @@ func assertBillableUnitsNormalization(t tb) {
 	}
 	normSrv := httptest.NewServer(normMux)
 	t.Cleanup(normSrv.Close)
-	checkNormalizationResponse(t, normSrv)
+	checkNormalizationResponse(t, normSrv, client)
 }
 
 // assertHandlerStructuredError verifies that the SDK correctly serializes a *crucible.Error
@@ -265,7 +263,7 @@ func assertBillableUnitsNormalization(t tb) {
 // whether the caller's handler ever returns one (which is handler-specific business logic).
 // It creates and tears down its own httptest.Server so Harness has no cross-assertion
 // server dependencies. Accepts tb so the package's own negative tests can drive it through spyT.
-func assertHandlerStructuredError(t tb) {
+func assertHandlerStructuredError(t tb, client *http.Client) {
 	t.Helper()
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
@@ -281,23 +279,22 @@ func assertHandlerStructuredError(t tb) {
 	if err != nil {
 		t.Fatalf("marshal error-handler request: %v", err)
 	}
-	checkErrorEnvelopeAt(t, errSrv, reqBody, "HANDLER_ERR")
+	checkErrorEnvelopeAt(t, errSrv, client, reqBody, "HANDLER_ERR")
 }
 
 // assertErrorEnvelope verifies that malformed JSON triggers the SDK's BAD_REQUEST
 // structured error and that the envelope contains no success fields.
-func assertErrorEnvelope(t tb, srv *httptest.Server) {
+func assertErrorEnvelope(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	checkErrorEnvelopeAt(t, srv, []byte(`{not valid json}`), "BAD_REQUEST")
+	checkErrorEnvelopeAt(t, srv, client, []byte(`{not valid json}`), "BAD_REQUEST")
 }
 
 // checkErrorEnvelopeAt posts body to srv's /invoke and asserts the response is a valid
 // structured error envelope: error.code and error.message non-empty, error.retryable
 // present, no payload, no billable_units. If wantCode is non-empty the response code
 // must match it exactly.
-func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte, wantCode string) {
+func checkErrorEnvelopeAt(t tb, srv *httptest.Server, client *http.Client, body []byte, wantCode string) {
 	t.Helper()
-	client := harnessClient()
 	resp, err := client.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)

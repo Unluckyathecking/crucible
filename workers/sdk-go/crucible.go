@@ -72,7 +72,7 @@ type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 // Returns an error only if h is nil.
 func Handler(h HandlerFunc) (http.Handler, error) {
 	if h == nil {
-		return nil, fmt.Errorf("crucible.Handler: nil HandlerFunc")
+		return nil, errors.New("crucible.Handler: nil HandlerFunc")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
