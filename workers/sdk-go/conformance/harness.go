@@ -140,7 +140,7 @@ func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 // with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
 func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
 		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
 		if err != nil {
 			t.Fatalf("%s /invoke: build request: %v", method, err)
@@ -186,7 +186,7 @@ func assertInvokeContract(t tb, srv *httptest.Server, client *http.Client) {
 		t.Fatalf("POST /invoke: decode: %v", err)
 	}
 
-	hasPayload := r.Payload != nil && !bytes.Equal(bytes.TrimSpace(r.Payload), []byte("null"))
+	hasPayload := r.Payload != nil && !bytes.Equal(r.Payload, []byte("null"))
 	hasError := r.Error != nil
 
 	if hasPayload && hasError {
@@ -333,7 +333,7 @@ func checkErrorEnvelopeAt(t tb, srv *httptest.Server, client *http.Client, body 
 	if r.Error.Retryable == nil {
 		t.Fatal("POST /invoke (error envelope): error.retryable must be present")
 	}
-	if r.Payload != nil && !bytes.Equal(bytes.TrimSpace(r.Payload), []byte("null")) {
+	if r.Payload != nil && !bytes.Equal(r.Payload, []byte("null")) {
 		t.Fatalf("POST /invoke (error envelope): must not contain payload, got %s", r.Payload)
 	}
 	if r.BillableUnits != nil {

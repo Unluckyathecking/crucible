@@ -185,23 +185,6 @@ func TestHarnessRejectsNilHandler(t *testing.T) {
 	}
 }
 
-// TestHarnessRejectsNilHandlerViaHarness proves the Harness failure path for a nil
-// HandlerFunc: crucible.Handler returns an error, Harness calls t.Fatalf, and the
-// test is marked failed. This mirrors the internal Harness code path via spyT.
-func TestHarnessRejectsNilHandlerViaHarness(t *testing.T) {
-	spy := &spyT{}
-	runSpy(spy, func() {
-		// Replicate what Harness does: call crucible.Handler and Fatalf on error.
-		_, err := crucible.Handler(nil)
-		if err != nil {
-			spy.Fatalf("crucible.Handler: %v", err)
-		}
-	})
-	if !spy.hasFailed() {
-		t.Fatal("Harness should fail the test for a nil HandlerFunc")
-	}
-}
-
 // TestHarnessRejectsRawBillableUnitsZero proves assertInvokeContract detects billable_units=0
 // in a raw response that bypasses the SDK's normalization guard.
 func TestHarnessRejectsRawBillableUnitsZero(t *testing.T) {
@@ -305,9 +288,9 @@ func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 	}
 }
 
-// TestHarnessRejectsInvokeGetMethod proves assertInvokeMethodNotAllowed detects a server
-// that incorrectly accepts GET requests on /invoke (contract requires POST-only).
-func TestHarnessRejectsInvokeGetMethod(t *testing.T) {
+// TestHarnessRejectsInvokeNonPostMethod proves assertInvokeMethodNotAllowed detects a server
+// that incorrectly accepts non-POST requests on /invoke (contract requires POST-only).
+func TestHarnessRejectsInvokeNonPostMethod(t *testing.T) {
 	// A raw server that returns 200 for all methods on /invoke (violates contract).
 	srv := newMockServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -325,7 +308,7 @@ func TestHarnessRejectsInvokeGetMethod(t *testing.T) {
 	client := harnessClient()
 	runSpy(spy, func() { assertInvokeMethodNotAllowed(spy, srv, client) })
 	if !spy.hasFailed() {
-		t.Fatal("assertInvokeMethodNotAllowed should fail when GET /invoke returns 200 instead of 405")
+		t.Fatal("assertInvokeMethodNotAllowed should fail when non-POST /invoke returns 200 instead of 405")
 	}
 }
 
