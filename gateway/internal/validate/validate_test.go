@@ -3,6 +3,7 @@ package validate_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,12 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/validate"
 )
+
+// errReader is an io.ReadCloser that always returns an error from Read.
+type errReader struct{ err error }
+
+func (e *errReader) Read(_ []byte) (int, error) { return 0, e.err }
+func (e *errReader) Close() error               { return nil }
 
 // intPtr / float64Ptr are helpers for pointer literals in schema definitions.
 func intPtr(v int) *int         { return &v }
@@ -340,6 +347,40 @@ func TestValidate(t *testing.T) {
 			},
 			input: `{"amount":100}`,
 		},
+		// Unicode string length — minLength/maxLength count code points, not bytes.
+		{
+			name: "minLength counts runes not bytes",
+			schema: &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					// "é" is 2 bytes but 1 rune; minLength:1 must pass.
+					"s": {Type: "string", MinLength: intPtr(1)},
+				},
+			},
+			input: `{"s":"é"}`,
+		},
+		{
+			name: "maxLength counts runes not bytes - multibyte char fits",
+			schema: &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					// "é" is 2 bytes but 1 rune; maxLength:1 must pass.
+					"s": {Type: "string", MaxLength: intPtr(1)},
+				},
+			},
+			input: `{"s":"é"}`,
+		},
+		// array values pass through without error
+		{
+			name: "array value with no constraints passes",
+			schema: &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					"tags": {Type: "array"},
+				},
+			},
+			input: `{"tags":["a","b"]}`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -408,6 +449,23 @@ func TestValidateBytes(t *testing.T) {
 			t.Fatal("expected error for invalid JSON, got nil")
 		}
 	})
+}
+
+// TestValidateBytesIntegerPrecision verifies that ValidateBytes uses UseNumber()
+// so that fractional values above 2^53 are still rejected as non-integers.
+func TestValidateBytesIntegerPrecision(t *testing.T) {
+	schema := &openapi.Schema{
+		Type: "object",
+		Properties: map[string]*openapi.Schema{
+			"id": {Type: "integer"},
+		},
+	}
+	// 9007199254740992.5 — float64 rounds this to a whole number, losing the fraction.
+	// UseNumber preserves the raw string so Int64() rejects it.
+	err := validate.ValidateBytes(schema, []byte(`{"id":9007199254740992.5}`))
+	if err == nil {
+		t.Fatal("expected error for fractional value > 2^53, got nil")
+	}
 }
 
 // --- Middleware integration tests ---
@@ -656,4 +714,86 @@ func TestMiddlewareMultipleRoutesSchemasIsolated(t *testing.T) {
 	if !looseReached {
 		t.Error("loose handler not reached")
 	}
+}
+
+// TestMiddlewareFastPathNoSchemas verifies that the middleware fast-path
+// (all routes have no RequestSchema → schemas map is empty) passes through
+// every request without touching the body.
+func TestMiddlewareFastPathNoSchemas(t *testing.T) {
+	reached := false
+	routes := []openapi.RouteDescriptor{
+		{Path: "/test", Operation: "test", Summary: "No schema"},
+	}
+	r := chi.NewRouter()
+	r.Route("/v1", func(r chi.Router) {
+		r.Use(validate.Middleware(routes))
+		r.Post("/test", func(w http.ResponseWriter, _ *http.Request) {
+			reached = true
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if !reached {
+		t.Error("handler not reached via schemas-empty fast path")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestMiddlewareBodyReadError verifies that a body read failure returns 400
+// and does not call the downstream handler.
+func TestMiddlewareBodyReadError(t *testing.T) {
+	schema := &openapi.Schema{Type: "object"}
+	routes := []openapi.RouteDescriptor{
+		{Path: "/test", Operation: "test", Summary: "Test", RequestSchema: schema},
+	}
+	r := chi.NewRouter()
+	r.Route("/v1", func(r chi.Router) {
+		r.Use(validate.Middleware(routes))
+		r.Post("/test", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test", nil)
+	req.Body = &errReader{err: errors.New("simulated read failure")}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on body read error, got %d", w.Code)
+	}
+}
+
+// TestMiddlewareNonPostPassThrough verifies that non-POST requests to
+// schema-bearing paths are passed through without body validation.
+func TestMiddlewareNonPostPassThrough(t *testing.T) {
+	schema := &openapi.Schema{
+		Type:     "object",
+		Required: []string{"name"},
+		Properties: map[string]*openapi.Schema{
+			"name": {Type: "string"},
+		},
+	}
+	reached := false
+	router := makeTestRouter(schema, func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// A GET to a schema-bearing route should not trigger body validation.
+	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// chi returns 405 for method-not-allowed; validation must not return 400.
+	if w.Code == http.StatusBadRequest {
+		t.Fatalf("non-POST request incorrectly returned 400 from validation middleware")
+	}
+	_ = reached // handler reachability depends on chi's method matching
 }

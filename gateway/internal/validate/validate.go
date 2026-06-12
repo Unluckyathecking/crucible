@@ -6,13 +6,34 @@
 package validate
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 )
+
+// patternCache stores compiled *regexp.Regexp values keyed by pattern string
+// so patterns are compiled at most once per unique regex across all requests.
+var patternCache sync.Map
+
+func compiledPattern(pattern string) (*regexp.Regexp, error) {
+	if v, ok := patternCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	// Store may lose a race with another goroutine; that's fine — compiled results
+	// are identical, and we return the freshly compiled one either way.
+	patternCache.Store(pattern, re)
+	return re, nil
+}
 
 // ValidationError names the failing field and describes the constraint violation.
 type ValidationError struct {
@@ -38,12 +59,17 @@ func Validate(schema *openapi.Schema, data any) error {
 
 // ValidateBytes parses raw JSON and validates it against schema.
 // Returns nil when schema is nil (pass-through) or when the body is valid.
+//
+// Uses json.Decoder with UseNumber so that large integer values are not
+// silently rounded to float64 before the integer type-check.
 func ValidateBytes(schema *openapi.Schema, body []byte) error {
 	if schema == nil {
 		return nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
 	var data any
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := dec.Decode(&data); err != nil {
 		return &ValidationError{Message: "invalid JSON body"}
 	}
 	return Validate(schema, data)
@@ -53,6 +79,11 @@ func ValidateBytes(schema *openapi.Schema, body []byte) error {
 // path for error messages.
 func validateValue(s *openapi.Schema, value any, path string) error {
 	if s == nil {
+		return nil
+	}
+	// $ref schemas are not resolved by this validator — inline schemas only.
+	// A schema that is purely a $ref has no local constraints, so we pass through.
+	if s.Ref != "" {
 		return nil
 	}
 
@@ -81,6 +112,17 @@ func validateValue(s *openapi.Schema, value any, path string) error {
 		return validateString(s, v, path)
 	case float64:
 		return validateNumber(s, v, path)
+	case json.Number:
+		// json.Number arrives when the caller decoded with UseNumber().
+		// The type check above already accepted it; convert for constraint checks.
+		f, err := v.Float64()
+		if err != nil {
+			return &ValidationError{Field: path, Message: "invalid number"}
+		}
+		return validateNumber(s, f, path)
+	case []any:
+		// Array values pass through; no array-specific constraints are implemented.
+		return nil
 	}
 
 	return nil
@@ -118,23 +160,25 @@ func validateObject(s *openapi.Schema, obj map[string]any, path string) error {
 }
 
 func validateString(s *openapi.Schema, v string, path string) error {
-	if s.MinLength != nil && len(v) < *s.MinLength {
+	// JSON Schema defines string length in Unicode code points, not bytes.
+	runes := utf8.RuneCountInString(v)
+	if s.MinLength != nil && runes < *s.MinLength {
 		return &ValidationError{
 			Field:   path,
 			Message: fmt.Sprintf("must be at least %d characters long", *s.MinLength),
 		}
 	}
-	if s.MaxLength != nil && len(v) > *s.MaxLength {
+	if s.MaxLength != nil && runes > *s.MaxLength {
 		return &ValidationError{
 			Field:   path,
 			Message: fmt.Sprintf("must be at most %d characters long", *s.MaxLength),
 		}
 	}
 	if s.Pattern != "" {
-		matched, err := regexp.MatchString(s.Pattern, v)
+		re, err := compiledPattern(s.Pattern)
 		// Treat an invalid pattern as a non-match so callers get a clear error
 		// rather than a silent pass. Invalid regexes are a schema authoring bug.
-		if err != nil || !matched {
+		if err != nil || !re.MatchString(v) {
 			return &ValidationError{
 				Field:   path,
 				Message: fmt.Sprintf("must match pattern %q", s.Pattern),
@@ -167,12 +211,24 @@ func checkType(typeName string, value any, path string) error {
 			return typeError(path, typeName, value)
 		}
 	case "number":
-		if _, ok := value.(float64); !ok {
+		switch value.(type) {
+		case float64, json.Number:
+			// both are valid JSON number representations
+		default:
 			return typeError(path, typeName, value)
 		}
 	case "integer":
-		f, ok := value.(float64)
-		if !ok || f != float64(int64(f)) {
+		switch v := value.(type) {
+		case float64:
+			if v != float64(int64(v)) {
+				return typeError(path, typeName, value)
+			}
+		case json.Number:
+			// UseNumber preserves the raw string; parse as int64 for exact check.
+			if _, err := v.Int64(); err != nil {
+				return typeError(path, typeName, value)
+			}
+		default:
 			return typeError(path, typeName, value)
 		}
 	case "boolean":

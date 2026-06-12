@@ -47,6 +47,14 @@ func Middleware(routes []openapi.RouteDescriptor) func(http.Handler) http.Handle
 			// r.URL.Path which Go's net/http has already cleaned and normalized.
 			// All Crucible /v1 routes are exact paths with no URL parameters,
 			// so URL.Path == the registered route pattern ("/v1" + rt.Path).
+			// Only POST requests carry a request body worth validating.
+			// Non-POST requests to schema-bearing paths are passed through
+			// so chi can return the correct method-not-allowed response.
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			schema, hasSchema := schemas[r.URL.Path]
 			if !hasSchema || schema == nil {
 				next.ServeHTTP(w, r)
