@@ -1,7 +1,7 @@
 // Package conformance provides an in-process harness that asserts the frozen
-// tool.proto HTTP/JSON worker contract. Product workers call Harness from their
-// go test suite to verify their handler satisfies the contract without binding
-// a real port or spawning a subprocess.
+// HTTP/JSON worker contract (derived from gateway/proto/tool.proto). Product
+// workers call Harness from their go test suite to verify their handler
+// satisfies the contract without binding a real port or spawning a subprocess.
 package conformance
 
 import (
@@ -13,9 +13,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 )
+
+// httpClient is shared across all assertion helpers. The 5-second timeout
+// prevents a hung httptest.Server from stalling the test suite indefinitely.
+var httpClient = &http.Client{Timeout: 5 * time.Second}
 
 // tb is the subset of *testing.T used by the assertion helpers. A recording shim
 // can implement this interface to verify the harness detects violations in the
@@ -63,6 +68,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)
+	assertHealthz(t, errSrv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
 	assertHandlerStructuredError(t, errSrv)
@@ -72,7 +78,7 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 // assertHealthz checks GET /healthz returns 200 and body byte-exactly {"status":"ok"}.
 func assertHealthz(t tb, srv *httptest.Server) {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := httpClient.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -102,7 +108,7 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 		"operation":  "conformance",
 		"payload":    map[string]string{"hello": "world"},
 	})
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
 	}
@@ -118,7 +124,7 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 		t.Fatalf("POST /invoke: decode: %v", err)
 	}
 
-	hasPayload := len(r.Payload) > 0 && string(r.Payload) != "null"
+	hasPayload := len(r.Payload) > 0 && !bytes.Equal(r.Payload, []byte("null"))
 	hasError := r.Error != nil
 
 	if hasPayload && hasError {
@@ -152,7 +158,7 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	t.Helper()
 	reqBody, _ := json.Marshal(map[string]any{"operation": "norm"})
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
 	}
@@ -208,7 +214,7 @@ func assertErrorEnvelope(t tb, srv *httptest.Server) {
 // present, no payload, no billable_units.
 func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
 	t.Helper()
-	resp, err := http.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)
 	}
@@ -235,7 +241,7 @@ func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
 	if r.Error.Retryable == nil {
 		t.Fatal("POST /invoke (error envelope): error.retryable must be present")
 	}
-	if len(r.Payload) > 0 && string(r.Payload) != "null" {
+	if len(r.Payload) > 0 && !bytes.Equal(r.Payload, []byte("null")) {
 		t.Fatalf("POST /invoke (error envelope): must not contain payload, got %s", r.Payload)
 	}
 	if r.BillableUnits != nil {

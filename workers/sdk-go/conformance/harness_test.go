@@ -13,8 +13,8 @@ import (
 )
 
 // spyT captures calls to Fatal/Fatalf/Errorf without propagating failures to the
-// real test. All three methods call runtime.Goexit() so the goroutine exits cleanly
-// with deferred functions run; the caller checks hasFailed() after runSpy returns.
+// real test. Fatal and Fatalf call runtime.Goexit() to exit the goroutine cleanly;
+// Errorf sets failed without exiting, matching testing.T.Errorf semantics.
 type spyT struct {
 	mu     sync.Mutex
 	failed bool
@@ -39,11 +39,12 @@ func (s *spyT) Fatalf(_ string, _ ...any) {
 	runtime.Goexit()
 }
 
+// Errorf marks the spy as failed without exiting the goroutine, matching
+// testing.T.Errorf semantics (non-fatal: execution continues after the call).
 func (s *spyT) Errorf(_ string, _ ...any) {
 	s.mu.Lock()
 	s.failed = true
 	s.mu.Unlock()
-	runtime.Goexit()
 }
 
 // hasFailed reports whether the spy captured a failure. Safe to call after
@@ -55,7 +56,7 @@ func (s *spyT) hasFailed() bool {
 }
 
 // runSpy runs f in a dedicated goroutine and waits for it. runtime.Goexit() calls
-// (from spy.Fatal/Fatalf/Errorf) and panics are both handled safely: deferred
+// (from spy.Fatal/Fatalf) and panics are both handled safely: deferred
 // wg.Done() fires in all cases, so runSpy always returns.
 func runSpy(spy *spyT, f func()) {
 	var wg sync.WaitGroup
@@ -103,7 +104,8 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 			Payload:       json.RawMessage(`{"ok":true}`),
 			BillableUnits: &zero,
 		}); err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
@@ -136,7 +138,8 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 				Retryable: &retryable,
 			},
 		}); err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
@@ -174,7 +177,8 @@ func TestHarnessRejectsNormalizationZero(t *testing.T) {
 			Payload:       json.RawMessage(`{"norm":"bypass"}`),
 			BillableUnits: &zero,
 		}); err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
@@ -196,7 +200,8 @@ func TestHarnessRejectsSuccessEnvelopeOnMalformedRequest(t *testing.T) {
 			Payload:       json.RawMessage(`{"ok":true}`),
 			BillableUnits: &units,
 		}); err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
@@ -224,7 +229,8 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 				Retryable: &retryable,
 			},
 		}); err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
