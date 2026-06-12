@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,11 +19,19 @@ import (
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 )
 
-// httpClient is shared across all assertion helpers. The 5-second timeout prevents a hung
+const (
+	// contentTypeJSON is the frozen contract media type for all /healthz and /invoke responses.
+	contentTypeJSON = "application/json"
+	// harnessClientTimeout caps each HTTP round-trip; prevents a hung httptest.Server
+	// from stalling the test suite indefinitely.
+	harnessClientTimeout = 5 * time.Second
+)
+
+// httpClient is shared across all assertion helpers. harnessClientTimeout prevents a hung
 // httptest.Server from stalling the test suite; Transport limits prevent port exhaustion
 // when Harness is called from many tests concurrently.
 var httpClient = &http.Client{
-	Timeout: 5 * time.Second,
+	Timeout: harnessClientTimeout,
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -30,9 +39,11 @@ var httpClient = &http.Client{
 	},
 }
 
-// tb is the subset of *testing.T used by the assertion helpers. A recording shim
-// can implement this interface to verify the harness detects violations in the
-// package's own unit tests.
+// tb is the subset of *testing.T used by all assertion helpers, including those that
+// spin up their own internal fixtures (assertBillableUnitsNormalization,
+// assertHandlerStructuredError). Keeping every helper on tb (rather than *testing.T)
+// lets the package's own negative tests drive them through spyT without a real
+// *testing.T.
 type tb interface {
 	Helper()
 	Fatalf(format string, args ...any)
@@ -50,12 +61,20 @@ type invokeResp struct {
 }
 
 type invokeError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 	// Retryable is a pointer so the decoder can distinguish absent (nil) from false.
 	// The wire format always includes this field (crucible.Error uses bool, never omitted),
 	// but we decode with a pointer to detect malformed responses that omit it.
 	Retryable *bool `json:"retryable"`
+}
+
+// checkContentType returns true if the header value parses as contentTypeJSON.
+// Uses mime.ParseMediaType to correctly reject media types like "application/json+evil"
+// that strings.HasPrefix would incorrectly accept.
+func checkContentType(header string) bool {
+	mt, _, err := mime.ParseMediaType(header)
+	return err == nil && mt == contentTypeJSON
 }
 
 // Harness drives crucible.Handler(h) in-process via httptest.NewServer and asserts
@@ -97,8 +116,8 @@ func assertHealthz(t tb, srv *httptest.Server) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz: expected 200, got %d", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("GET /healthz: expected Content-Type application/json, got %q", ct)
+	if ct := resp.Header.Get("Content-Type"); !checkContentType(ct) {
+		t.Fatalf("GET /healthz: expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -137,7 +156,7 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 	if err != nil {
 		t.Fatalf("marshal invoke request: %v", err)
 	}
-	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	resp, err := httpClient.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
 	}
@@ -145,8 +164,8 @@ func assertInvokeContract(t tb, srv *httptest.Server) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke: expected 200, got %d", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("POST /invoke: expected Content-Type application/json, got %q", ct)
+	if ct := resp.Header.Get("Content-Type"); !checkContentType(ct) {
+		t.Fatalf("POST /invoke: expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -193,7 +212,7 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	if err != nil {
 		t.Fatalf("marshal normalization request: %v", err)
 	}
-	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(reqBody))
+	resp, err := httpClient.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
 	}
@@ -201,8 +220,8 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (normalization): expected 200, got %d", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("POST /invoke (normalization): expected Content-Type application/json, got %q", ct)
+	if ct := resp.Header.Get("Content-Type"); !checkContentType(ct) {
+		t.Fatalf("POST /invoke (normalization): expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -216,7 +235,8 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 // assertBillableUnitsNormalization verifies that crucible.Handler normalizes a zero
 // BillableUnits to >= 1 (mirrors invokeHandler + the gateway trust boundary).
 // Uses an internal fixture handler to exercise the SDK normalization path directly.
-func assertBillableUnitsNormalization(t *testing.T) {
+// Accepts tb so the package's own negative tests can drive it through spyT.
+func assertBillableUnitsNormalization(t tb) {
 	t.Helper()
 	// Zero-units fixture: explicitly returns 0 to exercise the SDK's normalization guard.
 	zeroH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
@@ -227,7 +247,7 @@ func assertBillableUnitsNormalization(t *testing.T) {
 		t.Fatalf("crucible.Handler(zeroH): %v", err)
 	}
 	normSrv := httptest.NewServer(normMux)
-	t.Cleanup(normSrv.Close)
+	defer normSrv.Close()
 	checkNormalizationResponse(t, normSrv)
 }
 
@@ -236,8 +256,8 @@ func assertBillableUnitsNormalization(t *testing.T) {
 // than the caller's handler because conformance tests what the SDK does with the error, not
 // whether the caller's handler ever returns one (which is handler-specific business logic).
 // It creates and tears down its own httptest.Server so Harness has no cross-assertion
-// server dependencies.
-func assertHandlerStructuredError(t *testing.T) {
+// server dependencies. Accepts tb so the package's own negative tests can drive it through spyT.
+func assertHandlerStructuredError(t tb) {
 	t.Helper()
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
@@ -247,7 +267,7 @@ func assertHandlerStructuredError(t *testing.T) {
 		t.Fatalf("crucible.Handler(errH): %v", err)
 	}
 	errSrv := httptest.NewServer(errMux)
-	t.Cleanup(errSrv.Close)
+	defer errSrv.Close()
 
 	reqBody, err := json.Marshal(map[string]any{"operation": "err"})
 	if err != nil {
@@ -268,7 +288,7 @@ func assertErrorEnvelope(t tb, srv *httptest.Server) {
 // present, no payload, no billable_units.
 func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
 	t.Helper()
-	resp, err := httpClient.Post(srv.URL+"/invoke", "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Post(srv.URL+"/invoke", contentTypeJSON, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /invoke (error envelope): %v", err)
 	}
@@ -276,8 +296,8 @@ func checkErrorEnvelopeAt(t tb, srv *httptest.Server, body []byte) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke (error envelope): expected HTTP 200, got %d", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("POST /invoke (error envelope): expected Content-Type application/json, got %q", ct)
+	if ct := resp.Header.Get("Content-Type"); !checkContentType(ct) {
+		t.Fatalf("POST /invoke (error envelope): expected Content-Type %s, got %q", contentTypeJSON, ct)
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
