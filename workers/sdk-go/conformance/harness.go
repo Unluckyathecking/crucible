@@ -33,14 +33,12 @@ const (
 // pooled connections cross between independent Harness calls. One client is created
 // per Harness call and shared across all assertions in that call for efficiency.
 func harnessClient() *http.Client {
-	c := &http.Client{
+	return &http.Client{
 		Timeout: harnessClientTimeout,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 		},
 	}
-	c.CloseIdleConnections()
-	return c
 }
 
 // tb is the subset of *testing.T used by all assertion helpers, including those that

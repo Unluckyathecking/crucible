@@ -173,9 +173,9 @@ func TestHarnessAcceptsConformantHandler(t *testing.T) {
 	}
 }
 
-// TestHarnessRejectsNilHandler proves that crucible.Handler(nil) returns an error rather
+// TestHandlerRejectsNilHandler proves that crucible.Handler(nil) returns an error rather
 // than panicking, documenting the nil boundary on the exported constructor.
-func TestHarnessRejectsNilHandler(t *testing.T) {
+func TestHandlerRejectsNilHandler(t *testing.T) {
 	_, err := crucible.Handler(nil)
 	if err == nil {
 		t.Fatal("crucible.Handler(nil) should return an error")
@@ -409,7 +409,7 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	}
 	spy := &spyT{}
 	client := harnessClient()
-	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, client, reqBody, "") })
+	runSpy(spy, func() { checkErrorEnvelopeAt(spy, srv, client, reqBody, "ERR_WITH_PAYLOAD") })
 	if !spy.hasFailed() {
 		t.Fatal("checkErrorEnvelopeAt should fail when error response contains payload")
 	}
