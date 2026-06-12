@@ -151,6 +151,22 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 	}
 }
 
+// TestHarnessRejectsHealthzNon200 proves assertHealthz detects a non-200 /healthz status.
+func TestHarnessRejectsHealthzNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"down"}`))
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertHealthz(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertHealthz should fail for non-200 /healthz status")
+	}
+}
+
 // TestHarnessRejectsMalformedHealthz proves assertHealthz detects a /healthz body that
 // does not match the byte-exact {"status":"ok"} requirement.
 func TestHarnessRejectsMalformedHealthz(t *testing.T) {
@@ -164,6 +180,31 @@ func TestHarnessRejectsMalformedHealthz(t *testing.T) {
 	runSpy(spy, func() { assertHealthz(spy, srv) })
 	if !spy.hasFailed() {
 		t.Fatal("assertHealthz should fail for a /healthz body that is not {\"status\":\"ok\"}")
+	}
+}
+
+// TestHarnessRejectsEmptyInvokeEnvelope proves assertInvokeContract detects a response
+// that carries neither payload nor error (empty envelope).
+func TestHarnessRejectsEmptyInvokeEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Empty envelope: neither payload nor error present.
+		if err := json.NewEncoder(w).Encode(invokeResp{}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}))
+	defer srv.Close()
+
+	spy := &spyT{}
+	runSpy(spy, func() { assertInvokeContract(spy, srv) })
+	if !spy.hasFailed() {
+		t.Fatal("assertInvokeContract should fail when response has neither payload nor error")
 	}
 }
 

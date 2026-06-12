@@ -63,7 +63,9 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	srv := httptest.NewServer(crucible.Handler(h))
 	t.Cleanup(srv.Close)
 
-	// Fixture server for the structured-error-handler assertion: always returns *crucible.Error.
+	// errSrv wraps a handler that always returns *crucible.Error. It is used solely
+	// by assertHandlerStructuredError to verify the error-envelope path; /healthz on
+	// errSrv is the same as srv's because crucible.Handler always serves both routes.
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
 	}
@@ -71,7 +73,6 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)
-	assertHealthz(t, errSrv)
 	assertInvokeContract(t, srv)
 	assertBillableUnitsNormalization(t)
 	assertHandlerStructuredError(t, errSrv)
