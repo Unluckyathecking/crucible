@@ -53,14 +53,14 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	}
 
 	srv := httptest.NewServer(crucible.Handler(h))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	// Fixture server for the structured-error-handler assertion: always returns *crucible.Error.
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
 	}
 	errSrv := httptest.NewServer(crucible.Handler(errH))
-	defer errSrv.Close()
+	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)
 	assertInvokeContract(t, srv)
@@ -162,6 +162,12 @@ func checkNormalizationResponse(t tb, srv *httptest.Server) {
 	}
 	if err != nil {
 		t.Fatalf("POST /invoke (normalization): %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /invoke (normalization): expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("POST /invoke (normalization): expected Content-Type application/json, got %q", ct)
 	}
 	var r invokeResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {

@@ -99,10 +99,12 @@ func TestHarnessRejectsBillableUnitsZero(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(invokeResp{
+		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"ok":true}`),
 			BillableUnits: &zero,
-		})
+		}); err != nil {
+			panic(err)
+		}
 	}))
 	defer srv.Close()
 
@@ -125,7 +127,7 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(invokeResp{
+		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"ok":true}`),
 			BillableUnits: &units,
 			Error: &invokeError{
@@ -133,7 +135,9 @@ func TestHarnessRejectsBothPayloadAndError(t *testing.T) {
 				Message:   "illegal: both payload and error set",
 				Retryable: &retryable,
 			},
-		})
+		}); err != nil {
+			panic(err)
+		}
 	}))
 	defer srv.Close()
 
@@ -166,10 +170,12 @@ func TestHarnessRejectsNormalizationZero(t *testing.T) {
 	zero := uint64(0)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(invokeResp{
+		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"norm":"bypass"}`),
 			BillableUnits: &zero,
-		})
+		}); err != nil {
+			panic(err)
+		}
 	}))
 	defer srv.Close()
 
@@ -187,7 +193,7 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 	units := uint64(1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(invokeResp{
+		if err := json.NewEncoder(w).Encode(invokeResp{
 			Payload:       json.RawMessage(`{"bad":"data"}`),
 			BillableUnits: &units,
 			Error: &invokeError{
@@ -195,7 +201,9 @@ func TestHarnessRejectsErrorWithPayload(t *testing.T) {
 				Message:   "error should not have payload",
 				Retryable: &retryable,
 			},
-		})
+		}); err != nil {
+			panic(err)
+		}
 	}))
 	defer srv.Close()
 
