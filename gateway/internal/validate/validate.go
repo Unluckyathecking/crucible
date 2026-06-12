@@ -455,7 +455,10 @@ func numericEqual(a, b any) bool {
 // normalizeJSONNumber strips trailing fractional zeros so that integer-valued
 // decimal notations ("1.0", "1.00") compare equal to their integer form ("1")
 // in string and ParseInt checks, without precision loss from float64.
-// Scientific notation is handled correctly: "2.0e3" → "2e3", "1.50e2" → "1.5e2".
+// Scientific notation with a fractional mantissa that evaluates to a whole
+// number is further reduced to its integer string form via sciNotationToInt
+// so the string-equality fast path in numericEqual applies directly:
+// "1.5e2" → "150", "1.23e3" → "1230", "2.0e3" → "2e3", "1.5e0" → "1.5".
 // Examples: "1.0" → "1", "1.50" → "1.5", "2.0e3" → "2e3", "1e3" → "1e3".
 func normalizeJSONNumber(n json.Number) json.Number {
 	s := string(n)
@@ -479,7 +482,64 @@ func normalizeJSONNumber(n json.Number) json.Number {
 		// All zeros after '.': drop the decimal point; keep exponent if present.
 		return json.Number(s[:dot] + s[exp:])
 	}
+	// Non-zero fractional digits remain after stripping trailing zeros.
+	// When an exponent is present, the value may still be a whole number
+	// (e.g. "1.5e2" = 150). Promote to integer string form so that the
+	// string-equality fast path in numericEqual applies without requiring
+	// the float64 fallback for this common case.
+	if expOff >= 0 {
+		if intStr, ok := sciNotationToInt(s[:end] + s[exp:]); ok {
+			return json.Number(intStr)
+		}
+	}
 	return json.Number(s[:end] + s[exp:])
+}
+
+// sciNotationToInt converts a normalized scientific notation number with a
+// non-zero fractional mantissa (e.g. "1.5e2") to its integer string form
+// ("150") when the exponent shifts the decimal point past all fractional
+// digits. The conversion is done by string arithmetic — no float64 involved —
+// so it is exact for any magnitude.
+//
+// Returns ("", false) when:
+//   - the value is not a whole number (exponent < fractional digit count), or
+//   - the integer string would exceed 20 digits (beyond uint64 range; the
+//     float64 fallback in numericEqual handles those cases).
+func sciNotationToInt(s string) (string, bool) {
+	eDot := strings.IndexByte(s, '.')
+	if eDot < 0 {
+		return "", false
+	}
+	eExp := strings.IndexAny(s, "eE")
+	if eExp < 0 {
+		return "", false
+	}
+	expVal, err := strconv.Atoi(s[eExp+1:])
+	if err != nil || expVal < 0 {
+		return "", false // negative or non-numeric exponent: not an integer via this path
+	}
+	sign := ""
+	mantissa := s[:eExp]
+	if strings.HasPrefix(mantissa, "-") {
+		sign = "-"
+		mantissa = mantissa[1:]
+		eDot-- // dot index shifts left when sign is removed
+	}
+	intPart := mantissa[:eDot]
+	fracPart := mantissa[eDot+1:]
+	// fracPart has already had trailing zeros stripped by normalizeJSONNumber.
+	if expVal < len(fracPart) {
+		return "", false // exponent does not cover all fractional digits: not an integer
+	}
+	zeros := expVal - len(fracPart)
+	if len(sign)+len(intPart)+len(fracPart)+zeros > 20 {
+		return "", false // result too large for int64/uint64; float64 fallback handles it
+	}
+	result := strings.TrimLeft(intPart+fracPart+strings.Repeat("0", zeros), "0")
+	if result == "" {
+		result = "0"
+	}
+	return sign + result, true
 }
 
 // isIntegerNumber reports whether n represents a whole-number (integer) value.

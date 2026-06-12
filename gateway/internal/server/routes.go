@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -196,7 +195,10 @@ func NewRouter(d *Deps) http.Handler {
 	// error in the clone, not a runtime condition; NewRouter callers should never
 	// hit this outside of development.
 	if err := validate.CompileSchemaPatterns(routes); err != nil {
-		panic(fmt.Sprintf("invalid regex pattern in RequestSchema: %v", err))
+		// An invalid RE2 pattern is a programming error in the clone, not a
+		// runtime condition. log.Panic logs at PANIC level then calls panic so
+		// the process terminates with both a structured log entry and a stack trace.
+		log.Panic().Err(err).Msg("invalid regex pattern in RequestSchema")
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil

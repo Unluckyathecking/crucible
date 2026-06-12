@@ -1189,6 +1189,83 @@ func TestPatternInvalidRegexReturnsSchemaError(t *testing.T) {
 	}
 }
 
+// TestSciNotationEnumMatch verifies that scientific notation numbers with
+// fractional mantissas that evaluate to integers (e.g. 1.5e2 = 150) compare
+// equal to their plain integer form in enum checks.
+// This exercises the sciNotationToInt path inside normalizeJSONNumber.
+func TestSciNotationEnumMatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		enum    []any
+		body    string
+		wantErr bool
+	}{
+		// request body "150" against schema enum containing json.Number("1.5e2")
+		{"request 150 matches enum 1.5e2", []any{json.Number("1.5e2")}, `{"v":150}`, false},
+		// inverse: request body "1.5e2" against schema enum containing float64(150)
+		{"request 1.5e2 matches enum float64(150)", []any{float64(150)}, `{"v":1.5e2}`, false},
+		// 1.23e3 = 1230
+		{"1.23e3 matches 1230", []any{float64(1230)}, `{"v":1.23e3}`, false},
+		// 1.5e1 = 15
+		{"1.5e1 matches 15", []any{float64(15)}, `{"v":1.5e1}`, false},
+		// 1.5e0 = 1.5 (not integer): must NOT match float64(1)
+		{"1.5 does not match integer 1", []any{float64(1)}, `{"v":1.5}`, true},
+		// value not in enum always fails
+		{"200 not in enum [150]", []any{float64(150)}, `{"v":200}`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &openapi.Schema{
+				Type: "object",
+				Properties: map[string]*openapi.Schema{
+					"v": {Enum: tc.enum},
+				},
+			}
+			err := validate.ValidateBytes(s, []byte(tc.body))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected enum mismatch error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRefSchemaWithConstraints documents the behaviour when a schema has
+// both a $ref and local constraints: the $ref short-circuits validation and the
+// local constraints are skipped (pass-through). This is intentional — this
+// validator does not resolve $ref, and a schema that starts with $ref is treated
+// as an unresolved reference that cannot be locally validated.
+func TestValidateRefSchemaWithConstraints(t *testing.T) {
+	// Ref + Type: the integer constraint would reject "hello", but $ref wins.
+	refWithType := &openapi.Schema{
+		Ref:  "#/components/schemas/SomeType",
+		Type: "integer",
+	}
+	if err := validate.Validate(refWithType, "hello"); err != nil {
+		t.Errorf("$ref with Type constraint: expected pass-through for string, got: %v", err)
+	}
+
+	// Ref + Required: would normally reject an empty object.
+	refWithRequired := &openapi.Schema{
+		Ref:      "#/components/schemas/SomeType",
+		Required: []string{"name"},
+	}
+	if err := validate.Validate(refWithRequired, map[string]any{}); err != nil {
+		t.Errorf("$ref with Required: expected pass-through for empty object, got: %v", err)
+	}
+
+	// Ref + Enum: would normally reject a value not in the enum.
+	refWithEnum := &openapi.Schema{
+		Ref:  "#/components/schemas/SomeType",
+		Enum: []any{"a", "b"},
+	}
+	if err := validate.Validate(refWithEnum, "z"); err != nil {
+		t.Errorf("$ref with Enum: expected pass-through for out-of-enum value, got: %v", err)
+	}
+}
+
 // TestNumericEnumHighPrecision verifies that integer enum values beyond float64's
 // 53-bit mantissa are compared without precision loss so that neighbouring
 // high-precision integers do NOT match each other, and that decimal notation of
