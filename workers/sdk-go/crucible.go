@@ -69,14 +69,15 @@ type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 
 // Handler returns an http.Handler that serves /healthz and /invoke for h.
 // Serve wires this to a real TCP listener; tests can drive it in-process via httptest.
-func Handler(h HandlerFunc) http.Handler {
+// Returns an error if h is nil.
+func Handler(h HandlerFunc) (http.Handler, error) {
 	if h == nil {
-		panic("crucible.Handler: nil HandlerFunc")
+		return nil, fmt.Errorf("crucible.Handler: nil HandlerFunc")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/invoke", invokeHandler(h))
-	return mux
+	return mux, nil
 }
 
 // Serve runs the worker HTTP server on the given port and blocks until SIGINT/SIGTERM,
@@ -84,9 +85,13 @@ func Handler(h HandlerFunc) http.Handler {
 func Serve(port int, h HandlerFunc) error {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
+	handler, err := Handler(h)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           Handler(h),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,

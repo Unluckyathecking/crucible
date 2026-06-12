@@ -63,7 +63,11 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 		t.Fatalf("conformance.Harness: nil HandlerFunc")
 	}
 
-	srv := httptest.NewServer(crucible.Handler(h))
+	srvMux, err := crucible.Handler(h)
+	if err != nil {
+		t.Fatalf("crucible.Handler: %v", err)
+	}
+	srv := httptest.NewServer(srvMux)
 	t.Cleanup(srv.Close)
 
 	// errSrv wraps a handler that always returns *crucible.Error. It is used solely
@@ -72,7 +76,11 @@ func Harness(t *testing.T, h crucible.HandlerFunc) {
 	errH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "HANDLER_ERR", Message: "handler-returned error", Retryable: true}
 	}
-	errSrv := httptest.NewServer(crucible.Handler(errH))
+	errMux, err := crucible.Handler(errH)
+	if err != nil {
+		t.Fatalf("crucible.Handler(errH): %v", err)
+	}
+	errSrv := httptest.NewServer(errMux)
 	t.Cleanup(errSrv.Close)
 
 	assertHealthz(t, srv)
@@ -200,7 +208,11 @@ func assertBillableUnitsNormalization(t *testing.T) {
 	zeroH := func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{Payload: map[string]string{"norm": "ok"}, BillableUnits: 0}, nil
 	}
-	normSrv := httptest.NewServer(crucible.Handler(zeroH))
+	normMux, err := crucible.Handler(zeroH)
+	if err != nil {
+		t.Fatalf("crucible.Handler(zeroH): %v", err)
+	}
+	normSrv := httptest.NewServer(normMux)
 	t.Cleanup(normSrv.Close)
 	checkNormalizationResponse(t, normSrv)
 }
