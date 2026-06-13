@@ -250,7 +250,7 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
-		t.Logf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
+		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
 
 	if string(body1) != string(body2) {
