@@ -264,11 +264,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	var (
 		prevRate int
 		prevCap  pgtype.Int8 // nullable int8; Valid=false when NULL (unlimited)
+		prevName string
 		existed  bool
 	)
 	if err := ts.DB.QueryRow(ctx,
-		`SELECT rate_limit_per_minute, monthly_unit_cap FROM plans WHERE id = $1`, id,
-	).Scan(&prevRate, &prevCap); err == nil {
+		`SELECT rate_limit_per_minute, monthly_unit_cap, display_name FROM plans WHERE id = $1`, id,
+	).Scan(&prevRate, &prevCap, &prevName); err == nil {
 		existed = true
 	}
 
@@ -291,16 +292,16 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if existed {
-			// Restore the original rate/cap. prevCap.Valid=false means the original
-			// cap was NULL (unlimited), so we restore NULL by passing a nil *int64.
+			// Restore the original rate/cap/name. prevCap.Valid=false means the
+			// original cap was NULL (unlimited); restore NULL via nil *int64.
 			var restoredCap *int64
 			if prevCap.Valid {
 				v := prevCap.Int64
 				restoredCap = &v
 			}
 			if _, err := ts.DB.Exec(cctx,
-				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
-				id, prevRate, restoredCap,
+				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
+				id, prevRate, restoredCap, prevName,
 			); err != nil {
 				t.Errorf("harness: restore plan %q: %v", id, err)
 				return
