@@ -9,15 +9,14 @@ BEGIN;
 -- between DROP and ADD), but migrations run single-threaded on each boot.
 DO $$
 BEGIN
-  -- Guard: if the error_events table does not yet exist, this migration is a
-  -- no-op. Avoids the ::regclass cast throwing on a truly fresh schema.
+  -- Guard: both tables must exist before we touch any constraints.
+  -- Avoids the ::regclass cast erroring on a schema where either table is absent.
   IF NOT EXISTS (
-    SELECT 1
-    FROM   pg_class c
-    JOIN   pg_namespace n ON n.oid = c.relnamespace
-    WHERE  n.nspname = 'public'
-      AND  c.relname = 'error_events'
-      AND  c.relkind = 'r'
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'error_events' AND c.relkind = 'r'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
   ) THEN
     RETURN;
   END IF;
