@@ -296,7 +296,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		cctx, cancel := context.WithTimeout(t.Context(), cleanupTimeout)
 		defer cancel()
 		if existed {
 			if _, err := ts.DB.Exec(cctx,
@@ -325,9 +325,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
-	parsedAddr, addrErr := mail.ParseAddress(email)
-	if addrErr != nil {
-		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, addrErr)
+	parsedAddr, err := mail.ParseAddress(email)
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
 	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
@@ -336,7 +336,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
 	var dummy int
-	err := ts.DB.QueryRow(planCtx,
+	err = ts.DB.QueryRow(planCtx,
 		`SELECT 1 FROM plans WHERE id = $1`, planID,
 	).Scan(&dummy)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -364,7 +364,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		if customerID == uuid.Nil {
 			return // setup fataled before first insert; nothing to clean up
 		}
-		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		cctx, cancel := context.WithTimeout(t.Context(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, opErr error) {
 			if opErr == nil {
@@ -450,9 +450,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		rlKey := "rl:" + customerID.String()
 		authKey := "auth:" + prefix
 		redisKeys := []string{quotaKey, nextQuotaKey, rlKey, authKey}
-		if delErr := ts.Redis.Del(cctx, redisKeys...).Err(); delErr != nil {
-			t.Logf("harness: cleanup redis keys for customer %s: %v", customerID, delErr)
-		}
+		cleanupErr("redis_keys", ts.Redis.Del(cctx, redisKeys...).Err())
 	})
 
 	customerID = uuid.New()
