@@ -30,7 +30,7 @@ const (
 	defaultTestMonthlyCap = 10_000
 
 	// HTTP client constants for newTestHTTPClient.
-	testClientTimeout       = 25 * time.Second // outer bound for all tests: testDialTimeout(5s) + testRequestTimeout(10s) + body-drain; unrelated to per-test proxy timeouts
+	testClientTimeout       = 25 * time.Second // generous ceiling for dial + request + body drain
 	testDialTimeout         = 5 * time.Second
 	testIdleConnTimeout     = 30 * time.Second
 	testMaxIdleConns        = 10
@@ -135,15 +135,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
 		}
 	})
 	return h, &invoked
 }
 
-// waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
-// Must be called from the main test goroutine (t.Fatalf calls runtime.Goexit).
+// waitForErrorEvents polls until want error_events rows exist or the deadline elapses.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
@@ -153,7 +152,8 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	for {
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+			t.Errorf("timeout waiting for %d error_events for customer %s", want, customerID)
+			return
 		case <-tick.C:
 		}
 		n := ts.CountErrorEvents(t, customerID)
@@ -161,7 +161,8 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			return
 		}
 		if n > want {
-			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
+			t.Errorf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
+			return
 		}
 	}
 }
