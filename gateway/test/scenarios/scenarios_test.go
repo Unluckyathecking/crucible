@@ -147,19 +147,17 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 
 // waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
 // Must be called from the main test goroutine (t.Fatalf calls runtime.Goexit).
-// Creates a fresh timer per iteration and stops it explicitly on cancellation so
-// no timer lingers after context expiry; avoids Reset reuse concerns entirely.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
+	tick := time.NewTicker(errorPollInterval)
+	defer tick.Stop()
 	for {
-		tmr := time.NewTimer(errorPollInterval)
 		select {
 		case <-ctx.Done():
-			tmr.Stop()
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
-		case <-tmr.C:
+		case <-tick.C:
 		}
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
@@ -268,6 +266,7 @@ func TestHappyPath(t *testing.T) {
 	if err := json.Unmarshal(inv.Payload, &payloadObj); err != nil {
 		t.Fatalf("payload unmarshal: %v\nbody: %s", err, body)
 	}
+	// echoWorker returns {} for its payload; verify the proxy forwards it unmodified.
 	if len(payloadObj) != 0 {
 		t.Errorf("payload: got %v, want empty object {}", payloadObj)
 	}
@@ -439,7 +438,8 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 2 s delay vs 100 ms timeout: 20× ratio ensures reliable timeout under -race.
+	// 2 s delay vs 100 ms proxy timeout: 20× ratio ensures reliable timeout under -race.
+	// The proxy timeout (WorkerTimeoutMS=100) is the bottleneck; client sees 502, not client-side expiry.
 	client := newTestHTTPClient(t)
 	worker, invoked := slowWorker(2 * time.Second)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {

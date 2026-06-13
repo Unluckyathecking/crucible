@@ -60,6 +60,7 @@ const (
 	redisCleanupTimeout       = 10 * time.Second      // timeout for the Redis DEL in customer cleanup
 	cleanupRetryBackoff       = 50 * time.Millisecond // delay between api_keys delete retries
 	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
+	customerInsertTimeout     = 10 * time.Second      // customer + api_key INSERT in CreateCustomer
 
 	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
 	testPlanDisplayNamePrefix = "Test Plan "
@@ -552,7 +553,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("customers", delErr)
 	})
 
-	custCtx, custCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	custCtx, custCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
 	defer custCancel()
 	_, err = ts.DB.Exec(custCtx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
@@ -563,7 +564,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	hash := auth.Hash(testSalt, full)
-	keyCtx, keyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	keyCtx, keyCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
 	defer keyCancel()
 	_, err = ts.DB.Exec(keyCtx,
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
