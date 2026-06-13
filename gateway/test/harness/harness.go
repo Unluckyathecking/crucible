@@ -219,7 +219,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
 	// routesMu is always held while calling server.NewRouter so that
 	// server.V1Routes cannot be mutated by a concurrent custom-route caller
 	// while a non-custom caller reads it inside NewRouter.
@@ -320,8 +319,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 // and returns (customerID, rawAPIKey). t.Cleanup removes all rows and Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
-	if ts == nil {
-		t.Fatal("harness: CreateCustomer called on nil TestServer")
+	if ts == nil || ts.DB == nil {
+		t.Fatal("harness: CreateCustomer called on nil TestServer or TestServer.DB")
 	}
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
@@ -480,8 +479,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 // CountUsageEvents returns the number of usage_events rows for customerID.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
-	if ts == nil {
-		t.Fatal("harness: CountUsageEvents called on nil TestServer")
+	if ts == nil || ts.DB == nil {
+		t.Fatal("harness: CountUsageEvents called on nil TestServer or TestServer.DB")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -498,8 +497,8 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64
 // CountErrorEvents returns the number of error_events rows for customerID.
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
-	if ts == nil {
-		t.Fatal("harness: CountErrorEvents called on nil TestServer")
+	if ts == nil || ts.DB == nil {
+		t.Fatal("harness: CountErrorEvents called on nil TestServer or TestServer.DB")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -540,6 +539,8 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 type redisPinger struct{ c *redis.Client }
 
 func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err() }
+
+var _ server.HealthChecker = (*pgPinger)(nil)
 
 // pgPinger adapts *pgxpool.Pool to server.HealthChecker.
 type pgPinger struct{ p *pgxpool.Pool }
