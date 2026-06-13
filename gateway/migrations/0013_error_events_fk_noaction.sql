@@ -27,13 +27,19 @@ BEGIN
 
   -- confdeltype='a' is PostgreSQL's catalog code for NO ACTION (the desired
   -- state). Skip DROP+ADD if the correct constraint already exists.
-  -- conname is unique per table, so conrelid is omitted to avoid the ::regclass cast.
+  -- Include table scoping via pg_class join so the check is unambiguous even if
+  -- another table coincidentally carries a constraint with the same name.
+  -- Safe to use here: both tables verified above, so pg_class rows exist.
   IF NOT EXISTS (
     SELECT 1
-    FROM   pg_constraint
-    WHERE  conname     = 'error_events_api_key_id_fkey'
-      AND  contype     = 'f'
-      AND  confdeltype = 'a'
+    FROM   pg_constraint c
+    JOIN   pg_class      t ON t.oid = c.conrelid
+    JOIN   pg_namespace  n ON n.oid = t.relnamespace
+    WHERE  c.conname     = 'error_events_api_key_id_fkey'
+      AND  c.contype     = 'f'
+      AND  c.confdeltype = 'a'
+      AND  t.relname     = 'error_events'
+      AND  n.nspname     = 'public'
   ) THEN
     ALTER TABLE public.error_events
       DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
