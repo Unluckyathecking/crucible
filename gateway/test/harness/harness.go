@@ -101,6 +101,11 @@ type Options struct {
 	// Set this low (e.g. 100) combined with a slow WorkerHandler to trigger the
 	// timeout scenario without blocking the test for a long time.
 	WorkerTimeoutMS int
+
+	// BootTimeout caps the time budget for DB pool open + migration apply.
+	// Defaults to serverBootTimeout (30 s); increase in slow CI environments
+	// where noisy-neighbour contention can push pool acquisition past 30 s.
+	BootTimeout time.Duration
 }
 
 // TestServer is a running gateway backed by real Postgres and Redis.
@@ -122,7 +127,11 @@ type TestServer struct {
 // INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	bootTimeout := serverBootTimeout
+	if opts.BootTimeout > 0 {
+		bootTimeout = opts.BootTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bootTimeout)
 	defer cancel()
 
 	if opts.WorkerHandler == nil {
