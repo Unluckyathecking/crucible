@@ -4,12 +4,26 @@ BEGIN;
 -- A previous migration incorrectly used ON DELETE SET NULL, which destroyed
 -- the audit-log link between an error event and the responsible API key.
 --
--- Idempotency: execute DROP+ADD only when the correct NO ACTION constraint
--- does not already exist. confdeltype='a' is PostgreSQL's catalog code for
--- NO ACTION. If the constraint is absent or has any other delete action,
--- this block drops and recreates it with the correct ON DELETE NO ACTION.
+-- Safe for re-runs: execute DROP+ADD only when the correct NO ACTION constraint
+-- does not already exist. Not safe for concurrent execution (brief constraint gap
+-- between DROP and ADD), but migrations run single-threaded on each boot.
 DO $$
 BEGIN
+  -- Guard: if the error_events table does not yet exist, this migration is a
+  -- no-op. Avoids the ::regclass cast throwing on a truly fresh schema.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM   pg_class c
+    JOIN   pg_namespace n ON n.oid = c.relnamespace
+    WHERE  n.nspname = 'public'
+      AND  c.relname = 'error_events'
+      AND  c.relkind = 'r'
+  ) THEN
+    RETURN;
+  END IF;
+
+  -- confdeltype='a' is PostgreSQL's catalog code for NO ACTION (the desired
+  -- state). If that constraint already exists, skip DROP+ADD.
   IF NOT EXISTS (
     SELECT 1
     FROM   pg_constraint

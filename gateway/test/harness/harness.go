@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -129,8 +130,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if opts.DSN == "" {
 		t.Fatal("harness: DSN is required")
 	}
+	if !strings.HasPrefix(opts.DSN, "postgres://") && !strings.HasPrefix(opts.DSN, "postgresql://") {
+		t.Fatalf("harness: DSN must be a postgres:// or postgresql:// URL, got: %s", opts.DSN)
+	}
 	if opts.RedisURL == "" {
 		t.Fatal("harness: RedisURL is required")
+	}
+	if !strings.HasPrefix(opts.RedisURL, "redis://") && !strings.HasPrefix(opts.RedisURL, "rediss://") {
+		t.Fatalf("harness: RedisURL must be a redis:// or rediss:// URL, got: %s", opts.RedisURL)
 	}
 
 	if opts.WorkerTimeoutMS <= 0 {
@@ -193,9 +200,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
 	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
-	// endpoint is not exercised by the scenario suite. Use a random suffix so the
-	// secret differs per test process and is clearly not a reused static value.
-	webhook := billing.NewWebhook(uuid.New().String(), pool)
+	// endpoint is not exercised by the scenario suite. Use the whsec_test_ prefix and a
+	// random suffix so the secret differs per test process and is not a reused static value.
+	webhook := billing.NewWebhook("whsec_test_"+uuid.New().String(), pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
