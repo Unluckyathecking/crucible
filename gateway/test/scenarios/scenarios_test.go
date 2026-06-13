@@ -248,13 +248,11 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// Determinism guarantee: idempotency/middleware.go calls store.Finalize before
-	// writing the HTTP response to the client (cw.flush). The row is committed before
-	// the socket write completes, so when drainBody returns the DB record is visible.
-	// Assertion failure here means the middleware's finalize-before-flush contract is
-	// broken — it is not a timing race.
+	// The idempotency key row must exist after the first request completes.
+	// Assertion failure here means the middleware did not call store.Finalize,
+	// which would also break the replay test below (r2 would re-invoke the worker).
 	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
-		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (store.Finalize must precede response flush)", n)
+		t.Fatalf("idempotency_keys after first request: got %d rows, want 1", n)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)

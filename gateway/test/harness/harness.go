@@ -431,10 +431,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
 		cleanupErr("webhook_endpoints", err)
 		// Bounded retry with fresh per-attempt context: the async errorlog.Record goroutine
-		// (2 s timeout) may insert an error_events row between the error_events DELETE
-		// above and this api_keys DELETE, causing a transient FK violation. Re-delete
-		// both idempotency_keys and error_events then retry api_keys. Each attempt gets
-		// its own context derived from cctx so retries respect the overall cleanup deadline.
+		// (2 s timeout) may insert an error_events row between the DELETE above and this
+		// api_keys DELETE, causing a transient FK violation (error_events.api_key_id
+		// REFERENCES api_keys(id) ON DELETE NO ACTION). Re-delete error_events then retry.
+		// Each attempt gets its own context derived from cctx so retries respect the
+		// overall cleanup deadline.
 		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
 			if cctx.Err() != nil {
@@ -454,20 +455,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				if attempt == 3 {
 					t.Errorf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 				}
+				// Only error_events can be re-inserted asynchronously (errorlog.Record
+				// goroutine, 2 s timeout). Webhook and idempotency tables are written
+				// synchronously in the request path and cannot race here.
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
-				if delErr != nil {
-					t.Errorf("harness: cleanup webhook_deliveries retry for customer %s: %v", customerID, delErr)
-				}
-				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
-				if delErr != nil {
-					t.Errorf("harness: cleanup webhook_endpoints retry for customer %s: %v", customerID, delErr)
-				}
-				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
-				if delErr != nil {
-					t.Errorf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
-				}
-				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				if delErr != nil {
 					t.Errorf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
