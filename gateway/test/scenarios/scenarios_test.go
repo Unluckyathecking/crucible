@@ -107,17 +107,21 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// time.Sleep is used rather than a channel-based timer: the proxy cancels
-// the connection after its deadline, so the sleeping goroutine will write
-// to a closed connection and exit. httptest.Server.Close waits for all
-// active handlers to finish before returning, so the sleep is bounded.
+// The proxy cancels the request context on timeout; the handler returns
+// immediately on r.Context().Done() to avoid writing to a closed response.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		time.Sleep(delay)
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
+		select {
+		case <-tmr.C:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+		case <-r.Context().Done():
+			return
+		}
 	})
 	return h, &invoked
 }
@@ -573,7 +577,7 @@ func TestRequestIDPresent(t *testing.T) {
 func TestIdempotencyKeyIsolation(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
-	worker, _ := varyingWorker()
+	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "idemp-iso-plan", 100, 10000)
 	_, keyA := ts.CreateCustomer(t, "idemp-iso-A-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
@@ -605,6 +609,9 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	if string(body1) == string(body2) {
 		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\nbody: %s", body1)
 	}
+	if got := invocations.Load(); got != 2 {
+		t.Errorf("worker invocations: got %d, want 2 (one per customer)", got)
+	}
 }
 
 // TestRateLimitHeadersOnSuccess verifies that the rate-limit middleware injects
@@ -629,6 +636,8 @@ func TestRateLimitHeadersOnSuccess(t *testing.T) {
 	}
 	if v := r.Header.Get("RateLimit-Remaining"); v == "" {
 		t.Errorf("RateLimit-Remaining header absent on 200 response")
+	} else if v != "9" {
+		t.Errorf("RateLimit-Remaining: got %q, want 9 (10 limit minus 1 consumed)", v)
 	}
 }
 
