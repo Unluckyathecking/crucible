@@ -124,6 +124,8 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay; returns on context cancellation.
+// On cancellation no response is written: the proxy already returned 502 to
+// the caller, so writing here would be a no-op on a closed connection.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +135,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			// proxy already responded 502; writing here is a no-op
 		}
 	})
 	return h, &invoked
