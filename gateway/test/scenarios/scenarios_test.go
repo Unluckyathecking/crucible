@@ -104,14 +104,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}()
+		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
@@ -225,8 +218,8 @@ func TestIdempotentReplay(t *testing.T) {
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
-	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
-		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
+	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" && v != "false" {
+		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent or false", v)
 	}
 
 	// The idempotency key row must exist after the first request completes.

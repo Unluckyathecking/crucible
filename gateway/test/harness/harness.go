@@ -66,8 +66,8 @@ func init() {
 // routesMu guards temporary modifications to server.V1Routes.
 var routesMu sync.Mutex
 
-// migrateOnce ensures migrations run exactly once per test process.
-// sync.Once provides safe deduplication even when db.Apply is called concurrently.
+// migrateOnce runs migrations once per test process for speed; the real
+// idempotency guarantee lives in the SQL files themselves (IF NOT EXISTS, etc.).
 var (
 	migrateOnce    sync.Once
 	migrateOnceErr error
