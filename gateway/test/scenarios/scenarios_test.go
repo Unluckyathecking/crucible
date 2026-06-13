@@ -111,8 +111,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -423,11 +425,11 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 500 ms worker delay vs 100 ms proxy timeout: large enough ratio to ensure the
-	// proxy forwards the request before timing out, testing the "forwarded then timed
-	// out" path; small enough to keep the test fast under CI load.
+	// 2 s worker delay vs 100 ms proxy timeout: 20× ratio ensures the proxy timeout
+	// fires reliably even under -race and heavy CI parallelism, while keeping total
+	// test time bounded.
 	client := newTestHTTPClient(t)
-	worker, invoked := slowWorker(500 * time.Millisecond)
+	worker, invoked := slowWorker(2 * time.Second)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
 		o.WorkerTimeoutMS = 100
 	}))
@@ -463,9 +465,10 @@ func TestAuthFailure(t *testing.T) {
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 
-	// Use the harness prefix constant + a clearly-invalid infix so the key is never
-	// in the DB and can never match a real generated key.
-	r := invoke(t, client, ts, harness.TestAPIKeyPrefix+"invalid_"+uuid.New().String())
+	// Synthesise a key that matches the production prefix format but is guaranteed
+	// absent from the database: prefix + 32 uppercase zeros (not base32-random) +
+	// UUID suffix ensures uniqueness without depending on key generation internals.
+	r := invoke(t, client, ts, harness.TestAPIKeyPrefix+strings.Repeat("A", 32)+uuid.New().String())
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
@@ -530,11 +533,11 @@ func TestRequestIDPresent(t *testing.T) {
 	_, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
 
 	r := invoke(t, client, ts, apiKey)
-	rid := r.Header.Get("X-Request-ID")
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
 	}
+	rid := r.Header.Get("X-Request-ID")
 	if rid == "" {
 		t.Fatalf("X-Request-ID header absent on 200 response")
 	}
@@ -627,5 +630,72 @@ func TestCrossCustomerIsolation(t *testing.T) {
 	}
 	if n := ts.CountErrorEvents(t, custB); n != 0 {
 		t.Errorf("customer B error_events = %d, want 0", n)
+	}
+}
+
+// TestIdempotentConcurrentSameKey: two concurrent requests from the same customer with
+// the same Idempotency-Key must both succeed, return identical bodies, and invoke the
+// worker exactly once — the idempotency middleware's INSERT ... ON CONFLICT guarantees
+// exactly-once semantics even under contention.
+func TestIdempotentConcurrentSameKey(t *testing.T) {
+	t.Parallel()
+	worker, invocations := varyingWorker()
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
+	ts.CreatePlan(t, "idemp-conc-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "idemp-conc-"+uuid.New().String()+"@example.com", "idemp-conc-plan")
+
+	idempKey := "concurrent-idemp-" + uuid.New().String()
+	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
+
+	type result struct {
+		status int
+		body   []byte
+		doErr  error
+	}
+	ch := make(chan result, 2)
+	for range 2 {
+		go func() {
+			// Each goroutine uses its own client to avoid connection-pool contention.
+			c := &http.Client{Timeout: 15 * time.Second}
+			defer c.CloseIdleConnections()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+				ts.Server.URL+"/v1/echo",
+				strings.NewReader(`{"input":"concurrent"}`),
+			)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			withIdemp(req)
+			resp, err := c.Do(req)
+			if err != nil {
+				ch <- result{doErr: err}
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			ch <- result{status: resp.StatusCode, body: b}
+		}()
+	}
+	r1 := <-ch
+	r2 := <-ch
+
+	for i, res := range []result{r1, r2} {
+		if res.doErr != nil {
+			t.Errorf("goroutine %d: request error: %v", i+1, res.doErr)
+			continue
+		}
+		if res.status != http.StatusOK {
+			t.Errorf("goroutine %d: want 200, got %d: %s", i+1, res.status, res.body)
+		}
+	}
+	if r1.doErr == nil && r2.doErr == nil && string(r1.body) != string(r2.body) {
+		t.Errorf("concurrent idempotency: bodies differ\n  1: %s\n  2: %s", r1.body, r2.body)
+	}
+	if got := invocations.Load(); got != 1 {
+		t.Errorf("worker invocations: got %d, want 1 (concurrent replay must not invoke worker twice)", got)
+	}
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("usage_events: got %d, want 1 (concurrent replay must not double-bill)", n)
 	}
 }
