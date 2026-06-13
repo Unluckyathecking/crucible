@@ -49,7 +49,7 @@ func postgresDSN(t *testing.T) string {
 	t.Helper()
 	v := os.Getenv("POSTGRES_DSN")
 	if v == "" {
-		t.Skip("POSTGRES_DSN not set; skipping integration test")
+		t.Fatal("POSTGRES_DSN not set; required for integration tests")
 	}
 	return v
 }
@@ -58,7 +58,7 @@ func redisURL(t *testing.T) string {
 	t.Helper()
 	v := os.Getenv("REDIS_URL")
 	if v == "" {
-		t.Skip("REDIS_URL not set; skipping integration test")
+		t.Fatal("REDIS_URL not set; required for integration tests")
 	}
 	return v
 }
@@ -111,13 +111,8 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
-		// defer runs on every function return (both select branches):
-		//   timer.C branch  — timer already fired; Stop() is a no-op, channel already drained.
-		//   Done() branch   — Stop() cancels the timer before it can fire; no goroutine leak.
-		defer timer.Stop()
 		select {
-		case <-timer.C:
+		case <-time.After(delay):
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
