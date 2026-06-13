@@ -5,11 +5,12 @@ BEGIN;
 -- the audit-log link between an error event and the responsible API key.
 --
 -- Safe for re-runs: execute DROP+ADD only when the correct NO ACTION constraint
--- does not already exist. Not safe for concurrent execution (brief constraint gap
--- between DROP and ADD), but migrations run single-threaded on each boot.
+-- does not already exist. The LOCK TABLE below eliminates the brief constraint
+-- gap between DROP and ADD; migrations run single-threaded on each boot anyway
+-- but the explicit lock makes that guarantee structural rather than operational.
 DO $$
 BEGIN
-  -- Guard: error_events table must exist.
+  -- Guard: error_events table must exist (skip on fresh DBs with no prior migration).
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relname = 'error_events' AND c.relkind = 'r'

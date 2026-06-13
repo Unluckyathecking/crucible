@@ -138,7 +138,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel) // keep ctx alive until after the caller reads the body
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -190,6 +190,7 @@ func errorCode(t *testing.T, body []byte) string {
 // TestHappyPath: authenticated POST /v1/echo → 200, response carries the worker's
 // billable_units value, and exactly one usage_events row is written for that customer.
 func TestHappyPath(t *testing.T) {
+	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
 	ts.CreatePlan(t, "hp-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", "hp-plan")
@@ -228,6 +229,7 @@ func TestHappyPath(t *testing.T) {
 // therefore proves the middleware returned the cached copy rather than a coincidentally
 // matching worker call.
 func TestIdempotentReplay(t *testing.T) {
+	t.Parallel()
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
@@ -295,6 +297,7 @@ func TestIdempotentReplay(t *testing.T) {
 // requests fired in rapid succession are all counted in the same 60-second window;
 // there is no boundary to straddle, and no sleep is needed to make the test deterministic.
 func TestRateLimit(t *testing.T) {
+	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
 	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
@@ -341,6 +344,7 @@ func TestRateLimit(t *testing.T) {
 // TestQuotaExceeded: a request that would exceed the seeded monthly cap returns
 // 429 QUOTA_EXCEEDED and leaves no usage_events row for the rejected call.
 func TestQuotaExceeded(t *testing.T) {
+	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	// monthlyCap=1: the first request is admitted and writes one usage_events row.
 	// The second request is rejected by the quota middleware (cap exhausted) and
@@ -379,6 +383,7 @@ func TestQuotaExceeded(t *testing.T) {
 // recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
+	t.Parallel()
 	worker, invoked := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
@@ -415,6 +420,7 @@ func TestWorkerTimeout(t *testing.T) {
 // TestCrossCustomerIsolation: requests from customer A never appear in customer B's
 // usage_events or error_events history, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
+	t.Parallel()
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "iso-plan", 100, 10000)
