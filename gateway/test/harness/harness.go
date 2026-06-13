@@ -389,6 +389,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if ts.DB == nil {
 		t.Fatal("harness: CreateCustomer called on nil TestServer.DB")
 	}
+	if ts.Redis == nil {
+		t.Fatal("harness: CreateCustomer called on nil TestServer.Redis")
+	}
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
