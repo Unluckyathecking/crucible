@@ -286,6 +286,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 // t.Cleanup removes all DB rows belonging to this customer and flushes their Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
+	if email == "" {
+		t.Fatal("harness: CreateCustomer email must be non-empty")
+	}
+	if planID == "" {
+		t.Fatal("harness: CreateCustomer planID must be non-empty")
+	}
 	ctx := context.Background()
 	// Capture the month now so the cleanup closure deletes the same month's quota key
 	// even if the test happens to span a UTC month boundary.
