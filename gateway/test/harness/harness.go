@@ -93,10 +93,21 @@ type TestServer struct {
 
 // NewGatewayTestServer boots the full gateway middleware chain via server.NewRouter against
 // real Postgres and Redis and returns the started test server. Migrations are applied on
-// every call (idempotent: CREATE IF NOT EXISTS, INSERT ON CONFLICT DO NOTHING).
+// every call; each migration file must be idempotent (CREATE TABLE IF NOT EXISTS,
+// INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
 	ctx := context.Background()
+
+	if opts.WorkerHandler == nil {
+		t.Fatal("harness: WorkerHandler is required")
+	}
+	if opts.DSN == "" {
+		t.Fatal("harness: DSN is required")
+	}
+	if opts.RedisURL == "" {
+		t.Fatal("harness: RedisURL is required")
+	}
 
 	if opts.WorkerTimeoutMS <= 0 {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
@@ -174,7 +185,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		// so a panic inside NewRouter cannot corrupt V1Routes or deadlock the mutex.
 		routesMu.Lock()
 		defer routesMu.Unlock()
-		backup := server.V1Routes
+		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
 		handler = server.NewRouter(deps)
@@ -256,18 +267,26 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		logErr := func(table string, err error) {
+			if err != nil {
+				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, err)
+			}
+		}
 		// Child tables before parent (explicit ordering; FK cascade would also work).
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
-		if _, err := ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID); err != nil {
-			t.Logf("harness: cleanup api_keys for customer %s: %v", customerID, err)
-		}
-		if _, err := ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID); err != nil {
-			t.Logf("harness: cleanup customers for customer %s: %v", customerID, err)
-		}
+		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
+		logErr("usage_events", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
+		logErr("idempotency_keys", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
+		logErr("error_events", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
+		logErr("webhook_deliveries", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
+		logErr("webhook_endpoints", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+		logErr("api_keys", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
+		logErr("customers", err)
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
 		// Formats verified against production source (do not change without updating both):
 		//   quota key:    quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"

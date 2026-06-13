@@ -216,6 +216,9 @@ func TestIdempotentReplay(t *testing.T) {
 
 // TestRateLimit: the (limit+1)-th request inside the window returns 429 with
 // Retry-After and/or RateLimit-* headers and the RATE_LIMITED error code.
+// The ratelimit package uses a sliding window (not a fixed-minute bucket), so
+// requests fired in rapid succession are all counted in the same 60-second window;
+// there is no boundary to straddle, and no sleep is needed to make the test deterministic.
 func TestRateLimit(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
@@ -249,9 +252,10 @@ func TestRateLimit(t *testing.T) {
 // 429 QUOTA_EXCEEDED and leaves no usage_events row for the rejected call.
 func TestQuotaExceeded(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	// monthlyCap=1: the quota middleware reserves +1 (counter→1, admitted since 1≤1),
-	// then the recorder adds +1 (counter→2). The second request reserves (counter→3 > 1)
-	// and is denied immediately with no usage row.
+	// monthlyCap=1: the quota middleware calls Reserve (+1, counter→1, admitted since 1≤1).
+	// After worker success, usage.Recorder calls quota.Add(units=1), so counter→2.
+	// The second request calls Reserve (would be counter→3 > cap=1) and is denied
+	// immediately; no worker call is made and no usage_events row is written.
 	ts.CreatePlan(t, "quota-1-plan", 100, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded@example.com", "quota-1-plan")
 
@@ -305,10 +309,12 @@ func TestWorkerTimeout(t *testing.T) {
 		t.Fatalf("want 502 BadGateway on proxy timeout, got %d: %s", r.StatusCode, body)
 	}
 
-	// The response must be an apierror envelope with a non-empty error code.
+	// The response must be an apierror envelope with WORKER_UNREACHABLE.
+	// server/routes.go writes apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...)
+	// for any proxy error including context deadline exceeded.
 	code := errorCode(t, body)
-	if code == "" {
-		t.Errorf("expected non-empty error.code in timeout envelope; body: %s", body)
+	if code != "WORKER_UNREACHABLE" {
+		t.Errorf("error.code: got %q, want WORKER_UNREACHABLE", code)
 	}
 
 	// No usage row: the worker never responded, so Record was never called.
