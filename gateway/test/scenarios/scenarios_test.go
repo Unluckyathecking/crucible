@@ -33,20 +33,23 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// testHTTPClient is a dedicated HTTP client for scenario tests. Using a shared
-// client (rather than http.DefaultClient) prevents cross-test interference and
-// ensures Transport settings are not inadvertently mutated.
-var testHTTPClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		TLSHandshakeTimeout:   5 * time.Second,
-		MaxIdleConns:          10,
-		MaxIdleConnsPerHost:   5,
-		MaxConnsPerHost:       10,
-		IdleConnTimeout:       30 * time.Second,
-		ForceAttemptHTTP2:     false,
-	},
+// newTestHTTPClient returns a fresh HTTP client for each caller. A fresh client per
+// call prevents cross-test state sharing (Transport internals, Jar, CheckRedirect).
+// ForceAttemptHTTP2:false matches httptest.NewServer which uses HTTP/1.1; disabling
+// HTTP/2 negotiation avoids spurious ALPN/TLS overhead on loopback connections.
+func newTestHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 5 * time.Second,
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 5,
+			MaxConnsPerHost:     10,
+			IdleConnTimeout:     30 * time.Second,
+			ForceAttemptHTTP2:   false,
+		},
+	}
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -123,10 +126,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) 
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			if r.Context().Err() != nil {
-				cancelled.Store(true)
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -157,7 +156,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	for _, fn := range mutators {
 		fn(req)
 	}
-	resp, err := testHTTPClient.Do(req)
+	resp, err := newTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
