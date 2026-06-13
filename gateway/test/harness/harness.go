@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -244,6 +245,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
 	}
+	if ratePerMinute < 0 {
+		t.Fatal("harness: CreatePlan ratePerMinute must be >= 0 (use 0 for unlimited)")
+	}
 	if monthlyCap < 0 {
 		t.Fatal("harness: CreatePlan monthlyCap must be >= 0 (use 0 for unlimited)")
 	}
@@ -253,7 +257,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	// row that wasn't created by this call (e.g. a seeded "free" or "pro" plan).
 	var (
 		prevRate int
-		prevCap  *int64
+		prevCap  pgtype.Int8 // nullable int8; Valid=false when NULL (unlimited)
 		existed  bool
 	)
 	if err := ts.DB.QueryRow(ctx,
@@ -281,10 +285,16 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if existed {
-			// Restore the original rate/cap rather than deleting a pre-existing plan row.
+			// Restore the original rate/cap. prevCap.Valid=false means the original
+			// cap was NULL (unlimited), so we restore NULL by passing a nil *int64.
+			var restoredCap *int64
+			if prevCap.Valid {
+				v := prevCap.Int64
+				restoredCap = &v
+			}
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
-				id, prevRate, prevCap,
+				id, prevRate, restoredCap,
 			); err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
 			}
