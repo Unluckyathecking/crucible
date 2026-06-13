@@ -4,9 +4,8 @@ SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
 -- Ensure error_events.api_key_id FK is ON DELETE NO ACTION.
--- DROP CONSTRAINT IF EXISTS + ADD under ACCESS EXCLUSIVE lock is idempotent:
--- it repairs any prior wrong delete rule (CASCADE, SET NULL, RESTRICT, etc.)
--- and is a no-op if the tables do not yet exist.
+-- DROP CONSTRAINT IF EXISTS + ADD is idempotent: repairs any prior wrong delete
+-- rule (CASCADE, SET NULL, RESTRICT, etc.) and is a no-op if tables do not exist.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -19,9 +18,11 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
   ) THEN RETURN; END IF;
 
-  -- Lock both tables before touching the FK: ADD CONSTRAINT requires ACCESS
-  -- EXCLUSIVE on the referenced table (api_keys) to validate the FK.
-  LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
+  -- Remove orphaned rows before (re-)adding the FK so ADD CONSTRAINT validation
+  -- cannot fail on stale error_events that reference a deleted api_keys row.
+  DELETE FROM public.error_events
+  WHERE api_key_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id);
 
   ALTER TABLE public.error_events
     DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
