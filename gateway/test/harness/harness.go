@@ -1,7 +1,7 @@
 // Package harness provides NewGatewayTestServer, a reusable test helper that boots
 // the full gateway middleware chain (server.NewRouter) against real Postgres and Redis,
-// plus an in-process worker stub. Product clones copy this package verbatim to assert
-// end-to-end behaviour and resulting DB state without mocking storage.
+// plus an in-process worker stub. Tests that exercise real storage catch schema–query
+// drift and middleware interaction effects that mocks cannot.
 //
 // Usage contract:
 //   - DSN and RedisURL must point at real, running services (no mocks).
@@ -55,6 +55,12 @@ const (
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
 	defaultDBPoolSize      = 5
 )
+
+func init() {
+	if len(TestSalt) < 32 {
+		panic("harness: TestSalt must be >= 32 bytes")
+	}
+}
 
 // routesMu guards temporary modifications to server.V1Routes.
 // NewRouter reads the package-level var at call time, so any caller that
@@ -169,8 +175,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
 	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
-	// endpoint is not exercised by the scenario suite.
-	webhook := billing.NewWebhook("test-webhook-secret-dummy", pool)
+	// endpoint is not exercised by the scenario suite. Use a whsec_-prefixed value
+	// that matches the format Stripe generates.
+	webhook := billing.NewWebhook("whsec_test_dummy_secret_32bytes!!", pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
@@ -194,11 +201,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	routesMu.Lock()
 	defer routesMu.Unlock()
 	if opts.Routes != nil {
-		// Shallow copy is correct here: we replace the slice variable entirely
-		// (server.V1Routes = opts.Routes / server.V1Routes = backup) and never mutate
-		// individual RouteDescriptor fields. Go strings are immutable; *Schema pointers
-		// are read by NewRouter but not mutated. Callers must treat opts.Routes as
-		// immutable after this call.
+		// Copy the current slice so we can restore it after NewRouter reads the var.
+		// We only ever replace the slice variable itself, never mutate individual elements.
+		// Callers must not modify opts.Routes elements after this call.
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
@@ -269,11 +274,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
 				id, prevRate, prevCap,
 			); err != nil {
-				t.Logf("harness: restore plan %q: %v", id, err)
+				t.Errorf("harness: restore plan %q: %v", id, err)
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Logf("harness: cleanup plan %q: %v", id, err)
+				t.Errorf("harness: cleanup plan %q: %v", id, err)
 			}
 		}
 	})
@@ -324,6 +329,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		defer cancel()
 		logErr := func(table string, e error) {
 			if e != nil {
+				// Log rather than fail: each customer is UUID-isolated so a cleanup
+				// failure does not corrupt other tests. The async errorlog.Record goroutine
+				// (2 s timeout) may insert an error_events row after the error_events
+				// DELETE but before the api_keys DELETE, causing a transient FK violation;
+				// logging keeps the cleanup running so subsequent tables are still deleted.
 				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 			}
 		}
