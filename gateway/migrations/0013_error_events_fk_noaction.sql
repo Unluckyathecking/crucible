@@ -19,10 +19,11 @@ BEGIN
   ) THEN RETURN; END IF;
 
   -- Remove orphaned rows before (re-)adding the FK so ADD CONSTRAINT validation
-  -- cannot fail on stale error_events that reference a deleted api_keys row.
-  DELETE FROM public.error_events
-  WHERE api_key_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id);
+  -- cannot fail on stale error_events referencing a deleted api_keys row.
+  -- Explicit alias 'e' makes the correlated reference unambiguous.
+  DELETE FROM public.error_events AS e
+  WHERE e.api_key_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = e.api_key_id);
 
   ALTER TABLE public.error_events
     DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
