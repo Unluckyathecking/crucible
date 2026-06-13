@@ -4,7 +4,8 @@ SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
 -- Restore error_events.api_key_id FK to ON DELETE NO ACTION.
--- confdeltype: 'a'=NO ACTION (target), 'n'=SET NULL (incorrect prior state)
+-- pg_constraint.confdeltype codes (https://www.postgresql.org/docs/current/catalog-pg-constraint.html):
+--   'a'=NO ACTION (target), 'r'=RESTRICT, 'c'=CASCADE, 'n'=SET NULL, 'd'=SET DEFAULT
 DO $$
 BEGIN
   IF NOT EXISTS (

@@ -384,10 +384,15 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
 			if retryErr == nil {
+				finalKeyErr = nil
 				break
 			}
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
+				if cctx.Err() != nil {
+					finalKeyErr = cctx.Err()
+					break
+				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				fixCancel()

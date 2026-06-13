@@ -104,7 +104,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
@@ -304,7 +311,7 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-// TestQuotaExceeded: (cap+1)-th request returns 429 QUOTA_EXCEEDED; no usage row written.
+// TestQuotaExceeded: second request exceeds cap of 1; returns 429 QUOTA_EXCEEDED; no additional usage row written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
