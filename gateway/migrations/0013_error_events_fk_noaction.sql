@@ -42,7 +42,7 @@ BEGIN
   -- (true orphans) are removed.
   DELETE FROM public.error_events
   WHERE api_key_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = api_key_id);
+    AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id);
 
   -- Drop the constraint only when it already exists (with the wrong delete rule).
   -- The unconditional DROP (no IF EXISTS) inside the IF branch keeps the pattern

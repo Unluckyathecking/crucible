@@ -107,21 +107,8 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
-		defer func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}()
 		select {
-		case <-timer.C:
-			// Write unconditionally: if the proxy already cancelled the context,
-			// the write will fail silently on a closed connection and the proxy has
-			// already sent 502 to the client. Checking r.Context().Err() here would
-			// introduce a TOCTOU between the select and the check.
+		case <-time.After(delay):
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():

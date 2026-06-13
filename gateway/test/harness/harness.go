@@ -1,8 +1,9 @@
 // Package harness provides NewGatewayTestServer: a test helper that boots the
 // full gateway middleware chain against real Postgres and Redis with an in-process
 // worker stub. DSN and RedisURL are required; callers set Options fields as needed.
-// Migrations must be applied before running tests; all SQL files use idempotent
-// patterns (IF NOT EXISTS, DROP IF EXISTS, DO blocks with guard queries).
+// Migrations are applied automatically once per test process via sync.Once; structural
+// SQL uses idempotent patterns (IF NOT EXISTS, DO blocks with guard queries) where
+// possible, though some migrations include non-idempotent data-repair steps.
 package harness
 
 import (
@@ -160,8 +161,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Cleanup(pool.Close)
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	defer redisCancel()
 	rdb, err := cache.NewRedis(redisCtx, opts.RedisURL)
-	redisCancel()
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
