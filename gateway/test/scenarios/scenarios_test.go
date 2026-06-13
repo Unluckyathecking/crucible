@@ -298,8 +298,12 @@ func TestHappyPath(t *testing.T) {
 	if inv.BillableUnits != 3 {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
 	}
-	if len(inv.Payload) == 0 || string(inv.Payload) == "null" {
-		t.Errorf("payload: got empty or null, want non-empty object from worker")
+	var payloadObj map[string]json.RawMessage
+	if err := json.Unmarshal(inv.Payload, &payloadObj); err != nil {
+		t.Fatalf("payload: unmarshal failed: %v\nbody: %s", err, body)
+	}
+	if len(payloadObj) != 0 {
+		t.Errorf("payload: got %v, want empty object {}", payloadObj)
 	}
 
 	// usage.Recorder.Record is synchronous; the row is committed before the HTTP response.
@@ -605,23 +609,21 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", sharedKey) }
 
 	r1 := invoke(t, client, ts, keyA, withIdemp)
-	replayA := r1.Header.Get("X-Idempotent-Replayed")
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("customer A first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
-	if replayA != "" {
-		t.Errorf("customer A first request: X-Idempotent-Replayed = %q, want absent", replayA)
+	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("customer A first request: X-Idempotent-Replayed = %q, want absent", v)
 	}
 
 	r2 := invoke(t, client, ts, keyB, withIdemp)
-	replayB := r2.Header.Get("X-Idempotent-Replayed")
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("customer B first request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
-	if replayB != "" {
-		t.Errorf("customer B first request: X-Idempotent-Replayed = %q, want absent (different customer)", replayB)
+	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("customer B first request: X-Idempotent-Replayed = %q, want absent (different customer)", v)
 	}
 	// varyingWorker embeds an incrementing counter; equal bodies would mean B was served A's cached payload.
 	if string(body1) == string(body2) {

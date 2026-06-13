@@ -425,12 +425,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
 	customerID := uuid.New()
-	var inserted bool
 
 	t.Cleanup(func() {
-		if !inserted {
-			return
-		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		// Redis keys are always cleaned up on function exit, regardless of whether DB
@@ -562,7 +558,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
-	inserted = true
 
 	hash := auth.Hash(testSalt, full)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), 10*time.Second)
