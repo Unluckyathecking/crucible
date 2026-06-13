@@ -379,6 +379,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// cleanup succeeds. A fresh context is used so DB timeout exhaustion cannot
 		// cancel the Redis DEL. DEL on non-existent keys returns 0 (not an error).
 		defer func() {
+			if ts.Redis == nil {
+				return
+			}
 			rctx, rcancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
 			defer rcancel()
 			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
