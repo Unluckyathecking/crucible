@@ -98,6 +98,26 @@ var (
 	migrateErr  error
 )
 
+// runMigrations applies schema migrations against pool exactly once per test
+// process. The defer inside the closure keeps the lock scope narrow: it is
+// released as soon as the migration check/apply block exits, before Redis,
+// auth-store, or any other initialisation begins. This avoids a serialisation
+// bottleneck for parallel tests where migrations are already done on subsequent
+// calls (migrateDone == true, so the lock-hold time is near-zero).
+func runMigrations(pool *pgxpool.Pool) error {
+	migrateMu.Lock()
+	defer migrateMu.Unlock()
+	if !migrateDone {
+		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+		migrateErr = db.Apply(ctx, pool)
+		cancel()
+		if migrateErr == nil {
+			migrateDone = true
+		}
+	}
+	return migrateErr
+}
+
 // Options configures a gateway test server.
 type Options struct {
 	// Routes overrides server.V1Routes. Nil means use production routes.
@@ -177,18 +197,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// keeping the pool open while workerSrv drains in-flight requests.
 	// pgxpool.Pool.Close() has no error return; direct registration is correct.
 	t.Cleanup(pool.Close)
-	migrateMu.Lock()
-	defer migrateMu.Unlock()
-	if !migrateDone {
-		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
-		migrateErr = db.Apply(applyCtx, pool)
-		applyCancel()
-		if migrateErr == nil {
-			migrateDone = true
-		}
-	}
-	if migrateErr != nil {
-		t.Fatalf("harness: apply migrations: %v", migrateErr)
+	if err := runMigrations(pool); err != nil {
+		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)

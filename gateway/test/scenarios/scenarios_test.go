@@ -30,7 +30,7 @@ const (
 	defaultTestMonthlyCap = 10_000
 
 	// HTTP client constants for newTestHTTPClient.
-	testClientTimeout       = 15 * time.Second
+	testClientTimeout       = 25 * time.Second // must exceed testDialTimeout + testRequestTimeout + body-drain margin
 	testDialTimeout         = 5 * time.Second
 	testIdleConnTimeout     = 30 * time.Second
 	testMaxIdleConns        = 10
@@ -101,7 +101,7 @@ func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Optio
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
 	})
 }
 
@@ -111,7 +111,7 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
 	})
 	return h, &count
 }
@@ -122,7 +122,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
+		_, _ = fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
 	})
 	return h, &count
 }
@@ -138,8 +138,15 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
+			// Re-check context: proxy may have already cancelled it if the
+			// timer and context.Done fired concurrently. Writing to a
+			// cancelled request is harmless in httptest, but the guard makes
+			// the intent explicit.
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			return
 		}
