@@ -409,14 +409,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
 	defer planCancel()
 	var dummy int
-	err = ts.DB.QueryRow(planCtx,
+	planErr := ts.DB.QueryRow(planCtx,
 		`SELECT 1 FROM plans WHERE id = $1`, planID,
 	).Scan(&dummy)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(planErr, pgx.ErrNoRows) {
 		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
 	}
-	if err != nil {
-		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
+	if planErr != nil {
+		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, planErr)
 	}
 
 	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
