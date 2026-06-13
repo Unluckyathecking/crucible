@@ -189,8 +189,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// authStore.Close stops the background last_used_at goroutine and drains its queue.
-	// It does NOT close the injected pool or rdb; those are cleaned up by their own t.Cleanup above.
+	// authStore.Close is registered last so it runs first (t.Cleanup is LIFO).
+	// It stops the background last_used_at goroutine and drains its queue while
+	// pool and rdb are still open. It does NOT close pool or rdb itself.
 	t.Cleanup(authStore.Close)
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
@@ -388,6 +389,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 			rctx, rcancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
 			defer rcancel()
+			// Key formats mirror the production packages (verified against source):
+			//   quota.Tracker: "quota:<customerID>:<YYYY-MM>"  (internal/quota/tracker.go)
+			//   ratelimit.Bucket: "rl:<customerID>"            (internal/ratelimit/bucket.go)
+			//   auth.Store: "auth:<prefix>"                    (internal/auth/store.go)
 			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 			nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
 			rlKey := "rl:" + customerID.String()
