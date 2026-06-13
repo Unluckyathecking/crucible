@@ -14,28 +14,26 @@ BEGIN;
 -- Idempotent two-phase approach:
 --   Phase 1: drop the constraint if it exists with the wrong delete action.
 --   Phase 2: add the constraint if it does not exist (handles fresh DBs and phase 1 drop).
--- Schema-qualified via pg_namespace join AND schema-prefixed regclass casts to avoid
--- search_path ambiguity.
 --
 -- PostgreSQL confdeltype codes: 'a'=NO ACTION, 'n'=SET NULL, 'c'=CASCADE,
 -- 'r'=RESTRICT, 'd'=SET DEFAULT. Phase 1 drops anything that is not 'a' (NO ACTION).
--- to_regclass() is used instead of a cast so an unresolvable name returns NULL rather
--- than raising an error, and it is not affected by search_path.
+--
+-- Table resolution uses pg_class + pg_namespace joins on relname/nspname strings,
+-- avoiding regclass casts and to_regclass() so there is no oid/regclass type mismatch
+-- and no NULL comparison risk when a table does not yet exist.
 DO $$
 BEGIN
   -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL='n').
-  -- to_regclass() returns NULL when the table doesn't exist; the IS NOT NULL guard
-  -- prevents the comparison from evaluating to UNKNOWN (NULL) on a fresh DB.
   IF EXISTS (
     SELECT 1 FROM pg_constraint c
-    JOIN pg_namespace n ON n.oid = c.connamespace
-    WHERE n.nspname   = 'public'
-      AND c.conname   = 'error_events_api_key_id_fkey'
-      AND to_regclass('public.error_events') IS NOT NULL
-      AND to_regclass('public.api_keys') IS NOT NULL
-      AND c.conrelid  = to_regclass('public.error_events')
-      AND c.confrelid = to_regclass('public.api_keys')
-      AND c.contype   = 'f'
+    JOIN pg_class     et ON et.oid = c.conrelid
+    JOIN pg_class     ak ON ak.oid = c.confrelid
+    JOIN pg_namespace en ON en.oid = et.relnamespace
+    JOIN pg_namespace an ON an.oid = ak.relnamespace
+    WHERE en.nspname = 'public' AND et.relname = 'error_events'
+      AND an.nspname = 'public' AND ak.relname = 'api_keys'
+      AND c.conname  = 'error_events_api_key_id_fkey'
+      AND c.contype  = 'f'
       AND c.confdeltype <> 'a'
   ) THEN
     ALTER TABLE public.error_events DROP CONSTRAINT error_events_api_key_id_fkey;
@@ -44,14 +42,14 @@ BEGIN
   -- Phase 2: add if absent (fresh DB or just dropped above).
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint c
-    JOIN pg_namespace n ON n.oid = c.connamespace
-    WHERE n.nspname   = 'public'
-      AND c.conname   = 'error_events_api_key_id_fkey'
-      AND to_regclass('public.error_events') IS NOT NULL
-      AND to_regclass('public.api_keys') IS NOT NULL
-      AND c.conrelid  = to_regclass('public.error_events')
-      AND c.confrelid = to_regclass('public.api_keys')
-      AND c.contype   = 'f'
+    JOIN pg_class     et ON et.oid = c.conrelid
+    JOIN pg_class     ak ON ak.oid = c.confrelid
+    JOIN pg_namespace en ON en.oid = et.relnamespace
+    JOIN pg_namespace an ON an.oid = ak.relnamespace
+    WHERE en.nspname = 'public' AND et.relname = 'error_events'
+      AND an.nspname = 'public' AND ak.relname = 'api_keys'
+      AND c.conname  = 'error_events_api_key_id_fkey'
+      AND c.contype  = 'f'
   ) THEN
     ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id);
