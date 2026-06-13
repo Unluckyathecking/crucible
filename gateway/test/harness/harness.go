@@ -178,6 +178,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// pgxpool.Pool.Close() has no error return; direct registration is correct.
 	t.Cleanup(pool.Close)
 	migrateMu.Lock()
+	defer migrateMu.Unlock()
 	if !migrateDone {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 		migrateErr = db.Apply(applyCtx, pool)
@@ -186,10 +187,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 			migrateDone = true
 		}
 	}
-	curMigrateErr := migrateErr
-	migrateMu.Unlock()
-	if curMigrateErr != nil {
-		t.Fatalf("harness: apply migrations: %v", curMigrateErr)
+	if migrateErr != nil {
+		t.Fatalf("harness: apply migrations: %v", migrateErr)
 	}
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
