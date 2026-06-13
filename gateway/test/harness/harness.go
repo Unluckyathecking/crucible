@@ -22,7 +22,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -221,25 +220,21 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
-	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
-	// The lock is intentionally held through server.NewRouter so that NewRouter
-	// reads the swapped V1Routes atomically — releasing before NewRouter would
-	// allow a concurrent caller to overwrite V1Routes before NewRouter reads it.
-	// defer Unlock + deferred restore guarantee the global is always unwound even
-	// on panic, at the cost of serializing custom-route tests (acceptable since
-	// those callers must not call t.Parallel per the Options doc comment).
+	// routesMu is always held while calling server.NewRouter so that
+	// server.V1Routes cannot be mutated by a concurrent custom-route caller
+	// while a non-custom caller reads it inside NewRouter.
+	if opts.Routes != nil && len(opts.Routes) == 0 {
+		t.Fatal("harness: Routes must be non-empty; use nil for production routes")
+	}
+	routesMu.Lock()
+	orig := server.V1Routes
 	if opts.Routes != nil {
-		if len(opts.Routes) == 0 {
-			t.Fatal("harness: Routes must be non-empty; use nil for production routes")
-		}
-		routesMu.Lock()
-		defer routesMu.Unlock()
-		// Capture the slice header before any allocation so the restore defer
-		// is registered while server.V1Routes still holds the original value.
-		orig := server.V1Routes
-		defer func() { server.V1Routes = orig }()
 		server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
 	}
+	defer func() {
+		server.V1Routes = orig
+		routesMu.Unlock()
+	}()
 	handler := server.NewRouter(deps)
 
 	gw := httptest.NewServer(handler)
@@ -274,7 +269,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 
 	var (
 		prevRate int64
-		prevCap  pgtype.Int8
+		prevCap  *int64 // nil = NULL (unlimited)
 		prevName string
 		existed  bool
 	)
@@ -305,14 +300,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
-			var restoredCap *int64
-			if prevCap.Valid {
-				v := prevCap.Int64
-				restoredCap = &v
-			}
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-				id, prevRate, restoredCap, prevName,
+				id, prevRate, prevCap, prevName,
 			); err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
 				return
