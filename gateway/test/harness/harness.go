@@ -47,7 +47,7 @@ const (
 
 	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
 	// Mirrors config.Config.APIKeyPrefix set inside NewGatewayTestServer so both
-	// the gateway auth middleware and CreateCustomer use the same value.
+	// the gateway auth middleware and CreateCustomer use the identical value.
 	TestAPIKeyPrefix = "cru_"
 
 	defaultWorkerTimeoutMS = 5000      // generous default; set low in Options to test timeout scenarios
