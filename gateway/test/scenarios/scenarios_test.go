@@ -115,13 +115,18 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			return
 		}
+		// Guard: if both channels were ready simultaneously Go picks randomly;
+		// check context before writing to avoid sending on a cancelled connection.
+		if r.Context().Err() != nil {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 	return h, &invoked
 }
@@ -634,9 +639,9 @@ func TestCrossCustomerIsolation(t *testing.T) {
 }
 
 // TestIdempotentConcurrentSameKey: two concurrent requests from the same customer with
-// the same Idempotency-Key must both succeed, return identical bodies, and invoke the
-// worker exactly once — the idempotency middleware's INSERT ... ON CONFLICT guarantees
-// exactly-once semantics even under contention.
+// the same Idempotency-Key must both succeed, return identical bodies, invoke the worker
+// exactly once, and mark exactly one response as a replay — the idempotency middleware's
+// INSERT ... ON CONFLICT guarantees exactly-once semantics even under contention.
 func TestIdempotentConcurrentSameKey(t *testing.T) {
 	t.Parallel()
 	worker, invocations := varyingWorker()
@@ -648,22 +653,34 @@ func TestIdempotentConcurrentSameKey(t *testing.T) {
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
 
 	type result struct {
-		status int
-		body   []byte
-		doErr  error
+		status   int
+		body     []byte
+		replayed string
+		doErr    error
 	}
 	ch := make(chan result, 2)
 	for range 2 {
 		go func() {
-			// Each goroutine uses its own client to avoid connection-pool contention.
+			// Deferred recover ensures ch always receives exactly one value per
+			// goroutine even if an unexpected panic occurs, preventing the main
+			// goroutine from blocking on the channel receive indefinitely.
+			defer func() {
+				if r := recover(); r != nil {
+					ch <- result{doErr: fmt.Errorf("goroutine panic: %v", r)}
+				}
+			}()
 			c := &http.Client{Timeout: 15 * time.Second}
 			defer c.CloseIdleConnections()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 				ts.Server.URL+"/v1/echo",
 				strings.NewReader(`{"input":"concurrent"}`),
 			)
+			if err != nil {
+				ch <- result{doErr: err}
+				return
+			}
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Set("Content-Type", "application/json")
 			withIdemp(req)
@@ -672,9 +689,10 @@ func TestIdempotentConcurrentSameKey(t *testing.T) {
 				ch <- result{doErr: err}
 				return
 			}
+			replayed := resp.Header.Get("X-Idempotent-Replayed")
 			defer resp.Body.Close()
 			b, _ := io.ReadAll(resp.Body)
-			ch <- result{status: resp.StatusCode, body: b}
+			ch <- result{status: resp.StatusCode, body: b, replayed: replayed}
 		}()
 	}
 	r1 := <-ch
@@ -691,6 +709,17 @@ func TestIdempotentConcurrentSameKey(t *testing.T) {
 	}
 	if r1.doErr == nil && r2.doErr == nil && string(r1.body) != string(r2.body) {
 		t.Errorf("concurrent idempotency: bodies differ\n  1: %s\n  2: %s", r1.body, r2.body)
+	}
+	// Exactly one response must carry X-Idempotent-Replayed: the request that lost the
+	// INSERT race gets the cached result; the winner proceeds to the worker normally.
+	replays := 0
+	for _, res := range []result{r1, r2} {
+		if res.doErr == nil && res.replayed == "true" {
+			replays++
+		}
+	}
+	if replays != 1 {
+		t.Errorf("X-Idempotent-Replayed: %d responses marked as replay, want exactly 1", replays)
 	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1 (concurrent replay must not invoke worker twice)", got)
