@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -29,6 +30,18 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
+
+// testHTTPClient is a dedicated HTTP client for scenario tests. Using a shared
+// client (rather than http.DefaultClient) prevents cross-test interference and
+// ensures Transport settings are not inadvertently mutated.
+var testHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConnsPerHost: 10,
+	},
+}
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -93,10 +106,10 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
-// Returns the handler and an atomic flag that is set true when the handler is invoked,
-// so callers can verify the proxy reached the worker before timing out.
-func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
-	var invoked atomic.Bool
+// Returns the handler, an invoked flag (set when the handler starts), and a cancelled
+// flag (set when the proxy disconnects and the handler detects context cancellation).
+func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) {
+	var invoked, cancelled atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
@@ -108,13 +121,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			cancelled.Store(true)
 			if !timer.Stop() {
 				<-timer.C
 			}
 			return
 		}
 	})
-	return h, &invoked
+	return h, &invoked, &cancelled
 }
 
 // invoke sends POST /v1/echo to the gateway server with the given API key and optional
@@ -137,7 +151,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	for _, fn := range mutators {
 		fn(req)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testHTTPClient.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
@@ -369,7 +383,7 @@ func TestQuotaExceeded(t *testing.T) {
 // recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
-	worker, invoked := slowWorker(500 * time.Millisecond)
+	worker, invoked, cancelled := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
@@ -404,6 +418,12 @@ func TestWorkerTimeout(t *testing.T) {
 	// The proxy must have reached the worker before timing out.
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
+	}
+	// Give the worker goroutine a moment to process r.Context().Done() after the
+	// proxy disconnects, then assert that the cancellation path was taken.
+	time.Sleep(200 * time.Millisecond)
+	if !cancelled.Load() {
+		t.Error("worker did not detect context cancellation via r.Context().Done()")
 	}
 }
 
