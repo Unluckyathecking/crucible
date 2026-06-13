@@ -14,13 +14,19 @@ BEGIN;
 -- Idempotent: checks pg_constraint.confdeltype before altering ('a' = NO ACTION).
 DO $$
 BEGIN
+  -- Acquire an exclusive lock before checking pg_constraint to prevent
+  -- concurrent migration processes from both observing the old constraint
+  -- and both attempting to drop/recreate it simultaneously.
+  LOCK TABLE error_events IN SHARE ROW EXCLUSIVE MODE;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'error_events_api_key_id_fkey'
       AND conrelid  = 'error_events'::regclass
       AND confrelid = 'api_keys'::regclass
-      AND contype   = 'f'
-      AND confdeltype = 'a'
+      AND contype      = 'f'
+      AND confdeltype  = 'a'
+      AND confupdtype  = 'a'
   ) THEN
     ALTER TABLE error_events DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey
