@@ -100,15 +100,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// A deferred timer.Stop() prevents the timer from firing if the handler
-// returns early via context cancellation; the timer is garbage collected
-// after the handler returns regardless of whether the channel was read.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -117,6 +113,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
