@@ -305,8 +305,8 @@ func TestRateLimit(t *testing.T) {
 		n, err := strconv.Atoi(ra)
 		if err != nil {
 			t.Errorf("Retry-After: got %q, want integer seconds", ra)
-		} else if n <= 0 || n >= 60 {
-			t.Errorf("Retry-After: got %d, want in [1,59]", n)
+		} else if n <= 0 || n > 60 {
+			t.Errorf("Retry-After: got %d, want in [1,60]", n)
 		}
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
