@@ -59,7 +59,10 @@ BEGIN
   -- Full repair path: acquire exclusive lock, purge orphans, recreate the FK.
   -- ACCESS EXCLUSIVE prevents concurrent inserts of orphaned rows between the
   -- DROP and ADD steps.
-  LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
+  -- Lock both tables: locking only error_events leaves a window where a concurrent
+  -- transaction could delete an api_keys row between the orphan purge and the
+  -- VALIDATE CONSTRAINT scan, creating a new orphan that fails validation.
+  LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
 
   -- Purge orphaned rows (api_key_id non-NULL but the api_keys row is gone)
   -- before re-adding the FK so VALIDATE CONSTRAINT cannot fail on stale data.

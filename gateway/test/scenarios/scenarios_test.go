@@ -27,17 +27,20 @@ import (
 // intent of per-test isolation. Each test drives its own httptest.Server, so per-test
 // clients avoid cross-test connection-pool interference under t.Parallel(). httptest.NewServer
 // uses HTTP/1.1 (non-TLS), so all requests use HTTP/1.1.
-func newTestHTTPClient() *http.Client {
-	return &http.Client{
+func newTestHTTPClient(t *testing.T) *http.Client {
+	t.Helper()
+	c := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 			MaxIdleConns:        10,
 			MaxIdleConnsPerHost: 5,
 			MaxConnsPerHost:     10,
-			IdleConnTimeout: 30 * time.Second,
+			IdleConnTimeout:     30 * time.Second,
 		},
 	}
+	t.Cleanup(c.CloseIdleConnections)
+	return c
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -107,17 +110,21 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-			if r.Context().Err() != nil {
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+			// timer fired; write below
 		case <-r.Context().Done():
 			if !timer.Stop() {
 				<-timer.C
 			}
 			return
 		}
+		// Separate context check after the select so the write never races a
+		// cancelled response: the proxy may cancel the context concurrently
+		// with the timer firing, so we re-check before touching w.
+		if r.Context().Err() != nil {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 	return h, &invoked
 }
@@ -184,7 +191,7 @@ func errorCode(t *testing.T, body []byte) string {
 // TestHappyPath: authenticated POST /v1/echo → 200, correct billable_units, one usage row.
 func TestHappyPath(t *testing.T) {
 	t.Parallel()
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
 	ts.CreatePlan(t, "hp-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", "hp-plan")
@@ -222,7 +229,7 @@ func TestHappyPath(t *testing.T) {
 // TestIdempotentReplay: same Idempotency-Key twice returns cached response; worker invoked once.
 func TestIdempotentReplay(t *testing.T) {
 	t.Parallel()
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
@@ -291,7 +298,7 @@ func TestIdempotentReplay(t *testing.T) {
 // 60-second sliding window — no minute-boundary race is possible at this timescale.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
@@ -353,7 +360,7 @@ func TestRateLimit(t *testing.T) {
 // the second request is rejected before reaching the worker and no additional usage_events row is written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "quota-1-plan", 100, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", "quota-1-plan")
@@ -386,7 +393,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// 500 ms worker delay vs 100 ms proxy timeout: large enough ratio to ensure the
 	// proxy forwards the request before timing out, testing the "forwarded then timed
 	// out" path; small enough to keep the test fast under CI load.
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	worker, invoked := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
@@ -412,25 +419,10 @@ func TestWorkerTimeout(t *testing.T) {
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
-	// The error recorder writes asynchronously in a background goroutine with a 2s
-	// deadline; poll with a ticker until the row appears (up to 5 s) before asserting.
-	var nErr int64
-	pollCtx, pollCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer pollCancel()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-poll:
-	for {
-		select {
-		case <-ticker.C:
-			nErr = ts.CountErrorEvents(t, customerID)
-			if nErr >= 1 {
-				break poll
-			}
-		case <-pollCtx.Done():
-			break poll
-		}
-	}
+	// The error recorder writes asynchronously with a 2s deadline; wait for it
+	// with a single sleep rather than polling to reduce database load.
+	time.Sleep(3 * time.Second)
+	nErr := ts.CountErrorEvents(t, customerID)
 	if nErr != 1 {
 		t.Errorf("error_events after timeout: got %d rows, want 1", nErr)
 	}
@@ -439,7 +431,7 @@ poll:
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	t.Parallel()
-	client := newTestHTTPClient()
+	client := newTestHTTPClient(t)
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "iso-plan", 100, 10000)
