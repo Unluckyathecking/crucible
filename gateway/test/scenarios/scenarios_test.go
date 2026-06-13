@@ -108,7 +108,12 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			timer.Stop()
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
 		}
 	})
@@ -307,16 +312,16 @@ func TestRateLimit(t *testing.T) {
 	}
 	// ratelimit.Middleware sets Retry-After, RateLimit-Limit, and RateLimit-Remaining
 	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
+	// ratelimit.Middleware sets Retry-After as integer seconds (RFC 6585 §4).
 	if ra := r.Header.Get("Retry-After"); ra == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
-	} else if n, err := strconv.Atoi(ra); err == nil {
-		// Integer-seconds format: verify it falls within the 60-second sliding window.
-		if n < 1 || n > 60 {
-			t.Errorf("Retry-After: got integer %d, want in [1,60]", n)
+	} else {
+		n, err := strconv.Atoi(ra)
+		if err != nil {
+			t.Errorf("Retry-After: got %q, want integer seconds", ra)
+		} else if n < 1 || n > 60 {
+			t.Errorf("Retry-After: got %d, want in [1,60]", n)
 		}
-	} else if _, err := http.ParseTime(ra); err != nil {
-		// Not integer and not a valid RFC 7231 HTTP-date.
-		t.Errorf("Retry-After: got %q, want integer in [1,60] or HTTP-date", ra)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)

@@ -44,6 +44,8 @@ import (
 const (
 	// TestSalt is the API key hash salt used by all harness instances.
 	// Must be >= 32 bytes (config.Load enforces this at runtime).
+	// WARNING: test-only value — never use a hardcoded salt in production;
+	// always generate via crypto/rand or load from secure configuration.
 	TestSalt = "crucible-harness-test-salt-min32!!"
 
 	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
@@ -356,6 +358,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
+		if err != nil {
+			// Retry: the async errorlog.Record goroutine (2 s timeout) may insert an
+			// error_events row between the earlier error_events DELETE and this api_keys
+			// DELETE, causing a transient FK violation. Re-delete error_events then retry.
+			logErr("api_keys (first attempt)", err)
+			_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+			_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+		}
 		logErr("api_keys", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		logErr("customers", err)
