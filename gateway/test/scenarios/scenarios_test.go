@@ -36,6 +36,7 @@ func newTestHTTPClient() *http.Client {
 			MaxIdleConnsPerHost: 5,
 			MaxConnsPerHost:     10,
 			IdleConnTimeout:     30 * time.Second,
+			ForceAttemptHTTP2:   false, // httptest.Server uses HTTP/1.1
 		},
 	}
 }
@@ -286,12 +287,13 @@ func TestIdempotentReplay(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient()
+	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
+	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
 	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	reqTime := time.Now().Unix()
-	for i := 0; i < 2; i++ {
+	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
 		b := drainBody(t, r)
 		if r.StatusCode != http.StatusOK {
@@ -331,8 +333,8 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime || resetUnix > reqTime+120 {
-		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 120s of request time (%d)", resetUnix, reqTime)
+	} else if resetUnix < reqTime || resetUnix > reqTime+65 {
+		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 65s of request time (%d)", resetUnix, reqTime)
 	}
 }
 
