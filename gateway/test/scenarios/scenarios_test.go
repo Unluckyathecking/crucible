@@ -99,13 +99,14 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
-// No defer timer.Stop(): the timer.C case consumes the channel value on fire,
-// and the Done case stops the timer and drains any concurrently fired value.
+// defer timer.Stop() is the sole cleanup path; it is safe to call after the
+// timer has already fired. The Done branch simply returns.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
 		case <-timer.C:
 			// Guard: if the proxy cancelled the context at the same instant the
@@ -116,12 +117,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			return
 		}
 	})
@@ -209,6 +204,9 @@ func TestHappyPath(t *testing.T) {
 	}
 	if inv.BillableUnits != 3 {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
+	}
+	if len(inv.Payload) == 0 || string(inv.Payload) == "null" {
+		t.Errorf("payload: got empty or null, want non-empty object from worker")
 	}
 
 	// usage.Recorder.Record is synchronous; the row is committed before the HTTP response.
@@ -319,6 +317,9 @@ func TestRateLimit(t *testing.T) {
 	}
 	if v := r.Header.Get("RateLimit-Remaining"); v != "0" {
 		t.Errorf("RateLimit-Remaining: got %q, want 0", v)
+	}
+	if v := r.Header.Get("RateLimit-Reset"); v == "" {
+		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	}
 }
 

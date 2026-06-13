@@ -283,7 +283,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		INSERT INTO plans (id, display_name, rate_limit_per_minute, monthly_unit_cap)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE
-		  SET rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
+		  SET display_name          = EXCLUDED.display_name,
+		      rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
 	`, id, "Test Plan "+id, ratePerMinute, capPtr); err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
