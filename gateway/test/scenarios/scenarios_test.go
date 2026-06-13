@@ -660,6 +660,18 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	if got := r.Header.Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options: got %q, want DENY", got)
 	}
+	if got := r.Header.Get("X-XSS-Protection"); got != "0" {
+		t.Errorf("X-XSS-Protection: got %q, want 0", got)
+	}
+	if got := r.Header.Get("Strict-Transport-Security"); !strings.HasPrefix(got, "max-age=") {
+		t.Errorf("Strict-Transport-Security: got %q, want value starting with max-age=", got)
+	}
+	if got := r.Header.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Errorf("Referrer-Policy: got %q, want strict-origin-when-cross-origin", got)
+	}
+	if got := r.Header.Get("Permissions-Policy"); got == "" {
+		t.Errorf("Permissions-Policy: header absent")
+	}
 }
 
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
