@@ -213,8 +213,12 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 
 	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
 	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
+	// The lock is intentionally held through server.NewRouter so that NewRouter
+	// reads the swapped V1Routes atomically — releasing before NewRouter would
+	// allow a concurrent caller to overwrite V1Routes before NewRouter reads it.
 	// defer Unlock + deferred restore guarantee the global is always unwound even
-	// on panic, at the cost of holding the lock for the rest of this function.
+	// on panic, at the cost of serializing custom-route tests (acceptable since
+	// those callers must not call t.Parallel per the Options doc comment).
 	if opts.Routes != nil {
 		if len(opts.Routes) == 0 {
 			t.Fatal("harness: Routes must be non-empty; use nil for production routes")
@@ -283,7 +287,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
 			var restoredCap *int64
@@ -350,7 +354,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, opErr error) {
-			t.Helper()
 			if opErr == nil {
 				return
 			}

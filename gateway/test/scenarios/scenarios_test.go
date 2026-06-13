@@ -133,6 +133,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // testHTTPClient.Timeout (15 s) bounds each request; no per-call context needed.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
+	if apiKey == "" {
+		t.Fatal("invoke: apiKey must be non-empty")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel) // cancel runs at test end; keeps context alive while caller reads body
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -357,7 +360,10 @@ func TestWorkerTimeout(t *testing.T) {
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 200, // 17.5:1 ratio; worker delay 3500ms vs 200ms proxy timeout
+		// Large delay (3500 ms) vs short proxy timeout (200 ms) ensures the proxy
+		// definitely forwards the request before timing out, testing the
+		// "forwarded then timed out" path rather than "failed to connect".
+		WorkerTimeoutMS: 200,
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
