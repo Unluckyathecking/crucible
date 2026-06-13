@@ -22,19 +22,21 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// testHTTPClient is shared across all scenario tests; http.Client is safe for concurrent use.
-// Keep-alives are enabled so parallel tests reuse connections rather than opening new TCP
-// connections on every request, which avoids ephemeral port exhaustion under -race.
-// httptest.Server uses plain HTTP (no TLS), so HTTP/2 is never negotiated regardless.
-var testHTTPClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		MaxIdleConns:        10,
-		MaxIdleConnsPerHost: 5,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     30 * time.Second,
-	},
+// newTestHTTPClient returns a fresh http.Client per test. Each test drives its own
+// httptest.Server, so per-test clients avoid cross-test connection-pool interference
+// under t.Parallel(). httptest.Server uses plain HTTP (no TLS), so HTTP/2 is never
+// attempted (HTTP/2 requires TLS or explicit h2c negotiation).
+func newTestHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 5,
+			MaxConnsPerHost:     10,
+			IdleConnTimeout:     30 * time.Second,
+		},
+	}
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -98,12 +100,13 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
 // The handler selects on r.Context().Done() so it releases promptly when cancelled.
+// No defer timer.Stop(): the timer.C branch consumes the channel via the select itself;
+// the Done branch explicitly drains the channel if the timer fired concurrently.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			// Guard against the narrow window where the proxy cancels the context
@@ -116,7 +119,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			if !timer.Stop() {
-				<-timer.C // blocking drain: timer fired concurrently with Done
+				<-timer.C // drain: timer fired concurrently with context cancellation
 			}
 			return
 		}
@@ -142,7 +145,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	for _, fn := range mutators {
 		fn(req)
 	}
-	resp, err := testHTTPClient.Do(req)
+	resp, err := newTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}

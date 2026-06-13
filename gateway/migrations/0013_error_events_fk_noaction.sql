@@ -20,11 +20,15 @@ BEGIN
   ) THEN RETURN; END IF;
 
   -- Skip if constraint already correct: confdeltype 'a' = ON DELETE NO ACTION.
+  -- Namespace join ensures we match only the constraint in the public schema,
+  -- consistent with the pg_class guards above.
   IF EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'error_events_api_key_id_fkey'
-      AND conrelid = 'public.error_events'::regclass
-      AND confdeltype = 'a'
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    WHERE c.conname = 'error_events_api_key_id_fkey'
+      AND n.nspname = 'public'
+      AND c.conrelid = 'public.error_events'::regclass
+      AND c.confdeltype = 'a'
   ) THEN RETURN; END IF;
 
   -- Remove orphaned rows before (re-)adding the FK so ADD CONSTRAINT validation
