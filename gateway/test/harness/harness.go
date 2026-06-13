@@ -346,10 +346,15 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	// — avoids a mismatch if cleanup runs across a UTC month boundary.
 	createdMonth := now.Format("2006-01")
 	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
-	// Declared before t.Cleanup so the closure captures by reference.
+	// Generate the key before t.Cleanup so the closure always holds a non-empty prefix
+	// regardless of where setup fatals — avoids a zero-value authKey in Redis cleanup.
+	var full, prefix string
+	full, prefix, err = auth.Generate(TestAPIKeyPrefix)
+	if err != nil {
+		t.Fatalf("harness: generate api key: %v", err)
+	}
 	// customerID == uuid.Nil signals setup fataled before the first INSERT.
 	var customerID uuid.UUID
-	var prefix string
 
 	t.Cleanup(func() {
 		if customerID == uuid.Nil {
@@ -454,11 +459,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
 
-	var full string
-	full, prefix, err = auth.Generate(TestAPIKeyPrefix)
-	if err != nil {
-		t.Fatalf("harness: generate api key: %v", err)
-	}
 	hash := auth.Hash(testSalt, full)
 	_, err = ts.DB.Exec(insertCtx,
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,

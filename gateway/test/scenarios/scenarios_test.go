@@ -318,8 +318,13 @@ func TestRateLimit(t *testing.T) {
 	if v := r.Header.Get("RateLimit-Remaining"); v != "0" {
 		t.Errorf("RateLimit-Remaining: got %q, want 0", v)
 	}
-	if v := r.Header.Get("RateLimit-Reset"); v == "" {
+	raReset := r.Header.Get("RateLimit-Reset")
+	if raReset == "" {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
+	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
+		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
+	} else if n := time.Now().Unix(); resetUnix < n-60 || resetUnix > n+120 {
+		t.Errorf("RateLimit-Reset: got %d, want within ~1 minute of now (%d)", resetUnix, n)
 	}
 }
 
@@ -355,15 +360,15 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	worker, invoked := slowWorker(3500 * time.Millisecond)
+	// 500 ms worker delay vs 100 ms proxy timeout: large enough ratio to ensure the
+	// proxy forwards the request before timing out, testing the "forwarded then timed
+	// out" path; small enough to keep the test fast under CI load.
+	worker, invoked := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		// Large delay (3500 ms) vs short proxy timeout (200 ms) ensures the proxy
-		// definitely forwards the request before timing out, testing the
-		// "forwarded then timed out" path rather than "failed to connect".
-		WorkerTimeoutMS: 200,
+		WorkerTimeoutMS: 100,
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
