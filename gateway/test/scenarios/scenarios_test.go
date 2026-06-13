@@ -112,14 +112,12 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
 			// Intentionally return without writing to simulate a worker that
 			// never responds before the gateway proxy deadline. The gateway proxy
 			// maps the resulting transport error to 502 WORKER_UNREACHABLE.
@@ -132,8 +130,16 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // waitForErrorEvents polls CountErrorEvents until want rows exist or a 5-second
 // deadline elapses. The error recorder writes asynchronously, so callers must
 // wait rather than asserting immediately after the triggering request returns.
+// Must be called from the main test goroutine (uses t.Fatalf).
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
+	// Check immediately before starting the ticker to return in the common case
+	// where the async errorlog has already written the event.
+	if n := ts.CountErrorEvents(t, customerID); n == want {
+		return
+	} else if n > want {
+		t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)

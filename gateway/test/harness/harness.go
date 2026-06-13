@@ -200,7 +200,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 				t.Logf("harness: redis close: %v", err)
 			}
 		}()
-		authStore.Close() // Close() drains the background goroutine; returns no error
+		// auth.Store.Close drains the background goroutine; returns no error.
+		// Registered exactly once, so no double-close risk.
+		authStore.Close()
 	})
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
