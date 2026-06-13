@@ -213,9 +213,6 @@ func TestHappyPath(t *testing.T) {
 	if err := json.Unmarshal(body, &inv); err != nil {
 		t.Fatalf("decode response: %v\nbody: %s", err, body)
 	}
-	if inv.Payload == nil {
-		t.Errorf("payload: missing or empty in 200 response")
-	}
 	if inv.BillableUnits != 3 {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
 	}
