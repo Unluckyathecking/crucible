@@ -516,8 +516,8 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 // Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int64 {
 	t.Helper()
-	if ts == nil {
-		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer")
+	if ts == nil || ts.DB == nil {
+		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer or TestServer.DB")
 	}
 	if idempotencyKey == "" {
 		t.Fatal("harness: CountIdempotencyKeys idempotencyKey must be non-empty")

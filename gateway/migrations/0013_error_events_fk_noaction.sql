@@ -1,18 +1,8 @@
-BEGIN;
-
 -- Repair error_events.api_key_id FK to ON DELETE NO ACTION.
 --
 -- PostgreSQL confdeltype codes: 'a' = NO ACTION (desired), 'r' = RESTRICT,
 -- 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT.
--- This migration ensures confdeltype = 'a' (NO ACTION): the database blocks
--- deletion of an api_keys row while error_events rows still reference it.
--- Nothing is ever silently nullified or cascaded. The migration is a no-op
--- when the constraint already carries the correct rule.
---
--- lock_timeout limits DDL lock-acquisition time; set at the transaction level
--- so it covers all ALTER TABLE statements in this migration.
-SET LOCAL lock_timeout = '5s';
-
+-- The guard below is a no-op when the constraint already carries ON DELETE NO ACTION.
 DO $$
 BEGIN
   -- No-op: constraint already has ON DELETE NO ACTION (confdeltype = 'a').
@@ -43,5 +33,3 @@ BEGIN
       ON DELETE NO ACTION;
 
 END $$;
-
-COMMIT;
