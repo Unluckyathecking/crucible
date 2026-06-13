@@ -24,6 +24,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"strings"
 	"sync"
 	"testing"
@@ -347,19 +348,21 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
-	if !strings.Contains(email, "@") {
-		t.Fatalf("harness: CreateCustomer email %q is not a valid address", email)
+	if _, err := mail.ParseAddress(email); err != nil {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
 	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
 	// Verify plan exists so a typo gives a clear message instead of a FK violation.
-	var planExists bool
+	// SELECT 1 + Scan(new(int)) is the idiomatic pgx existence check; avoid SELECT true
+	// which requires a bool scan and can confuse linters or future type-safety audits.
+	var planFound int
 	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
 	err := ts.DB.QueryRow(planCtx,
-		`SELECT true FROM plans WHERE id = $1`, planID,
-	).Scan(&planExists)
+		`SELECT 1 FROM plans WHERE id = $1`, planID,
+	).Scan(&planFound)
 	if errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
 	}
@@ -454,19 +457,19 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 				if delErr != nil {
-					t.Logf("harness: cleanup webhook_deliveries retry for customer %s: %v", customerID, delErr)
+					t.Errorf("harness: cleanup webhook_deliveries retry for customer %s: %v", customerID, delErr)
 				}
 				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
 				if delErr != nil {
-					t.Logf("harness: cleanup webhook_endpoints retry for customer %s: %v", customerID, delErr)
+					t.Errorf("harness: cleanup webhook_endpoints retry for customer %s: %v", customerID, delErr)
 				}
 				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 				if delErr != nil {
-					t.Logf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
+					t.Errorf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
 				}
 				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				if delErr != nil {
-					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
+					t.Errorf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
 				fixCancel()
 				continue
