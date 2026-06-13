@@ -99,28 +99,22 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
-// The handler selects on r.Context().Done() so it releases promptly when cancelled.
-// No defer timer.Stop(): the timer.C branch consumes the channel via the select itself;
-// the Done branch explicitly drains the channel if the timer fired concurrently.
+// Uses time.After to avoid manual timer management; the handler returns promptly
+// when the request context is cancelled (proxy timeout or client disconnect).
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
 		select {
-		case <-timer.C:
-			// Guard against the narrow window where the proxy cancels the context
-			// at the same time the timer fires: if context is already done, the
-			// client has disconnected and we must not write to the response.
+		case <-time.After(delay):
+			// Guard: if the proxy cancelled the context at the same instant the
+			// delay elapsed, do not write to a disconnected client.
 			if r.Context().Err() != nil {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			if !timer.Stop() {
-				<-timer.C // drain: timer fired concurrently with context cancellation
-			}
 			return
 		}
 	})
@@ -299,15 +293,16 @@ func TestRateLimit(t *testing.T) {
 	if code := errorCode(t, body); code != "RATE_LIMITED" {
 		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
 	}
-	if ra := r.Header.Get("Retry-After"); ra == "" {
-		t.Error("want Retry-After header on 429 RATE_LIMITED response")
-	} else {
-		n, err := strconv.Atoi(ra)
-		if err != nil {
-			t.Errorf("Retry-After: got %q, want integer seconds", ra)
-		} else if n <= 0 || n > 60 {
-			t.Errorf("Retry-After: got %d, want in [1,60]", n)
-		}
+	ra := r.Header.Get("Retry-After")
+	if ra == "" {
+		t.Fatalf("Retry-After header missing on 429 RATE_LIMITED response")
+	}
+	n, err := strconv.Atoi(ra)
+	if err != nil {
+		t.Fatalf("Retry-After: got %q, want integer seconds: %v", ra, err)
+	}
+	if n <= 0 || n > 60 {
+		t.Errorf("Retry-After: got %d, want in [1,60]", n)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)
