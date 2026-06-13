@@ -370,7 +370,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, opErr error) {
-			t.Helper()
 			if opErr == nil {
 				return
 			}
