@@ -81,7 +81,7 @@ jobs:
 
           # Extract go version from gateway Dockerfile FROM line.
           # Regex matches any image suffix (alpine, bookworm, etc.) or no suffix.
-          GW_FROM=$(grep -m1 '^FROM golang:' gateway/Dockerfile | sed 's/^FROM golang:\([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/')
+          GW_FROM=$(grep -m1 '^FROM golang:' gateway/Dockerfile | sed -E 's/^FROM golang:([0-9]+(\.[0-9]+)*).*/\1/')
           echo "gateway/Dockerfile golang version: $GW_FROM"
           if [ "$GOMOD_VERSION" != "$GW_FROM" ]; then
             echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM"
@@ -89,7 +89,8 @@ jobs:
           fi
 
           # Extract go version from workers/active/Dockerfile FROM line.
-          WF_FROM=$(grep -m1 '^FROM golang:' workers/active/Dockerfile | sed 's/^FROM golang:\([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/')
+          # workers/active is a symlink to the current worker implementation (e.g. workers/stubs/go).
+          WF_FROM=$(grep -m1 '^FROM golang:' workers/active/Dockerfile | sed -E 's/^FROM golang:([0-9]+(\.[0-9]+)*).*/\1/')
           echo "workers/active/Dockerfile golang version: $WF_FROM"
           if [ "$GOMOD_VERSION" != "$WF_FROM" ]; then
             echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM"
