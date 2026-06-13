@@ -322,19 +322,19 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
-	if _, err := mail.ParseAddress(email); err != nil {
-		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
+	parsedAddr, addrErr := mail.ParseAddress(email)
+	if addrErr != nil {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, addrErr)
 	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
 	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
-	var planFound int
 	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
 	err := ts.DB.QueryRow(planCtx,
 		`SELECT 1 FROM plans WHERE id = $1`, planID,
-	).Scan(&planFound)
+	).Scan(new(int))
 	if errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
 	}
@@ -367,11 +367,15 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			if opErr == nil {
 				return
 			}
-			// Transient FK violations (23503) from the async errorlog.Record goroutine are
-			// expected and logged only; the retry loop below handles the api_keys case.
+			// FK violations on error_events_api_key_id_fkey (23503) are expected from the
+			// async errorlog.Record goroutine and logged only; the retry loop handles api_keys.
 			var pgErr *pgconn.PgError
+			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "error_events_api_key_id_fkey" {
+				t.Logf("harness: cleanup FK violation %s for customer %s (async errorlog): %v", table, customerID, opErr)
+				return
+			}
 			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
-				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, opErr)
+				t.Errorf("harness: cleanup unexpected FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
 				return
 			}
 			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
@@ -454,7 +458,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	defer insertCancel()
 	_, err = ts.DB.Exec(insertCtx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
-		customerID, email, planID,
+		customerID, parsedAddr.Address, planID,
 	)
 	if err != nil {
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)

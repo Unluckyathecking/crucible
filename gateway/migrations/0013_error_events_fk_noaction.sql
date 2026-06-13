@@ -1,14 +1,17 @@
 BEGIN;
 
-SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '30s';
-
 -- Ensure error_events.api_key_id FK is ON DELETE NO ACTION.
 -- The IF EXISTS guard skips DROP/ADD when the constraint already has the correct
 -- delete rule (confdeltype 'a' = NO ACTION), eliminating any window where the FK
 -- is briefly absent. Only repairs wrong delete rules or missing constraints.
 DO $$
 BEGIN
+  -- SET LOCAL inside the DO body so timeouts apply to the DDL statements here.
+  -- A SET LOCAL at the top-level transaction does not propagate into the DO
+  -- block's execution scope for the ALTER TABLE statements below.
+  SET LOCAL lock_timeout = '5s';
+  SET LOCAL statement_timeout = '30s';
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relname = 'error_events' AND c.relkind = 'r'
@@ -34,6 +37,11 @@ BEGIN
 
   -- Remove orphaned rows before (re-)adding the FK so ADD CONSTRAINT validation
   -- cannot fail on stale error_events referencing a deleted api_keys row.
+  -- api_key_id IS NOT NULL guards against NULL: SQL NULL semantics mean
+  -- `id = NULL` evaluates to UNKNOWN, making NOT EXISTS TRUE for NULL ids, which
+  -- would incorrectly delete rows with no API key association. The guard ensures
+  -- only rows where api_key_id is non-NULL but references a missing api_keys row
+  -- (true orphans) are removed.
   DELETE FROM public.error_events
   WHERE api_key_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = api_key_id);
