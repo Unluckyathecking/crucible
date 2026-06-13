@@ -146,7 +146,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 	t.Cleanup(pool.Close)
 
-	rdb, err := cache.NewRedis(context.Background(), opts.RedisURL)
+	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	rdb, err := cache.NewRedis(redisCtx, opts.RedisURL)
+	redisCancel()
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
@@ -378,32 +380,27 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
 			if retryErr == nil {
-				finalKeyErr = nil
 				break
 			}
-			finalKeyErr = retryErr
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
-				if attempt == 3 {
-					t.Errorf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
-				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+				fixCancel()
 				if delErr != nil {
 					t.Errorf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
-				fixCancel()
+				if attempt == 3 {
+					finalKeyErr = retryErr
+				}
 				continue
 			}
 			// Non-transient error; stop retrying.
-			t.Errorf("harness: cleanup api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
+			finalKeyErr = retryErr
 			break
 		}
 		if finalKeyErr != nil {
-			var pgErr *pgconn.PgError
-			if !(errors.As(finalKeyErr, &pgErr) && pgErr.Code == "23503") {
-				t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
-			}
+			t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)

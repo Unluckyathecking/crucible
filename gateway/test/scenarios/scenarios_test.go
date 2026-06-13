@@ -33,6 +33,7 @@ var testHTTPClient = &http.Client{
 		MaxConnsPerHost:     10,
 		IdleConnTimeout:     30 * time.Second,
 		ForceAttemptHTTP2:   false,
+		DisableKeepAlives:   true,
 	},
 }
 
@@ -115,12 +116,11 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 }
 
 // invoke sends POST /v1/echo to the gateway. Callers must drain and close via drainBody.
+// testHTTPClient.Timeout (15 s) bounds each request; no per-call context needed.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
-	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(ctxCancel) // cancel context only — drainBody is the sole owner of resp.Body.Close
 	req, err := http.NewRequestWithContext(
-		ctx,
+		context.Background(),
 		http.MethodPost,
 		ts.Server.URL+"/v1/echo",
 		strings.NewReader(`{"input":"scenario-test"}`),
