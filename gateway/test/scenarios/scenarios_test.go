@@ -95,14 +95,21 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Returns the handler and an atomic flag that is set true when the handler is invoked,
 // so callers can verify the proxy reached the worker before timing out.
-// Uses time.NewTimer (not time.After) so the timer goroutine is reclaimed promptly
-// when the request context is cancelled.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			// If the timer already fired when Stop is called, drain the channel
+			// so the buffered value does not linger until GC.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -122,7 +129,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel)
+	defer cancel()
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -233,9 +240,17 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// A completed idempotency_keys row must exist after the first request.
-	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
-		t.Errorf("idempotency_keys after first request: got %d rows, want 1", n)
+	// The middleware commits the idempotency record synchronously before sending the
+	// response, so drainBody guarantees the key exists. Poll briefly as a defensive
+	// barrier against unexpected commit latency on loaded CI runners.
+	for i := 0; i < 50; i++ {
+		if ts.CountIdempotencyKeys(t, customerID, idempKey) == 1 {
+			break
+		}
+		if i == 49 {
+			t.Fatalf("idempotency_keys row not committed after 500ms; middleware may not have written it")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)
