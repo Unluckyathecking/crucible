@@ -116,10 +116,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+				<-timer.C // blocking drain: timer fired concurrently with Done
 			}
 			return
 		}
@@ -354,7 +351,7 @@ func TestWorkerTimeout(t *testing.T) {
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 500, // 7:1 ratio; reliable on loaded CI runners under -race
+		WorkerTimeoutMS: 200, // 17.5:1 ratio; worker delay 3500ms vs 200ms proxy timeout
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
