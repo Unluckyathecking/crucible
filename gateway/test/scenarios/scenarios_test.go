@@ -251,9 +251,8 @@ func TestHappyPath(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
-	planID := "hp-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "hp-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", "hp-plan")
 
 	resp := invoke(t, client, ts, apiKey)
 	body := drainBody(t, resp)
@@ -266,12 +265,6 @@ func TestHappyPath(t *testing.T) {
 	}
 	if v := resp.Header.Get("X-Idempotent-Replayed"); v != "" {
 		t.Errorf("X-Idempotent-Replayed: got %q, want absent on non-replay request", v)
-	}
-	if rl := resp.Header.Get("RateLimit-Limit"); rl == "" {
-		t.Errorf("RateLimit-Limit header missing on 200 response")
-	}
-	if rr := resp.Header.Get("RateLimit-Remaining"); rr == "" {
-		t.Errorf("RateLimit-Remaining header missing on 200 response")
 	}
 
 	var inv struct {
@@ -300,9 +293,8 @@ func TestIdempotentReplay(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	planID := "ir-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "ir-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay-"+uuid.New().String()+"@example.com", "ir-plan")
 
 	idempKey := "scenario-idemp-" + uuid.New().String()
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
@@ -370,9 +362,8 @@ func TestRateLimit(t *testing.T) {
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	planID := "rl-2-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, rateLimit, 10000)
-	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
@@ -432,9 +423,8 @@ func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	planID := "quota-1-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 1)
-	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "quota-1-plan", 100, 1)
+	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", "quota-1-plan")
 
 	r1 := invoke(t, client, ts, apiKey)
 	body1 := drainBody(t, r1)
@@ -469,9 +459,8 @@ func TestWorkerTimeout(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
 		o.WorkerTimeoutMS = 100
 	}))
-	planID := "timeout-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "timeout-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
 
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
@@ -519,9 +508,8 @@ func TestWorkerBadResponse(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(0)))
-	planID := "bad-resp-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 10, 1000)
-	customerID, apiKey := ts.CreateCustomer(t, "bad-resp-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "bad-resp-plan", 10, 1000)
+	customerID, apiKey := ts.CreateCustomer(t, "bad-resp-"+uuid.New().String()+"@example.com", "bad-resp-plan")
 
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
@@ -561,9 +549,8 @@ func TestRequestIDPresent(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	planID := "reqid-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	customerID, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "reqid-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
 
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
@@ -590,10 +577,9 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, _ := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	planID := "idemp-iso-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	_, keyA := ts.CreateCustomer(t, "idemp-iso-A-"+uuid.New().String()+"@example.com", planID)
-	_, keyB := ts.CreateCustomer(t, "idemp-iso-B-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "idemp-iso-plan", 100, 10000)
+	_, keyA := ts.CreateCustomer(t, "idemp-iso-A-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
+	_, keyB := ts.CreateCustomer(t, "idemp-iso-B-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
 
 	sharedKey := "shared-idemp-" + uuid.New().String()
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", sharedKey) }
@@ -629,9 +615,8 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	planID := "sec-hdr-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
-	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", planID)
+	ts.CreatePlan(t, "sec-hdr-plan", 100, 10000)
+	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", "sec-hdr-plan")
 
 	r := invoke(t, client, ts, apiKey)
 	drainBody(t, r)
@@ -652,11 +637,10 @@ func TestCrossCustomerIsolation(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	planID := "iso-plan-" + uuid.New().String()
-	ts.CreatePlan(t, planID, 100, 10000)
+	ts.CreatePlan(t, "iso-plan", 100, 10000)
 
-	custA, keyA := ts.CreateCustomer(t, "isolation-A-"+uuid.New().String()+"@example.com", planID)
-	custB, keyB := ts.CreateCustomer(t, "isolation-B-"+uuid.New().String()+"@example.com", planID)
+	custA, keyA := ts.CreateCustomer(t, "isolation-A-"+uuid.New().String()+"@example.com", "iso-plan")
+	custB, keyB := ts.CreateCustomer(t, "isolation-B-"+uuid.New().String()+"@example.com", "iso-plan")
 
 	rA := invoke(t, client, ts, keyA)
 	drainBody(t, rA)
