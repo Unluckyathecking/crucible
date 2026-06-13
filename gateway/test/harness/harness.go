@@ -474,6 +474,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 // CountUsageEvents returns the number of usage_events rows for customerID.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CountUsageEvents called on nil TestServer")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var n int
@@ -491,6 +494,9 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 // belonging to the customer (async errorlog writes may only set api_key_id).
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CountErrorEvents called on nil TestServer")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var n int
@@ -507,6 +513,9 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 // Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer")
+	}
 	if idempotencyKey == "" {
 		t.Fatal("harness: CountIdempotencyKeys idempotencyKey must be non-empty")
 	}
