@@ -179,11 +179,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := rdb.Close(); err != nil {
-			t.Logf("harness: redis close: %v", err)
-		}
-	})
 
 	cfg := &config.Config{
 		BodyLimitBytes:  defaultBodyLimitBytes,
@@ -194,10 +189,16 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// authStore.Close is registered last so it runs first (t.Cleanup is LIFO).
-	// It stops the background last_used_at goroutine and drains its queue while
-	// pool and rdb are still open. It does NOT close pool or rdb itself.
-	t.Cleanup(authStore.Close)
+	// Single cleanup enforces explicit shutdown order: authStore first (drains the
+	// background last_used_at goroutine while Redis is still open), then rdb.
+	// pool.Close is registered separately and earlier so it runs last in LIFO order,
+	// remaining open throughout the authStore and rdb shutdown.
+	t.Cleanup(func() {
+		authStore.Close()
+		if err := rdb.Close(); err != nil {
+			t.Logf("harness: redis close: %v", err)
+		}
+	})
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
