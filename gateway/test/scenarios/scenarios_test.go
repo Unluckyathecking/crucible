@@ -107,24 +107,18 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
 		select {
-		case <-timer.C:
-			// timer fired; write below
-		case <-r.Context().Done():
-			if !timer.Stop() {
-				<-timer.C
+		case <-time.After(delay):
+			// Re-check context: the proxy may cancel concurrently with the
+			// delay expiring, so we guard before writing to w.
+			if r.Context().Err() != nil {
+				return
 			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+		case <-r.Context().Done():
 			return
 		}
-		// Separate context check after the select so the write never races a
-		// cancelled response: the proxy may cancel the context concurrently
-		// with the timer firing, so we re-check before touching w.
-		if r.Context().Err() != nil {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 	return h, &invoked
 }

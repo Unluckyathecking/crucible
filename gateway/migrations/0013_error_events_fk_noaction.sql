@@ -38,8 +38,10 @@ BEGIN
       AND  c.convalidated = true   -- fully validated (NOT VALID → false)
   ) THEN RETURN; END IF;
 
-  -- Guard 2: ADD NOT VALID succeeded but VALIDATE was interrupted. Just finish the
-  -- validate step without re-dropping and re-adding the constraint.
+  -- Guard 2: ADD NOT VALID succeeded but VALIDATE was interrupted or failed.
+  -- VALIDATE may have failed because orphaned rows existed at the time; simply
+  -- re-running VALIDATE without purging them would fail again. Lock both tables,
+  -- purge any remaining orphans, then retry VALIDATE.
   IF EXISTS (
     SELECT 1
     FROM   pg_constraint c
@@ -51,6 +53,12 @@ BEGIN
       AND  c.confdeltype  = 'a'
       AND  c.convalidated = false
   ) THEN
+    LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
+    DELETE FROM public.error_events
+    WHERE  api_key_id IS NOT NULL
+      AND  NOT EXISTS (
+        SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
+      );
     ALTER TABLE public.error_events
       VALIDATE CONSTRAINT error_events_api_key_id_fkey;
     RETURN;
