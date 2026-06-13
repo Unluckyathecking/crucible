@@ -118,11 +118,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		}()
 		select {
 		case <-timer.C:
-			// Guard: if the proxy cancelled the context at the same instant the
-			// timer fired, do not write to a disconnected client.
-			if r.Context().Err() != nil {
-				return
-			}
+			// Write unconditionally: if the proxy already cancelled the context,
+			// the write will fail silently on a closed connection and the proxy has
+			// already sent 502 to the client. Checking r.Context().Err() here would
+			// introduce a TOCTOU between the select and the check.
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():

@@ -230,7 +230,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		defer routesMu.Unlock()
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
-		server.V1Routes = opts.Routes
+		server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
 	}
 	handler := server.NewRouter(deps)
 
