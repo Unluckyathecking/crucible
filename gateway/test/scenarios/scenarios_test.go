@@ -107,6 +107,12 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
+			// Guard against the narrow window where the proxy cancels the context
+			// at the same time the timer fires: if context is already done, the
+			// client has disconnected and we must not write to the response.
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
