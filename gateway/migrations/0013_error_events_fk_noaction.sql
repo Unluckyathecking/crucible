@@ -22,16 +22,22 @@ BEGIN
 
   -- Find the FK from error_events -> api_keys with wrong delete rule.
   -- Capturing the actual constraint name avoids assumptions about naming conventions.
+  -- All three namespace joins (constraint, table, referenced table) are qualified so
+  -- the query cannot match a same-named constraint in a different schema.
   SELECT c.conname INTO actual_conname
   FROM   pg_constraint c
-  JOIN   pg_class      t  ON t.oid  = c.conrelid
-  JOIN   pg_namespace  n  ON n.oid  = t.relnamespace
-  JOIN   pg_class      rf ON rf.oid = c.confrelid
+  JOIN   pg_namespace  n   ON n.oid   = c.connamespace
+  JOIN   pg_class      t   ON t.oid   = c.conrelid
+  JOIN   pg_namespace  nt  ON nt.oid  = t.relnamespace
+  JOIN   pg_class      rf  ON rf.oid  = c.confrelid
+  JOIN   pg_namespace  nrf ON nrf.oid = rf.relnamespace
   WHERE  c.contype     = 'f'
     AND  c.confdeltype != 'a'   -- not NO ACTION: needs fixing
-    AND  t.relname     = 'error_events'
     AND  n.nspname     = 'public'
+    AND  t.relname     = 'error_events'
+    AND  nt.nspname    = 'public'
     AND  rf.relname    = 'api_keys'
+    AND  nrf.nspname   = 'public'
   LIMIT 1;
 
   IF FOUND THEN
