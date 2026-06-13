@@ -6,8 +6,9 @@
 // Usage contract:
 //   - DSN must be a postgres:// or postgresql:// URL pointing at a real service.
 //   - RedisURL must be a redis:// or rediss:// URL pointing at a real service.
-//   - NewGatewayTestServer is NOT safe for t.Parallel when Options.Routes is non-nil
-//     because it temporarily swaps the package-level server.V1Routes.
+//   - NewGatewayTestServer is safe for t.Parallel when Options.Routes is nil.
+//     Tests that set Options.Routes must NOT use t.Parallel because they temporarily
+//     swap the package-level server.V1Routes under routesMu.
 //   - Each CreateCustomer call registers a t.Cleanup that removes all test rows for
 //     that customer from usage_events, idempotency_keys, error_events,
 //     webhook_deliveries, webhook_endpoints, api_keys, customers, and the customer's
@@ -84,6 +85,10 @@ func init() {
 // injects custom routes must hold this lock across the NewRouter call.
 var routesMu sync.Mutex
 
+// migrateMu serialises migration runs so concurrent t.Parallel tests do not
+// race on ALTER TABLE / CREATE TABLE between them.
+var migrateMu sync.Mutex
+
 // Options configures a gateway test server.
 type Options struct {
 	// Routes overrides server.V1Routes for this server's lifetime.
@@ -157,13 +162,15 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
+	migrateMu.Lock()
 	applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	if err := db.Apply(applyCtx, pool); err != nil {
-		applyCancel()
-		pool.Close()
-		t.Fatalf("harness: apply migrations: %v", err)
-	}
+	migrateErr := db.Apply(applyCtx, pool)
 	applyCancel()
+	migrateMu.Unlock()
+	if migrateErr != nil {
+		pool.Close()
+		t.Fatalf("harness: apply migrations: %v", migrateErr)
+	}
 	t.Cleanup(pool.Close)
 
 	// Real Redis.
@@ -467,17 +474,22 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
-		// Flush quota counter and rate-limit key to avoid polluting next run.
+		// Flush quota, rate-limit, and auth-cache keys to avoid polluting next run.
 		// Formats verified against production source (do not change without updating both):
 		//   quota key:     quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
 		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>"
+		//   auth cache:    auth/store.go cacheKey()     → "auth:<prefix>"
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
+		authKey := "auth:" + prefix
 		if delErr := ts.Redis.Del(cctx, quotaKey).Err(); delErr != nil {
 			t.Errorf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
 		}
 		if delErr := ts.Redis.Del(cctx, rlKey).Err(); delErr != nil {
 			t.Errorf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)
+		}
+		if delErr := ts.Redis.Del(cctx, authKey).Err(); delErr != nil {
+			t.Errorf("harness: cleanup auth cache key for customer %s: %v", customerID, delErr)
 		}
 	})
 
