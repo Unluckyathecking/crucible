@@ -480,14 +480,14 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var n int
+	var n int64
 	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count usage_events: %v", err)
 	}
-	return n
+	return int(n)
 }
 
 // CountErrorEvents returns the number of error_events rows for customerID.
@@ -500,14 +500,14 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var n int
+	var n int64
 	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM error_events e WHERE e.customer_id = $1 OR EXISTS (SELECT 1 FROM api_keys k WHERE k.customer_id = $1 AND k.id = e.api_key_id)`, customerID,
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count error_events: %v", err)
 	}
-	return n
+	return int(n)
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows for customerID and key.
@@ -522,7 +522,7 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var n int
+	var n int64
 	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2`,
 		customerID, idempotencyKey,
@@ -530,7 +530,7 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 	if err != nil {
 		t.Fatalf("harness: count idempotency_keys: %v", err)
 	}
-	return n
+	return int(n)
 }
 
 // redisPinger adapts *redis.Client to server.HealthChecker.

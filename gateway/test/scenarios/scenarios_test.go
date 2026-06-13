@@ -22,10 +22,11 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// newTestHTTPClient returns a fresh http.Client per test. Each test drives its own
-// httptest.Server, so per-test clients avoid cross-test connection-pool interference
-// under t.Parallel(). httptest.Server uses plain HTTP (no TLS), so HTTP/2 is never
-// attempted (HTTP/2 requires TLS or explicit h2c negotiation).
+// newTestHTTPClient returns a fresh http.Client for a single test. Create one client
+// per test (not per request) to avoid TCP connection churn and to satisfy the stated
+// intent of per-test isolation. Each test drives its own httptest.Server, so per-test
+// clients avoid cross-test connection-pool interference under t.Parallel(). httptest.Server
+// uses plain HTTP (no TLS), so HTTP/2 is never attempted.
 func newTestHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 15 * time.Second,
@@ -99,14 +100,23 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
-// defer timer.Stop() is the sole cleanup path; it is safe to call after the
-// timer has already fired. The Done branch simply returns.
+// The deferred drain (Stop + non-blocking receive) is the standard Go pattern
+// for safe timer cleanup: if the context fires first, Stop may return false
+// (timer already fired concurrently) leaving an unread value in the buffered
+// channel; the non-blocking receive discards it without blocking.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
 			// Guard: if the proxy cancelled the context at the same instant the
@@ -123,9 +133,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	return h, &invoked
 }
 
-// invoke sends POST /v1/echo to the gateway. Callers must drain and close via drainBody.
-// testHTTPClient.Timeout (15 s) bounds each request; no per-call context needed.
-func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
+// invoke sends POST /v1/echo to the gateway. client must be created once per test
+// via newTestHTTPClient() and reused across calls. Callers must drain and close the
+// response body via drainBody.
+func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	if apiKey == "" {
 		t.Fatal("invoke: apiKey must be non-empty")
@@ -144,7 +155,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	for _, fn := range mutators {
 		fn(req)
 	}
-	resp, err := newTestHTTPClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
@@ -181,11 +192,12 @@ func errorCode(t *testing.T, body []byte) string {
 // TestHappyPath: authenticated POST /v1/echo → 200, correct billable_units, one usage row.
 func TestHappyPath(t *testing.T) {
 	t.Parallel()
+	client := newTestHTTPClient()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
 	ts.CreatePlan(t, "hp-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", "hp-plan")
 
-	resp := invoke(t, ts, apiKey)
+	resp := invoke(t, client, ts, apiKey)
 	body := drainBody(t, resp)
 
 	if resp.StatusCode != http.StatusOK {
@@ -218,6 +230,7 @@ func TestHappyPath(t *testing.T) {
 // TestIdempotentReplay: same Idempotency-Key twice returns cached response; worker invoked once.
 func TestIdempotentReplay(t *testing.T) {
 	t.Parallel()
+	client := newTestHTTPClient()
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
@@ -226,7 +239,7 @@ func TestIdempotentReplay(t *testing.T) {
 	idempKey := "scenario-idemp-" + uuid.New().String()
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
 
-	r1 := invoke(t, ts, apiKey, withIdemp)
+	r1 := invoke(t, client, ts, apiKey, withIdemp)
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
@@ -242,7 +255,7 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Fatalf("idempotency_keys after first request: got %d rows, want 1", n)
 	}
 
-	r2 := invoke(t, ts, apiKey, withIdemp)
+	r2 := invoke(t, client, ts, apiKey, withIdemp)
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
@@ -281,19 +294,20 @@ func TestIdempotentReplay(t *testing.T) {
 // 60-second sliding window — no minute-boundary race is possible at this timescale.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
+	client := newTestHTTPClient()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
 	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	for i := 0; i < 2; i++ {
-		r := invoke(t, ts, apiKey)
+		r := invoke(t, client, ts, apiKey)
 		b := drainBody(t, r)
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: want 200, got %d: %s", i+1, r.StatusCode, b)
 		}
 	}
 
-	r := invoke(t, ts, apiKey)
+	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("third request: want 429, got %d: %s", r.StatusCode, body)
@@ -331,11 +345,12 @@ func TestRateLimit(t *testing.T) {
 // TestQuotaExceeded: second request exceeds cap of 1; returns 429 QUOTA_EXCEEDED; no additional usage row written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
+	client := newTestHTTPClient()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "quota-1-plan", 100, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", "quota-1-plan")
 
-	r1 := invoke(t, ts, apiKey)
+	r1 := invoke(t, client, ts, apiKey)
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
@@ -344,7 +359,7 @@ func TestQuotaExceeded(t *testing.T) {
 		t.Errorf("after first request: usage_events count = %d, want 1", n)
 	}
 
-	r2 := invoke(t, ts, apiKey)
+	r2 := invoke(t, client, ts, apiKey)
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("second request: want 429, got %d: %s", r2.StatusCode, body2)
@@ -363,6 +378,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// 500 ms worker delay vs 100 ms proxy timeout: large enough ratio to ensure the
 	// proxy forwards the request before timing out, testing the "forwarded then timed
 	// out" path; small enough to keep the test fast under CI load.
+	client := newTestHTTPClient()
 	worker, invoked := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
@@ -373,7 +389,7 @@ func TestWorkerTimeout(t *testing.T) {
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
 
-	r := invoke(t, ts, apiKey)
+	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 
 	if r.StatusCode != http.StatusBadGateway {
@@ -393,6 +409,7 @@ func TestWorkerTimeout(t *testing.T) {
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	t.Parallel()
+	client := newTestHTTPClient()
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "iso-plan", 100, 10000)
@@ -400,7 +417,7 @@ func TestCrossCustomerIsolation(t *testing.T) {
 	custA, keyA := ts.CreateCustomer(t, "isolation-A-"+uuid.New().String()+"@example.com", "iso-plan")
 	custB, keyB := ts.CreateCustomer(t, "isolation-B-"+uuid.New().String()+"@example.com", "iso-plan")
 
-	rA := invoke(t, ts, keyA)
+	rA := invoke(t, client, ts, keyA)
 	drainBody(t, rA)
 	if rA.StatusCode != http.StatusOK {
 		t.Fatalf("customer A: want 200, got %d", rA.StatusCode)
@@ -413,7 +430,7 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Errorf("after A's request: customer B error_events = %d, want 0", n)
 	}
 
-	rB := invoke(t, ts, keyB)
+	rB := invoke(t, client, ts, keyB)
 	drainBody(t, rB)
 	if rB.StatusCode != http.StatusOK {
 		t.Fatalf("customer B: want 200, got %d", rB.StatusCode)
