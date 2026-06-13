@@ -93,23 +93,21 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
-// Selects on r.Context().Done() so the handler exits promptly when the proxy
-// cancels the request context, rather than blocking httptest.Server shutdown.
-func slowWorker(delay time.Duration) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// Returns the handler and an atomic flag that is set true when the handler is invoked,
+// so callers can verify the proxy reached the worker before timing out.
+func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
+	var invoked atomic.Bool
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		invoked.Store(true)
 		select {
 		case <-time.After(delay):
-			// Re-check context: proxy may have cancelled between the timer firing
-			// and this goroutine being scheduled to write the response.
-			if r.Context().Err() != nil {
-				return
-			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
+	return h, &invoked
 }
 
 // invoke sends POST /v1/echo to the gateway server with the given API key and optional
@@ -220,6 +218,10 @@ func TestIdempotentReplay(t *testing.T) {
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
+	}
+	// First request is a fresh invocation — must NOT carry the replay header.
+	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
 	// A completed idempotency_keys row must exist after the first request.
@@ -347,8 +349,9 @@ func TestQuotaExceeded(t *testing.T) {
 // recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
+	worker, invoked := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
-		WorkerHandler:   slowWorker(500 * time.Millisecond),
+		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
 		WorkerTimeoutMS: 100, // times out well before the 500ms worker sleep
@@ -377,6 +380,10 @@ func TestWorkerTimeout(t *testing.T) {
 	// No usage row: the worker never responded, so Record was never called.
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
+	}
+	// The proxy must have reached the worker before timing out.
+	if !invoked.Load() {
+		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
 }
 

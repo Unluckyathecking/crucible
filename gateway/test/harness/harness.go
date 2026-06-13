@@ -321,39 +321,31 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 			}
 		}
-		// Explicit child-before-parent ordering. api_keys comes before error_events because
-		// error_events.api_key_id uses ON DELETE SET NULL (0013_error_events_fk_setnull
-		// migration): deleting api_keys nullifies any error_events reference rather than
-		// blocking with a FK constraint. This also closes the async-goroutine race in
-		// errorlog.Record — any in-flight insert fires after api_keys are gone, hits a FK
-		// violation on the now-absent api_key_id, and logs "error event record failed"
-		// (the existing graceful-failure path), so no row is orphaned.
+		// Delete children before parents to satisfy FK constraints.
+		// error_events.api_key_id REFERENCES api_keys(id) NO ACTION — must delete
+		// error_events before api_keys.
 		var err error
 		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
 		logErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
 		logErr("idempotency_keys", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
+		logErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 		logErr("webhook_deliveries", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
 		logErr("api_keys", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
-		logErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		logErr("customers", err)
-		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
+		// Flush quota counter and rate-limit key to avoid polluting next run.
 		// Formats verified against production source (do not change without updating both):
-		//   quota key:    quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
-		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>" (fmt.Sprintf("rl:%s", id))
+		//   quota key:     quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
+		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>"
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
-		if err := ts.Redis.Del(cctx, quotaKey, rlKey).Err(); err != nil {
-			// Log but do not fail: stale Redis keys expire naturally and UUID-scoped
-			// keys cannot pollute other customers.
-			t.Logf("harness: redis cleanup for customer %s: %v", customerID, err)
-		}
+		logErr("redis quota+rl", ts.Redis.Del(cctx, quotaKey, rlKey).Err())
 	})
 
 	return customerID, full
