@@ -1,7 +1,7 @@
 // Package harness provides NewGatewayTestServer, a reusable test helper that boots
 // the full gateway middleware chain (server.NewRouter) against real Postgres and Redis,
 // plus an in-process worker stub. Product clones copy this package verbatim to assert
-// end-to-end behaviour and resulting DB state without mocking storage.
+// end-to-end behavior and resulting DB state without mocking storage.
 //
 // Usage contract:
 //   - DSN and RedisURL must point at real, running services (no mocks).
