@@ -39,12 +39,13 @@ import (
 var testHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		TLSHandshakeTimeout: 5 * time.Second,
-		MaxIdleConns:        10,
-		MaxIdleConnsPerHost: 5,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     30 * time.Second,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		MaxIdleConns:          10,
+		MaxIdleConnsPerHost:   5,
+		MaxConnsPerHost:       10,
+		IdleConnTimeout:       30 * time.Second,
+		ForceAttemptHTTP2:     false,
 	},
 }
 
