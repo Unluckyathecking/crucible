@@ -129,7 +129,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // wait rather than asserting immediately after the triggering request returns.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for {
 		n := ts.CountErrorEvents(t, customerID)
@@ -461,9 +461,9 @@ func TestAuthFailure(t *testing.T) {
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 
-	// The "0" chars in the suffix are outside base32's alphabet (A–Z, 2–7), so this
-	// key can never collide with a legitimately generated key stored in the DB.
-	r := invoke(t, client, ts, "cru_live_0000000000000000000000000")
+	// Use the harness prefix constant + a clearly-invalid infix so the key is never
+	// in the DB and can never match a real generated key.
+	r := invoke(t, client, ts, harness.TestAPIKeyPrefix+"invalid_"+uuid.New().String())
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
