@@ -109,11 +109,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		invoked.Store(true)
 		select {
 		case <-time.After(delay):
-			// Re-check context: the proxy may cancel concurrently with the
-			// delay expiring, so we guard before writing to w.
-			if r.Context().Err() != nil {
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -121,6 +116,23 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		}
 	})
 	return h, &invoked
+}
+
+// waitForErrorEvents polls CountErrorEvents until want rows exist or a 5-second
+// deadline elapses. The error recorder writes asynchronously, so callers must
+// wait rather than asserting immediately after the triggering request returns.
+func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if n := ts.CountErrorEvents(t, customerID); n == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
@@ -413,13 +425,7 @@ func TestWorkerTimeout(t *testing.T) {
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
-	// The error recorder writes asynchronously with a 2s deadline; wait for it
-	// with a single sleep rather than polling to reduce database load.
-	time.Sleep(3 * time.Second)
-	nErr := ts.CountErrorEvents(t, customerID)
-	if nErr != 1 {
-		t.Errorf("error_events after timeout: got %d rows, want 1", nErr)
-	}
+	waitForErrorEvents(t, ts, customerID, 1)
 }
 
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
