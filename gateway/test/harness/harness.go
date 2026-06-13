@@ -481,16 +481,21 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	return n
 }
 
-// CountIdempotencyKeys returns the number of idempotency_keys rows stored for
-// the given customerID and key value. The table is created by
-// gateway/migrations/0007_idempotency_keys.sql with a UNIQUE(customer_id, idempotency_key)
-// constraint, so this count is always 0 or 1 for a successful call.
-func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, key string) int {
+// CountIdempotencyKeys returns the number of idempotency_keys rows for the
+// given customerID and idempotencyKey value.
+//
+// Schema (gateway/migrations/0007_idempotency_keys.sql):
+//
+//	idempotency_key TEXT NOT NULL
+//	UNIQUE (customer_id, idempotency_key)
+//
+// This count is always 0 or 1 for a successful call.
+func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
 	var n int
 	err := ts.DB.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2`,
-		customerID, key,
+		customerID, idempotencyKey,
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count idempotency_keys: %v", err)
