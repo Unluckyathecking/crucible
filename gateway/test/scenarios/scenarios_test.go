@@ -403,6 +403,18 @@ func TestWorkerTimeout(t *testing.T) {
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
+	// The error recorder writes asynchronously in a background goroutine with a 2s
+	// deadline; poll until the row appears (up to 5 s) before asserting.
+	var nErr int64
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		nErr = ts.CountErrorEvents(t, customerID)
+		if nErr >= 1 {
+			break
+		}
+	}
+	if nErr != 1 {
+		t.Errorf("error_events after timeout: got %d rows, want 1", nErr)
+	}
 }
 
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
