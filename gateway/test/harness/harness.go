@@ -280,7 +280,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 
 // CreatePlan inserts or updates a plan row. ratePerMinute=0 means unlimited;
 // monthlyCap=0 means unlimited (stored as NULL). Registers t.Cleanup to restore
-// the plan to its pre-test state.
+// the plan to its pre-test state. Plan IDs must be unique across concurrent tests
+// (t.Parallel()) because the plan table is shared DB state; callers are responsible
+// for choosing non-colliding IDs.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
 	if ts == nil {
@@ -365,7 +367,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
-	parsedAddr, err := mail.ParseAddress(email)
+	_, err := mail.ParseAddress(email)
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
 	}
@@ -524,7 +526,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	defer custCancel()
 	_, err = ts.DB.Exec(custCtx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
-		customerID, parsedAddr.Address, planID,
+		customerID, email, planID,
 	)
 	if err != nil {
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
