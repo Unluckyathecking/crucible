@@ -4,22 +4,26 @@ BEGIN;
 -- Previous version used ON DELETE SET NULL, which destroyed the audit-log
 -- link between an error event and the key that caused it.
 --
--- Idempotency via pg_get_constraintdef: PostgreSQL omits the ON DELETE clause
--- from the definition text when the action is NO ACTION (the default). Any other
--- ON DELETE action (SET NULL, CASCADE, etc.) appears explicitly in the output.
--- The DO block skips DROP+ADD when the constraint already has correct semantics;
--- it also handles fresh schemas where def IS NULL (constraint absent).
+-- Idempotency via confdeltype: pg_constraint.confdeltype stores the delete action
+-- as a single char ('a'=NO ACTION, 'n'=SET NULL, 'c'=CASCADE, 'r'=RESTRICT,
+-- 'd'=SET DEFAULT). Using confdeltype is more reliable than parsing
+-- pg_get_constraintdef text, which may or may not include "ON DELETE NO ACTION"
+-- depending on whether the clause was written explicitly.
+-- COALESCE(deltype,'a') treats a missing constraint (NULL) the same as NO ACTION
+-- for the outer check; the real guard is def IS NULL (constraint absent).
 DO $$
 DECLARE
-  def TEXT;
+  def     TEXT;
+  deltype "char";
 BEGIN
-  SELECT pg_get_constraintdef(oid) INTO def
+  SELECT pg_get_constraintdef(oid), confdeltype INTO def, deltype
   FROM   pg_constraint
   WHERE  conname  = 'error_events_api_key_id_fkey'
     AND  contype  = 'f'
     AND  conrelid = 'public.error_events'::regclass;
 
-  IF def IS NULL OR def LIKE '%ON DELETE%' THEN
+  -- Skip when constraint already exists with NO ACTION ('a' = default).
+  IF def IS NULL OR COALESCE(deltype, 'a') <> 'a' THEN
     ALTER TABLE public.error_events
       DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE public.error_events

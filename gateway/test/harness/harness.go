@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -271,6 +272,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		`SELECT rate_limit_per_minute, monthly_unit_cap, display_name FROM plans WHERE id = $1`, id,
 	).Scan(&prevRate, &prevCap, &prevName); err == nil {
 		existed = true
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("harness: snapshot plan %q: %v", id, err)
 	}
 
 	// NULL signals unlimited in the schema; the quota middleware reads this as 0 (always admit).
