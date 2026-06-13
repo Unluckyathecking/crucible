@@ -33,14 +33,15 @@ BEGIN
   -- longer exists. Such rows cannot satisfy ON DELETE NO ACTION and must be
   -- removed before the constraint can be added. NULL api_key_id rows are left
   -- untouched (the WHERE requires IS NOT NULL).
-  -- NOT EXISTS with explicit table aliases: e = error_events row being evaluated,
-  -- k = the api_keys row we look for. If no api_keys row with k.id = e.api_key_id
-  -- exists, the error_events row is an orphan and must be deleted before the FK
-  -- can be added. Using NOT EXISTS (rather than NOT IN) avoids the NULL-in-subquery
-  -- footgun and lets the planner use an index on api_keys.id.
-  DELETE FROM public.error_events e
-  WHERE  e.api_key_id IS NOT NULL
-    AND  NOT EXISTS (SELECT 1 FROM public.api_keys k WHERE k.id = e.api_key_id);
+  -- NOT EXISTS (rather than NOT IN) avoids the NULL-in-subquery footgun and
+  -- lets the planner use an index on api_keys.id. The schema-qualified
+  -- public.error_events.api_key_id makes the outer-table correlation explicit.
+  DELETE FROM public.error_events
+  WHERE  api_key_id IS NOT NULL
+    AND  NOT EXISTS (
+           SELECT 1 FROM public.api_keys
+           WHERE  id = public.error_events.api_key_id
+         );
 
   -- Drop any existing FK regardless of its current delete rule, then recreate
   -- it with ON DELETE NO ACTION. ADD CONSTRAINT validates all rows inline under
