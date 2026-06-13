@@ -189,15 +189,17 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// Single cleanup enforces explicit shutdown order: authStore first (drains the
-	// background last_used_at goroutine while Redis is still open), then rdb.
-	// pool.Close is registered separately and earlier so it runs last in LIFO order,
-	// remaining open throughout the authStore and rdb shutdown.
+	// Single cleanup closes authStore first (draining the background last_used_at
+	// goroutine while Redis is still open), then rdb via defer so rdb.Close runs
+	// even if authStore.Close panics. pool.Close is registered separately and earlier
+	// so it runs last in LIFO order, remaining open throughout.
 	t.Cleanup(func() {
+		defer func() {
+			if err := rdb.Close(); err != nil {
+				t.Logf("harness: redis close: %v", err)
+			}
+		}()
 		authStore.Close()
-		if err := rdb.Close(); err != nil {
-			t.Logf("harness: redis close: %v", err)
-		}
 	})
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
