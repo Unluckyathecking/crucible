@@ -27,7 +27,7 @@ BEGIN
 
   -- Lock both tables before the orphan purge. Locking api_keys prevents a
   -- concurrent DELETE from api_keys creating a new orphan between the purge
-  -- and the VALIDATE CONSTRAINT scan.
+  -- and the ADD CONSTRAINT validation scan.
   LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
 
   -- Remove orphaned rows: api_key_id non-NULL but the referenced api_keys row
@@ -39,18 +39,15 @@ BEGIN
       SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
     );
 
-  -- Three-step pattern: DROP (idempotent), ADD NOT VALID (skips the full-table
-  -- scan by relying on the orphan purge above), then VALIDATE.
+  -- Drop any existing FK (regardless of its current delete rule) then recreate
+  -- with ON DELETE NO ACTION. ADD CONSTRAINT validates existing rows inline
+  -- under the ACCESS EXCLUSIVE lock, so no separate VALIDATE step is needed.
   ALTER TABLE public.error_events
     DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
 
   ALTER TABLE public.error_events
     ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id)
-      ON DELETE NO ACTION
-      NOT VALID;
-
-  ALTER TABLE public.error_events
-    VALIDATE CONSTRAINT error_events_api_key_id_fkey;
+      ON DELETE NO ACTION;
 
 END $$;
