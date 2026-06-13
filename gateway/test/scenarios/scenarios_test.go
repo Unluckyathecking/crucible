@@ -105,9 +105,19 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -232,9 +242,10 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// The idempotency key row must exist after the first request completes.
-	// Assertion failure here means the middleware did not call store.Finalize,
-	// which would also break the replay test below (r2 would re-invoke the worker).
+	// Race guard: CountIdempotencyKeys blocks until the row is committed.
+	// The idempotency middleware writes the row synchronously before sending the
+	// HTTP response, so drainBody guarantees commit. Asserting here ensures the
+	// second request (r2) always sees the row and returns a replay, not a fresh call.
 	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
 		t.Fatalf("idempotency_keys after first request: got %d rows, want 1", n)
 	}

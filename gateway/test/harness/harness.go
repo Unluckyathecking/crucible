@@ -58,6 +58,9 @@ const (
 	maxCleanupRetries    = 3
 	cleanupRetryTimeout  = 10 * time.Second
 
+	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
+	testPlanDisplayNamePrefix = "Test Plan "
+
 	// errorEventsDeleteSQL removes all error_events rows for a customer.
 	// error_events.customer_id is NOT NULL and indexed via idx_error_events_customer_created,
 	// so this is a fast indexed delete.
@@ -72,7 +75,8 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
-// routesMu guards temporary modifications to server.V1Routes.
+// routesMu serializes access to server.V1Routes during server.NewRouter calls,
+// preventing concurrent test goroutines from observing a partially-mutated route table.
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations once per test process for speed. If the first
@@ -226,7 +230,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatal("harness: Routes must be non-empty; use nil for production routes")
 	}
 	routesMu.Lock()
-	orig := server.V1Routes
+	// Copy the original slice so the restore in defer is not affected by any
+	// concurrent append/replace to server.V1Routes that happens to share the
+	// underlying array. The structs themselves are value types; *Schema pointers
+	// are read-only once registered, so a shallow element copy is safe here.
+	orig := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 	if opts.Routes != nil {
 		server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
 	}
@@ -252,8 +260,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // the plan to its pre-test state.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
-	if ts == nil || ts.DB == nil {
-		t.Fatal("harness: CreatePlan called on nil TestServer or TestServer.DB")
+	if ts.DB == nil {
+		t.Fatal("harness: CreatePlan called on nil TestServer.DB")
 	}
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
@@ -291,12 +299,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		  SET display_name          = EXCLUDED.display_name,
 		      rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
-	`, id, "Test Plan "+id, ratePerMinute, capPtr); err != nil {
+	`, id, testPlanDisplayNamePrefix+id, ratePerMinute, capPtr); err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(t.Context(), cleanupTimeout)
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
 			if _, err := ts.DB.Exec(cctx,
@@ -319,8 +327,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 // and returns (customerID, rawAPIKey). t.Cleanup removes all rows and Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
-	if ts == nil || ts.DB == nil {
-		t.Fatal("harness: CreateCustomer called on nil TestServer or TestServer.DB")
+	if ts.DB == nil {
+		t.Fatal("harness: CreateCustomer called on nil TestServer.DB")
 	}
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
@@ -364,7 +372,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		if customerID == uuid.Nil {
 			return // setup fataled before first insert; nothing to clean up
 		}
-		cctx, cancel := context.WithTimeout(t.Context(), cleanupTimeout)
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, opErr error) {
 			if opErr == nil {
@@ -479,8 +487,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 // CountUsageEvents returns the number of usage_events rows for customerID.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
-	if ts == nil || ts.DB == nil {
-		t.Fatal("harness: CountUsageEvents called on nil TestServer or TestServer.DB")
+	if ts.DB == nil {
+		t.Fatal("harness: CountUsageEvents called on nil TestServer.DB")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -497,8 +505,8 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64
 // CountErrorEvents returns the number of error_events rows for customerID.
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
-	if ts == nil || ts.DB == nil {
-		t.Fatal("harness: CountErrorEvents called on nil TestServer or TestServer.DB")
+	if ts.DB == nil {
+		t.Fatal("harness: CountErrorEvents called on nil TestServer.DB")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -513,11 +521,15 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows matching customerID and the
-// idempotency_key value (the TEXT column defined in migrations/0007_idempotency_keys.sql).
+// given key value. The column is named idempotency_key (TEXT NOT NULL, schema line:
+//
+//	idempotency_key TEXT NOT NULL  -- migrations/0007_idempotency_keys.sql line 17
+//
+// The UNIQUE constraint is UNIQUE(customer_id, idempotency_key) on the same table.
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int64 {
 	t.Helper()
-	if ts == nil || ts.DB == nil {
-		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer or TestServer.DB")
+	if ts.DB == nil {
+		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer.DB")
 	}
 	if idempotencyKey == "" {
 		t.Fatal("harness: CountIdempotencyKeys idempotencyKey must be non-empty")
