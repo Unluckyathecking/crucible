@@ -15,12 +15,14 @@ BEGIN;
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'error_events_api_key_id_fkey'
-      AND conrelid  = 'error_events'::regclass
-      AND confrelid = 'api_keys'::regclass
-      AND contype     = 'f'
-      AND confdeltype = 'a'
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    WHERE n.nspname   = 'public'
+      AND c.conname   = 'error_events_api_key_id_fkey'
+      AND c.conrelid  = 'error_events'::regclass
+      AND c.confrelid = 'api_keys'::regclass
+      AND c.contype     = 'f'
+      AND c.confdeltype = 'a'
   ) THEN
     ALTER TABLE error_events DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey
