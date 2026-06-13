@@ -52,10 +52,11 @@ const (
 	defaultBodyLimitBytes  = 1 << 20
 	defaultDBPoolSize      = 5
 
-	serverBootTimeout    = 30 * time.Second
-	cleanupTimeout       = 60 * time.Second // budget for customer cleanup including retry loop
-	maxCleanupRetries    = 3
-	cleanupRetryTimeout  = 10 * time.Second
+	serverBootTimeout         = 30 * time.Second
+	cleanupTimeout            = 60 * time.Second // budget for customer cleanup including retry loop
+	maxCleanupRetries         = 3
+	cleanupRetryTimeout       = 10 * time.Second
+	planExistenceCheckTimeout = 5 * time.Second  // plan lookup before customer insert
 
 	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
 	testPlanDisplayNamePrefix = "Test Plan "
@@ -342,7 +343,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
 	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
-	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
 	defer planCancel()
 	var dummy int
 	err = ts.DB.QueryRow(planCtx,
@@ -365,6 +366,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	full, prefix, err = auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
+	}
+	if prefix == "" {
+		t.Fatal("harness: auth.Generate returned empty prefix")
 	}
 	// customerID == uuid.Nil signals setup fataled before the first INSERT.
 	var customerID uuid.UUID

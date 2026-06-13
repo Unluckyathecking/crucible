@@ -411,10 +411,16 @@ func TestWorkerTimeout(t *testing.T) {
 	// The error recorder writes asynchronously in a background goroutine with a 2s
 	// deadline; poll until the row appears (up to 5 s) before asserting.
 	var nErr int64
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pollCancel()
+	for pollCtx.Err() == nil {
 		nErr = ts.CountErrorEvents(t, customerID)
 		if nErr >= 1 {
 			break
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-pollCtx.Done():
 		}
 	}
 	if nErr != 1 {
