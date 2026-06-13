@@ -32,11 +32,12 @@ BEGIN
 
   -- Remove orphaned rows: api_key_id non-NULL but the referenced api_keys row
   -- no longer exists. NULL api_key_id is valid per FK semantics (no reference)
-  -- and is preserved by the IS NOT NULL guard.
-  DELETE FROM public.error_events
-  WHERE  api_key_id IS NOT NULL
+  -- and is preserved by the IS NOT NULL guard. The alias 'orphan' makes the
+  -- correlated reference in the subquery unambiguous.
+  DELETE FROM public.error_events AS orphan
+  WHERE  orphan.api_key_id IS NOT NULL
     AND  NOT EXISTS (
-      SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
+      SELECT 1 FROM public.api_keys WHERE id = orphan.api_key_id
     );
 
   -- Drop any existing FK (regardless of its current delete rule) then recreate
