@@ -1,17 +1,6 @@
 // Package scenarios_test exercises the full gateway middleware pipeline end-to-end
 // using real Postgres and Redis via the harness package.
-//
-// Each test creates isolated customers (unique UUIDs) so tests are independent
-// even when run against a shared CI database. Harness t.Cleanup removes all rows
-// and Redis keys belonging to test customers after each test.
-//
-// Environment variables required:
-//
-//	POSTGRES_DSN  — real Postgres DSN (same one the CI "Apply gateway migrations" step uses)
-//	REDIS_URL     — real Redis URL
-//
-// Tests skip (not fail) when either variable is unset, so they are safe to run locally
-// without infra configured and always green in CI where the vars are always set.
+// Requires POSTGRES_DSN and REDIS_URL; tests skip when either is unset.
 package scenarios_test
 
 import (
@@ -33,11 +22,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// testHTTPClient is a dedicated HTTP client for scenario tests. Using a shared
-// client (rather than http.DefaultClient) prevents cross-test interference and
-// ensures Transport settings are not inadvertently mutated.
-// ForceAttemptHTTP2:false matches httptest.NewServer which uses HTTP/1.1 only;
-// this avoids ALPN negotiation overhead on loopback connections.
+// testHTTPClient is a shared client for scenario tests (not http.DefaultClient).
 var testHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
@@ -71,7 +56,6 @@ func redisURL(t *testing.T) string {
 	return v
 }
 
-// baseOpts returns a minimal Options for tests that just need the defaults.
 func baseOpts(t *testing.T, worker http.Handler) harness.Options {
 	t.Helper()
 	return harness.Options{
@@ -81,7 +65,7 @@ func baseOpts(t *testing.T, worker http.Handler) harness.Options {
 	}
 }
 
-// echoWorker returns a handler that responds to POST /invoke with a fixed billable_units payload.
+// echoWorker responds to POST /invoke with a fixed billable_units payload.
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -100,9 +84,7 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// varyingWorker embeds the invocation count in the payload so each response body is
-// unique. Used in idempotency tests: if the second response matches the first, it
-// proves the middleware returned the cached response, not a coincidental worker match.
+// varyingWorker embeds the invocation count in the payload so each response is unique.
 func varyingWorker() (http.Handler, *atomic.Int64) {
 	var count atomic.Int64
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,9 +95,8 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// slowWorker waits for delay before responding — used to trigger the proxy timeout.
-// Returns the handler and an invoked flag (set when the handler starts). The handler
-// selects on r.Context().Done() so it releases promptly when the proxy cancels.
+// slowWorker waits for delay before responding — triggers the proxy timeout.
+// The handler selects on r.Context().Done() so it releases promptly when cancelled.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,8 +114,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	return h, &invoked
 }
 
-// invoke sends POST /v1/echo to the gateway server with the given API key and optional
-// request mutators. Callers must drain and close the body via drainBody.
+// invoke sends POST /v1/echo to the gateway. Callers must drain and close via drainBody.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -187,8 +167,7 @@ func errorCode(t *testing.T, body []byte) string {
 
 // ---- scenarios --------------------------------------------------------------
 
-// TestHappyPath: authenticated POST /v1/echo → 200, response carries the worker's
-// billable_units value, and exactly one usage_events row is written for that customer.
+// TestHappyPath: authenticated POST /v1/echo → 200, correct billable_units, one usage row.
 func TestHappyPath(t *testing.T) {
 	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
@@ -216,18 +195,13 @@ func TestHappyPath(t *testing.T) {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
 	}
 
-	// usage.Recorder.Record is synchronous within the request handler, so the row
-	// is committed before the HTTP response is written.
+	// usage.Recorder.Record is synchronous; the row is committed before the HTTP response.
 	if n := ts.CountUsageEvents(t, customerID); n != 1 {
 		t.Errorf("usage_events row count: got %d, want 1", n)
 	}
 }
 
-// TestIdempotentReplay: sending the same Idempotency-Key twice returns the stored
-// response on the second call and invokes the worker exactly once. Uses varyingWorker
-// so each invocation returns a unique payload; body equality on the second response
-// therefore proves the middleware returned the cached copy rather than a coincidentally
-// matching worker call.
+// TestIdempotentReplay: same Idempotency-Key twice returns cached response; worker invoked once.
 func TestIdempotentReplay(t *testing.T) {
 	t.Parallel()
 	worker, invocations := varyingWorker()
@@ -243,7 +217,6 @@ func TestIdempotentReplay(t *testing.T) {
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
-	// First request is a fresh invocation — must NOT carry the replay header.
 	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
@@ -260,8 +233,6 @@ func TestIdempotentReplay(t *testing.T) {
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
-	// X-Idempotent-Replayed is the middleware's explicit signal that the response
-	// came from cache; its absence means the middleware did not replay.
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
 		t.Fatalf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
@@ -269,9 +240,6 @@ func TestIdempotentReplay(t *testing.T) {
 	if string(body1) != string(body2) {
 		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
 	}
-	// The replayed body must be the cached first-invocation response.
-	// varyingWorker embeds the invocation count; n=1 in the replay proves
-	// the cached copy (not a second worker call with n=2) was returned.
 	var replayed struct {
 		Payload       struct{ N int64 `json:"n"` } `json:"payload"`
 		BillableUnits uint64                       `json:"billable_units"`
@@ -290,18 +258,13 @@ func TestIdempotentReplay(t *testing.T) {
 	}
 }
 
-// TestRateLimit: the (limit+1)-th request inside the window returns 429 with
-// Retry-After and/or RateLimit-* headers and the RATE_LIMITED error code.
-// The ratelimit package uses a sliding window (not a fixed-minute bucket), so
-// requests fired in rapid succession are all counted in the same 60-second window;
-// there is no boundary to straddle, and no sleep is needed to make the test deterministic.
+// TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
 	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
-	// First two requests must succeed (rate=2/min).
 	for i := 0; i < 2; i++ {
 		r := invoke(t, ts, apiKey)
 		b := drainBody(t, r)
@@ -310,7 +273,6 @@ func TestRateLimit(t *testing.T) {
 		}
 	}
 
-	// Third request must hit the limit.
 	r := invoke(t, ts, apiKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusTooManyRequests {
@@ -319,9 +281,6 @@ func TestRateLimit(t *testing.T) {
 	if code := errorCode(t, body); code != "RATE_LIMITED" {
 		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
 	}
-	// ratelimit.Middleware sets Retry-After, RateLimit-Limit, and RateLimit-Remaining
-	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
-	// ratelimit.Middleware sets Retry-After as integer seconds (RFC 6585 §4).
 	if ra := r.Header.Get("Retry-After"); ra == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
 	} else {
@@ -340,18 +299,13 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-// TestQuotaExceeded: a request that would exceed the seeded monthly cap returns
-// 429 QUOTA_EXCEEDED and leaves no usage_events row for the rejected call.
+// TestQuotaExceeded: (cap+1)-th request returns 429 QUOTA_EXCEEDED; no usage row written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	// monthlyCap=1: the first request is admitted and writes one usage_events row.
-	// The second request is rejected by the quota middleware (cap exhausted) and
-	// produces no usage_events row.
 	ts.CreatePlan(t, "quota-1-plan", 100, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", "quota-1-plan")
 
-	// First request succeeds and consumes the cap.
 	r1 := invoke(t, ts, apiKey)
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
@@ -361,7 +315,6 @@ func TestQuotaExceeded(t *testing.T) {
 		t.Errorf("after first request: usage_events count = %d, want 1", n)
 	}
 
-	// Second request must be denied by the quota middleware.
 	r2 := invoke(t, ts, apiKey)
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusTooManyRequests {
@@ -370,17 +323,12 @@ func TestQuotaExceeded(t *testing.T) {
 	if code := errorCode(t, body2); code != "QUOTA_EXCEEDED" {
 		t.Errorf("error.code: got %q, want QUOTA_EXCEEDED", code)
 	}
-
-	// No additional usage_events row for the denied request.
 	if n := ts.CountUsageEvents(t, customerID); n != 1 {
 		t.Errorf("after denied request: usage_events count = %d, want 1 (no row for rejected call)", n)
 	}
 }
 
-// TestWorkerTimeout: a worker that sleeps past the proxy deadline causes a 502
-// BadGateway response in the apierror envelope shape, and no usage_events row is
-// recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
-// via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
+// TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
 	worker, invoked := slowWorker(750 * time.Millisecond)
@@ -388,7 +336,7 @@ func TestWorkerTimeout(t *testing.T) {
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 250, // 3:1 ratio with worker sleep gives reliable scheduling margin on shared CI runners
+		WorkerTimeoutMS: 250, // 3:1 ratio gives reliable scheduling margin on shared CI runners
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
@@ -396,28 +344,21 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, ts, apiKey)
 	body := drainBody(t, r)
 
-	// The proxy client timeout surfaces as 502 BadGateway.
-	// server/routes.go calls apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...)
-	// on any proxy error including context deadline exceeded; 502 is confirmed by routes_test.go.
 	if r.StatusCode != http.StatusBadGateway {
 		t.Fatalf("proxy timeout: want %d, got %d: %s", http.StatusBadGateway, r.StatusCode, body)
 	}
-	code := errorCode(t, body)
-	if code != "WORKER_UNREACHABLE" {
+	if code := errorCode(t, body); code != "WORKER_UNREACHABLE" {
 		t.Errorf("error.code: got %q, want WORKER_UNREACHABLE", code)
 	}
-	// No usage row: the worker never responded, so Record was never called.
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
 	}
-	// The proxy must have reached the worker before timing out.
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
 }
 
-// TestCrossCustomerIsolation: requests from customer A never appear in customer B's
-// usage_events or error_events history, and vice versa.
+// TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	t.Parallel()
 	worker, invocations := countingWorker(1)
@@ -427,14 +368,12 @@ func TestCrossCustomerIsolation(t *testing.T) {
 	custA, keyA := ts.CreateCustomer(t, "isolation-A-"+uuid.New().String()+"@example.com", "iso-plan")
 	custB, keyB := ts.CreateCustomer(t, "isolation-B-"+uuid.New().String()+"@example.com", "iso-plan")
 
-	// Customer A makes a request.
 	rA := invoke(t, ts, keyA)
 	drainBody(t, rA)
 	if rA.StatusCode != http.StatusOK {
 		t.Fatalf("customer A: want 200, got %d", rA.StatusCode)
 	}
 
-	// Customer B's usage_events and error_events are unaffected by A's request.
 	if n := ts.CountUsageEvents(t, custB); n != 0 {
 		t.Errorf("after A's request: customer B usage_events = %d, want 0", n)
 	}
@@ -442,25 +381,21 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Errorf("after A's request: customer B error_events = %d, want 0", n)
 	}
 
-	// Customer B makes a request.
 	rB := invoke(t, ts, keyB)
 	drainBody(t, rB)
 	if rB.StatusCode != http.StatusOK {
 		t.Fatalf("customer B: want 200, got %d", rB.StatusCode)
 	}
 
-	// Worker must have been invoked exactly once per customer.
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations: got %d, want 2", got)
 	}
-	// Each customer has exactly one usage row; neither bleeds into the other.
 	if n := ts.CountUsageEvents(t, custA); n != 1 {
 		t.Errorf("customer A usage_events = %d, want 1", n)
 	}
 	if n := ts.CountUsageEvents(t, custB); n != 1 {
 		t.Errorf("customer B usage_events = %d, want 1", n)
 	}
-	// Both customers' requests succeeded (200), so no error_events for either.
 	if n := ts.CountErrorEvents(t, custA); n != 0 {
 		t.Errorf("customer A error_events = %d, want 0", n)
 	}
