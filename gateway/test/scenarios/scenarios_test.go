@@ -30,7 +30,7 @@ const (
 	defaultTestMonthlyCap = 10_000
 
 	// HTTP client constants for newTestHTTPClient.
-	testClientTimeout       = 25 * time.Second // must exceed testDialTimeout + testRequestTimeout + body-drain margin
+	testClientTimeout       = 25 * time.Second // outer bound for all tests: testDialTimeout(5s) + testRequestTimeout(10s) + body-drain; unrelated to per-test proxy timeouts
 	testDialTimeout         = 5 * time.Second
 	testIdleConnTimeout     = 30 * time.Second
 	testMaxIdleConns        = 10
