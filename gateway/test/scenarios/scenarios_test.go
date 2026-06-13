@@ -107,25 +107,25 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// time.After is intentional: the goroutine it spawns exits after delay and is
-// garbage-collected; no explicit Stop is needed because nobody reads the channel
-// when r.Context().Done() wins the select.
+// NewTimer with defer Stop releases the timer in all exit paths. The write and
+// context check are colocated inside the timer.C case so the handler never
+// writes to w after the request context is cancelled.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
+			if r.Context().Err() != nil {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			// Return without writing to w. The HTTP server closes the connection
-			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			return
 		}
-		if r.Context().Err() != nil {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 	return h, &invoked
 }
@@ -182,7 +182,7 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("do request: %v", err)
+		t.Fatalf("send request: %v", err)
 	}
 	// Callers must drain and close the response body via drainBody; drainBody is the sole closer.
 	return resp
@@ -197,6 +197,33 @@ func drainBody(t *testing.T, r *http.Response) []byte {
 		t.Fatalf("read body: %v", err)
 	}
 	return b
+}
+
+// invokeNoAuth sends POST /v1/echo without an Authorization header. Use for
+// tests that exercise the missing-auth path without needing a registered key.
+func invokeNoAuth(t *testing.T, client *http.Client, ts *harness.TestServer, mutators ...func(*http.Request)) *http.Response {
+	t.Helper()
+	if ts == nil || ts.Server == nil {
+		t.Fatal("invokeNoAuth: ts and ts.Server must be non-nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.Server.URL+"/v1/echo",
+		strings.NewReader(`{"input":"scenario-test"}`),
+	)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for _, fn := range mutators {
+		fn(req)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	return resp
 }
 
 // errorCode extracts the top-level error.code from an apierror envelope.
@@ -385,7 +412,7 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime-2 || resetUnix > reqTime+61 {
+	} else if resetUnix < reqTime || resetUnix > reqTime+61 {
 		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 61s of request time (%d)", resetUnix, reqTime)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
@@ -513,11 +540,7 @@ func TestNoAuthorizationHeader(t *testing.T) {
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 
-	// Pass a non-empty placeholder to satisfy invoke's empty-key guard, then remove
-	// the Authorization header via a mutator before the request is sent.
-	r := invoke(t, client, ts, "placeholder-key", func(req *http.Request) {
-		req.Header.Del("Authorization")
-	})
+	r := invokeNoAuth(t, client, ts)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
