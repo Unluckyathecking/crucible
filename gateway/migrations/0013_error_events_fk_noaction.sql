@@ -4,10 +4,10 @@ BEGIN;
 -- A previous migration incorrectly used ON DELETE SET NULL, which destroyed
 -- the audit-log link between an error event and the responsible API key.
 --
--- Safe for re-runs: execute DROP+ADD only when the correct NO ACTION constraint
--- does not already exist. The LOCK TABLE below eliminates the brief constraint
--- gap between DROP and ADD; migrations run single-threaded on each boot anyway
--- but the explicit lock makes that guarantee structural rather than operational.
+-- Re-run behaviour: the DO block skips DROP+ADD when the correct NO ACTION
+-- constraint already exists (catalog check on confdeltype='a'). The migration
+-- runner is single-threaded, so concurrent execution is not a production concern;
+-- the LOCK TABLE below makes that guarantee structural rather than operational.
 DO $$
 BEGIN
   -- Guard: error_events table must exist (skip on fresh DBs with no prior migration).

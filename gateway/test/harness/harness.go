@@ -127,8 +127,11 @@ type TestServer struct {
 
 // NewGatewayTestServer boots the full gateway middleware chain via server.NewRouter against
 // real Postgres and Redis and returns the started test server. Migrations are applied on
-// every call; each migration file must be idempotent (CREATE TABLE IF NOT EXISTS,
-// INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
+// every call (serialised via migrateMu); this is intentional — it mirrors the production
+// boot path and ensures schema-level bugs surface in integration tests. The cost is a
+// brief serialisation point per parallel test; acceptable for a CI suite of this size.
+// Each migration file must be idempotent (CREATE TABLE IF NOT EXISTS,
+// INSERT ON CONFLICT DO NOTHING).
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
 	if opts.WorkerHandler == nil {
@@ -368,7 +371,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	createdMonth := time.Now().UTC().Format("2006-01")
 
 	customerID := uuid.New()
-	_, err = ts.DB.Exec(context.Background(),
+	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer insertCancel()
+	_, err = ts.DB.Exec(insertCtx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
 		customerID, email, planID,
 	)
@@ -381,7 +386,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: generate api key: %v", err)
 	}
 	hash := auth.Hash(testSalt, full)
-	_, err = ts.DB.Exec(context.Background(),
+	_, err = ts.DB.Exec(insertCtx,
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
 		customerID, prefix, hash,
 	)
