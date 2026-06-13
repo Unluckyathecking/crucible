@@ -438,12 +438,12 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 2 s delay vs 100 ms proxy timeout: 20× ratio ensures reliable timeout under -race.
-	// The proxy timeout (WorkerTimeoutMS=100) is the bottleneck; client sees 502, not client-side expiry.
+	// 5 s delay vs 250 ms proxy timeout: 20× ratio ensures reliable timeout under -race.
+	// The proxy timeout (WorkerTimeoutMS=250) is the bottleneck; client sees 502, not client-side expiry.
 	client := newTestHTTPClient(t)
-	worker, invoked := slowWorker(2 * time.Second)
+	worker, invoked := slowWorker(5 * time.Second)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
-		o.WorkerTimeoutMS = 100
+		o.WorkerTimeoutMS = 250
 	}))
 	ts.CreatePlan(t, "timeout-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
