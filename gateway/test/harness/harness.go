@@ -234,8 +234,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		}
 		routesMu.Lock()
 		defer routesMu.Unlock()
-		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
-		defer func() { server.V1Routes = backup }()
+		// Capture the slice header before any allocation so the restore defer
+		// is registered while server.V1Routes still holds the original value.
+		orig := server.V1Routes
+		defer func() { server.V1Routes = orig }()
 		server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
 	}
 	handler := server.NewRouter(deps)
@@ -256,8 +258,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // the plan to its pre-test state.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
-	if ts == nil {
-		t.Fatal("harness: CreatePlan called on nil TestServer")
+	if ts == nil || ts.DB == nil {
+		t.Fatal("harness: CreatePlan called on nil TestServer or TestServer.DB")
 	}
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
@@ -423,7 +425,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				break
 			}
 			var pgErr *pgconn.PgError
-			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
+			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "error_events_api_key_id_fkey" {
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, errorEventsDeleteSQL, customerID)
 				fixCancel()
