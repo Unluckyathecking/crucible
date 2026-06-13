@@ -213,7 +213,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
 	// defer Unlock + deferred restore guarantee the global is always unwound even
 	// on panic, at the cost of holding the lock for the rest of this function.
-	var handler http.Handler
 	if opts.Routes != nil {
 		if len(opts.Routes) == 0 {
 			t.Fatal("harness: Routes must be non-empty; use nil for production routes")
@@ -223,10 +222,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
-		handler = server.NewRouter(deps)
-	} else {
-		handler = server.NewRouter(deps)
 	}
+	handler := server.NewRouter(deps)
 
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)
@@ -366,23 +363,24 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		cleanupErr := func(table string, e error) {
-			if e == nil {
+		cleanupErr := func(table string, opErr error) {
+			t.Helper()
+			if opErr == nil {
 				return
 			}
 			// Transient FK violations (23503) from the async errorlog.Record goroutine are
 			// expected and logged only; the retry loop below handles the api_keys case.
 			var pgErr *pgconn.PgError
-			if errors.As(e, &pgErr) && pgErr.Code == "23503" {
-				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, e)
+			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
+				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, opErr)
 				return
 			}
 			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
-			if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
-				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, e)
+			if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
+				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
 				return
 			}
-			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, e)
+			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
