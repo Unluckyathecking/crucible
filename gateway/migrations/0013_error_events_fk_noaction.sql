@@ -14,17 +14,21 @@ BEGIN;
 -- Idempotent two-phase approach:
 --   Phase 1: drop the constraint if it exists with the wrong delete action.
 --   Phase 2: add the constraint if it does not exist (handles fresh DBs and phase 1 drop).
--- Schema-qualified via pg_namespace to avoid search_path ambiguity.
+-- Schema-qualified via pg_namespace join AND schema-prefixed regclass casts to avoid
+-- search_path ambiguity.
+--
+-- PostgreSQL confdeltype codes: 'a'=NO ACTION, 'n'=SET NULL, 'c'=CASCADE,
+-- 'r'=RESTRICT, 'd'=SET DEFAULT. Phase 1 drops anything that is not 'a' (NO ACTION).
 DO $$
 BEGIN
-  -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL).
+  -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL='n').
   IF EXISTS (
     SELECT 1 FROM pg_constraint c
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
-      AND c.conrelid  = 'error_events'::regclass
-      AND c.confrelid = 'api_keys'::regclass
+      AND c.conrelid  = 'public.error_events'::regclass
+      AND c.confrelid = 'public.api_keys'::regclass
       AND c.contype   = 'f'
       AND c.confdeltype <> 'a'
   ) THEN
@@ -37,8 +41,8 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
-      AND c.conrelid  = 'error_events'::regclass
-      AND c.confrelid = 'api_keys'::regclass
+      AND c.conrelid  = 'public.error_events'::regclass
+      AND c.confrelid = 'public.api_keys'::regclass
       AND c.contype   = 'f'
   ) THEN
     ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey
