@@ -25,6 +25,7 @@ import (
 // testHTTPClient is shared across all scenario tests; http.Client is safe for concurrent use.
 // Keep-alives are enabled so parallel tests reuse connections rather than opening new TCP
 // connections on every request, which avoids ephemeral port exhaustion under -race.
+// httptest.Server uses plain HTTP (no TLS), so HTTP/2 is never negotiated regardless.
 var testHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
@@ -34,7 +35,6 @@ var testHTTPClient = &http.Client{
 		MaxIdleConnsPerHost: 5,
 		MaxConnsPerHost:     10,
 		IdleConnTimeout:     30 * time.Second,
-		ForceAttemptHTTP2:   false,
 	},
 }
 
@@ -271,6 +271,8 @@ func TestIdempotentReplay(t *testing.T) {
 }
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
+// All three requests complete within milliseconds so they reliably land in the same
+// 60-second sliding window — no minute-boundary race is possible at this timescale.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
