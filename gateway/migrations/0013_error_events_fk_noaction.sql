@@ -32,9 +32,12 @@ BEGIN
   -- untouched (the WHERE requires IS NOT NULL).
   -- NOT IN uses an uncorrelated subquery: id refers to api_keys.id, not to
   -- any column of the table being deleted.
+  -- api_keys.id is a PK (NOT NULL), but the WHERE id IS NOT NULL guard is explicit:
+  -- NOT IN returns unknown (not false) if the subquery contains a NULL, which would
+  -- suppress all deletions. The guard makes the NULL-safety contract visible.
   DELETE FROM public.error_events
   WHERE  api_key_id IS NOT NULL
-    AND  api_key_id NOT IN (SELECT id FROM public.api_keys);
+    AND  api_key_id NOT IN (SELECT id FROM public.api_keys WHERE id IS NOT NULL);
 
   -- Drop any existing FK regardless of its current delete rule, then recreate
   -- it with ON DELETE NO ACTION. ADD CONSTRAINT validates all rows inline under

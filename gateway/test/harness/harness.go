@@ -429,20 +429,28 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
 		// error_events row after the DELETE above, causing a transient FK violation.
 		// A short backoff between retries lets the async writer finish before retrying.
+		//
+		// ctxSleep is an inline closure so the for loop needs no label: break/continue
+		// inside the for loop itself (never inside a select) unambiguously exit/advance it.
+		ctxSleep := func(d time.Duration) bool {
+			tmr := time.NewTimer(d)
+			defer tmr.Stop()
+			select {
+			case <-tmr.C:
+				return true
+			case <-cctx.Done():
+				return false
+			}
+		}
 		var finalKeyErr error
-	retryLoop:
 		for attempt := 1; attempt <= maxCleanupRetries; attempt++ {
 			if cctx.Err() != nil {
 				finalKeyErr = cctx.Err()
-				break retryLoop
+				break
 			}
-			if attempt > 1 {
-				select {
-				case <-time.After(50 * time.Millisecond):
-				case <-cctx.Done():
-					finalKeyErr = cctx.Err()
-					break retryLoop // break retryLoop exits the for, not just the select
-				}
+			if attempt > 1 && !ctxSleep(50*time.Millisecond) {
+				finalKeyErr = cctx.Err()
+				break
 			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, cleanupRetryTimeout)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
