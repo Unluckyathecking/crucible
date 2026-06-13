@@ -120,6 +120,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			if !timer.Stop() {
 				<-timer.C
 			}
+			// Intentionally return without writing to simulate a worker that
+			// never responds before the gateway proxy deadline. The gateway proxy
+			// maps the resulting transport error to 502 WORKER_UNREACHABLE.
 			return
 		}
 	})
@@ -430,6 +433,8 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 
+	// The proxy maps all transport errors (including client timeout) to 502 WORKER_UNREACHABLE
+	// per the contract documented in internal/proxy/client.go. 504 is not returned.
 	if r.StatusCode != http.StatusBadGateway {
 		t.Fatalf("proxy timeout: want %d, got %d: %s", http.StatusBadGateway, r.StatusCode, body)
 	}

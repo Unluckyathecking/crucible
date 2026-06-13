@@ -200,7 +200,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 				t.Logf("harness: redis close: %v", err)
 			}
 		}()
-		authStore.Close()
+		authStore.Close() // Close() drains the background goroutine; returns no error
 	})
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
@@ -428,17 +428,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// error_events row after the DELETE above, causing a transient FK violation.
 		// A short backoff between retries lets the async writer finish before retrying.
 		var finalKeyErr error
+	retryLoop:
 		for attempt := 1; attempt <= maxCleanupRetries; attempt++ {
 			if cctx.Err() != nil {
 				finalKeyErr = cctx.Err()
-				break
+				break retryLoop
 			}
 			if attempt > 1 {
 				select {
 				case <-time.After(50 * time.Millisecond):
 				case <-cctx.Done():
 					finalKeyErr = cctx.Err()
-					break
+					break retryLoop // break retryLoop exits the for, not just the select
 				}
 			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, cleanupRetryTimeout)
