@@ -51,6 +51,7 @@ jobs:
         env:
           POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
       - name: gateway test
+        timeout-minutes: 10
         env:
           REDIS_URL: redis://localhost:6379
           POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable

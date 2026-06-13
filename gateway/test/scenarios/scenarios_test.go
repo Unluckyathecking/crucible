@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
@@ -241,7 +243,7 @@ func TestIdempotentReplay(t *testing.T) {
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
 
-	idempKey := "scenario-idemp-" + strings.ReplaceAll(t.Name(), "/", "-")
+	idempKey := "scenario-idemp-" + uuid.New().String()
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
 
 	r1 := invoke(t, ts, apiKey, withIdemp)
@@ -427,7 +429,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// propagation to r.Context(), so we use t.Log (not t.Error) — a miss here
 	// indicates a potential proxy goroutine leak but is not a hard failure.
 	var sawCancel bool
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 20 && !t.Failed(); i++ {
 		if sawCancel = cancelledFlag.Load(); sawCancel {
 			break
 		}
