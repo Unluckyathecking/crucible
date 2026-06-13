@@ -75,8 +75,9 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
-// routesMu serializes access to server.V1Routes during server.NewRouter calls,
-// preventing concurrent test goroutines from observing a partially-mutated route table.
+// routesMu serializes replacement of server.V1Routes during server.NewRouter calls,
+// preventing concurrent test goroutines from replacing the route table while another
+// is reading it or calling NewRouter.
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations exactly once per test process for speed.

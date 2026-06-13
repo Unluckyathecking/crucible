@@ -140,8 +140,12 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		case <-ticker.C:
-			if n := ts.CountErrorEvents(t, customerID); n == want {
+			n := ts.CountErrorEvents(t, customerID)
+			if n == want {
 				return
+			}
+			if n > want {
+				t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 			}
 		}
 	}
@@ -325,7 +329,6 @@ func TestRateLimit(t *testing.T) {
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
-	reqTime := time.Now().Unix()
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
 		b := drainBody(t, r)
@@ -334,6 +337,8 @@ func TestRateLimit(t *testing.T) {
 		}
 	}
 
+	// Capture time just before the rate-limited request for tighter Retry-After bounds.
+	reqTime := time.Now().Unix()
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusTooManyRequests {
