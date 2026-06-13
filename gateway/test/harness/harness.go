@@ -458,6 +458,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			if opErr == nil {
 				return
 			}
+			if ts == nil || ts.DB == nil {
+				t.Logf("harness: cleanup %s skipped: nil TestServer or DB", table)
+				return
+			}
 			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
 			if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
 				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
@@ -471,8 +475,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
-		// delErr is a distinct variable name (not `err`) to prevent accidental reuse after
-		// the loop; each call passes its own return value directly to cleanupErr.
+		// delErr is reused across sequential cleanup calls so each Exec error is passed
+		// directly to cleanupErr; the retry block below uses distinct variable names
+		// (retryErr, finalKeyErr) to preserve state across loop iterations.
 		var delErr error
 		_, delErr = ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
 		cleanupErr("usage_events", delErr)

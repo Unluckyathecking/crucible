@@ -147,16 +147,17 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 
 // waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
 // Must be called from the main test goroutine (t.Fatalf calls runtime.Goexit).
-// Uses a single reused timer to avoid leaking per-iteration timer allocations.
+// Creates a fresh timer per iteration and stops it explicitly on cancellation so
+// no timer lingers after context expiry; avoids Reset reuse concerns entirely.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
-	tmr := time.NewTimer(0)
-	defer tmr.Stop()
 	for {
+		tmr := time.NewTimer(errorPollInterval)
 		select {
 		case <-ctx.Done():
+			tmr.Stop()
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		case <-tmr.C:
 		}
@@ -167,7 +168,6 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
-		tmr.Reset(errorPollInterval)
 	}
 }
 
