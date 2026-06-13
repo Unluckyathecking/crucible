@@ -395,18 +395,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if full == "" || prefix == "" {
 		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
-	// customerID is zero (uuid.Nil) until assigned below by customerID = uuid.New().
-	// Go closures capture the variable itself (by reference), not its value at capture
-	// time. The t.Cleanup closure runs after CreateCustomer returns (or after t.Fatal
-	// exits the goroutine via runtime.Goexit), at which point customerID holds the
-	// value written by the assignment below. If t.Fatal fires before that assignment,
-	// customerID remains uuid.Nil and the early return correctly skips all cleanup.
-	var customerID uuid.UUID
+	// Assign customerID before registering cleanup so the closure always has a valid
+	// UUID. If t.Cleanup fires before any DB inserts (e.g. due to a t.Fatal below),
+	// all DELETE and DEL calls are no-ops on empty tables/keys.
+	customerID := uuid.New()
 
 	t.Cleanup(func() {
-		if customerID == uuid.Nil {
-			return // setup fataled before customerID was assigned; nothing to clean up
-		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		// Redis keys are always cleaned up on function exit, regardless of whether DB
@@ -526,9 +520,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("customers", delErr)
 	})
 
-	// Assign to the variable declared above (= not :=): the t.Cleanup closure captured
-	// the variable by reference and reads this value at cleanup time.
-	customerID = uuid.New()
 	custCtx, custCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer custCancel()
 	_, err = ts.DB.Exec(custCtx,

@@ -15,3 +15,6 @@ exclude_patterns:
   - "workers/stubs/go/Dockerfile"
   - ".github/**"
   - "gateway/migrations/**"
+  # Test harness (infrastructure, not scenarios): 630 LOC of complex cleanup
+  # code consistently exhausts the Kimi output budget before JSON is written.
+  - "gateway/test/harness/**"
