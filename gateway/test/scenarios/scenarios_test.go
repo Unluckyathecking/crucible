@@ -191,9 +191,7 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	// Guarantee the body is closed even if the caller fatals before reaching drainBody.
-	// drainBody also calls Close; double-close on http.Response.Body is idempotent.
-	t.Cleanup(func() { resp.Body.Close() })
+	// Callers must drain and close the response body via drainBody; drainBody is the sole closer.
 	return resp
 }
 
@@ -378,8 +376,8 @@ func TestRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry-After: got %q, want integer seconds: %v", ra, err)
 	}
-	if n < 0 || n > 60 {
-		t.Errorf("Retry-After: got %d, want in [0,60]", n)
+	if n < 1 || n > 60 {
+		t.Errorf("Retry-After: got %d, want in [1,60]", n)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)
