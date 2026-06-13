@@ -22,7 +22,7 @@ jobs:
         env:
           POSTGRES_USER: crucible
           POSTGRES_DB: crucible
-          POSTGRES_PASSWORD: crucibleci
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -49,18 +49,18 @@ jobs:
             psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f "$f";
           done
         env:
-          POSTGRES_DSN: postgres://crucible:crucibleci@localhost:5432/crucible?sslmode=disable
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
       - name: gateway test
         timeout-minutes: 10
         env:
           REDIS_URL: redis://localhost:6379
-          POSTGRES_DSN: postgres://crucible:crucibleci@localhost:5432/crucible?sslmode=disable
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
         run: cd gateway && go vet ./... && go test -race $(go list ./... | grep -v '/test')
       - name: integration test
         timeout-minutes: 15
         env:
           REDIS_URL: redis://localhost:6379
-          POSTGRES_DSN: postgres://crucible:crucibleci@localhost:5432/crucible?sslmode=disable
+          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
         run: cd gateway && go vet ./test/... && go test -race -count=1 -timeout 10m ./test/...
 
       - name: sdk-go test

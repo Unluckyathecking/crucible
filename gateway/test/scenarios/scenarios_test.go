@@ -121,7 +121,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			return
 		}
@@ -285,10 +288,9 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// Race guard: CountIdempotencyKey verifies the row is committed before r2 fires.
-	// The idempotency middleware writes the row synchronously before sending the
-	// HTTP response, so drainBody guarantees commit. Asserting here ensures the
-	// second request (r2) always sees the row and returns a replay, not a fresh call.
+	// Synchrony assertion: the idempotency middleware persists the row before
+	// writing the HTTP response, so drainBody guarantees visibility. This
+	// catches any regression where the write becomes asynchronous.
 	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after first request", idempKey)
 	}
