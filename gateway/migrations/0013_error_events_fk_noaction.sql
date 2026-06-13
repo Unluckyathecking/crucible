@@ -24,11 +24,15 @@ BEGIN;
 DO $$
 BEGIN
   -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL='n').
+  -- to_regclass() returns NULL when the table doesn't exist; the IS NOT NULL guard
+  -- prevents the comparison from evaluating to UNKNOWN (NULL) on a fresh DB.
   IF EXISTS (
     SELECT 1 FROM pg_constraint c
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
+      AND to_regclass('public.error_events') IS NOT NULL
+      AND to_regclass('public.api_keys') IS NOT NULL
       AND c.conrelid  = to_regclass('public.error_events')
       AND c.confrelid = to_regclass('public.api_keys')
       AND c.contype   = 'f'
@@ -43,6 +47,8 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
+      AND to_regclass('public.error_events') IS NOT NULL
+      AND to_regclass('public.api_keys') IS NOT NULL
       AND c.conrelid  = to_regclass('public.error_events')
       AND c.confrelid = to_regclass('public.api_keys')
       AND c.contype   = 'f'

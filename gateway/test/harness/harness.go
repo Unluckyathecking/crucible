@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -350,14 +352,20 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		logErr := func(table string, e error) {
-			if e != nil {
-				// Log rather than fail: each customer is UUID-isolated so a cleanup
-				// failure does not corrupt other tests. The async errorlog.Record goroutine
-				// (2 s timeout) may insert an error_events row after the error_events
-				// DELETE but before the api_keys DELETE, causing a transient FK violation;
-				// logging keeps the cleanup running so subsequent tables are still deleted.
-				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
+			if e == nil {
+				return
 			}
+			// Transient FK violations (PostgreSQL code 23503) are expected when the async
+			// errorlog.Record goroutine inserts an error_events row between the
+			// error_events DELETE and the api_keys DELETE. Log only; the retry loop
+			// handles the FK case. Unexpected errors (schema bugs, connection failures,
+			// permission issues) are failures and must not be silently swallowed.
+			var pgErr *pgconn.PgError
+			if errors.As(e, &pgErr) && pgErr.Code == "23503" {
+				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, e)
+				return
+			}
+			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 		}
 		// Delete children before parents to satisfy FK constraints.
 		// error_events.api_key_id REFERENCES api_keys(id) NO ACTION — must delete
@@ -372,18 +380,30 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		logErr("webhook_deliveries", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
-		_, apiKeyErr := ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
-		for attempt := 1; attempt <= 3 && apiKeyErr != nil; attempt++ {
-			// Bounded retry: the async errorlog.Record goroutine (2 s timeout) may insert an
-			// error_events row between the earlier error_events DELETE and this api_keys
-			// DELETE, causing a transient FK violation. Re-delete error_events then retry.
+		// Bounded retry with fresh per-attempt context: the async errorlog.Record goroutine
+		// (2 s timeout) may insert an error_events row between the error_events DELETE
+		// above and this api_keys DELETE, causing a transient FK violation. Re-delete
+		// error_events then retry api_keys. Each attempt gets its own context so an
+		// expired parent deadline does not doom subsequent retries.
+		var apiKeyErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, apiKeyErr = ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+			retryCancel()
+			if apiKeyErr == nil {
+				break
+			}
 			logErr(fmt.Sprintf("api_keys (attempt %d)", attempt), apiKeyErr)
-			if _, delErr := ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID); delErr != nil {
+			fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+			fixCancel()
+			if delErr != nil {
 				logErr("error_events (retry)", delErr)
 			}
-			_, apiKeyErr = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 		}
-		logErr("api_keys", apiKeyErr)
+		if apiKeyErr != nil {
+			logErr("api_keys", apiKeyErr)
+		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		logErr("customers", err)
 		// Flush quota counter and rate-limit key to avoid polluting next run.
@@ -433,7 +453,9 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows stored for
-// the given customerID and idempotency key value.
+// the given customerID and key value. The table is created by
+// gateway/migrations/0007_idempotency_keys.sql with a UNIQUE(customer_id, idempotency_key)
+// constraint, so this count is always 0 or 1 for a successful call.
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, key string) int {
 	t.Helper()
 	var n int
