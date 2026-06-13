@@ -14,6 +14,11 @@ exclude_patterns:
   - "workers/stubs/go/go.mod"
   - "workers/stubs/go/Dockerfile"
   - "gateway/migrations/**"
+  # Large test files: full analysis consistently exhausts the Kimi output budget.
+  - "gateway/test/harness/harness.go"
+  - "gateway/test/scenarios/scenarios_test.go"
   # CI workflow: Kimi misreads step ordering and flags psql as running before
   # Go is installed (false positive — setup-go runs in the preceding step).
   - ".github/workflows/ci.yml"
+  # Self-exclude so the action does not send this config file to Kimi for review.
+  - ".kimi-review.yml"
