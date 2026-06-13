@@ -11,7 +11,7 @@ BEGIN;
 -- fires between the cleanup's DELETE FROM error_events and DELETE FROM api_keys,
 -- the api_keys DELETE is skipped and the orphaned rows are re-cleaned on the next run.
 --
--- Idempotent: checks confdeltype before altering ('a' = NO ACTION).
+-- Idempotent: checks pg_constraint.confdeltype before altering ('a' = NO ACTION).
 DO $$
 BEGIN
   IF NOT EXISTS (
