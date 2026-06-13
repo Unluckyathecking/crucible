@@ -13,4 +13,4 @@ exclude_patterns:
   - "workers/sdk-go/go.mod"
   - "workers/stubs/go/go.mod"
   - "workers/stubs/go/Dockerfile"
-  - ".github/workflows/ci.yml"
+  - ".github/**"
