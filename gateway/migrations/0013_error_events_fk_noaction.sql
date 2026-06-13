@@ -2,14 +2,13 @@
 -- ON DELETE NO ACTION enforces referential integrity by preventing deletion
 -- of api_keys rows that error_events rows still reference.
 --
--- Idempotent: the guard exits immediately when the FK is already correct,
--- making the common case a single cheap catalog query with no locking.
+-- Idempotent: the guard exits immediately when the FK already exists with
+-- ON DELETE NO ACTION, making the common path a single cheap catalog query.
 -- Fully qualified table names (public.*) guard against search_path surprises.
 DO $$
 BEGIN
-  -- Skip the repair if the FK already exists with ON DELETE NO ACTION and is
-  -- validated (covers all existing rows). confdeltype='a' is PostgreSQL's
-  -- internal code for ON DELETE NO ACTION — the same rule we ADD below.
+  -- Skip the repair if the FK already exists with ON DELETE NO ACTION.
+  -- confdeltype='a' is PostgreSQL's internal code for ON DELETE NO ACTION.
   IF EXISTS (
     SELECT 1
     FROM   pg_constraint c
@@ -19,8 +18,12 @@ BEGIN
       AND  r.relname      = 'error_events'
       AND  n.nspname      = 'public'
       AND  c.confdeltype  = 'a'     -- 'a' = ON DELETE NO ACTION
-      AND  c.convalidated = true
   ) THEN RETURN; END IF;
+
+  -- Bound the time this repair blocks concurrent traffic. The guard above
+  -- exits immediately on subsequent runs; timeouts only apply on first deployment.
+  SET LOCAL lock_timeout      = '30s';
+  SET LOCAL statement_timeout = '120s';
 
   -- Lock both tables before the orphan scan to prevent a concurrent api_keys
   -- DELETE from creating a new orphan between the purge and FK validation.
