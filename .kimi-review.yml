@@ -18,6 +18,10 @@ exclude_patterns:
   # code consistently exhausts the Kimi output budget before JSON is written.
   # Listed as exact path: the action's glob engine does not support ** patterns.
   - "gateway/test/harness/harness.go"
+  # Test scenarios: 500+ LOC of parallel tests with channel/atomic concurrency
+  # patterns that consistently exhaust the Kimi output budget before JSON is written.
+  # Listed as exact path: the action's glob engine does not support ** patterns.
+  - "gateway/test/scenarios/scenarios_test.go"
   # CI workflow: Kimi misreads step ordering and flags psql as running before
   # Go is installed (false positive — setup-go runs in the preceding step).
   - ".github/workflows/ci.yml"
