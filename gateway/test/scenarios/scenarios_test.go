@@ -123,31 +123,20 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// slowWorker delays the response by delay. The Done branch returns without
-// writing; if the timer fires while the context is already cancelled the
-// Err check short-circuits before the write attempt.
+// slowWorker delays the response by delay; returns on context cancellation.
+// Write errors in the timer branch are discarded (_, _ =): if the proxy
+// already returned 502, the client is gone and the write is a no-op.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		tmr := time.NewTimer(delay)
-		defer func() {
-			if !tmr.Stop() {
-				select {
-				case <-tmr.C:
-				default:
-				}
-			}
-		}()
+		defer tmr.Stop()
 		select {
 		case <-tmr.C:
-			if r.Context().Err() != nil {
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			return
 		}
 	})
 	return h, &invoked
