@@ -717,6 +717,12 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Fatalf("customer A: want 200, got %d", rA.StatusCode)
 	}
 
+	if n := ts.CountUsageEvents(t, custA); n != 1 {
+		t.Errorf("after A's request: customer A usage_events = %d, want 1", n)
+	}
+	if n := ts.CountErrorEvents(t, custA); n != 0 {
+		t.Errorf("after A's request: customer A error_events = %d, want 0", n)
+	}
 	if n := ts.CountUsageEvents(t, custB); n != 0 {
 		t.Errorf("after A's request: customer B usage_events = %d, want 0", n)
 	}
