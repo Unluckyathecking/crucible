@@ -30,8 +30,6 @@ BEGIN
   -- longer exists. Such rows cannot satisfy ON DELETE NO ACTION and must be
   -- removed before the constraint can be added. NULL api_key_id rows are left
   -- untouched (the WHERE requires IS NOT NULL).
-  -- NOT IN uses an uncorrelated subquery: id refers to api_keys.id, not to
-  -- any column of the table being deleted.
   -- NOT EXISTS with explicit table aliases: e = error_events row being evaluated,
   -- k = the api_keys row we look for. If no api_keys row with k.id = e.api_key_id
   -- exists, the error_events row is an orphan and must be deleted before the FK
