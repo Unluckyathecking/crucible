@@ -33,23 +33,22 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// newTestHTTPClient returns a fresh HTTP client for each caller. A fresh client per
-// call prevents cross-test state sharing (Transport internals, Jar, CheckRedirect).
-// ForceAttemptHTTP2:false matches httptest.NewServer which uses HTTP/1.1; disabling
-// HTTP/2 negotiation avoids spurious ALPN/TLS overhead on loopback connections.
-func newTestHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-			TLSHandshakeTimeout: 5 * time.Second,
-			MaxIdleConns:        10,
-			MaxIdleConnsPerHost: 5,
-			MaxConnsPerHost:     10,
-			IdleConnTimeout:     30 * time.Second,
-			ForceAttemptHTTP2:   false,
-		},
-	}
+// testHTTPClient is a dedicated HTTP client for scenario tests. Using a shared
+// client (rather than http.DefaultClient) prevents cross-test interference and
+// ensures Transport settings are not inadvertently mutated.
+// ForceAttemptHTTP2:false matches httptest.NewServer which uses HTTP/1.1 only;
+// this avoids ALPN negotiation overhead on loopback connections.
+var testHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		MaxConnsPerHost:     10,
+		IdleConnTimeout:     30 * time.Second,
+		ForceAttemptHTTP2:   false,
+	},
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -156,7 +155,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	for _, fn := range mutators {
 		fn(req)
 	}
-	resp, err := newTestHTTPClient().Do(req)
+	resp, err := testHTTPClient.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
