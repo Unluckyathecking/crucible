@@ -401,10 +401,8 @@ func TestRateLimit(t *testing.T) {
 }
 
 // TestQuotaExceeded: second request exceeds monthly cap of 1 billable unit; returns 429 QUOTA_EXCEEDED.
-// The quota middleware calls Allow() which increments the Redis counter (0→1) and admits the first
-// request since 1 ≤ cap(1). The usage recorder writes a usage_events row but does not touch the
-// quota counter. The second request: Allow() increments (1→2), which exceeds cap(1), so the request
-// is denied immediately with no usage_events row written.
+// First request: quota middleware admits it (counter 0 < cap 1), usage recorder writes a usage_events row.
+// Second request: quota middleware denies it (counter 1 ≥ cap 1); no usage_events row is written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)

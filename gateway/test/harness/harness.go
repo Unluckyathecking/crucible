@@ -55,7 +55,8 @@ const (
 	serverBootTimeout         = 30 * time.Second
 	cleanupTimeout            = 60 * time.Second      // budget for customer cleanup including retry loop
 	maxCleanupRetries         = 3
-	cleanupRetryTimeout       = 10 * time.Second
+	cleanupRetryTimeout       = 10 * time.Second      // timeout for each api_keys DELETE retry attempt
+	redisCleanupTimeout       = 10 * time.Second      // timeout for the Redis DEL in customer cleanup
 	cleanupRetryBackoff       = 50 * time.Millisecond // delay between api_keys delete retries
 	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
 
@@ -170,6 +171,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 	// Register pool.Close after workerSrv.Close so LIFO runs pool.Close last,
 	// keeping the pool open while workerSrv drains in-flight requests.
+	// pgxpool.Pool.Close() has no error return; direct registration is correct.
 	t.Cleanup(pool.Close)
 	migrateOnce.Do(func() {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
@@ -251,8 +253,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// The IIFE's defer restores V1Routes and unlocks even if NewRouter panics.
 	handler := func() http.Handler {
 		routesMu.Lock()
-		// Shallow copy is safe: RouteDescriptor structs are value types and *Schema
-		// pointers are read-only once registered.
+		// Deep copy of slice header (new backing array). RouteDescriptor structs are
+		// value types and *Schema pointers are read-only once registered, so copying
+		// the slice elements is sufficient to protect server.V1Routes from mutation.
 		orig := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() {
 			server.V1Routes = orig
@@ -408,18 +411,19 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// cleanup succeeds. A fresh context is used so DB timeout exhaustion cannot
 		// cancel the Redis DEL. DEL on non-existent keys returns 0 (not an error).
 		defer func() {
-			rctx, rcancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
+			rctx, rcancel := context.WithTimeout(context.Background(), redisCleanupTimeout)
 			defer rcancel()
 			// Key formats mirror the production packages (verified against source):
 			//   quota.Tracker: "quota:<customerID>:<YYYY-MM>"  (internal/quota/tracker.go)
 			//   ratelimit.Bucket: "rl:<customerID>"            (internal/ratelimit/bucket.go)
 			//   auth.Store: "auth:<prefix>"                    (internal/auth/store.go)
-			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
-			nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
-			rlKey := "rl:" + customerID.String()
+			cid := customerID.String()
+			quotaKey := "quota:" + cid + ":" + createdMonth
+			nextQuotaKey := "quota:" + cid + ":" + nextMonth
+			rlKey := "rl:" + cid
 			authKey := "auth:" + prefix
 			if delErr := ts.Redis.Del(rctx, quotaKey, nextQuotaKey, rlKey, authKey).Err(); delErr != nil {
-				t.Logf("harness: redis cleanup for customer %s: %v", customerID, delErr)
+				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
 		}()
 		cleanupErr := func(table string, opErr error) {
@@ -512,7 +516,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("customers", delErr)
 	})
 
-	customerID = uuid.New()
+	customerID = uuid.New() // must use = not := so the t.Cleanup closure above captures this variable
 	custCtx, custCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer custCancel()
 	_, err = ts.DB.Exec(custCtx,
