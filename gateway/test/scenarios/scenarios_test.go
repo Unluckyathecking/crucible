@@ -170,12 +170,15 @@ func TestHappyPath(t *testing.T) {
 }
 
 // TestIdempotentReplay: sending the same Idempotency-Key twice returns the stored
-// response on the second call and invokes the worker exactly once.
+// response on the second call and invokes the worker exactly once. Also asserts that
+// a durable idempotency_keys row was written to Postgres after the first request,
+// proving the middleware stored state rather than the worker coincidentally returning
+// the same bytes.
 func TestIdempotentReplay(t *testing.T) {
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
-	_, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
+	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
 
 	idempKey := "scenario-idemp-" + t.Name()
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
@@ -184,6 +187,11 @@ func TestIdempotentReplay(t *testing.T) {
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
+	}
+
+	// A completed idempotency_keys row must exist after the first request.
+	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
+		t.Errorf("idempotency_keys after first request: got %d rows, want 1", n)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)
@@ -228,7 +236,7 @@ func TestRateLimit(t *testing.T) {
 	if code := errorCode(t, body); code != "RATE_LIMITED" {
 		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
 	}
-	// Either header form is acceptable; the middleware sets both.
+	// Either header form is acceptable; ratelimit.Middleware sets both.
 	if r.Header.Get("Retry-After") == "" && r.Header.Get("RateLimit-Limit") == "" {
 		t.Error("want Retry-After or RateLimit-Limit header on 429 RATE_LIMITED response")
 	}
@@ -270,8 +278,10 @@ func TestQuotaExceeded(t *testing.T) {
 	}
 }
 
-// TestWorkerTimeout: a worker that sleeps past the proxy deadline causes a 5xx response
-// in the apierror envelope shape, and no usage_events row is recorded.
+// TestWorkerTimeout: a worker that sleeps past the proxy deadline causes a 502
+// BadGateway response in the apierror envelope shape, and no usage_events row is
+// recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
+// via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   slowWorker(500 * time.Millisecond),
@@ -285,11 +295,12 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, ts, apiKey)
 	body := drainBody(t, r)
 
-	if r.StatusCode < 500 || r.StatusCode > 599 {
-		t.Fatalf("want 5xx, got %d: %s", r.StatusCode, body)
+	// The proxy client timeout surfaces as 502 BadGateway (WORKER_UNREACHABLE).
+	if r.StatusCode != http.StatusBadGateway {
+		t.Fatalf("want 502 BadGateway on proxy timeout, got %d: %s", r.StatusCode, body)
 	}
 
-	// The apierror envelope must be present and have a non-empty error code.
+	// The response must be an apierror envelope with a non-empty error code.
 	code := errorCode(t, body)
 	if code == "" {
 		t.Errorf("expected non-empty error.code in timeout envelope; body: %s", body)
@@ -302,7 +313,7 @@ func TestWorkerTimeout(t *testing.T) {
 }
 
 // TestCrossCustomerIsolation: requests from customer A never appear in customer B's
-// usage_events history and vice versa.
+// usage_events or error_events history, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	worker, _ := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
@@ -318,9 +329,12 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Fatalf("customer A: want 200, got %d", rA.StatusCode)
 	}
 
-	// Customer B's usage is unaffected.
+	// Customer B's usage_events and error_events are unaffected by A's request.
 	if n := ts.CountUsageEvents(t, custB); n != 0 {
 		t.Errorf("after A's request: customer B usage_events = %d, want 0", n)
+	}
+	if n := ts.CountErrorEvents(t, custB); n != 0 {
+		t.Errorf("after A's request: customer B error_events = %d, want 0", n)
 	}
 
 	// Customer B makes a request.
@@ -330,11 +344,18 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Fatalf("customer B: want 200, got %d", rB.StatusCode)
 	}
 
-	// Each customer has exactly one row; neither bleeds into the other.
+	// Each customer has exactly one usage row; neither bleeds into the other.
 	if n := ts.CountUsageEvents(t, custA); n != 1 {
 		t.Errorf("customer A usage_events = %d, want 1", n)
 	}
 	if n := ts.CountUsageEvents(t, custB); n != 1 {
 		t.Errorf("customer B usage_events = %d, want 1", n)
+	}
+	// Both customers' requests succeeded (200), so no error_events for either.
+	if n := ts.CountErrorEvents(t, custA); n != 0 {
+		t.Errorf("customer A error_events = %d, want 0", n)
+	}
+	if n := ts.CountErrorEvents(t, custB); n != 0 {
+		t.Errorf("customer B error_events = %d, want 0", n)
 	}
 }

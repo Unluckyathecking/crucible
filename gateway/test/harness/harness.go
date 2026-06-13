@@ -10,6 +10,7 @@
 //   - Each CreateCustomer call registers a t.Cleanup that removes all test rows for
 //     that customer from usage_events, idempotency_keys, error_events, api_keys,
 //     customers, and the customer's Redis quota/rate-limit keys.
+//   - Each CreatePlan call registers a t.Cleanup that deletes the plan row.
 package harness
 
 import (
@@ -39,14 +40,20 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
+const (
+	// TestSalt is the API key hash salt used by all harness instances.
+	// Must be >= 32 bytes (config.Load enforces this at runtime).
+	TestSalt = "crucible-harness-test-salt-min32!!"
+
+	defaultWorkerTimeoutMS = 5000
+	defaultProxyPoolSize   = 8
+	defaultBodyLimitBytes  = 1 << 20 // 1 MB
+)
+
 // routesMu guards temporary modifications to server.V1Routes.
 // Required because NewRouter reads the package-level var at call time, so any
 // caller that injects custom routes must hold this lock across NewRouter.
 var routesMu sync.Mutex
-
-// TestSalt is the API key hash salt used by all harness instances.
-// Must be >= 32 bytes (config.Load enforces this at runtime; here we set it directly).
-const TestSalt = "crucible-harness-test-salt-min32!!"
 
 // Options configures a gateway test server.
 type Options struct {
@@ -92,7 +99,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	ctx := context.Background()
 
 	if opts.WorkerTimeoutMS <= 0 {
-		opts.WorkerTimeoutMS = 5000
+		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
 
 	// In-process worker: the gateway proxies /invoke calls here.
@@ -120,7 +127,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// We build it directly (without config.Load) to avoid requiring Stripe env vars
 	// that are irrelevant for end-to-end functional testing.
 	cfg := &config.Config{
-		BodyLimitBytes:  1 << 20, // 1 MB
+		BodyLimitBytes:  defaultBodyLimitBytes,
 		DashboardOrigin: "http://localhost:3001",
 		ErrorExposure:   "full", // expose worker error details in tests
 		APIKeyPrefix:    "cru_",
@@ -133,14 +140,16 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	workerClient := proxy.New(
 		workerSrv.URL,
 		time.Duration(opts.WorkerTimeoutMS)*time.Millisecond,
-		8,
+		defaultProxyPoolSize,
 	)
 
 	bucket := ratelimit.New(rdb)
 	plans := billing.NewPlanCache(pool)
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
-	webhook := billing.NewWebhook("test-webhook-secret-unused", pool)
+	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
+	// endpoint is not exercised by the scenario suite.
+	webhook := billing.NewWebhook("test-webhook-secret-dummy", pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
@@ -161,13 +170,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	var handler http.Handler
 	if len(opts.Routes) > 0 {
 		// Temporarily swap the package-level V1Routes so NewRouter picks up our
-		// custom descriptors. routesMu prevents a concurrent swap from another test.
+		// custom descriptors. Both the mutex and the backup restoration are deferred
+		// so a panic inside NewRouter cannot corrupt V1Routes or deadlock the mutex.
 		routesMu.Lock()
+		defer routesMu.Unlock()
 		backup := server.V1Routes
+		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
 		handler = server.NewRouter(deps)
-		server.V1Routes = backup
-		routesMu.Unlock()
 	} else {
 		handler = server.NewRouter(deps)
 	}
@@ -186,6 +196,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // CreatePlan inserts or updates a plan row for use in tests.
 // ratePerMinute=0 means unlimited. monthlyCap=0 means unlimited (NULL in DB).
 // Uses ON CONFLICT DO UPDATE so repeated test runs against the same DB are safe.
+// Registers t.Cleanup to delete the plan row after the test completes.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
 	t.Helper()
 	var capPtr *int64
@@ -202,6 +213,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	if err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = ts.DB.Exec(ctx, `DELETE FROM plans WHERE id = $1`, id)
+	})
 }
 
 // CreateCustomer inserts a customer on planID, generates and persists an API key hashed
@@ -238,17 +254,23 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// Child tables before parent (FK cascade would also work but explicit is clearer).
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM usage_events     WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys  WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events      WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM api_keys          WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM customers         WHERE id = $1`, customerID)
+		// Child tables before parent (explicit ordering; FK cascade would also work).
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
+		_, _ = ts.DB.Exec(cctx, `DELETE FROM customers          WHERE id = $1`, customerID)
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
 		now := time.Now().UTC()
 		quotaKey := "quota:" + customerID.String() + ":" + now.Format("2006-01")
 		rlKey := "rl:" + customerID.String()
-		ts.Redis.Del(cctx, quotaKey, rlKey)
+		if err := ts.Redis.Del(cctx, quotaKey, rlKey).Err(); err != nil {
+			// Log but do not fail: stale Redis keys expire naturally and UUID-scoped
+			// keys cannot pollute other customers.
+			t.Logf("harness: redis cleanup for customer %s: %v", customerID, err)
+		}
 	})
 
 	return customerID, full
@@ -264,6 +286,36 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count usage_events: %v", err)
+	}
+	return n
+}
+
+// CountErrorEvents returns the number of error_events rows written for customerID.
+// Useful in isolation assertions to verify that one customer's errors don't bleed
+// into another customer's error history.
+func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := ts.DB.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1`, customerID,
+	).Scan(&n)
+	if err != nil {
+		t.Fatalf("harness: count error_events: %v", err)
+	}
+	return n
+}
+
+// CountIdempotencyKeys returns the number of idempotency_keys rows stored for
+// the given customerID and idempotency key value.
+func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, key string) int {
+	t.Helper()
+	var n int
+	err := ts.DB.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2`,
+		customerID, key,
+	).Scan(&n)
+	if err != nil {
+		t.Fatalf("harness: count idempotency_keys: %v", err)
 	}
 	return n
 }
