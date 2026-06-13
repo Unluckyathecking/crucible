@@ -101,12 +101,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
 		defer func() {
-			// If the timer already fired when Stop is called, drain the channel
-			// so the buffered value does not linger until GC.
+			// Stop returns false when the timer already fired (value in channel).
+			// The default branch handles the case where the main select already
+			// consumed the value from timer.C — the channel is then empty and a
+			// blocking read would deadlock.
 			if !timer.Stop() {
 				select {
-				case <-timer.C:
-				default:
+				case <-timer.C: // drain if value not yet consumed by select below
+				default:        // timer.C already read by select; nothing to drain
 				}
 			}
 		}()
@@ -315,9 +317,12 @@ func TestRateLimit(t *testing.T) {
 	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
 	if ra := r.Header.Get("Retry-After"); ra == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
-	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 || n > 60 {
-		// The sliding window is 60 s; a valid Retry-After must be in [1, 60].
-		t.Errorf("Retry-After: got %q, want integer in [1,60]", ra)
+	} else if n, err := strconv.Atoi(ra); err == nil && n >= 1 && n <= 60 {
+		// ok — integer seconds, sliding window is 60 s
+	} else if _, err := http.ParseTime(ra); err == nil {
+		// ok — RFC 7231 HTTP-date format also valid
+	} else {
+		t.Errorf("Retry-After: got %q, want integer in [1,60] or HTTP-date", ra)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)
