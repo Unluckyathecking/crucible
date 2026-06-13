@@ -134,6 +134,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():

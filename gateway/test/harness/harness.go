@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -329,7 +328,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 
 	var (
 		prevRate int64
-		prevCap  pgtype.Int8 // Valid=false when monthly_unit_cap is NULL (unlimited)
+		prevCap  *int64 // nil when monthly_unit_cap is NULL (unlimited)
 		prevName string
 		existed  bool
 	)
@@ -341,9 +340,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		t.Fatalf("harness: snapshot plan %q: %v", id, err)
 	}
 
-	var capArg pgtype.Int8
+	var capArg *int64
 	if monthlyCap > 0 {
-		capArg = pgtype.Int8{Int64: monthlyCap, Valid: true}
+		capArg = &monthlyCap
 	}
 	if _, err := ts.DB.Exec(ctx, `
 		INSERT INTO plans (id, display_name, rate_limit_per_minute, monthly_unit_cap)
