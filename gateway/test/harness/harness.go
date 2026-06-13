@@ -338,9 +338,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		t.Fatalf("harness: snapshot plan %q: %v", id, err)
 	}
 
-	var capPtr *int64
+	var capArg pgtype.Int8
 	if monthlyCap > 0 {
-		capPtr = &monthlyCap
+		capArg = pgtype.Int8{Int64: monthlyCap, Valid: true}
 	}
 	if _, err := ts.DB.Exec(ctx, `
 		INSERT INTO plans (id, display_name, rate_limit_per_minute, monthly_unit_cap)
@@ -349,7 +349,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		  SET display_name          = EXCLUDED.display_name,
 		      rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
-	`, id, testPlanDisplayNamePrefix+id, ratePerMinute, capPtr); err != nil {
+	`, id, testPlanDisplayNamePrefix+id, ratePerMinute, capArg); err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
 	}
 
