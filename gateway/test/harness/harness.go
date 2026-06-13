@@ -4,7 +4,8 @@
 // drift and middleware interaction effects that mocks cannot.
 //
 // Usage contract:
-//   - DSN and RedisURL must point at real, running services (no mocks).
+//   - DSN must be a postgres:// or postgresql:// URL pointing at a real service.
+//   - RedisURL must be a redis:// or rediss:// URL pointing at a real service.
 //   - NewGatewayTestServer is NOT safe for t.Parallel when Options.Routes is non-nil
 //     because it temporarily swaps the package-level server.V1Routes.
 //   - Each CreateCustomer call registers a t.Cleanup that removes all test rows for
@@ -12,6 +13,7 @@
 //     webhook_deliveries, webhook_endpoints, api_keys, customers, and the customer's
 //     Redis quota/rate-limit keys.
 //   - Each CreatePlan call registers a t.Cleanup that deletes or restores the plan row.
+//   - CreateCustomer validates that the planID exists before inserting the customer.
 package harness
 
 import (
