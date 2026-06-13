@@ -131,6 +131,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if opts.WorkerTimeoutMS <= 0 {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
+	const maxWorkerTimeoutMS = 300_000 // 5 min; guards against accidentally huge values
+	if opts.WorkerTimeoutMS > maxWorkerTimeoutMS {
+		t.Fatalf("harness: WorkerTimeoutMS %d exceeds maximum %d ms", opts.WorkerTimeoutMS, maxWorkerTimeoutMS)
+	}
 
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
 	t.Cleanup(workerSrv.Close)
@@ -207,16 +211,19 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 
 	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
 	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
-	// Synchronous Lock/Unlock (no defer) keeps the critical section explicit:
-	// deep-copy the backup before swapping, restore before releasing the lock.
+	// defer Unlock + deferred restore guarantee the global is always unwound even
+	// on panic, at the cost of holding the lock for the rest of this function.
 	var handler http.Handler
 	if opts.Routes != nil {
+		if len(opts.Routes) == 0 {
+			t.Fatal("harness: Routes must be non-empty; use nil for production routes")
+		}
 		routesMu.Lock()
+		defer routesMu.Unlock()
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
+		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
 		handler = server.NewRouter(deps)
-		server.V1Routes = backup
-		routesMu.Unlock()
 	} else {
 		handler = server.NewRouter(deps)
 	}
@@ -328,8 +335,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 	customerID := uuid.New()
-	// Capture month after customerID so createdMonth is conceptually part of this customer's record.
-	createdMonth := time.Now().UTC().Format("2006-01")
+	now := time.Now().UTC()
+	// Capture both the current and next month now so cleanup never needs to call time.Now()
+	// — avoids a mismatch if cleanup runs across a UTC month boundary.
+	createdMonth := now.Format("2006-01")
+	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
 	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer insertCancel()
 	_, err = ts.DB.Exec(insertCtx,
@@ -431,14 +441,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		//   quota:<uuid>:<YYYY-MM>  quota/tracker.go monthKey()
 		//   rl:<uuid>               ratelimit/bucket.go Allow()
 		//   auth:<prefix>           auth/store.go cacheKey()
+		// nextMonth was captured at creation time; DEL of a non-existent key is harmless.
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
+		nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
 		rlKey := "rl:" + customerID.String()
 		authKey := "auth:" + prefix
-		redisKeys := []string{quotaKey, rlKey, authKey}
-		// Guard against tests spanning a UTC month boundary: also delete the current-month quota key.
-		if nowMonth := time.Now().UTC().Format("2006-01"); nowMonth != createdMonth {
-			redisKeys = append(redisKeys, "quota:"+customerID.String()+":"+nowMonth)
-		}
+		redisKeys := []string{quotaKey, nextQuotaKey, rlKey, authKey}
 		if delErr := ts.Redis.Del(cctx, redisKeys...).Err(); delErr != nil {
 			t.Logf("harness: cleanup redis keys for customer %s: %v", customerID, delErr)
 		}
@@ -463,13 +471,15 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 }
 
 // CountErrorEvents returns the number of error_events rows for customerID.
+// Matches the cleanup predicate: counts rows by customer_id OR by api_key_id
+// belonging to the customer (async errorlog writes may only set api_key_id).
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var n int
 	err := ts.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1`, customerID,
+		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1 OR api_key_id IN (SELECT id FROM api_keys WHERE customer_id = $1)`, customerID,
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count error_events: %v", err)

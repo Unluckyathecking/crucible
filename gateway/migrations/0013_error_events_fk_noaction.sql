@@ -4,8 +4,9 @@ SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
 -- Ensure error_events.api_key_id FK is ON DELETE NO ACTION.
--- DROP CONSTRAINT IF EXISTS + ADD is idempotent: repairs any prior wrong delete
--- rule (CASCADE, SET NULL, RESTRICT, etc.) and is a no-op if tables do not exist.
+-- The IF EXISTS guard skips DROP/ADD when the constraint already has the correct
+-- delete rule (confdeltype 'a' = NO ACTION), eliminating any window where the FK
+-- is briefly absent. Only repairs wrong delete rules or missing constraints.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -16,6 +17,14 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
+  ) THEN RETURN; END IF;
+
+  -- Skip if constraint already correct: confdeltype 'a' = ON DELETE NO ACTION.
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'error_events_api_key_id_fkey'
+      AND conrelid = 'public.error_events'::regclass
+      AND confdeltype = 'a'
   ) THEN RETURN; END IF;
 
   -- Remove orphaned rows before (re-)adding the FK so ADD CONSTRAINT validation
@@ -31,9 +40,6 @@ BEGIN
   ALTER TABLE public.error_events
     ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
-
-EXCEPTION WHEN OTHERS THEN
-  RAISE EXCEPTION 'migration 0013 failed: %', SQLERRM;
 END $$;
 
 COMMIT;
