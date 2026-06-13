@@ -14,12 +14,14 @@ BEGIN;
 -- Idempotent: the DO block checks delete_rule before altering; safe to re-run.
 DO $$
 BEGIN
+  -- Use pg_constraint rather than information_schema: the information_schema
+  -- delete_rule column is character_data (blank-padded per SQL standard), so
+  -- comparing against 'SET NULL' may fail due to trailing spaces.
+  -- pg_constraint.confdeltype is a single char with no padding: 'n' = SET NULL.
   IF NOT EXISTS (
-    SELECT 1
-    FROM information_schema.referential_constraints
-    WHERE constraint_schema = 'public'
-      AND constraint_name   = 'error_events_api_key_id_fkey'
-      AND delete_rule       = 'SET NULL'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'error_events_api_key_id_fkey'
+      AND confdeltype = 'n'
   ) THEN
     ALTER TABLE error_events DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey

@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,6 +79,19 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
+// varyingWorker embeds the invocation count in the payload so each response body is
+// unique. Used in idempotency tests: if the second response matches the first, it
+// proves the middleware returned the cached response, not a coincidental worker match.
+func varyingWorker() (http.Handler, *atomic.Int64) {
+	var count atomic.Int64
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := count.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
+	})
+	return h, &count
+}
+
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Selects on r.Context().Done() so the handler exits promptly when the proxy
 // cancels the request context, rather than blocking httptest.Server shutdown.
@@ -85,6 +99,11 @@ func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-time.After(delay):
+			// Re-check context: proxy may have cancelled between the timer firing
+			// and this goroutine being scheduled to write the response.
+			if r.Context().Err() != nil {
+				return
+			}
 		case <-r.Context().Done():
 			return
 		}
@@ -184,12 +203,12 @@ func TestHappyPath(t *testing.T) {
 }
 
 // TestIdempotentReplay: sending the same Idempotency-Key twice returns the stored
-// response on the second call and invokes the worker exactly once. Also asserts that
-// a durable idempotency_keys row was written to Postgres after the first request,
-// proving the middleware stored state rather than the worker coincidentally returning
-// the same bytes.
+// response on the second call and invokes the worker exactly once. Uses varyingWorker
+// so each invocation returns a unique payload; body equality on the second response
+// therefore proves the middleware returned the cached copy rather than a coincidentally
+// matching worker call.
 func TestIdempotentReplay(t *testing.T) {
-	worker, invocations := countingWorker(1)
+	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
@@ -217,9 +236,12 @@ func TestIdempotentReplay(t *testing.T) {
 	if string(body1) != string(body2) {
 		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
 	}
-	// The replayed body must be a valid worker response, not a cached error envelope.
+	// The replayed body must be the cached first-invocation response.
+	// varyingWorker embeds the invocation count; n=1 in the replay proves
+	// the cached copy (not a second worker call with n=2) was returned.
 	var replayed struct {
-		BillableUnits uint64 `json:"billable_units"`
+		Payload       struct{ N int64 `json:"n"` } `json:"payload"`
+		BillableUnits uint64                       `json:"billable_units"`
 	}
 	if err := json.Unmarshal(body2, &replayed); err != nil {
 		t.Fatalf("decode replayed body: %v\nbody: %s", err, body2)
@@ -227,11 +249,16 @@ func TestIdempotentReplay(t *testing.T) {
 	if replayed.BillableUnits != 1 {
 		t.Errorf("replayed billable_units: got %d, want 1", replayed.BillableUnits)
 	}
+	if replayed.Payload.N != 1 {
+		t.Errorf("replayed payload.n: got %d, want 1 (cached first invocation)", replayed.Payload.N)
+	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
 	}
+	// X-Idempotent-Replayed is the middleware's explicit signal that the response
+	// came from cache; its absence indicates the middleware did not replay.
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
-		t.Errorf("X-Idempotent-Replayed: got %q, want \"true\"", v)
+		t.Fatalf("X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
 }
 
@@ -265,8 +292,11 @@ func TestRateLimit(t *testing.T) {
 	}
 	// ratelimit.Middleware sets Retry-After, RateLimit-Limit, and RateLimit-Remaining
 	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
-	if r.Header.Get("Retry-After") == "" {
+	if ra := r.Header.Get("Retry-After"); ra == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
+	} else if n, err := strconv.Atoi(ra); err != nil || n < 1 || n > 60 {
+		// The sliding window is 60 s; a valid Retry-After must be in [1, 60].
+		t.Errorf("Retry-After: got %q, want integer in [1,60]", ra)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)

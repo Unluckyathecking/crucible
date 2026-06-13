@@ -45,6 +45,11 @@ const (
 	// Must be >= 32 bytes (config.Load enforces this at runtime).
 	TestSalt = "crucible-harness-test-salt-min32!!"
 
+	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
+	// Mirrors config.Config.APIKeyPrefix set inside NewGatewayTestServer so both
+	// the gateway auth middleware and CreateCustomer use the same value.
+	TestAPIKeyPrefix = "cru_"
+
 	defaultWorkerTimeoutMS = 5000      // generous default; set low in Options to test timeout scenarios
 	defaultProxyPoolSize   = 8
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
@@ -146,7 +151,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		BodyLimitBytes:  defaultBodyLimitBytes,
 		DashboardOrigin: "http://localhost:3001",
 		ErrorExposure:   "full", // expose worker error details in tests
-		APIKeyPrefix:    "cru_",
+		APIKeyPrefix:    TestAPIKeyPrefix,
 		APIKeyHashSalt:  TestSalt,
 	}
 
@@ -189,6 +194,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	routesMu.Lock()
 	defer routesMu.Unlock()
 	if opts.Routes != nil {
+		// Shallow copy is correct here: we replace the slice variable entirely
+		// (server.V1Routes = opts.Routes / server.V1Routes = backup) and never mutate
+		// individual RouteDescriptor fields. Go strings are immutable; *Schema pointers
+		// are read by NewRouter but not mutated. Callers must treat opts.Routes as
+		// immutable after this call.
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
@@ -217,6 +227,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // deleted, so the shared plan table is not corrupted for subsequent tests.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
 	t.Helper()
+	if id == "" {
+		t.Fatal("harness: CreatePlan id must be non-empty")
+	}
 	ctx := context.Background()
 
 	// Snapshot any pre-existing plan so cleanup can restore it rather than deleting a
@@ -287,7 +300,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert customer: %v", err)
 	}
 
-	full, prefix, err := auth.Generate("cru_")
+	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
