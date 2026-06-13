@@ -335,9 +335,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
 	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
+	var dummy int
 	err := ts.DB.QueryRow(planCtx,
 		`SELECT 1 FROM plans WHERE id = $1`, planID,
-	).Scan(new(int))
+	).Scan(&dummy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
 	}
@@ -388,7 +389,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
-		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
+		var err error
+		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
 		cleanupErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 		cleanupErr("idempotency_keys", err)
@@ -540,9 +542,9 @@ type redisPinger struct{ c *redis.Client }
 
 func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err() }
 
-var _ server.HealthChecker = (*pgPinger)(nil)
-
 // pgPinger adapts *pgxpool.Pool to server.HealthChecker.
 type pgPinger struct{ p *pgxpool.Pool }
 
 func (p *pgPinger) Ping(ctx context.Context) error { return p.p.Ping(ctx) }
+
+var _ server.HealthChecker = (*pgPinger)(nil)
