@@ -393,9 +393,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// cleanup succeeds. A fresh context is used so DB timeout exhaustion cannot
 		// cancel the Redis DEL. DEL on non-existent keys returns 0 (not an error).
 		defer func() {
-			if ts.Redis == nil {
-				return
-			}
 			rctx, rcancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
 			defer rcancel()
 			// Key formats mirror the production packages (verified against source):
@@ -515,9 +512,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	customerID = uuid.New()
-	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer insertCancel()
-	_, err = ts.DB.Exec(insertCtx,
+	custCtx, custCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer custCancel()
+	_, err = ts.DB.Exec(custCtx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
 		customerID, parsedAddr.Address, planID,
 	)
@@ -526,7 +523,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	hash := auth.Hash(testSalt, full)
-	_, err = ts.DB.Exec(insertCtx,
+	keyCtx, keyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer keyCancel()
+	_, err = ts.DB.Exec(keyCtx,
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
 		customerID, prefix, hash,
 	)

@@ -118,9 +118,8 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			// Intentionally return without writing to simulate a worker that
-			// never responds before the gateway proxy deadline. The gateway proxy
-			// maps the resulting transport error to 502 WORKER_UNREACHABLE.
+			// Return without writing to w. The HTTP server closes the connection
+			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			if !timer.Stop() {
 				<-timer.C
 			}
