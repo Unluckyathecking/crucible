@@ -7,6 +7,8 @@ SET LOCAL statement_timeout = '30s';
 -- pg_constraint.confdeltype codes (https://www.postgresql.org/docs/current/catalog-pg-constraint.html):
 --   'a'=NO ACTION (target), 'r'=RESTRICT, 'c'=CASCADE, 'n'=SET NULL, 'd'=SET DEFAULT
 DO $$
+DECLARE
+  actual_conname text;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -18,26 +20,29 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
   ) THEN RETURN; END IF;
 
-  -- Fix only when the constraint exists and has the wrong delete rule.
-  -- IF EXISTS (confdeltype != 'a') is the natural positive form:
-  --   true  = constraint present with wrong type (SET NULL, CASCADE, etc.) = fix
-  --   false = constraint already NO ACTION, OR constraint absent = skip
-  IF EXISTS (
-    SELECT 1
-    FROM   pg_constraint c
-    JOIN   pg_class      t ON t.oid = c.conrelid
-    JOIN   pg_namespace  n ON n.oid = t.relnamespace
-    WHERE  c.conname     = 'error_events_api_key_id_fkey'
-      AND  c.contype     = 'f'
-      AND  c.confdeltype != 'a'   -- not NO ACTION: needs fixing
-      AND  t.relname     = 'error_events'
-      AND  n.nspname     = 'public'
-  ) THEN
-    LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
-    RAISE NOTICE 'migration 0013: fixing error_events FK from SET NULL to NO ACTION';
-    -- ACCESS EXCLUSIVE lock prevents concurrent DML, so a plain DROP + ADD is safe.
-    ALTER TABLE public.error_events
-      DROP CONSTRAINT error_events_api_key_id_fkey;
+  -- Find the FK from error_events -> api_keys with wrong delete rule.
+  -- Capturing the actual constraint name avoids assumptions about naming conventions.
+  SELECT c.conname INTO actual_conname
+  FROM   pg_constraint c
+  JOIN   pg_class      t  ON t.oid  = c.conrelid
+  JOIN   pg_namespace  n  ON n.oid  = t.relnamespace
+  JOIN   pg_class      rf ON rf.oid = c.confrelid
+  WHERE  c.contype     = 'f'
+    AND  c.confdeltype != 'a'   -- not NO ACTION: needs fixing
+    AND  t.relname     = 'error_events'
+    AND  n.nspname     = 'public'
+    AND  rf.relname    = 'api_keys'
+  LIMIT 1;
+
+  IF FOUND THEN
+    -- Lock both tables: ADD CONSTRAINT requires ACCESS EXCLUSIVE on the referenced
+    -- table (api_keys) to validate the FK, so locking only error_events would allow
+    -- concurrent DML on api_keys to block or deadlock the migration.
+    LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
+    RAISE NOTICE 'migration 0013: fixing error_events FK % to ON DELETE NO ACTION', actual_conname;
+    -- Drop by captured name so the migration succeeds even if the constraint was
+    -- previously recreated under a non-canonical name.
+    EXECUTE format('ALTER TABLE public.error_events DROP CONSTRAINT %I', actual_conname);
     ALTER TABLE public.error_events
       ADD CONSTRAINT error_events_api_key_id_fkey
         FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
