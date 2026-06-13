@@ -396,6 +396,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
 			if cctx.Err() != nil {
+				finalKeyErr = cctx.Err()
 				break
 			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, 10*time.Second)
