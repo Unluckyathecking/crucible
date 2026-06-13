@@ -1,24 +1,18 @@
 -- Repair error_events.api_key_id FK to ON DELETE NO ACTION.
 --
--- ON DELETE NO ACTION (confdeltype = 'a') prevents deleting api_keys rows
--- while error_events rows reference them, preserving the full audit trail.
+-- ON DELETE NO ACTION prevents deleting api_keys rows while error_events rows
+-- reference them, preserving the full audit trail.
 --
--- This migration runs on every gateway boot. The guard returns immediately
--- when the FK is already valid, making the common case a single cheap catalog
--- query. The full repair path acquires ACCESS EXCLUSIVE on both tables before
--- purging orphans: locking api_keys prevents concurrent deletes from creating
--- new orphans between the DELETE and the VALIDATE CONSTRAINT scan.
+-- Runs on every gateway boot; the guard returns immediately when the FK is
+-- already fully valid, making the common case a single cheap catalog query.
+-- All table names are fully qualified (public.*) to avoid search_path dependency.
 --
 -- PostgreSQL confdeltype codes: 'a' = NO ACTION, 'r' = RESTRICT,
 -- 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT.
 -- convalidated = true means the constraint covers all existing rows.
 DO $$
 BEGIN
-  SET LOCAL lock_timeout = 10000;      -- 10 s in ms; governs ACCESS EXCLUSIVE wait
-  SET LOCAL statement_timeout = 300000; -- 5 min in ms; covers orphan purge + VALIDATE scan
-  SET LOCAL search_path = public;
-
-  -- Guard: constraint already fully valid with the desired delete rule — skip.
+  -- Guard: skip if already fully valid with ON DELETE NO ACTION.
   IF EXISTS (
     SELECT 1
     FROM   pg_constraint c
@@ -36,9 +30,9 @@ BEGIN
   -- and the VALIDATE CONSTRAINT scan.
   LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
 
-  -- Remove orphaned rows: api_key_id is non-NULL but the referenced api_keys
-  -- row no longer exists. NULL api_key_id is valid per FK semantics (no
-  -- reference) and is preserved by the IS NOT NULL guard.
+  -- Remove orphaned rows: api_key_id non-NULL but the referenced api_keys row
+  -- no longer exists. NULL api_key_id is valid per FK semantics (no reference)
+  -- and is preserved by the IS NOT NULL guard.
   DELETE FROM public.error_events
   WHERE  api_key_id IS NOT NULL
     AND  NOT EXISTS (
