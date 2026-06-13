@@ -1,7 +1,7 @@
 -- Repair error_events.api_key_id FK to ON DELETE NO ACTION.
 --
--- ON DELETE NO ACTION prevents deleting api_keys rows while error_events rows
--- reference them, preserving the full audit trail.
+-- ON DELETE NO ACTION enforces referential integrity: it prevents deleting
+-- api_keys rows while error_events rows reference them.
 --
 -- Runs on every gateway boot; the guard returns immediately when the FK is
 -- already fully valid, making the common case a single cheap catalog query.
