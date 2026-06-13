@@ -9,7 +9,8 @@ BEGIN;
 -- The test harness cleanup handles the FK ordering (error_events before api_keys)
 -- without a schema change. In the rare case where an async errorlog.Record goroutine
 -- fires between the cleanup's DELETE FROM error_events and DELETE FROM api_keys,
--- the api_keys DELETE is skipped and the orphaned rows are re-cleaned on the next run.
+-- the test harness retries the api_keys DELETE (re-deleting dependents first) up to
+-- three times, so orphaned rows are resolved within the same cleanup pass.
 --
 -- Idempotent two-phase approach:
 --   Phase 1: drop the constraint if it exists with the wrong delete action.
@@ -50,6 +51,7 @@ BEGIN
       AND an.nspname = 'public' AND ak.relname = 'api_keys'
       AND c.conname  = 'error_events_api_key_id_fkey'
       AND c.contype  = 'f'
+      AND c.confdeltype = 'a'
   ) THEN
     ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;

@@ -64,6 +64,8 @@ const (
 	defaultProxyPoolSize   = 8
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
 	defaultDBPoolSize      = 5
+
+	serverBootTimeout = 30 * time.Second // time budget for DB pool open + migration apply
 )
 
 func init() {
@@ -121,7 +123,7 @@ type TestServer struct {
 // INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
 
 	if opts.WorkerHandler == nil {
@@ -394,6 +396,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// its own context derived from cctx so retries respect the overall cleanup deadline.
 		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
+			if cctx.Err() != nil {
+				break
+			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, 10*time.Second)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
