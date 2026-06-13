@@ -340,10 +340,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
-	ctx := context.Background()
 	// Verify plan exists so a typo gives a clear message instead of a FK violation.
 	var planExists bool
-	planCtx, planCancel := context.WithTimeout(ctx, 5*time.Second)
+	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
 	err := ts.DB.QueryRow(planCtx,
 		`SELECT true FROM plans WHERE id = $1`, planID,
@@ -359,7 +358,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	createdMonth := time.Now().UTC().Format("2006-01")
 
 	customerID := uuid.New()
-	_, err = ts.DB.Exec(ctx,
+	_, err = ts.DB.Exec(context.Background(),
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
 		customerID, email, planID,
 	)
@@ -372,7 +371,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: generate api key: %v", err)
 	}
 	hash := auth.Hash(testSalt, full)
-	_, err = ts.DB.Exec(ctx,
+	_, err = ts.DB.Exec(context.Background(),
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
 		customerID, prefix, hash,
 	)
