@@ -11,7 +11,7 @@ BEGIN;
 --
 -- lock_timeout limits DDL lock-acquisition time; set at the transaction level
 -- so it covers all ALTER TABLE statements in this migration.
-SET LOCAL lock_timeout = '5s';
+SET LOCAL lock_timeout = '5000';
 
 DO $$
 BEGIN
