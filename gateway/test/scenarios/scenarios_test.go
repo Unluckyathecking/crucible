@@ -170,6 +170,9 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 // response body via drainBody.
 func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
+	if ts == nil || ts.Server == nil {
+		t.Fatal("invoke: ts and ts.Server must be non-nil")
+	}
 	if apiKey == "" {
 		t.Fatal("invoke: apiKey must be non-empty")
 	}
