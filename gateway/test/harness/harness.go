@@ -425,9 +425,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
 	customerID := uuid.New()
-	// inserted is set to true after the customers row is committed. The cleanup
-	// closure checks it so that a t.Fatal before the INSERT is a no-op rather
-	// than attempting DELETEs on rows that were never created.
 	var inserted bool
 
 	t.Cleanup(func() {
