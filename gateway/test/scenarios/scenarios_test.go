@@ -137,8 +137,8 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // request mutators. Callers must drain and close the body via drainBody.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel) // keep ctx alive until after the caller reads the body
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(ctxCancel) // cancel context only — drainBody is the sole owner of resp.Body.Close
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
