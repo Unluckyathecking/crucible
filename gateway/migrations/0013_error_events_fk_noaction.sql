@@ -31,6 +31,9 @@ BEGIN
   ALTER TABLE public.error_events
     ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE EXCEPTION 'migration 0013 failed: %', SQLERRM;
 END $$;
 
 COMMIT;

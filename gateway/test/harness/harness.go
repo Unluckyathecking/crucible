@@ -68,8 +68,10 @@ func init() {
 // routesMu guards temporary modifications to server.V1Routes.
 var routesMu sync.Mutex
 
-// migrateOnce runs migrations once per test process for speed; the real
-// idempotency guarantee lives in the SQL files themselves (IF NOT EXISTS, etc.).
+// migrateOnce runs migrations once per test process for speed. If the first
+// attempt fails, migrateOnceErr remains set and all subsequent tests in the
+// same process fail; callers must ensure Postgres is ready before running
+// tests. The SQL files use IF NOT EXISTS / DROP IF EXISTS for idempotency.
 var (
 	migrateOnce    sync.Once
 	migrateOnceErr error
@@ -205,14 +207,16 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 
 	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
 	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
+	// Synchronous Lock/Unlock (no defer) keeps the critical section explicit:
+	// deep-copy the backup before swapping, restore before releasing the lock.
 	var handler http.Handler
 	if opts.Routes != nil {
 		routesMu.Lock()
-		defer routesMu.Unlock()
-		backup := server.V1Routes
-		defer func() { server.V1Routes = backup }()
+		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		server.V1Routes = opts.Routes
 		handler = server.NewRouter(deps)
+		server.V1Routes = backup
+		routesMu.Unlock()
 	} else {
 		handler = server.NewRouter(deps)
 	}
@@ -363,7 +367,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, e)
 				return
 			}
-			t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
+			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
+			if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, e)
+				return
+			}
+			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
