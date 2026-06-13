@@ -32,12 +32,14 @@ BEGIN
   -- untouched (the WHERE requires IS NOT NULL).
   -- NOT IN uses an uncorrelated subquery: id refers to api_keys.id, not to
   -- any column of the table being deleted.
-  -- api_keys.id is a PK (NOT NULL), but the WHERE id IS NOT NULL guard is explicit:
-  -- NOT IN returns unknown (not false) if the subquery contains a NULL, which would
-  -- suppress all deletions. The guard makes the NULL-safety contract visible.
-  DELETE FROM public.error_events
-  WHERE  api_key_id IS NOT NULL
-    AND  api_key_id NOT IN (SELECT id FROM public.api_keys WHERE id IS NOT NULL);
+  -- NOT EXISTS with explicit table aliases: e = error_events row being evaluated,
+  -- k = the api_keys row we look for. If no api_keys row with k.id = e.api_key_id
+  -- exists, the error_events row is an orphan and must be deleted before the FK
+  -- can be added. Using NOT EXISTS (rather than NOT IN) avoids the NULL-in-subquery
+  -- footgun and lets the planner use an index on api_keys.id.
+  DELETE FROM public.error_events e
+  WHERE  e.api_key_id IS NOT NULL
+    AND  NOT EXISTS (SELECT 1 FROM public.api_keys k WHERE k.id = e.api_key_id);
 
   -- Drop any existing FK regardless of its current delete rule, then recreate
   -- it with ON DELETE NO ACTION. ADD CONSTRAINT validates all rows inline under

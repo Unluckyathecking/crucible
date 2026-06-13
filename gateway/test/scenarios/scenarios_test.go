@@ -201,17 +201,19 @@ func drainBody(t *testing.T, r *http.Response) []byte {
 }
 
 // errorCode extracts the top-level error.code from an apierror envelope.
+// Using a pointer for the Error field lets us distinguish "error key absent from JSON"
+// from "error.code is an empty string"; both call t.Fatalf with the raw body.
 func errorCode(t *testing.T, body []byte) string {
 	t.Helper()
 	var env struct {
-		Error struct {
+		Error *struct {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatalf("decode apierror envelope: %v\nbody: %s", err, body)
 	}
-	if env.Error.Code == "" {
+	if env.Error == nil || env.Error.Code == "" {
 		t.Fatalf("apierror envelope missing error.code\nbody: %s", body)
 	}
 	return env.Error.Code
@@ -328,8 +330,9 @@ func TestIdempotentReplay(t *testing.T) {
 }
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
-// All three requests complete within milliseconds so they reliably land in the same
-// 60-second sliding window — no minute-boundary race is possible at this timescale.
+// The rate-limit bucket resets on the minute boundary (time.Now().Truncate(time.Minute)).
+// If the test starts within 2 seconds of a boundary, we sleep past it so all three
+// requests land in the same window and the third is reliably rejected.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -337,6 +340,13 @@ func TestRateLimit(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
+
+	// Guard against a minute-boundary race: if we're within the last 2 seconds of
+	// the current minute, sleep until the next minute starts so all requests land
+	// in the same window.
+	if sec := time.Now().Second(); sec >= 58 {
+		time.Sleep(time.Duration(62-sec) * time.Second)
+	}
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
@@ -390,9 +400,10 @@ func TestRateLimit(t *testing.T) {
 }
 
 // TestQuotaExceeded: second request exceeds monthly cap of 1 billable unit; returns 429 QUOTA_EXCEEDED.
-// The quota tracker (quota.Add) increments a per-customer Redis counter; the usage recorder writes
-// usage_events rows only for accepted requests. Because cap is 1 and the first request consumed 1 unit,
-// the second request is rejected before reaching the worker and no additional usage_events row is written.
+// The quota middleware calls Allow() which increments the Redis counter (0→1) and admits the first
+// request since 1 ≤ cap(1). The usage recorder writes a usage_events row but does not touch the
+// quota counter. The second request: Allow() increments (1→2), which exceeds cap(1), so the request
+// is denied immediately with no usage_events row written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
