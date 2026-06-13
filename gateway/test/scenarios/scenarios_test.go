@@ -41,9 +41,10 @@ var testHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout: 5 * time.Second,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		MaxConnsPerHost:     10,
+		IdleConnTimeout:     5 * time.Second,
 	},
 }
 
@@ -109,7 +110,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
+// slowWorker waits for delay before responding — used to trigger the proxy timeout.
 // Returns the handler, an invoked flag (set when the handler starts), and a cancelled
 // flag (set when the handler detects context cancellation). Uses time.NewTimer with
 // defer Stop so the timer goroutine is released when the handler returns.
@@ -265,6 +266,11 @@ func TestIdempotentReplay(t *testing.T) {
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
+	// X-Idempotent-Replayed is the middleware's explicit signal that the response
+	// came from cache; its absence means the middleware did not replay.
+	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
+		t.Fatalf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
+	}
 
 	if string(body1) != string(body2) {
 		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
@@ -287,11 +293,6 @@ func TestIdempotentReplay(t *testing.T) {
 	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
-	}
-	// X-Idempotent-Replayed is the middleware's explicit signal that the response
-	// came from cache; its absence indicates the middleware did not replay.
-	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
-		t.Fatalf("X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
 }
 
@@ -402,7 +403,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// server/routes.go calls apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...)
 	// on any proxy error including context deadline exceeded; 502 is confirmed by routes_test.go.
 	if r.StatusCode != http.StatusBadGateway {
-		t.Fatalf("want 502 BadGateway on proxy timeout, got %d: %s", r.StatusCode, body)
+		t.Fatalf("proxy timeout: want %d, got %d: %s", http.StatusBadGateway, r.StatusCode, body)
 	}
 
 	// The response must be an apierror envelope with WORKER_UNREACHABLE.
@@ -425,7 +426,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// propagation to r.Context(), so we use t.Log (not t.Error) — a miss here
 	// indicates a potential proxy goroutine leak but is not a hard failure.
 	var sawCancel bool
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		if sawCancel = cancelledFlag.Load(); sawCancel {
 			break
 		}
