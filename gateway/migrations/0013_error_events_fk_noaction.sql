@@ -6,11 +6,9 @@ BEGIN;
 -- is briefly absent. Only repairs wrong delete rules or missing constraints.
 DO $$
 BEGIN
-  -- SET LOCAL inside the DO body so timeouts apply to the DDL statements here.
-  -- A SET LOCAL at the top-level transaction does not propagate into the DO
-  -- block's execution scope for the ALTER TABLE statements below.
+  -- lock_timeout caps how long ALTER TABLE waits to acquire the table lock.
+  -- statement_timeout is intentionally omitted: PostgreSQL ignores it for DDL.
   SET LOCAL lock_timeout = '5s';
-  SET LOCAL statement_timeout = '30s';
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
