@@ -206,6 +206,16 @@ func TestIdempotentReplay(t *testing.T) {
 	if string(body1) != string(body2) {
 		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
 	}
+	// The replayed body must be a valid worker response, not a cached error envelope.
+	var replayed struct {
+		BillableUnits uint64 `json:"billable_units"`
+	}
+	if err := json.Unmarshal(body2, &replayed); err != nil {
+		t.Fatalf("decode replayed body: %v\nbody: %s", err, body2)
+	}
+	if replayed.BillableUnits != 1 {
+		t.Errorf("replayed billable_units: got %d, want 1", replayed.BillableUnits)
+	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
 	}
@@ -256,6 +266,9 @@ func TestQuotaExceeded(t *testing.T) {
 	// After worker success, usage.Recorder calls quota.Add(units=1), so counter→2.
 	// The second request calls Reserve (would be counter→3 > cap=1) and is denied
 	// immediately; no worker call is made and no usage_events row is written.
+	// monthlyCap=1: the first request is admitted and writes one usage_events row.
+	// The second request is rejected by the quota middleware (cap exhausted) and
+	// produces no usage_events row.
 	ts.CreatePlan(t, "quota-1-plan", 100, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded@example.com", "quota-1-plan")
 

@@ -48,6 +48,7 @@ const (
 	defaultWorkerTimeoutMS = 5000
 	defaultProxyPoolSize   = 8
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
+	defaultDBPoolSize      = 5
 )
 
 // routesMu guards temporary modifications to server.V1Routes.
@@ -118,7 +119,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Cleanup(workerSrv.Close)
 
 	// Real Postgres: run migrations to ensure schema is current.
-	pool, err := db.NewPool(ctx, opts.DSN, 5)
+	pool, err := db.NewPool(ctx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
@@ -205,11 +206,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 }
 
 // CreatePlan inserts or updates a plan row for use in tests.
-// ratePerMinute=0 means unlimited. monthlyCap=0 means unlimited (NULL in DB).
+// ratePerMinute=0 means unlimited. monthlyCap=0 means unlimited: the column is
+// stored as NULL, which pgx scans into int64(0); quota.Tracker.Reserve treats
+// cap<=0 as "always admitted" (no ceiling). Pass monthlyCap>0 for a finite cap.
 // Uses ON CONFLICT DO UPDATE so repeated test runs against the same DB are safe.
 // Registers t.Cleanup to delete the plan row after the test completes.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
 	t.Helper()
+	// NULL signals unlimited in the schema; the quota middleware reads this as 0 (always admit).
 	var capPtr *int64
 	if monthlyCap > 0 {
 		capPtr = &monthlyCap
