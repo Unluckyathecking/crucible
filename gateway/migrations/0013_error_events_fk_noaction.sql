@@ -36,6 +36,10 @@ BEGIN
   -- NOT EXISTS (rather than NOT IN) avoids the NULL-in-subquery footgun and
   -- lets the planner use an index on api_keys.id. The schema-qualified
   -- public.error_events.api_key_id makes the outer-table correlation explicit.
+  -- Orphaned rows exist only when a prior deployment ran DELETE CASCADE or a
+  -- manual api_keys deletion without also removing error_events. In practice
+  -- the orphan set is tiny; the ACCESS EXCLUSIVE lock already prevents new
+  -- orphans from arriving during the purge, so no LIMIT loop is needed.
   DELETE FROM public.error_events
   WHERE  api_key_id IS NOT NULL
     AND  NOT EXISTS (
