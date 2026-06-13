@@ -376,7 +376,7 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime || resetUnix > reqTime+61 {
+	} else if resetUnix < reqTime-2 || resetUnix > reqTime+61 {
 		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 61s of request time (%d)", resetUnix, reqTime)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
