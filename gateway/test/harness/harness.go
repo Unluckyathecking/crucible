@@ -1,9 +1,7 @@
 // Package harness provides NewGatewayTestServer: a test helper that boots the
 // full gateway middleware chain against real Postgres and Redis with an in-process
 // worker stub. DSN and RedisURL are required; callers set Options fields as needed.
-// Migrations are applied automatically once per test process via sync.Once; structural
-// SQL uses idempotent patterns (IF NOT EXISTS, DO blocks with guard queries) where
-// possible, though some migrations include non-idempotent data-repair steps.
+// Migrations are applied automatically once per test process via sync.Once.
 package harness
 
 import (
@@ -103,7 +101,7 @@ type Options struct {
 	// RedisURL is a real Redis connection string.
 	RedisURL string
 
-	// WorkerTimeoutMS caps the gateway→worker call. Defaults to 5000 ms.
+	// WorkerTimeoutMS caps the gateway→worker call. 0 means use the default (5000 ms).
 	WorkerTimeoutMS int
 }
 
@@ -223,12 +221,15 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// routesMu is always held while calling server.NewRouter so that
-	// server.V1Routes cannot be mutated by a concurrent custom-route caller
-	// while a non-custom caller reads it inside NewRouter.
+	// The Routes validation must precede routesMu.Lock() so that t.Fatal exits
+	// cleanly without leaving the mutex locked for subsequent tests.
 	if opts.Routes != nil && len(opts.Routes) == 0 {
 		t.Fatal("harness: Routes must be non-empty; use nil for production routes")
 	}
+	// routesMu is held through server.NewRouter so no concurrent caller can read
+	// server.V1Routes while we have temporarily replaced it with opts.Routes.
+	// The lock must be held through NewRouter (not just the assignment) because
+	// NewRouter reads V1Routes to build the chi router.
 	routesMu.Lock()
 	// Copy the original slice so the restore in defer is not affected by any
 	// concurrent append/replace to server.V1Routes that happens to share the
@@ -520,19 +521,16 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 	return n
 }
 
-// CountIdempotencyKeys returns the number of idempotency_keys rows matching customerID and the
-// given key value. The column is named idempotency_key (TEXT NOT NULL, schema line:
-//
-//	idempotency_key TEXT NOT NULL  -- migrations/0007_idempotency_keys.sql line 17
-//
-// The UNIQUE constraint is UNIQUE(customer_id, idempotency_key) on the same table.
-func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int64 {
+// CountIdempotencyKey reports whether an idempotency_keys row exists for the given
+// customerID and idempotencyKey. Because the table has a UNIQUE constraint on
+// (customer_id, idempotency_key), the result is always 0 or 1 — a boolean existence check.
+func (ts *TestServer) CountIdempotencyKey(t *testing.T, customerID uuid.UUID, idempotencyKey string) bool {
 	t.Helper()
 	if ts.DB == nil {
-		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer.DB")
+		t.Fatal("harness: CountIdempotencyKey called on nil TestServer.DB")
 	}
 	if idempotencyKey == "" {
-		t.Fatal("harness: CountIdempotencyKeys idempotencyKey must be non-empty")
+		t.Fatal("harness: CountIdempotencyKey idempotencyKey must be non-empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -542,9 +540,9 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 		customerID, idempotencyKey,
 	).Scan(&n)
 	if err != nil {
-		t.Fatalf("harness: count idempotency_keys: %v", err)
+		t.Fatalf("harness: count idempotency_key: %v", err)
 	}
-	return n
+	return n == 1
 }
 
 // redisPinger adapts *redis.Client to server.HealthChecker.
