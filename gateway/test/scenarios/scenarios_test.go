@@ -78,9 +78,18 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
+// Uses a timer + select so the handler exits promptly when the proxy cancels the
+// request context (e.g., on timeout), rather than blocking the httptest.Server
+// shutdown goroutine for the full sleep duration.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(delay)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
@@ -252,9 +261,12 @@ func TestRateLimit(t *testing.T) {
 	if code := errorCode(t, body); code != "RATE_LIMITED" {
 		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
 	}
-	// Either header form is acceptable; ratelimit.Middleware sets both.
-	if r.Header.Get("Retry-After") == "" && r.Header.Get("RateLimit-Limit") == "" {
-		t.Error("want Retry-After or RateLimit-Limit header on 429 RATE_LIMITED response")
+	// ratelimit.Middleware sets both headers on every 429 response.
+	if r.Header.Get("Retry-After") == "" {
+		t.Error("want Retry-After header on 429 RATE_LIMITED response")
+	}
+	if r.Header.Get("RateLimit-Limit") == "" {
+		t.Error("want RateLimit-Limit header on 429 RATE_LIMITED response")
 	}
 }
 
@@ -262,10 +274,6 @@ func TestRateLimit(t *testing.T) {
 // 429 QUOTA_EXCEEDED and leaves no usage_events row for the rejected call.
 func TestQuotaExceeded(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	// monthlyCap=1: the quota middleware calls Reserve (+1, counter→1, admitted since 1≤1).
-	// After worker success, usage.Recorder calls quota.Add(units=1), so counter→2.
-	// The second request calls Reserve (would be counter→3 > cap=1) and is denied
-	// immediately; no worker call is made and no usage_events row is written.
 	// monthlyCap=1: the first request is admitted and writes one usage_events row.
 	// The second request is rejected by the quota middleware (cap exhausted) and
 	// produces no usage_events row.

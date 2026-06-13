@@ -245,6 +245,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
 	ctx := context.Background()
+	// Capture the month now so the cleanup closure deletes the same month's quota key
+	// even if the test happens to span a UTC month boundary.
+	createdMonth := time.Now().UTC().Format("2006-01")
 
 	customerID := uuid.New()
 	_, err := ts.DB.Exec(ctx,
@@ -296,8 +299,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Formats verified against production source (do not change without updating both):
 		//   quota key:    quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
 		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>" (fmt.Sprintf("rl:%s", id))
-		now := time.Now().UTC()
-		quotaKey := "quota:" + customerID.String() + ":" + now.Format("2006-01")
+		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
 		if err := ts.Redis.Del(cctx, quotaKey, rlKey).Err(); err != nil {
 			// Log but do not fail: stale Redis keys expire naturally and UUID-scoped
