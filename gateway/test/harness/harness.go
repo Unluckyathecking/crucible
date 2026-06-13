@@ -312,12 +312,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
 				id, prevRate, prevCap, prevName,
 			); err != nil {
-				t.Logf("harness: restore plan %q: %v", id, err)
+				t.Errorf("harness: restore plan %q: %v", id, err)
 				return
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Logf("harness: cleanup plan %q: %v", id, err)
+				t.Errorf("harness: cleanup plan %q: %v", id, err)
 				return
 			}
 		}
@@ -379,7 +379,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// cleanup succeeds. A fresh context is used so DB timeout exhaustion cannot
 		// cancel the Redis DEL. DEL on non-existent keys returns 0 (not an error).
 		defer func() {
-			rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			rctx, rcancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
 			defer rcancel()
 			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 			nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth

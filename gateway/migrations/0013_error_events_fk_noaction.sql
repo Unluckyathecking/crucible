@@ -9,13 +9,11 @@
 -- The guard below is a no-op when the constraint already carries ON DELETE NO ACTION.
 DO $$
 BEGIN
-  -- Fail fast rather than blocking the deployment indefinitely if error_events
-  -- is actively locked. 30 s statement_timeout covers the full block.
-  -- SET (not SET LOCAL) so the timeouts persist for the session, not just
-  -- the current subtransaction, in case the migration tool wraps files in
-  -- an outer transaction where SET LOCAL would be reverted at commit.
-  SET lock_timeout = '10s';
-  SET statement_timeout = '30s';
+  -- SET LOCAL reverts automatically at transaction end so these settings cannot
+  -- leak to other queries on a pooled connection. Fail fast on stuck locks.
+  SET LOCAL lock_timeout = '10s';
+  SET LOCAL statement_timeout = '30s';
+  SET LOCAL search_path = public;
 
   -- No-op: constraint already has ON DELETE NO ACTION (confdeltype = 'a').
   IF EXISTS (
@@ -34,12 +32,9 @@ BEGIN
       SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
     );
 
-  -- Replace any existing constraint (possibly carrying the wrong delete rule,
-  -- or absent entirely) with the correct ON DELETE NO ACTION rule.
+  -- Single ALTER TABLE minimises the window where api_key_id has no FK.
   ALTER TABLE public.error_events
-    DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
-
-  ALTER TABLE public.error_events
+    DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey,
     ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id)
       ON DELETE NO ACTION;
