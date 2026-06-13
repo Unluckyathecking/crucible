@@ -112,6 +112,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
@@ -332,9 +333,9 @@ func TestIdempotentReplay(t *testing.T) {
 }
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
-// The rate-limit bucket resets on the minute boundary (time.Now().Truncate(time.Minute)).
-// If the test starts within 2 seconds of a boundary, we sleep past it so all three
-// requests land in the same window and the third is reliably rejected.
+// ratelimit.Bucket uses a 60-second sliding window (not a fixed minute boundary),
+// so all three requests — issued within milliseconds of each other — always land
+// in the same window and the third is reliably rejected.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -342,13 +343,6 @@ func TestRateLimit(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
-
-	// Guard against a minute-boundary race: if we're within the last 2 seconds of
-	// the current minute, sleep until the next minute starts so all requests land
-	// in the same window.
-	if sec := time.Now().Second(); sec >= 58 {
-		time.Sleep(time.Duration(62-sec) * time.Second)
-	}
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)

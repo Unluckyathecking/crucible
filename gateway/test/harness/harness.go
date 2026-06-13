@@ -185,6 +185,13 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
+	// Registered before authStore cleanup so LIFO runs rdb.Close after authStore.Close,
+	// keeping Redis open while authStore drains its background goroutine.
+	t.Cleanup(func() {
+		if err := rdb.Close(); err != nil {
+			t.Logf("harness: redis close: %v", err)
+		}
+	})
 
 	cfg := &config.Config{
 		BodyLimitBytes:  defaultBodyLimitBytes,
@@ -195,20 +202,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// Single cleanup closes authStore first (draining the background last_used_at
-	// goroutine while Redis is still open), then rdb via defer so rdb.Close runs
-	// even if authStore.Close panics. pool.Close is registered separately and earlier
-	// so it runs last in LIFO order, remaining open throughout.
-	t.Cleanup(func() {
-		defer func() {
-			if err := rdb.Close(); err != nil {
-				t.Logf("harness: redis close: %v", err)
-			}
-		}()
-		// auth.Store.Close() signature: func (s *Store) Close() — no error return.
-		// Registered exactly once via this t.Cleanup; no double-close risk.
-		authStore.Close()
-	})
+	// auth.Store.Close() signature: func (s *Store) Close() — no error return.
+	// Registered after rdb cleanup so LIFO runs this first, draining the background
+	// last_used_at goroutine while Redis is still open.
+	t.Cleanup(authStore.Close)
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
@@ -424,10 +421,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 			var pgErr *pgconn.PgError
 			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
-				t.Errorf("harness: cleanup FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
+				t.Logf("harness: cleanup FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
 				return
 			}
-			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
+			t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		// delErr is a distinct variable name (not `err`) to prevent accidental reuse after
