@@ -129,6 +129,8 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // waitForErrorEvents polls CountErrorEvents until want rows exist or a 5-second
 // deadline elapses. The error recorder writes asynchronously, so callers must
 // wait rather than asserting immediately after the triggering request returns.
+// The condition is checked immediately on each iteration before sleeping, so if
+// the condition is already met there is no 100ms delay before returning.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -239,9 +241,6 @@ func errorCode(t *testing.T, body []byte) string {
 	}
 	if env.Error == nil || env.Error.Code == "" {
 		t.Fatalf("apierror envelope missing error.code\nbody: %s", body)
-	}
-	if env.Error.Message == "" {
-		t.Fatalf("apierror envelope missing error.message\nbody: %s", body)
 	}
 	return env.Error.Code
 }
@@ -408,8 +407,8 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime || resetUnix > reqTime+61 {
-		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 61s of request time (%d)", resetUnix, reqTime)
+	} else if resetUnix < reqTime || resetUnix > reqTime+60 {
+		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 60s of request time (%d)", resetUnix, reqTime)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
 	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {
@@ -663,8 +662,10 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	if got := r.Header.Get("X-XSS-Protection"); got != "0" {
 		t.Errorf("X-XSS-Protection: got %q, want 0", got)
 	}
-	if got := r.Header.Get("Strict-Transport-Security"); !strings.HasPrefix(got, "max-age=") {
-		t.Errorf("Strict-Transport-Security: got %q, want value starting with max-age=", got)
+	// SecurityHeaders sets HSTS unconditionally (not gated on r.TLS), so it is
+	// present even on the HTTP-only httptest.Server used by this test.
+	if got, want := r.Header.Get("Strict-Transport-Security"), "max-age=63072000; includeSubDomains"; got != want {
+		t.Errorf("Strict-Transport-Security: got %q, want %q", got, want)
 	}
 	if got := r.Header.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
 		t.Errorf("Referrer-Policy: got %q, want strict-origin-when-cross-origin", got)

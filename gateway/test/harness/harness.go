@@ -83,9 +83,12 @@ func init() {
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations exactly once per test process for speed.
-// If the first attempt fails, migrateOnceErr remains set and all subsequent
-// tests in the same process fail; callers must ensure Postgres is ready before
-// running tests. Migration files in this project are individually idempotent
+// Unlike sync.Once, we use a mutex + bool + error so that the error from the
+// first (and only) attempt is propagated to all subsequent callers. sync.Once
+// has no mechanism to expose the result of the wrapped function. If the first
+// attempt fails, migrateErr remains set and all later tests in the same process
+// fail fast. Callers must ensure Postgres is ready before running tests.
+// Migration files in this project are individually idempotent
 // (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING / PL/pgSQL guards), so repeated
 // runs against the same schema are safe — but concurrent NewGatewayTestServer
 // calls against the same DB schema should not be made from parallel processes.
@@ -471,8 +474,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// error_events row after the DELETE above, causing a transient FK violation.
 		// A short backoff between retries lets the async writer finish before retrying.
 		//
-		// ctxSleep is an inline closure so the for loop needs no label: break/continue
-		// inside the for loop itself (never inside a select) unambiguously exit/advance it.
+		// ctxSleep wraps the timed sleep in a closure so that break/continue in the
+		// outer for loop (below) operate on the for loop, not on a select statement.
+		// If the select were inlined in the for body, break inside select would exit
+		// the select, not the for loop, requiring a labelled break to leave the loop.
+		// The closure avoids that label while keeping context-cancellation support.
 		ctxSleep := func(d time.Duration) bool {
 			tmr := time.NewTimer(d)
 			defer tmr.Stop()
