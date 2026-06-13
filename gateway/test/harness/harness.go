@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	pgx "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,8 +65,12 @@ func init() {
 // routesMu guards temporary modifications to server.V1Routes.
 var routesMu sync.Mutex
 
-// migrateMu serialises migration runs across parallel tests.
-var migrateMu sync.Mutex
+// migrateOnce ensures migrations run exactly once per test process.
+// Migrations are idempotent so a single run covers all parallel tests.
+var (
+	migrateOnce    sync.Once
+	migrateOnceErr error
+)
 
 // Options configures a gateway test server.
 type Options struct {
@@ -130,14 +134,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	migrateMu.Lock()
-	applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	migrateErr := db.Apply(applyCtx, pool)
-	applyCancel()
-	migrateMu.Unlock()
-	if migrateErr != nil {
+	migrateOnce.Do(func() {
+		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+		migrateOnceErr = db.Apply(applyCtx, pool)
+		applyCancel()
+	})
+	if migrateOnceErr != nil {
 		pool.Close()
-		t.Fatalf("harness: apply migrations: %v", migrateErr)
+		t.Fatalf("harness: apply migrations: %v", migrateOnceErr)
 	}
 	t.Cleanup(pool.Close)
 
@@ -215,7 +219,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // CreatePlan inserts or updates a plan row. ratePerMinute=0 means unlimited;
 // monthlyCap=0 means unlimited (stored as NULL). Registers t.Cleanup to restore
 // the plan to its pre-test state.
-func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
+func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
@@ -229,7 +233,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	ctx := context.Background()
 
 	var (
-		prevRate int
+		prevRate int64
 		prevCap  pgtype.Int8
 		prevName string
 		existed  bool
@@ -390,6 +394,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				fixCancel()
 				continue
 			}
+			// Non-transient error; stop retrying.
+			t.Errorf("harness: cleanup api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 			break
 		}
 		if finalKeyErr != nil {
@@ -452,6 +458,7 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows for customerID and key.
+// Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
