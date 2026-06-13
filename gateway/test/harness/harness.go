@@ -57,8 +57,8 @@ const (
 )
 
 // routesMu guards temporary modifications to server.V1Routes.
-// Required because NewRouter reads the package-level var at call time, so any
-// caller that injects custom routes must hold this lock across NewRouter.
+// NewRouter reads the package-level var at call time, so any caller that
+// injects custom routes must hold this lock across the NewRouter call.
 var routesMu sync.Mutex
 
 // Options configures a gateway test server.
