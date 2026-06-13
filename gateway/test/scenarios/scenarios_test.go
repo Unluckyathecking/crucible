@@ -25,8 +25,8 @@ import (
 // newTestHTTPClient returns a fresh http.Client for a single test. Create one client
 // per test (not per request) to avoid TCP connection churn and to satisfy the stated
 // intent of per-test isolation. Each test drives its own httptest.Server, so per-test
-// clients avoid cross-test connection-pool interference under t.Parallel(). httptest.Server
-// does not support HTTP/2, so all requests use HTTP/1.1.
+// clients avoid cross-test connection-pool interference under t.Parallel(). httptest.NewServer
+// uses HTTP/1.1 (non-TLS), so all requests use HTTP/1.1.
 func newTestHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 15 * time.Second,
@@ -105,7 +105,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -171,6 +178,9 @@ func errorCode(t *testing.T, body []byte) string {
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatalf("decode apierror envelope: %v\nbody: %s", err, body)
 	}
+	if env.Error.Code == "" {
+		t.Fatalf("apierror envelope missing error.code\nbody: %s", body)
+	}
 	return env.Error.Code
 }
 
@@ -232,14 +242,14 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
 	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
-		t.Logf("first request: X-Idempotent-Replayed: got %q, want absent", v)
+		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
 	// Race guard: CountIdempotencyKey verifies the row is committed before r2 fires.
 	// The idempotency middleware writes the row synchronously before sending the
 	// HTTP response, so drainBody guarantees commit. Asserting here ensures the
 	// second request (r2) always sees the row and returns a replay, not a fresh call.
-	if !ts.CountIdempotencyKey(t, customerID, idempKey) {
+	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after first request", idempKey)
 	}
 
@@ -249,7 +259,7 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
-		t.Logf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
+		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
 
 	if string(body1) != string(body2) {
@@ -272,7 +282,7 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("worker invocations: got %d, want 1", got)
 	}
 	// Idempotency row must survive the replay (not be deleted after cache hit).
-	if !ts.CountIdempotencyKey(t, customerID, idempKey) {
+	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after replay request", idempKey)
 	}
 }

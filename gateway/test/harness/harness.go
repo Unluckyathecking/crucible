@@ -221,15 +221,15 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// The Routes validation must precede routesMu.Lock() so that t.Fatal exits
-	// cleanly without leaving the mutex locked for subsequent tests.
+	// Validate Routes before locking. t.Fatal calls runtime.Goexit which unwinds
+	// defers in this goroutine, so the Unlock in the defer below would still execute.
+	// The validation is here for clarity, not for lock safety.
 	if opts.Routes != nil && len(opts.Routes) == 0 {
 		t.Fatal("harness: Routes must be non-empty; use nil for production routes")
 	}
 	// routesMu is held through server.NewRouter so no concurrent caller can read
 	// server.V1Routes while we have temporarily replaced it with opts.Routes.
-	// The lock must be held through NewRouter (not just the assignment) because
-	// NewRouter reads V1Routes to build the chi router.
+	// The lock must cover the NewRouter call because NewRouter reads V1Routes.
 	routesMu.Lock()
 	// Copy the original slice so the restore in defer is not affected by any
 	// concurrent append/replace to server.V1Routes that happens to share the
@@ -375,6 +375,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
+		// Redis keys are always cleaned up on function exit, regardless of whether DB
+		// cleanup succeeds. The defer below runs before cancel() (LIFO), so cctx is valid.
+		// DEL on non-existent keys returns 0 (not an error), so this is always safe.
+		defer func() {
+			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
+			nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
+			rlKey := "rl:" + customerID.String()
+			authKey := "auth:" + prefix
+			if delErr := ts.Redis.Del(cctx, quotaKey, nextQuotaKey, rlKey, authKey).Err(); delErr != nil {
+				t.Logf("harness: redis cleanup for customer %s: %v", customerID, delErr)
+			}
+		}()
 		cleanupErr := func(table string, opErr error) {
 			if opErr == nil {
 				return
@@ -449,17 +461,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
-		// Key formats (must match production source):
-		//   quota:<uuid>:<YYYY-MM>  quota/tracker.go monthKey()
-		//   rl:<uuid>               ratelimit/bucket.go Allow()
-		//   auth:<prefix>           auth/store.go cacheKey()
-		// nextMonth was captured at creation time; DEL of a non-existent key is harmless.
-		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
-		nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
-		rlKey := "rl:" + customerID.String()
-		authKey := "auth:" + prefix
-		redisKeys := []string{quotaKey, nextQuotaKey, rlKey, authKey}
-		cleanupErr("redis_keys", ts.Redis.Del(cctx, redisKeys...).Err())
 	})
 
 	customerID = uuid.New()
@@ -521,16 +522,16 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 	return n
 }
 
-// CountIdempotencyKey reports whether an idempotency_keys row exists for the given
+// HasIdempotencyKey reports whether an idempotency_keys row exists for the given
 // customerID and idempotencyKey. Because the table has a UNIQUE constraint on
 // (customer_id, idempotency_key), the result is always 0 or 1 — a boolean existence check.
-func (ts *TestServer) CountIdempotencyKey(t *testing.T, customerID uuid.UUID, idempotencyKey string) bool {
+func (ts *TestServer) HasIdempotencyKey(t *testing.T, customerID uuid.UUID, idempotencyKey string) bool {
 	t.Helper()
 	if ts.DB == nil {
-		t.Fatal("harness: CountIdempotencyKey called on nil TestServer.DB")
+		t.Fatal("harness: HasIdempotencyKey called on nil TestServer.DB")
 	}
 	if idempotencyKey == "" {
-		t.Fatal("harness: CountIdempotencyKey idempotencyKey must be non-empty")
+		t.Fatal("harness: HasIdempotencyKey idempotencyKey must be non-empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
