@@ -17,14 +17,18 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
   ) THEN RETURN; END IF;
 
-  IF NOT EXISTS (
+  -- Fix only when the constraint exists and has the wrong delete rule.
+  -- IF EXISTS (confdeltype != 'a') is the natural positive form:
+  --   true  → constraint present with wrong type (SET NULL, CASCADE, etc.) → fix
+  --   false → constraint already NO ACTION, OR constraint absent → skip
+  IF EXISTS (
     SELECT 1
     FROM   pg_constraint c
     JOIN   pg_class      t ON t.oid = c.conrelid
     JOIN   pg_namespace  n ON n.oid = t.relnamespace
     WHERE  c.conname     = 'error_events_api_key_id_fkey'
       AND  c.contype     = 'f'
-      AND  c.confdeltype = 'a'
+      AND  c.confdeltype != 'a'   -- not NO ACTION: needs fixing
       AND  t.relname     = 'error_events'
       AND  n.nspname     = 'public'
   ) THEN
@@ -44,7 +48,7 @@ BEGIN
     ALTER TABLE public.error_events
       RENAME CONSTRAINT error_events_api_key_id_fkey_new TO error_events_api_key_id_fkey;
   ELSE
-    RAISE NOTICE 'migration 0013: error_events FK already NO ACTION, skipping';
+    RAISE NOTICE 'migration 0013: error_events FK already NO ACTION or absent, skipping';
   END IF;
 END $$;
 
