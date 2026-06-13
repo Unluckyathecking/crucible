@@ -248,12 +248,13 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// The idempotency middleware writes the record synchronously before sending the
-	// response, so by the time drainBody returns the key is committed. Verify this
-	// with a direct DB read; if the assertion below fails, the middleware guarantee
-	// is broken, not a test timing issue.
+	// Determinism guarantee: idempotency/middleware.go calls store.Finalize (line 218)
+	// before cw.flush(w) (line 237). The HTTP response is written to the socket only
+	// after Finalize completes, so when drainBody returns the DB row is committed.
+	// Assertion failure here means the middleware's finalize-before-flush ordering
+	// is broken — it is not a timing race in this test.
 	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
-		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (middleware must write synchronously)", n)
+		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (Finalize runs before flush in idempotency middleware)", n)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)
