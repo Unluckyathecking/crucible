@@ -100,7 +100,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -221,7 +228,7 @@ func TestIdempotentReplay(t *testing.T) {
 	ts.CreatePlan(t, "ir-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
 
-	idempKey := "scenario-idemp-" + t.Name()
+	idempKey := "scenario-idemp-" + strings.ReplaceAll(t.Name(), "/", "-")
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
 
 	r1 := invoke(t, ts, apiKey, withIdemp)
