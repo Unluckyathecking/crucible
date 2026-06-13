@@ -14,3 +14,4 @@ exclude_patterns:
   - "workers/stubs/go/go.mod"
   - "workers/stubs/go/Dockerfile"
   - ".github/**"
+  - "gateway/migrations/**"
