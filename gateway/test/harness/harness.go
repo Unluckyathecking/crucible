@@ -521,10 +521,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "error_events_api_key_id_fkey" {
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, errorEventsDeleteSQL, customerID)
+				_, fixErr := ts.DB.Exec(fixCtx, errorEventsDeleteSQL, customerID)
 				fixCancel()
-				if delErr != nil {
-					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
+				if fixErr != nil {
+					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, fixErr)
 				}
 				if attempt == maxCleanupRetries {
 					finalKeyErr = retryErr
