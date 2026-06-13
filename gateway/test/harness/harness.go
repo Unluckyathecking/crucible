@@ -424,12 +424,16 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if full == "" || prefix == "" {
 		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
-	// Assign customerID before registering cleanup so the closure always has a valid
-	// UUID. If t.Cleanup fires before any DB inserts (e.g. due to a t.Fatal below),
-	// all DELETE and DEL calls are no-ops on empty tables/keys.
 	customerID := uuid.New()
+	// inserted is set to true after the customers row is committed. The cleanup
+	// closure checks it so that a t.Fatal before the INSERT is a no-op rather
+	// than attempting DELETEs on rows that were never created.
+	var inserted bool
 
 	t.Cleanup(func() {
+		if !inserted {
+			return
+		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		// Redis keys are always cleaned up on function exit, regardless of whether DB
@@ -561,6 +565,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
+	inserted = true
 
 	hash := auth.Hash(testSalt, full)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), 10*time.Second)
