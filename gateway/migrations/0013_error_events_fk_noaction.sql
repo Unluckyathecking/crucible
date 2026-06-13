@@ -24,6 +24,11 @@ BEGIN
       AND c.confdeltype = 'a'   -- 'a' = ON DELETE NO ACTION (desired rule)
   ) THEN RETURN; END IF;
 
+  -- Acquire exclusive lock before purging and altering to prevent concurrent inserts
+  -- of orphaned rows into the drop/add window. ALTER TABLE takes ACCESS EXCLUSIVE
+  -- anyway; the explicit lock here makes the intent clear.
+  LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
+
   -- Purge orphaned rows (api_key_id non-NULL but the api_keys row is gone)
   -- before re-adding the FK so ADD CONSTRAINT validation cannot fail on stale data.
   DELETE FROM public.error_events
