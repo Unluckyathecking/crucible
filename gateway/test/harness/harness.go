@@ -302,11 +302,13 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
 				id, prevRate, restoredCap,
 			); err != nil {
-				t.Fatalf("harness: restore plan %q: %v", id, err)
+				t.Errorf("harness: restore plan %q: %v", id, err)
+				return
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Fatalf("harness: cleanup plan %q: %v", id, err)
+				t.Errorf("harness: cleanup plan %q: %v", id, err)
+				return
 			}
 		}
 	})
@@ -388,12 +390,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Bounded retry with fresh per-attempt context: the async errorlog.Record goroutine
 		// (2 s timeout) may insert an error_events row between the error_events DELETE
 		// above and this api_keys DELETE, causing a transient FK violation. Re-delete
-		// error_events then retry api_keys. Each attempt gets its own context so an
-		// expired parent deadline does not doom subsequent retries.
+		// both idempotency_keys and error_events then retry api_keys. Each attempt gets
+		// its own context derived from cctx so retries respect the overall cleanup deadline.
 		var finalKeyErr error
-		var keyErrReported bool
 		for attempt := 1; attempt <= 3; attempt++ {
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			retryCtx, retryCancel := context.WithTimeout(cctx, 10*time.Second)
 			_, err := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
 			if err == nil {
@@ -404,20 +405,22 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 				t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, err)
-				fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
+				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
+				if delErr != nil {
+					t.Logf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
+				}
+				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				fixCancel()
 				if delErr != nil {
 					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
 				continue
 			}
-			// Non-FK error: report once and stop retrying.
-			t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, err)
-			keyErrReported = true
+			// Non-FK error: stop retrying.
 			break
 		}
-		if finalKeyErr != nil && !keyErrReported {
+		if finalKeyErr != nil {
 			var pgErr *pgconn.PgError
 			if !(errors.As(finalKeyErr, &pgErr) && pgErr.Code == "23503") {
 				t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
@@ -432,10 +435,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
 		if delErr := ts.Redis.Del(cctx, quotaKey).Err(); delErr != nil {
-			t.Logf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
+			t.Errorf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
 		}
 		if delErr := ts.Redis.Del(cctx, rlKey).Err(); delErr != nil {
-			t.Logf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)
+			t.Errorf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)
 		}
 	})
 
@@ -447,7 +450,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	var n int
-	err := ts.DB.QueryRow(context.Background(),
+	err := ts.DB.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
@@ -462,7 +465,7 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	var n int
-	err := ts.DB.QueryRow(context.Background(),
+	err := ts.DB.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
@@ -478,7 +481,7 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, key string) int {
 	t.Helper()
 	var n int
-	err := ts.DB.QueryRow(context.Background(),
+	err := ts.DB.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2`,
 		customerID, key,
 	).Scan(&n)

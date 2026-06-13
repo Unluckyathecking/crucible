@@ -52,7 +52,7 @@ BEGIN
       AND c.contype  = 'f'
   ) THEN
     ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
-      FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id);
+      FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
   END IF;
 END $$;
 
