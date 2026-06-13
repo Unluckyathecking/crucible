@@ -321,8 +321,10 @@ func TestRateLimit(t *testing.T) {
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)
 	}
-	if v := r.Header.Get("RateLimit-Remaining"); v != "0" {
-		t.Errorf("RateLimit-Remaining: got %q, want 0", v)
+	if rrv := r.Header.Get("RateLimit-Remaining"); rrv == "" {
+		t.Errorf("RateLimit-Remaining header missing on 429 RATE_LIMITED response")
+	} else if rrv != "0" {
+		t.Errorf("RateLimit-Remaining: got %q, want 0", rrv)
 	}
 	raReset := r.Header.Get("RateLimit-Reset")
 	if raReset == "" {

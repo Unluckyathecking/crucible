@@ -144,7 +144,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if opts.WorkerTimeoutMS == 0 {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
-	const maxWorkerTimeoutMS = 300_000 // 5 min; guards against accidentally huge values
+	const maxWorkerTimeoutMS = 300_000 // 5 min; matches production gateway proxy max, prevents accidentally huge values
 	if opts.WorkerTimeoutMS > maxWorkerTimeoutMS {
 		t.Fatalf("harness: WorkerTimeoutMS %d exceeds maximum %d ms", opts.WorkerTimeoutMS, maxWorkerTimeoutMS)
 	}

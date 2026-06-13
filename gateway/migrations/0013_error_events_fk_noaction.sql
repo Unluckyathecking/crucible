@@ -11,8 +11,11 @@ DO $$
 BEGIN
   -- Fail fast rather than blocking the deployment indefinitely if error_events
   -- is actively locked. 30 s statement_timeout covers the full block.
-  SET LOCAL lock_timeout = '10s';
-  SET LOCAL statement_timeout = '30s';
+  -- SET (not SET LOCAL) so the timeouts persist for the session, not just
+  -- the current subtransaction, in case the migration tool wraps files in
+  -- an outer transaction where SET LOCAL would be reverted at commit.
+  SET lock_timeout = '10s';
+  SET statement_timeout = '30s';
 
   -- No-op: constraint already has ON DELETE NO ACTION (confdeltype = 'a').
   IF EXISTS (
