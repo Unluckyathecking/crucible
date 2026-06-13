@@ -395,16 +395,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
 			retryCtx, retryCancel := context.WithTimeout(cctx, 10*time.Second)
-			_, err := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
-			if err == nil {
+			if retryErr == nil {
 				finalKeyErr = nil
 				break
 			}
-			finalKeyErr = err
+			finalKeyErr = retryErr
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-				t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, err)
+			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
+				if attempt == 3 {
+					t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
+				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 				if delErr != nil {
