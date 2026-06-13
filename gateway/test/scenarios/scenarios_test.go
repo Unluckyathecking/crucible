@@ -54,7 +54,6 @@ func newTestHTTPClient(t *testing.T) *http.Client {
 			MaxIdleConnsPerHost: testMaxIdleConnsPerHost,
 			MaxConnsPerHost:     testMaxConnsPerHost,
 			IdleConnTimeout:     testIdleConnTimeout,
-			ForceAttemptHTTP2:   false,
 		},
 	}
 	t.Cleanup(c.CloseIdleConnections)

@@ -322,11 +322,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 	// A t.Cleanup registered at the end of this function restores the plan to its
 	// pre-call state (or deletes it if it did not exist before) after the test ends.
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
+	defer cancel()
 
 	var (
 		prevRate int64
-		prevCap  *int64 // nil = NULL (unlimited)
+		prevCap  pgtype.Int8 // Valid=false when monthly_unit_cap is NULL (unlimited)
 		prevName string
 		existed  bool
 	)
@@ -354,16 +355,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
-		defer cancel()
+		cctx, ccancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer ccancel()
 		if existed {
-			var capArg pgtype.Int8
-			if prevCap != nil {
-				capArg = pgtype.Int8{Int64: *prevCap, Valid: true}
-			}
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-				id, prevRate, capArg, prevName,
+				id, prevRate, prevCap, prevName,
 			); err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
 				return
