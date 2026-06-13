@@ -129,8 +129,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // wait rather than asserting immediately after the triggering request returns.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
 			return
@@ -138,9 +139,12 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		}
 	}
-	t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 }
 
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
@@ -266,12 +270,12 @@ func TestIdempotentReplay(t *testing.T) {
 	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
 
 	r1 := invoke(t, client, ts, apiKey, withIdemp)
+	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
+	}
 	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
-	}
-	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
-		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
 	// Synchrony assertion: the idempotency middleware persists the row before
@@ -282,12 +286,12 @@ func TestIdempotentReplay(t *testing.T) {
 	}
 
 	r2 := invoke(t, client, ts, apiKey, withIdemp)
+	if v := r2.Header.Get("X-Idempotent-Replayed"); !strings.EqualFold(v, "true") {
+		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\" (case-insensitive)", v)
+	}
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
-	}
-	if v := r2.Header.Get("X-Idempotent-Replayed"); !strings.EqualFold(v, "true") {
-		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\" (case-insensitive)", v)
 	}
 
 	if string(body1) != string(body2) {
@@ -456,7 +460,6 @@ func TestAuthFailure(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "auth-fail-plan", 10, 1000)
 
 	// The "0" chars in the suffix are outside base32's alphabet (A–Z, 2–7), so this
 	// key can never collide with a legitimately generated key stored in the DB.
