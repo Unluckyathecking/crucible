@@ -100,8 +100,9 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// defer timer.Stop() is the idiomatic Go 1.23+ form: Stop atomically
-// closes and drains the channel, so no manual drain is needed.
+// A deferred timer.Stop() prevents the timer from firing if the handler
+// returns early via context cancellation; the timer is garbage collected
+// after the handler returns regardless of whether the channel was read.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +281,10 @@ func TestIdempotentReplay(t *testing.T) {
 	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after replay request", idempKey)
 	}
+	// Two requests, one worker call; idempotent replay must not double-bill.
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("usage_events after idempotent replay: got %d, want 1 (replay must not bill again)", n)
+	}
 }
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
@@ -291,7 +296,7 @@ func TestRateLimit(t *testing.T) {
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
-	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
+	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	reqTime := time.Now().Unix()
 	for i := 0; i < rateLimit; i++ {
@@ -336,6 +341,10 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
 	} else if resetUnix < reqTime || resetUnix > reqTime+65 {
 		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 65s of request time (%d)", resetUnix, reqTime)
+	}
+	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
+	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {
+		t.Errorf("usage_events after rate limit: got %d, want %d (rejected request must not bill)", n, rateLimit)
 	}
 }
 
