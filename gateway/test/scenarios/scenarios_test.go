@@ -112,16 +112,19 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
+			timer.Stop()
 		case <-r.Context().Done():
+			// Drain the channel if Stop reports the timer already fired, to avoid
+			// a later receive on timer.C blocking or a goroutine observing stale state.
+			if !timer.Stop() {
+				<-timer.C
+			}
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			return
 		}
-		// Guard: if both channels were ready simultaneously Go picks randomly;
-		// check context before writing to avoid sending on a cancelled connection.
 		if r.Context().Err() != nil {
 			return
 		}
@@ -141,17 +144,17 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		}
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
 			return
 		}
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		}
 	}
 }
@@ -535,7 +538,7 @@ func TestRequestIDPresent(t *testing.T) {
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
 	ts.CreatePlan(t, "reqid-plan", 100, 10000)
-	_, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
+	customerID, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
 
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
@@ -548,6 +551,9 @@ func TestRequestIDPresent(t *testing.T) {
 	}
 	if _, err := uuid.Parse(rid); err != nil {
 		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid, err)
+	}
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("usage_events: got %d, want 1", n)
 	}
 }
 
