@@ -1,6 +1,8 @@
 // Package harness provides NewGatewayTestServer: a test helper that boots the
 // full gateway middleware chain against real Postgres and Redis with an in-process
 // worker stub. DSN and RedisURL are required; callers set Options fields as needed.
+// Migrations must be applied before running tests; all SQL files use idempotent
+// patterns (IF NOT EXISTS, DROP IF EXISTS, DO blocks with guard queries).
 package harness
 
 import (
@@ -331,36 +333,20 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
-	customerID := uuid.New()
 	now := time.Now().UTC()
 	// Capture both the current and next month now so cleanup never needs to call time.Now()
 	// — avoids a mismatch if cleanup runs across a UTC month boundary.
 	createdMonth := now.Format("2006-01")
 	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
-	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer insertCancel()
-	_, err = ts.DB.Exec(insertCtx,
-		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
-		customerID, email, planID,
-	)
-	if err != nil {
-		t.Fatalf("harness: insert customer %s: %v", customerID, err)
-	}
-
-	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
-	if err != nil {
-		t.Fatalf("harness: generate api key: %v", err)
-	}
-	hash := auth.Hash(testSalt, full)
-	_, err = ts.DB.Exec(insertCtx,
-		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
-		customerID, prefix, hash,
-	)
-	if err != nil {
-		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
-	}
+	// Declared before t.Cleanup so the closure captures by reference.
+	// customerID == uuid.Nil signals setup fataled before the first INSERT.
+	var customerID uuid.UUID
+	var prefix string
 
 	t.Cleanup(func() {
+		if customerID == uuid.Nil {
+			return // setup fataled before first insert; nothing to clean up
+		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, opErr error) {
@@ -450,6 +436,31 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		}
 	})
 
+	customerID = uuid.New()
+	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer insertCancel()
+	_, err = ts.DB.Exec(insertCtx,
+		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
+		customerID, email, planID,
+	)
+	if err != nil {
+		t.Fatalf("harness: insert customer %s: %v", customerID, err)
+	}
+
+	var full string
+	full, prefix, err = auth.Generate(TestAPIKeyPrefix)
+	if err != nil {
+		t.Fatalf("harness: generate api key: %v", err)
+	}
+	hash := auth.Hash(testSalt, full)
+	_, err = ts.DB.Exec(insertCtx,
+		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
+		customerID, prefix, hash,
+	)
+	if err != nil {
+		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
+	}
+
 	return customerID, full
 }
 
@@ -489,6 +500,9 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 // Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
+	if idempotencyKey == "" {
+		t.Fatal("harness: CountIdempotencyKeys idempotencyKey must be non-empty")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var n int
