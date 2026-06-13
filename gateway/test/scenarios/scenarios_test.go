@@ -111,9 +111,8 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Returns the handler, an invoked flag (set when the handler starts), and a cancelled
-// flag (set when the handler detects context cancellation, either via the Done branch
-// or when the timer fires after a disconnect). Uses time.NewTimer with defer Stop so
-// the timer goroutine is released in all exit paths.
+// flag (set when the handler detects context cancellation). Uses time.NewTimer with
+// defer Stop so the timer goroutine is released when the handler returns.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) {
 	var invoked, cancelled atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,9 +130,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) 
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			cancelled.Store(true)
-			if !timer.Stop() {
-				<-timer.C
-			}
 			return
 		}
 	})
@@ -429,7 +425,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// propagation to r.Context(), so we use t.Log (not t.Error) — a miss here
 	// indicates a potential proxy goroutine leak but is not a hard failure.
 	var sawCancel bool
-	for i := 0; i < 20 && !t.Failed(); i++ {
+	for i := 0; i < 20; i++ {
 		if sawCancel = cancelledFlag.Load(); sawCancel {
 			break
 		}
