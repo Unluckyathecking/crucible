@@ -58,6 +58,7 @@ func newTestHTTPClient(t *testing.T) *http.Client {
 			MaxIdleConnsPerHost: testMaxIdleConnsPerHost,
 			MaxConnsPerHost:     testMaxConnsPerHost,
 			IdleConnTimeout:     testIdleConnTimeout,
+			ForceAttemptHTTP2:   false,
 		},
 	}
 	t.Cleanup(c.CloseIdleConnections)
@@ -134,18 +135,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		tmr := time.NewTimer(delay)
 		select {
-		case <-tmr.C:
+		case <-time.After(delay):
 			if r.Context().Err() != nil {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			if !tmr.Stop() {
-				<-tmr.C
-			}
 		}
 	})
 	return h, &invoked
