@@ -81,6 +81,8 @@ func init() {
 // routesMu serializes replacement of server.V1Routes during server.NewRouter calls,
 // preventing concurrent test goroutines from replacing the route table while another
 // is reading it or calling NewRouter.
+// WARNING: Tests that set opts.Routes must NOT call t.Parallel; concurrent
+// mutations of server.V1Routes will race across goroutines.
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations exactly once per test process for speed.
@@ -91,8 +93,10 @@ var routesMu sync.Mutex
 // fail fast. Callers must ensure Postgres is ready before running tests.
 // Migration files in this project are individually idempotent
 // (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING / PL/pgSQL guards), so repeated
-// runs against the same schema are safe — but concurrent NewGatewayTestServer
-// calls against the same DB schema should not be made from parallel processes.
+// runs against the same schema are safe.
+// All concurrent callers in the same process must target the same Postgres
+// schema; do not use this harness from multiple packages in the same go test
+// invocation unless they share the same DSN.
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool

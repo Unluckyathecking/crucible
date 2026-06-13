@@ -130,28 +130,35 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
 		select {
-		case <-time.After(delay):
+		case <-tmr.C:
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			// proxy already responded 502; writing here is a no-op
 		}
 	})
 	return h, &invoked
 }
 
 // waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
-// The select fires before CountErrorEvents so the DB is never queried after the deadline.
+// Must be called from the main test goroutine (t.Fatalf calls runtime.Goexit).
+// Uses a single reused timer to avoid leaking per-iteration timer allocations.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
+	tmr := time.NewTimer(0)
+	defer tmr.Stop()
 	for {
 		select {
-		case <-time.After(errorPollInterval):
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		case <-tmr.C:
 		}
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
@@ -160,6 +167,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
+		tmr.Reset(errorPollInterval)
 	}
 }
 
@@ -199,7 +207,7 @@ func drainBody(t *testing.T, r *http.Response) []byte {
 	defer r.Body.Close()
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
-		t.Fatalf("read body: %v", err)
+		t.Fatalf("drainBody: read body: %v", err)
 	}
 	return b
 }
