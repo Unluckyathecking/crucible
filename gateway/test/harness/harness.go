@@ -203,16 +203,19 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// Hold routesMu across the V1Routes read and NewRouter call so custom-routes
-	// tests and default-routes tests cannot race on the package-level var.
-	routesMu.Lock()
-	defer routesMu.Unlock()
+	// routesMu guards the swap of server.V1Routes. Lock only when custom routes
+	// are provided; callers with opts.Routes != nil must NOT call t.Parallel.
+	var handler http.Handler
 	if opts.Routes != nil {
-		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
+		routesMu.Lock()
+		defer routesMu.Unlock()
+		backup := server.V1Routes
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
+		handler = server.NewRouter(deps)
+	} else {
+		handler = server.NewRouter(deps)
 	}
-	handler := server.NewRouter(deps)
 
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)
@@ -320,10 +323,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
-	// Capture month now so cleanup deletes the correct quota key even across UTC month boundaries.
-	createdMonth := time.Now().UTC().Format("2006-01")
-
 	customerID := uuid.New()
+	// Capture month after customerID so createdMonth is conceptually part of this customer's record.
+	createdMonth := time.Now().UTC().Format("2006-01")
 	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer insertCancel()
 	_, err = ts.DB.Exec(insertCtx,
@@ -382,7 +384,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				finalKeyErr = cctx.Err()
 				break
 			}
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
+			retryCtx, retryCancel := context.WithTimeout(cctx, cleanupRetryTimeout)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
 			if retryErr == nil {
@@ -391,7 +393,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
-				fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				fixCancel()
 				if delErr != nil {

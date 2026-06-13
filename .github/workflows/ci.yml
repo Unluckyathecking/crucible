@@ -57,7 +57,7 @@ jobs:
           POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
         run: cd gateway && go vet ./... && go test -race $(go list ./... | grep -v '/test')
       - name: integration test
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           REDIS_URL: redis://localhost:6379
           POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable

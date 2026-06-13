@@ -30,7 +30,6 @@ var testHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		TLSHandshakeTimeout: 5 * time.Second,
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 5,
 		MaxConnsPerHost:     10,
@@ -116,6 +115,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
@@ -300,8 +302,8 @@ func TestRateLimit(t *testing.T) {
 		n, err := strconv.Atoi(ra)
 		if err != nil {
 			t.Errorf("Retry-After: got %q, want integer seconds", ra)
-		} else if n < 0 || n > 60 {
-			t.Errorf("Retry-After: got %d, want in [0,60]", n)
+		} else if n <= 0 || n > 60 {
+			t.Errorf("Retry-After: got %d, want in [1,60]", n)
 		}
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
