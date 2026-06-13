@@ -1,6 +1,6 @@
 // Package harness provides NewGatewayTestServer, a reusable test helper that boots
 // the full gateway middleware chain (server.NewRouter) against real Postgres and Redis,
-// plus an in-process worker stub. Tests that exercise real storage catch schema–query
+// plus an in-process worker stub. Tests that exercise real storage catch schema-query
 // drift and middleware interaction effects that mocks cannot.
 //
 // Usage contract:
