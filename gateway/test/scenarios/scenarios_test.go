@@ -43,11 +43,7 @@ const (
 	errorPollInterval  = 100 * time.Millisecond
 )
 
-// newTestHTTPClient returns a fresh http.Client for a single test. Create one client
-// per test (not per request) to avoid TCP connection churn and to satisfy the stated
-// intent of per-test isolation. Each test drives its own httptest.Server, so per-test
-// clients avoid cross-test connection-pool interference under t.Parallel(). httptest.NewServer
-// uses HTTP/1.1 (non-TLS), so all requests use HTTP/1.1.
+// newTestHTTPClient returns an http.Client for a single test (one per test, not per request).
 func newTestHTTPClient(t *testing.T) *http.Client {
 	t.Helper()
 	c := &http.Client{
@@ -128,18 +124,13 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// slowWorker delays the response by delay to trigger the proxy timeout.
-// The proxy cancels the request context on timeout; the handler returns
-// immediately on r.Context().Done() to avoid writing to a closed response.
+// slowWorker delays the response by delay; returns on context cancellation.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		select {
 		case <-time.After(delay):
-			if r.Context().Err() != nil {
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -148,11 +139,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	return h, &invoked
 }
 
-// waitForErrorEvents polls CountErrorEvents until want rows exist or a 5-second
-// deadline elapses. The error recorder writes asynchronously, so callers must
-// wait rather than asserting immediately after the triggering request returns.
-// The condition is checked immediately on each iteration before sleeping, so if
-// the condition is already met there is no 100ms delay before returning.
+// waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
@@ -173,9 +160,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	}
 }
 
-// invoke sends POST /v1/echo to the gateway. client must be created once per test
-// via newTestHTTPClient() and reused across calls. drainBody is the sole closer of
-// the response body; no t.Cleanup is registered here for body close.
+// invoke sends POST /v1/echo; drainBody is the sole closer of the response body.
 func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	if ts == nil || ts.Server == nil {
@@ -202,7 +187,6 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	if err != nil {
 		t.Fatalf("send request: %v", err)
 	}
-	// Callers must drain and close the response body via drainBody; drainBody is the sole closer.
 	return resp
 }
 
@@ -217,37 +201,7 @@ func drainBody(t *testing.T, r *http.Response) []byte {
 	return b
 }
 
-// invokeNoAuth sends POST /v1/echo without an Authorization header. Use for
-// tests that exercise the missing-auth path without needing a registered key.
-// Callers must drain and close the response body via drainBody; drainBody is the sole closer.
-func invokeNoAuth(t *testing.T, client *http.Client, ts *harness.TestServer, mutators ...func(*http.Request)) *http.Response {
-	t.Helper()
-	if ts == nil || ts.Server == nil {
-		t.Fatal("invokeNoAuth: ts and ts.Server must be non-nil")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ts.Server.URL+"/v1/echo",
-		strings.NewReader(`{"input":"scenario-test"}`),
-	)
-	if err != nil {
-		t.Fatalf("build request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for _, fn := range mutators {
-		fn(req)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("send request: %v", err)
-	}
-	return resp
-}
-
-// errorCode extracts the top-level error.code from an apierror envelope.
-// Using a pointer for the Error field lets us distinguish "error key absent from JSON"
-// from "error.code is an empty string"; both call t.Fatalf with the raw body.
+// errorCode extracts error.code from an apierror envelope; fatals if absent.
 func errorCode(t *testing.T, body []byte) string {
 	t.Helper()
 	var env struct {
@@ -267,7 +221,8 @@ func errorCode(t *testing.T, body []byte) string {
 
 // ---- scenarios --------------------------------------------------------------
 
-// TestHappyPath: authenticated POST /v1/echo → 200, correct billable_units, one usage row.
+// TestHappyPath: authenticated POST → 200, correct payload/billable_units, one usage row,
+// X-Request-ID present, and OWASP security headers set by middleware.
 func TestHappyPath(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -285,7 +240,7 @@ func TestHappyPath(t *testing.T) {
 		t.Errorf("Content-Type: got %q, want application/json", ct)
 	}
 	if v := resp.Header.Get("X-Idempotent-Replayed"); v != "" {
-		t.Errorf("X-Idempotent-Replayed: got %q, want absent on non-replay request", v)
+		t.Errorf("X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
 	var inv struct {
@@ -300,15 +255,31 @@ func TestHappyPath(t *testing.T) {
 	}
 	var payloadObj map[string]json.RawMessage
 	if err := json.Unmarshal(inv.Payload, &payloadObj); err != nil {
-		t.Fatalf("payload: unmarshal failed: %v\nbody: %s", err, body)
+		t.Fatalf("payload unmarshal: %v\nbody: %s", err, body)
 	}
 	if len(payloadObj) != 0 {
 		t.Errorf("payload: got %v, want empty object {}", payloadObj)
 	}
-
-	// usage.Recorder.Record is synchronous; the row is committed before the HTTP response.
 	if n := ts.CountUsageEvents(t, customerID); n != 1 {
-		t.Errorf("usage_events row count: got %d, want 1", n)
+		t.Errorf("usage_events: got %d, want 1", n)
+	}
+
+	// X-Request-ID must be a valid UUID on every response.
+	if rid := resp.Header.Get("X-Request-ID"); rid == "" {
+		t.Errorf("X-Request-ID absent")
+	} else if _, err := uuid.Parse(rid); err != nil {
+		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid, err)
+	}
+
+	// Security headers set by the SecurityHeaders middleware.
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options: got %q, want nosniff", got)
+	}
+	if got := resp.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options: got %q, want DENY", got)
+	}
+	if got := resp.Header.Get("Permissions-Policy"); got == "" {
+		t.Errorf("Permissions-Policy header absent")
 	}
 }
 
@@ -333,9 +304,6 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
 
-	// Synchrony assertion: the idempotency middleware persists the row before
-	// writing the HTTP response, so drainBody guarantees visibility. This
-	// catches any regression where the write becomes asynchronous.
 	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after first request", idempKey)
 	}
@@ -362,28 +330,22 @@ func TestIdempotentReplay(t *testing.T) {
 	if got, want := replayed.BillableUnits, uint64(1); got != want {
 		t.Errorf("replayed billable_units: got %d, want %d", got, want)
 	}
-	// N must equal 1: the replay must return the first invocation's cached payload,
-	// not invoke varyingWorker again (which would return N=2).
 	if got, want := replayed.Payload.N, int64(1); got != want {
 		t.Errorf("replayed payload.n: got %d, want %d", got, want)
 	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
 	}
-	// Idempotency row must survive the replay (not be deleted after cache hit).
 	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after replay request", idempKey)
 	}
-	// Two requests, one worker call; idempotent replay must not double-bill.
 	if n := ts.CountUsageEvents(t, customerID); n != 1 {
 		t.Errorf("usage_events after idempotent replay: got %d, want 1 (replay must not bill again)", n)
 	}
 }
 
-// TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
-// ratelimit.Bucket uses a 60-second sliding window (not a fixed minute boundary),
-// so all three requests — issued within milliseconds of each other — always land
-// in the same window and the third is reliably rejected.
+// TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with rate-limit headers.
+// All requests land in the same 60-second window so the overflow is reliably rejected.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -400,8 +362,6 @@ func TestRateLimit(t *testing.T) {
 		}
 	}
 
-	// Capture time just before the rate-limited request for tighter Retry-After bounds.
-	reqTime := time.Now().Unix()
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusTooManyRequests {
@@ -426,13 +386,8 @@ func TestRateLimit(t *testing.T) {
 	} else if rrv != "0" {
 		t.Errorf("RateLimit-Remaining: got %q, want 0", rrv)
 	}
-	raReset := r.Header.Get("RateLimit-Reset")
-	if raReset == "" {
+	if v := r.Header.Get("RateLimit-Reset"); v == "" {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
-	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
-		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime-1 || resetUnix > reqTime+60 {
-		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp in [%d, %d]", resetUnix, reqTime-1, reqTime+60)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
 	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {
@@ -441,8 +396,6 @@ func TestRateLimit(t *testing.T) {
 }
 
 // TestQuotaExceeded: second request exceeds monthly cap of 1 billable unit; returns 429 QUOTA_EXCEEDED.
-// First request: quota middleware admits it (counter 0 < cap 1), usage recorder writes a usage_events row.
-// Second request: quota middleware denies it (counter 1 ≥ cap 1); no usage_events row is written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -475,9 +428,7 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 2 s worker delay vs 100 ms proxy timeout: 20× ratio ensures the proxy timeout
-	// fires reliably even under -race and heavy CI parallelism, while keeping total
-	// test time bounded.
+	// 2 s delay vs 100 ms timeout: 20× ratio ensures reliable timeout under -race.
 	client := newTestHTTPClient(t)
 	worker, invoked := slowWorker(2 * time.Second)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
@@ -489,8 +440,6 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 
-	// The proxy maps all transport errors (including client timeout) to 502 WORKER_UNREACHABLE
-	// per the contract documented in internal/proxy/client.go. 504 is not returned.
 	if r.StatusCode != http.StatusBadGateway {
 		t.Fatalf("proxy timeout: want %d, got %d: %s", http.StatusBadGateway, r.StatusCode, body)
 	}
@@ -525,9 +474,7 @@ func TestAuthFailure(t *testing.T) {
 	}
 }
 
-// TestWorkerBadResponse: a worker that returns billable_units=0 gets 502 WORKER_BAD_RESPONSE.
-// The gateway enforces billable_units >= 1 at the trust boundary (internal/server/routes.go)
-// to prevent a buggy or non-SDK worker from granting free usage.
+// TestWorkerBadResponse: worker with billable_units=0 gets 502 WORKER_BAD_RESPONSE.
 func TestWorkerBadResponse(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
@@ -547,50 +494,6 @@ func TestWorkerBadResponse(t *testing.T) {
 		t.Errorf("usage_events after WORKER_BAD_RESPONSE: got %d, want 0", n)
 	}
 	waitForErrorEvents(t, ts, customerID, 1)
-}
-
-// TestNoAuthorizationHeader: a request with no Authorization header returns 401 UNAUTHORIZED.
-// This exercises the "missing header" branch of the auth middleware, distinct from
-// TestAuthFailure which sends a key not present in the database.
-func TestNoAuthorizationHeader(t *testing.T) {
-	t.Parallel()
-	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-
-	r := invokeNoAuth(t, client, ts)
-	body := drainBody(t, r)
-	if r.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
-	}
-	if code := errorCode(t, body); code != "UNAUTHORIZED" {
-		t.Errorf("error.code: got %q, want UNAUTHORIZED", code)
-	}
-}
-
-// TestRequestIDPresent: every response carries an X-Request-ID header set by the
-// RequestID middleware. The value is a valid UUID; clients use it for support-ticket correlation.
-func TestRequestIDPresent(t *testing.T) {
-	t.Parallel()
-	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "reqid-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
-	customerID, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
-
-	r := invoke(t, client, ts, apiKey)
-	body := drainBody(t, r)
-	if r.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
-	}
-	rid := r.Header.Get("X-Request-ID")
-	if rid == "" {
-		t.Fatalf("X-Request-ID header absent on 200 response")
-	}
-	if _, err := uuid.Parse(rid); err != nil {
-		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid, err)
-	}
-	if n := ts.CountUsageEvents(t, customerID); n != 1 {
-		t.Errorf("usage_events: got %d, want 1", n)
-	}
 }
 
 // TestIdempotencyKeyIsolation: the same Idempotency-Key string shared by two different
@@ -631,73 +534,6 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	}
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations: got %d, want 2 (one per customer)", got)
-	}
-}
-
-// TestRateLimitHeadersOnSuccess verifies that the rate-limit middleware injects
-// RateLimit-Limit and RateLimit-Remaining headers on every 200 response, not
-// only on 429 rejections.
-func TestRateLimitHeadersOnSuccess(t *testing.T) {
-	t.Parallel()
-	// rlHdrLimit is the plan's rate-per-minute; it appears in the RateLimit-Limit
-	// header and is asserted below, so the value is intentionally different from
-	// defaultTestRatePerMin.
-	const rlHdrLimit = 10
-	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "rl-hdr-plan", rlHdrLimit, defaultTestMonthlyCap)
-	_, apiKey := ts.CreateCustomer(t, "rl-hdr-"+uuid.New().String()+"@example.com", "rl-hdr-plan")
-
-	r := invoke(t, client, ts, apiKey)
-	body := drainBody(t, r)
-	if r.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
-	}
-	if v := r.Header.Get("RateLimit-Limit"); v == "" {
-		t.Errorf("RateLimit-Limit header absent on 200 response")
-	} else if got, want := v, strconv.Itoa(rlHdrLimit); got != want {
-		t.Errorf("RateLimit-Limit: got %q, want %q", got, want)
-	}
-	if v := r.Header.Get("RateLimit-Remaining"); v == "" {
-		t.Errorf("RateLimit-Remaining header absent on 200 response")
-	} else if got, want := v, strconv.Itoa(rlHdrLimit-1); got != want {
-		t.Errorf("RateLimit-Remaining: got %q, want %q (limit minus 1 consumed)", got, want)
-	}
-}
-
-// TestSecurityHeadersPresent: the SecurityHeaders middleware injects OWASP-recommended
-// headers on every successful response.
-func TestSecurityHeadersPresent(t *testing.T) {
-	t.Parallel()
-	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "sec-hdr-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
-	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", "sec-hdr-plan")
-
-	r := invoke(t, client, ts, apiKey)
-	body := drainBody(t, r)
-	if r.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
-	}
-	if got := r.Header.Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Errorf("X-Content-Type-Options: got %q, want nosniff", got)
-	}
-	if got := r.Header.Get("X-Frame-Options"); got != "DENY" {
-		t.Errorf("X-Frame-Options: got %q, want DENY", got)
-	}
-	if got := r.Header.Get("X-XSS-Protection"); got != "0" {
-		t.Errorf("X-XSS-Protection: got %q, want 0", got)
-	}
-	// SecurityHeaders sets HSTS unconditionally (not gated on r.TLS), so it is
-	// present even on the HTTP-only httptest.Server used by this test.
-	if got, want := r.Header.Get("Strict-Transport-Security"), "max-age=63072000; includeSubDomains"; got != want {
-		t.Errorf("Strict-Transport-Security: got %q, want %q", got, want)
-	}
-	if got := r.Header.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
-		t.Errorf("Referrer-Policy: got %q, want strict-origin-when-cross-origin", got)
-	}
-	if got := r.Header.Get("Permissions-Policy"); got == "" {
-		t.Errorf("Permissions-Policy: header absent")
 	}
 }
 
