@@ -107,20 +107,17 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// NewTimer with defer Stop releases the timer on all exit paths.
+// time.Sleep is used rather than a channel-based timer: the proxy cancels
+// the connection after its deadline, so the sleeping goroutine will write
+// to a closed connection and exit. httptest.Server.Close waits for all
+// active handlers to finish before returning, so the sleep is bounded.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
-		case <-r.Context().Done():
-			return
-		}
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 	return h, &invoked
 }
@@ -196,6 +193,7 @@ func drainBody(t *testing.T, r *http.Response) []byte {
 
 // invokeNoAuth sends POST /v1/echo without an Authorization header. Use for
 // tests that exercise the missing-auth path without needing a registered key.
+// Callers must drain and close the response body via drainBody; drainBody is the sole closer.
 func invokeNoAuth(t *testing.T, client *http.Client, ts *harness.TestServer, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	if ts == nil || ts.Server == nil {
@@ -606,6 +604,31 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	// varyingWorker embeds an incrementing counter; equal bodies would mean B was served A's cached payload.
 	if string(body1) == string(body2) {
 		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\nbody: %s", body1)
+	}
+}
+
+// TestRateLimitHeadersOnSuccess verifies that the rate-limit middleware injects
+// RateLimit-Limit and RateLimit-Remaining headers on every 200 response, not
+// only on 429 rejections.
+func TestRateLimitHeadersOnSuccess(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "rl-hdr-plan", 10, 10000)
+	_, apiKey := ts.CreateCustomer(t, "rl-hdr-"+uuid.New().String()+"@example.com", "rl-hdr-plan")
+
+	r := invoke(t, client, ts, apiKey)
+	drainBody(t, r)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", r.StatusCode)
+	}
+	if v := r.Header.Get("RateLimit-Limit"); v == "" {
+		t.Errorf("RateLimit-Limit header absent on 200 response")
+	} else if v != "10" {
+		t.Errorf("RateLimit-Limit: got %q, want 10", v)
+	}
+	if v := r.Header.Get("RateLimit-Remaining"); v == "" {
+		t.Errorf("RateLimit-Remaining header absent on 200 response")
 	}
 }
 
