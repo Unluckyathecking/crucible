@@ -108,12 +108,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
@@ -216,6 +218,9 @@ func TestHappyPath(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+	if v := resp.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("X-Idempotent-Replayed: got %q, want absent on non-replay request", v)
 	}
 
 	var inv struct {

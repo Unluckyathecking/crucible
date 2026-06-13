@@ -14,11 +14,8 @@
 -- convalidated = true means the constraint covers all existing rows.
 DO $$
 BEGIN
-  SET LOCAL lock_timeout = '10s';
-  -- 5 minutes: the orphan purge and VALIDATE scan the full table.
-  -- lock_timeout governs the ACCESS EXCLUSIVE wait; statement_timeout covers
-  -- the total PL/pgSQL block including the VALIDATE scan.
-  SET LOCAL statement_timeout = '5min';
+  SET LOCAL lock_timeout = 10000;      -- 10 s in ms; governs ACCESS EXCLUSIVE wait
+  SET LOCAL statement_timeout = 300000; -- 5 min in ms; covers orphan purge + VALIDATE scan
   SET LOCAL search_path = public;
 
   -- Guard: constraint already fully valid with the desired delete rule — skip.
