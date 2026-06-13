@@ -184,22 +184,18 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
-	// Register workerSrv.Close immediately so it runs even if a subsequent t.Fatal
-	// (e.g. db.NewPool failure) returns before the LIFO cleanup block below.
-	// The pool.Close registration below re-establishes the correct LIFO ordering:
-	// pool.Close runs last (outermost), workerSrv.Close runs second-to-last.
-	t.Cleanup(workerSrv.Close)
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
 	pool, err := db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
+		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// Register pool.Close after workerSrv.Close so LIFO runs pool.Close last,
-	// keeping the pool open while workerSrv drains in-flight requests.
-	// pgxpool.Pool.Close() has no error return; direct registration is correct.
+	// Register in LIFO order: pool.Close first = runs last; workerSrv.Close second = runs
+	// first. This keeps the DB pool open while workerSrv drains any in-flight proxy requests.
 	t.Cleanup(pool.Close)
+	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
