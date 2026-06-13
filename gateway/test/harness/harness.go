@@ -298,11 +298,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
 				id, prevRate, restoredCap,
 			); err != nil {
-				t.Logf("harness: restore plan %q: %v", id, err)
+				t.Errorf("harness: restore plan %q: %v", id, err)
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Logf("harness: cleanup plan %q: %v", id, err)
+				t.Errorf("harness: cleanup plan %q: %v", id, err)
 			}
 		}
 	})
