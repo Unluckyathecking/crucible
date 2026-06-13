@@ -20,14 +20,15 @@ BEGIN
   ) THEN RETURN; END IF;
 
   -- Skip if constraint already correct: confdeltype 'a' = ON DELETE NO ACTION.
-  -- Namespace join ensures we match only the constraint in the public schema,
-  -- consistent with the pg_class guards above.
+  -- Uses explicit pg_class/pg_namespace joins (no ::regclass cast) so the check
+  -- works regardless of search_path, consistent with the guards above.
   IF EXISTS (
     SELECT 1 FROM pg_constraint c
     JOIN pg_namespace n ON n.oid = c.connamespace
-    WHERE c.conname = 'error_events_api_key_id_fkey'
-      AND n.nspname = 'public'
-      AND c.conrelid = 'public.error_events'::regclass
+    JOIN pg_class r     ON r.oid = c.conrelid
+    WHERE c.conname   = 'error_events_api_key_id_fkey'
+      AND n.nspname   = 'public'
+      AND r.relname   = 'error_events'
       AND c.confdeltype = 'a'
   ) THEN RETURN; END IF;
 
