@@ -1,7 +1,8 @@
 // Package harness provides NewGatewayTestServer: a test helper that boots the
-// full gateway middleware chain against real Postgres and Redis with an in-process
-// worker stub. DSN and RedisURL are required; callers set Options fields as needed.
-// Migrations are applied automatically once per test process via sync.Once.
+// full gateway middleware chain against real Postgres and Redis with an
+// in-process worker stub. DSN and RedisURL are required; callers set Options
+// fields as needed. Migrations are applied automatically once per test process
+// via sync.Once.
 package harness
 
 import (
