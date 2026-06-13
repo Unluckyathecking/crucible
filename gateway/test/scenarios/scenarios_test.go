@@ -63,13 +63,17 @@ func redisURL(t *testing.T) string {
 	return v
 }
 
-func baseOpts(t *testing.T, worker http.Handler) harness.Options {
+func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Options)) harness.Options {
 	t.Helper()
-	return harness.Options{
+	opts := harness.Options{
 		WorkerHandler: worker,
 		DSN:           postgresDSN(t),
 		RedisURL:      redisURL(t),
 	}
+	for _, fn := range mutators {
+		fn(&opts)
+	}
+	return opts
 }
 
 // echoWorker responds to POST /invoke with a fixed billable_units payload.
@@ -412,12 +416,9 @@ func TestWorkerTimeout(t *testing.T) {
 	// out" path; small enough to keep the test fast under CI load.
 	client := newTestHTTPClient(t)
 	worker, invoked := slowWorker(500 * time.Millisecond)
-	ts := harness.NewGatewayTestServer(t, harness.Options{
-		WorkerHandler:   worker,
-		DSN:             postgresDSN(t),
-		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 100,
-	})
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
+		o.WorkerTimeoutMS = 100
+	}))
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
 
@@ -433,10 +434,13 @@ func TestWorkerTimeout(t *testing.T) {
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
 	}
+	// waitForErrorEvents before invoked.Load: the async errorlog goroutine writes
+	// the error event only after the handler goroutine has run, so waiting for the
+	// event guarantees invoked.Store(true) has already executed.
+	waitForErrorEvents(t, ts, customerID, 1)
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
-	waitForErrorEvents(t, ts, customerID, 1)
 }
 
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.

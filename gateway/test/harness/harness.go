@@ -423,11 +423,15 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("webhook_endpoints", err)
 		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
 		// error_events row after the DELETE above, causing a transient FK violation.
+		// A short backoff between retries lets the async writer finish before retrying.
 		var finalKeyErr error
 		for attempt := 1; attempt <= maxCleanupRetries; attempt++ {
 			if cctx.Err() != nil {
 				finalKeyErr = cctx.Err()
 				break
+			}
+			if attempt > 1 {
+				time.Sleep(250 * time.Millisecond)
 			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, cleanupRetryTimeout)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
