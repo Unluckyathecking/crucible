@@ -26,6 +26,12 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Acquire ACCESS EXCLUSIVE on error_events to eliminate the brief window
+  -- between DROP CONSTRAINT and ADD CONSTRAINT where the column is unprotected.
+  -- Migrations run single-threaded on boot, but the explicit lock makes that
+  -- guarantee structural rather than operational.
+  LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
+
   -- confdeltype='a' is PostgreSQL's catalog code for NO ACTION (the desired
   -- state). Skip DROP+ADD if the correct constraint already exists.
   -- Include table scoping via pg_class join so the check is unambiguous even if
