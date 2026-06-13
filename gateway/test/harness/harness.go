@@ -282,7 +282,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if existed {
 			// Restore the original rate/cap. prevCap.Valid=false means the original
@@ -347,7 +347,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		logErr := func(table string, e error) {
 			if e != nil {
