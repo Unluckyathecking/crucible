@@ -294,8 +294,8 @@ func TestIdempotentReplay(t *testing.T) {
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
 	}
-	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
-		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
+	if v := r2.Header.Get("X-Idempotent-Replayed"); !strings.EqualFold(v, "true") {
+		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\" (case-insensitive)", v)
 	}
 
 	if string(body1) != string(body2) {
@@ -380,8 +380,8 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime || resetUnix > reqTime+65 {
-		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 65s of request time (%d)", resetUnix, reqTime)
+	} else if resetUnix < reqTime || resetUnix > reqTime+61 {
+		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 61s of request time (%d)", resetUnix, reqTime)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
 	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {

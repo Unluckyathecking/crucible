@@ -29,14 +29,12 @@ BEGIN
   -- Purge rows where api_key_id is non-NULL but the referenced api_keys row no
   -- longer exists. Such rows cannot satisfy ON DELETE NO ACTION and must be
   -- removed before the constraint can be added. NULL api_key_id rows are left
-  -- untouched (the WHERE requires IS NOT NULL). The fully-qualified table name
-  -- in the correlated subquery (error_events.api_key_id) unambiguously refers
-  -- to the row being examined by the outer DELETE.
+  -- untouched (the WHERE requires IS NOT NULL).
+  -- NOT IN uses an uncorrelated subquery: id refers to api_keys.id, not to
+  -- any column of the table being deleted.
   DELETE FROM public.error_events
   WHERE  api_key_id IS NOT NULL
-    AND  NOT EXISTS (
-      SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
-    );
+    AND  api_key_id NOT IN (SELECT id FROM public.api_keys);
 
   -- Drop any existing FK regardless of its current delete rule, then recreate
   -- it with ON DELETE NO ACTION. ADD CONSTRAINT validates all rows inline under
