@@ -345,17 +345,21 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	var planExists bool
 	planCtx, planCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer planCancel()
-	if err := ts.DB.QueryRow(planCtx,
+	err := ts.DB.QueryRow(planCtx,
 		`SELECT true FROM plans WHERE id = $1`, planID,
-	).Scan(&planExists); err != nil {
-		t.Fatalf("harness: CreateCustomer planID %q does not exist: %v", planID, err)
+	).Scan(&planExists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
+	}
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 	// Capture the month now so the cleanup closure deletes the same month's quota key
 	// even if the test happens to span a UTC month boundary.
 	createdMonth := time.Now().UTC().Format("2006-01")
 
 	customerID := uuid.New()
-	_, err := ts.DB.Exec(ctx,
+	_, err = ts.DB.Exec(ctx,
 		`INSERT INTO customers (id, email, plan_id) VALUES ($1, $2, $3)`,
 		customerID, email, planID,
 	)

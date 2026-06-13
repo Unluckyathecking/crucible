@@ -9,12 +9,16 @@ BEGIN;
 -- between DROP and ADD), but migrations run single-threaded on each boot.
 DO $$
 BEGIN
-  -- Guard: both tables must exist before we touch any constraints.
-  -- Avoids the ::regclass cast erroring on a schema where either table is absent.
+  -- Guard: error_events table must exist.
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relname = 'error_events' AND c.relkind = 'r'
-  ) OR NOT EXISTS (
+  ) THEN
+    RETURN;
+  END IF;
+
+  -- Guard: api_keys table must exist (referenced by the FK we are adding).
+  IF NOT EXISTS (
     SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relname = 'api_keys' AND c.relkind = 'r'
   ) THEN
@@ -22,13 +26,13 @@ BEGIN
   END IF;
 
   -- confdeltype='a' is PostgreSQL's catalog code for NO ACTION (the desired
-  -- state). If that constraint already exists, skip DROP+ADD.
+  -- state). Skip DROP+ADD if the correct constraint already exists.
+  -- conname is unique per table, so conrelid is omitted to avoid the ::regclass cast.
   IF NOT EXISTS (
     SELECT 1
     FROM   pg_constraint
     WHERE  conname     = 'error_events_api_key_id_fkey'
       AND  contype     = 'f'
-      AND  conrelid    = 'public.error_events'::regclass
       AND  confdeltype = 'a'
   ) THEN
     ALTER TABLE public.error_events
