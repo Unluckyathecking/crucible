@@ -336,11 +336,13 @@ func TestIdempotentReplay(t *testing.T) {
 	if err := json.Unmarshal(body2, &replayed); err != nil {
 		t.Fatalf("decode replayed body: %v\nbody: %s", err, body2)
 	}
-	if replayed.BillableUnits != 1 {
-		t.Errorf("replayed billable_units: got %d, want 1", replayed.BillableUnits)
+	if got, want := replayed.BillableUnits, uint64(1); got != want {
+		t.Errorf("replayed billable_units: got %d, want %d", got, want)
 	}
-	if replayed.Payload.N != 1 {
-		t.Errorf("replayed payload.n: got %d, want 1 (cached first invocation)", replayed.Payload.N)
+	// N must equal 1: the replay must return the first invocation's cached payload,
+	// not invoke varyingWorker again (which would return N=2).
+	if got, want := replayed.Payload.N, int64(1); got != want {
+		t.Errorf("replayed payload.n: got %d, want %d", got, want)
 	}
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
@@ -387,13 +389,10 @@ func TestRateLimit(t *testing.T) {
 	}
 	ra := r.Header.Get("Retry-After")
 	if ra == "" {
-		t.Fatalf("Retry-After header missing on 429 RATE_LIMITED response")
-	}
-	n, err := strconv.Atoi(ra)
-	if err != nil {
+		t.Errorf("Retry-After header missing on 429 RATE_LIMITED response")
+	} else if n, err := strconv.Atoi(ra); err != nil {
 		t.Fatalf("Retry-After: got %q, want integer seconds: %v", ra, err)
-	}
-	if n < 1 || n > 60 {
+	} else if n < 1 || n > 60 {
 		t.Errorf("Retry-After: got %d, want in [1,60]", n)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
@@ -625,9 +624,9 @@ func TestRateLimitHeadersOnSuccess(t *testing.T) {
 	_, apiKey := ts.CreateCustomer(t, "rl-hdr-"+uuid.New().String()+"@example.com", "rl-hdr-plan")
 
 	r := invoke(t, client, ts, apiKey)
-	drainBody(t, r)
+	body := drainBody(t, r)
 	if r.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d", r.StatusCode)
+		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v == "" {
 		t.Errorf("RateLimit-Limit header absent on 200 response")
@@ -651,9 +650,9 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", "sec-hdr-plan")
 
 	r := invoke(t, client, ts, apiKey)
-	drainBody(t, r)
+	body := drainBody(t, r)
 	if r.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d", r.StatusCode)
+		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
 	}
 	if got := r.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options: got %q, want nosniff", got)
