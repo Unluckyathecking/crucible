@@ -16,6 +16,8 @@ package harness
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -41,13 +43,13 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
-const (
-	// TestSalt is the API key hash salt used by all harness instances.
-	// Must be >= 32 bytes (config.Load enforces this at runtime).
-	// WARNING: test-only value — never use a hardcoded salt in production;
-	// always generate via crypto/rand or load from secure configuration.
-	TestSalt = "crucible-harness-test-salt-min32!!"
+// TestSalt is the API key hash salt used by all harness instances.
+// Generated at process start via crypto/rand; guaranteed ≥ 64 chars (32 bytes hex-encoded).
+// Each test process gets a unique salt; auth.Hash(TestSalt, ...) and Store lookups both
+// use this value, so per-process uniqueness is safe.
+var TestSalt string
 
+const (
 	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
 	// Mirrors config.Config.APIKeyPrefix set inside NewGatewayTestServer so both
 	// the gateway auth middleware and CreateCustomer use the identical value.
@@ -60,9 +62,11 @@ const (
 )
 
 func init() {
-	if len(TestSalt) < 32 {
-		panic("harness: TestSalt must be >= 32 bytes")
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("harness: failed to generate test salt: " + err.Error())
 	}
+	TestSalt = hex.EncodeToString(b) // 64 hex chars, well above 32-byte minimum
 }
 
 // routesMu guards temporary modifications to server.V1Routes.
@@ -112,7 +116,8 @@ type TestServer struct {
 // INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	if opts.WorkerHandler == nil {
 		t.Fatal("harness: WorkerHandler is required")
@@ -357,18 +362,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		logErr("webhook_deliveries", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
-		for attempt := 1; attempt <= 3 && err != nil; attempt++ {
+		_, apiKeyErr := ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
+		for attempt := 1; attempt <= 3 && apiKeyErr != nil; attempt++ {
 			// Bounded retry: the async errorlog.Record goroutine (2 s timeout) may insert an
 			// error_events row between the earlier error_events DELETE and this api_keys
 			// DELETE, causing a transient FK violation. Re-delete error_events then retry.
-			logErr(fmt.Sprintf("api_keys (attempt %d)", attempt), err)
+			logErr(fmt.Sprintf("api_keys (attempt %d)", attempt), apiKeyErr)
 			if _, delErr := ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID); delErr != nil {
 				logErr("error_events (retry)", delErr)
 			}
-			_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+			_, apiKeyErr = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 		}
-		logErr("api_keys", err)
+		logErr("api_keys", apiKeyErr)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		logErr("customers", err)
 		// Flush quota counter and rate-limit key to avoid polluting next run.
@@ -377,7 +382,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>"
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
-		logErr("redis quota+rl", ts.Redis.Del(cctx, quotaKey, rlKey).Err())
+		if delErr := ts.Redis.Del(cctx, quotaKey).Err(); delErr != nil {
+			t.Logf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
+		}
+		if delErr := ts.Redis.Del(cctx, rlKey).Err(); delErr != nil {
+			t.Logf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)
+		}
 	})
 
 	return customerID, full

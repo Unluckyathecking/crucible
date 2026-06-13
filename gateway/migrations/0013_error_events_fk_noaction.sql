@@ -19,9 +19,8 @@ BEGIN
     WHERE conname = 'error_events_api_key_id_fkey'
       AND conrelid  = 'error_events'::regclass
       AND confrelid = 'api_keys'::regclass
-      AND contype      = 'f'
-      AND confdeltype  = 'a'
-      AND confupdtype  = 'a'
+      AND contype     = 'f'
+      AND confdeltype = 'a'
   ) THEN
     ALTER TABLE error_events DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey
