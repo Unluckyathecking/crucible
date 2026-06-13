@@ -58,6 +58,11 @@ const (
 	cleanupTimeout       = 60 * time.Second // budget for customer cleanup including retry loop
 	maxCleanupRetries    = 3
 	cleanupRetryTimeout  = 10 * time.Second
+
+	// errorEventsDeleteSQL removes all error_events rows for a customer.
+	// error_events.customer_id is NOT NULL and indexed via idx_error_events_customer_created,
+	// so this is a fast indexed delete.
+	errorEventsDeleteSQL = `DELETE FROM error_events WHERE customer_id = $1`
 )
 
 func init() {
@@ -396,9 +401,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 		cleanupErr("idempotency_keys", err)
-		// Include rows written by the async errorlog goroutine that reference api_keys
-		// directly (api_key_id) as well as rows that carry the customer_id FK.
-		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events e WHERE e.customer_id = $1 OR EXISTS (SELECT 1 FROM api_keys k WHERE k.customer_id = $1 AND k.id = e.api_key_id)`, customerID)
+		_, err = ts.DB.Exec(cctx, errorEventsDeleteSQL, customerID)
 		cleanupErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 		cleanupErr("webhook_deliveries", err)
@@ -422,7 +425,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events e WHERE e.customer_id = $1 OR EXISTS (SELECT 1 FROM api_keys k WHERE k.customer_id = $1 AND k.id = e.api_key_id)`, customerID)
+				_, delErr := ts.DB.Exec(fixCtx, errorEventsDeleteSQL, customerID)
 				fixCancel()
 				if delErr != nil {
 					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
@@ -501,8 +504,6 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 }
 
 // CountErrorEvents returns the number of error_events rows for customerID.
-// Matches the cleanup predicate: counts rows by customer_id OR by api_key_id
-// belonging to the customer (async errorlog writes may only set api_key_id).
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	if ts == nil {
@@ -512,7 +513,7 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	defer cancel()
 	var n int64
 	err := ts.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM error_events e WHERE e.customer_id = $1 OR EXISTS (SELECT 1 FROM api_keys k WHERE k.customer_id = $1 AND k.id = e.api_key_id)`, customerID,
+		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
 		t.Fatalf("harness: count error_events: %v", err)
