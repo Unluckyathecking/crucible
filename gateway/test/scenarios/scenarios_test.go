@@ -150,19 +150,6 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	}
 }
 
-// waitForTrue polls fn every 10 ms until it returns true or timeout elapses.
-func waitForTrue(t *testing.T, fn func() bool, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timeout waiting for condition after %v", timeout)
-}
-
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
 // via newTestHTTPClient() and reused across calls. Callers must drain and close the
 // response body via drainBody.
@@ -489,12 +476,10 @@ func TestWorkerTimeout(t *testing.T) {
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
 	}
-	// Poll invoked directly rather than relying on the error-event ordering.
-	waitForTrue(t, func() bool { return invoked.Load() }, 5*time.Second)
+	waitForErrorEvents(t, ts, customerID, 1)
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
-	waitForErrorEvents(t, ts, customerID, 1)
 }
 
 // TestAuthFailure: a key not registered in the database returns 401 UNAUTHORIZED.
@@ -537,6 +522,7 @@ func TestWorkerBadResponse(t *testing.T) {
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after WORKER_BAD_RESPONSE: got %d, want 0", n)
 	}
+	waitForErrorEvents(t, ts, customerID, 1)
 }
 
 // TestNoAuthorizationHeader: a request with no Authorization header returns 401 UNAUTHORIZED.
@@ -620,6 +606,28 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	// varyingWorker embeds an incrementing counter; equal bodies would mean B was served A's cached payload.
 	if string(body1) == string(body2) {
 		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\nbody: %s", body1)
+	}
+}
+
+// TestSecurityHeadersPresent: the SecurityHeaders middleware injects OWASP-recommended
+// headers on every successful response.
+func TestSecurityHeadersPresent(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "sec-hdr-plan", 100, 10000)
+	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", "sec-hdr-plan")
+
+	r := invoke(t, client, ts, apiKey)
+	drainBody(t, r)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", r.StatusCode)
+	}
+	if got := r.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options: got %q, want nosniff", got)
+	}
+	if got := r.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options: got %q, want DENY", got)
 	}
 }
 
