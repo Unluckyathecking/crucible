@@ -120,12 +120,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		case <-r.Context().Done():
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			return
 		}
 	})

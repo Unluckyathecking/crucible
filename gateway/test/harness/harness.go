@@ -370,9 +370,23 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
 	}
-	// Generate the key and register t.Cleanup before any operations that can t.Fatal.
-	// The closure guards customerID == uuid.Nil so nothing is cleaned up if setup
-	// fatals before the first INSERT.
+
+	// Validate planID before generating a key so we don't discard a key immediately
+	// on an invalid planID — auth.Generate is a cheap in-memory op but the intent
+	// is clearer when it follows the guard that justifies proceeding.
+	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
+	defer planCancel()
+	var dummy int
+	err = ts.DB.QueryRow(planCtx,
+		`SELECT 1 FROM plans WHERE id = $1`, planID,
+	).Scan(&dummy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
+	}
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
+	}
+
 	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
@@ -496,20 +510,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, delErr = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", delErr)
 	})
-
-	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
-	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
-	defer planCancel()
-	var dummy int
-	err = ts.DB.QueryRow(planCtx,
-		`SELECT 1 FROM plans WHERE id = $1`, planID,
-	).Scan(&dummy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
-	}
-	if err != nil {
-		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
-	}
 
 	customerID = uuid.New()
 	custCtx, custCancel := context.WithTimeout(context.Background(), 10*time.Second)
