@@ -107,8 +107,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -123,15 +125,19 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // wait rather than asserting immediately after the triggering request returns.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
-		if n := ts.CountErrorEvents(t, customerID); n == want {
-			return
-		}
-		if time.Now().After(deadline) {
+		select {
+		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		case <-ticker.C:
+			if n := ts.CountErrorEvents(t, customerID); n == want {
+				return
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
