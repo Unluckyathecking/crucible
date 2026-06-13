@@ -130,17 +130,17 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // Must be called from the main test goroutine (uses t.Fatalf).
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	// Check immediately before starting the ticker to return in the common case
-	// where the async errorlog has already written the event.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	// Check immediately on entry before the first tick; return early in the common
+	// case where the async errorlog has already written by the time we arrive.
 	if n := ts.CountErrorEvents(t, customerID); n == want {
 		return
 	} else if n > want {
 		t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
