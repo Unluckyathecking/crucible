@@ -322,8 +322,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 	// A t.Cleanup registered at the end of this function restores the plan to its
 	// pre-call state (or deletes it if it did not exist before) after the test ends.
-	ctx, cancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
-	defer cancel()
+	ctx := context.Background()
 
 	var (
 		prevRate int64
@@ -355,8 +354,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 
 	t.Cleanup(func() {
-		cctx, ccancel := context.WithTimeout(context.Background(), cleanupTimeout)
-		defer ccancel()
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
 		if existed {
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
