@@ -135,6 +135,8 @@ func slowWorker(delay time.Duration) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
+			// client is gone; don't write anything.
+			return
 		}
 	})
 }
@@ -152,14 +154,14 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			t.Errorf("timeout waiting for %d error_events for customer %s", want, customerID)
 			return
 		case <-tick.C:
-		}
-		n := ts.CountErrorEvents(t, customerID)
-		if n == want {
-			return
-		}
-		if n > want {
-			t.Errorf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
-			return
+			n := ts.CountErrorEvents(t, customerID)
+			if n == want {
+				return
+			}
+			if n > want {
+				t.Errorf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
+				return
+			}
 		}
 	}
 }
