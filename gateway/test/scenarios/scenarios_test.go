@@ -99,16 +99,18 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
-// Uses time.After to avoid manual timer management; the handler returns promptly
-// when the request context is cancelled (proxy timeout or client disconnect).
+// defer timer.Stop() is the sole cleanup path; the Done branch simply returns,
+// leaving any fired-but-unread timer value to be collected with the timer.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 			// Guard: if the proxy cancelled the context at the same instant the
-			// delay elapsed, do not write to a disconnected client.
+			// timer fired, do not write to a disconnected client.
 			if r.Context().Err() != nil {
 				return
 			}
@@ -125,9 +127,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // testHTTPClient.Timeout (15 s) bounds each request; no per-call context needed.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
-	req, err := http.NewRequestWithContext(
-		context.Background(),
-		http.MethodPost,
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel) // cancel runs at test end; keeps context alive while caller reads body
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.Server.URL+"/v1/echo",
 		strings.NewReader(`{"input":"scenario-test"}`),
 	)
