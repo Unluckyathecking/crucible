@@ -67,7 +67,7 @@ func init() {
 var routesMu sync.Mutex
 
 // migrateOnce ensures migrations run exactly once per test process.
-// Migrations are idempotent so a single run covers all parallel tests.
+// sync.Once provides safe deduplication even when db.Apply is called concurrently.
 var (
 	migrateOnce    sync.Once
 	migrateOnceErr error
@@ -167,8 +167,12 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
+	// authStore.Close stops the background last_used_at goroutine and drains its queue.
+	// It does NOT close the injected pool or rdb; those are cleaned up by their own t.Cleanup above.
 	t.Cleanup(authStore.Close)
 
+	// proxy.Client has no Close() method; its http.Transport closes idle connections
+	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
 	workerClient := proxy.New(
 		workerSrv.URL,
 		time.Duration(opts.WorkerTimeoutMS)*time.Millisecond,
@@ -413,6 +417,13 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		authKey := "auth:" + prefix
 		if delErr := ts.Redis.Del(cctx, quotaKey).Err(); delErr != nil {
 			t.Errorf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
+		}
+		// Guard against tests spanning a UTC month boundary: also delete the current-month key.
+		if nowMonth := time.Now().UTC().Format("2006-01"); nowMonth != createdMonth {
+			nowKey := "quota:" + customerID.String() + ":" + nowMonth
+			if delErr := ts.Redis.Del(cctx, nowKey).Err(); delErr != nil {
+				t.Errorf("harness: cleanup quota key (current month) for customer %s: %v", customerID, delErr)
+			}
 		}
 		if delErr := ts.Redis.Del(cctx, rlKey).Err(); delErr != nil {
 			t.Errorf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)

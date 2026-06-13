@@ -22,7 +22,9 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
-// testHTTPClient is a shared client for scenario tests (not http.DefaultClient).
+// testHTTPClient is shared across all scenario tests; http.Client is safe for concurrent use.
+// Keep-alives are enabled so parallel tests reuse connections rather than opening new TCP
+// connections on every request, which avoids ephemeral port exhaustion under -race.
 var testHTTPClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
@@ -33,7 +35,6 @@ var testHTTPClient = &http.Client{
 		MaxConnsPerHost:     10,
 		IdleConnTimeout:     30 * time.Second,
 		ForceAttemptHTTP2:   false,
-		DisableKeepAlives:   true,
 	},
 }
 
@@ -335,12 +336,12 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	worker, invoked := slowWorker(2500 * time.Millisecond)
+	worker, invoked := slowWorker(3500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 250, // 10:1 ratio gives reliable margin on shared CI runners
+		WorkerTimeoutMS: 500, // 7:1 ratio; reliable on loaded CI runners under -race
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
