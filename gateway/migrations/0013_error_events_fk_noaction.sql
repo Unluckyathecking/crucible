@@ -1,61 +1,20 @@
 BEGIN;
 
--- Restore error_events.api_key_id FK to the original NO ACTION default.
+-- Restore error_events.api_key_id FK to NO ACTION.
 --
--- An earlier version of this file changed the FK to ON DELETE SET NULL to allow
--- the test harness cleanup to delete api_keys before error_events. That change
--- was reverted: ON DELETE SET NULL on an audit-log FK is architecturally wrong,
--- since it destroys the link between an error event and the key that caused it.
--- The test harness cleanup handles the FK ordering (error_events before api_keys)
--- without a schema change. In the rare case where an async errorlog.Record goroutine
--- fires between the cleanup's DELETE FROM error_events and DELETE FROM api_keys,
--- the test harness retries the api_keys DELETE (re-deleting dependents first) up to
--- three times, so orphaned rows are resolved within the same cleanup pass.
+-- An earlier version used ON DELETE SET NULL to allow the test harness cleanup
+-- to delete api_keys before error_events. That was reverted: SET NULL on an
+-- audit-log FK destroys the link between an error event and the key that caused it.
+-- The harness cleanup now deletes error_events before api_keys to satisfy the FK.
 --
--- Idempotent two-phase approach:
---   Phase 1: drop the constraint if it exists with the wrong delete action.
---   Phase 2: add the constraint if it does not exist (handles fresh DBs and phase 1 drop).
---
--- PostgreSQL confdeltype codes: 'a'=NO ACTION, 'n'=SET NULL, 'c'=CASCADE,
--- 'r'=RESTRICT, 'd'=SET DEFAULT. Phase 1 drops anything that is not 'a' (NO ACTION).
---
--- Table resolution uses pg_class + pg_namespace joins on relname/nspname strings,
--- avoiding regclass casts and to_regclass() so there is no oid/regclass type mismatch
--- and no NULL comparison risk when a table does not yet exist.
-DO $$
-BEGIN
-  -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL='n').
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint c
-    JOIN pg_class     et ON et.oid = c.conrelid
-    JOIN pg_class     ak ON ak.oid = c.confrelid
-    JOIN pg_namespace en ON en.oid = et.relnamespace
-    JOIN pg_namespace an ON an.oid = ak.relnamespace
-    WHERE en.nspname = 'public' AND et.relname = 'error_events'
-      AND an.nspname = 'public' AND ak.relname = 'api_keys'
-      AND c.conname  = 'error_events_api_key_id_fkey'
-      AND c.contype  = 'f'
-      AND c.confdeltype <> 'a'
-  ) THEN
-    ALTER TABLE public.error_events DROP CONSTRAINT error_events_api_key_id_fkey;
-  END IF;
-
-  -- Phase 2: add if absent (fresh DB or just dropped by Phase 1 above).
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint c
-    JOIN pg_class     et ON et.oid = c.conrelid
-    JOIN pg_class     ak ON ak.oid = c.confrelid
-    JOIN pg_namespace en ON en.oid = et.relnamespace
-    JOIN pg_namespace an ON an.oid = ak.relnamespace
-    WHERE en.nspname = 'public' AND et.relname = 'error_events'
-      AND an.nspname = 'public' AND ak.relname = 'api_keys'
-      AND c.conname  = 'error_events_api_key_id_fkey'
-      AND c.contype  = 'f'
-      AND c.confdeltype = 'a'
-  ) THEN
-    ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
-      FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
-  END IF;
-END $$;
+-- Idempotent via DROP IF EXISTS + ADD: if the constraint is absent or has the wrong
+-- delete action, this restores it. If it already has NO ACTION semantics, the DROP
+-- removes it and ADD re-creates it within the same transaction — the brief absence
+-- is invisible to concurrent readers outside the transaction boundary.
+ALTER TABLE public.error_events
+  DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
+ALTER TABLE public.error_events
+  ADD CONSTRAINT error_events_api_key_id_fkey
+  FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
 
 COMMIT;

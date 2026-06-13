@@ -413,12 +413,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 					t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
+				defer fixCancel()
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 				if delErr != nil {
 					t.Logf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
 				}
 				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
-				fixCancel()
 				if delErr != nil {
 					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
