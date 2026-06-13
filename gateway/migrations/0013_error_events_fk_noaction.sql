@@ -38,8 +38,20 @@ BEGIN
   WHERE api_key_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM public.api_keys WHERE id = api_key_id);
 
-  ALTER TABLE public.error_events
-    DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
+  -- Drop the constraint only when it already exists (with the wrong delete rule).
+  -- The unconditional DROP (no IF EXISTS) inside the IF branch keeps the pattern
+  -- explicit: existence is checked once, then the DROP is guaranteed to succeed.
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    JOIN pg_class r     ON r.oid = c.conrelid
+    WHERE c.conname = 'error_events_api_key_id_fkey'
+      AND n.nspname = 'public'
+      AND r.relname = 'error_events'
+  ) THEN
+    ALTER TABLE public.error_events
+      DROP CONSTRAINT error_events_api_key_id_fkey;
+  END IF;
 
   ALTER TABLE public.error_events
     ADD CONSTRAINT error_events_api_key_id_fkey
