@@ -269,11 +269,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Logf("harness: cleanup customers for customer %s: %v", customerID, err)
 		}
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
-		// Keys are constructed via the same exported functions as production to ensure
-		// this cleanup targets exactly the keys the middleware touches.
+		// Formats verified against production source (do not change without updating both):
+		//   quota key:    quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
+		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>" (fmt.Sprintf("rl:%s", id))
 		now := time.Now().UTC()
-		quotaKey := quota.MonthKey(customerID, now)
-		rlKey := ratelimit.RateLimitKey(customerID.String())
+		quotaKey := "quota:" + customerID.String() + ":" + now.Format("2006-01")
+		rlKey := "rl:" + customerID.String()
 		if err := ts.Redis.Del(cctx, quotaKey, rlKey).Err(); err != nil {
 			// Log but do not fail: stale Redis keys expire naturally and UUID-scoped
 			// keys cannot pollute other customers.
