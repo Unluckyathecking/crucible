@@ -32,19 +32,17 @@ BEGIN
   -- Purge rows where api_key_id is non-NULL but the referenced api_keys row no
   -- longer exists. Such rows cannot satisfy ON DELETE NO ACTION and must be
   -- removed before the constraint can be added. NULL api_key_id rows are left
-  -- untouched (the WHERE requires IS NOT NULL).
-  -- NOT EXISTS (rather than NOT IN) avoids the NULL-in-subquery footgun and
-  -- lets the planner use an index on api_keys.id. The schema-qualified
-  -- public.error_events.api_key_id makes the outer-table correlation explicit.
-  -- Orphaned rows exist only when a prior deployment ran DELETE CASCADE or a
-  -- manual api_keys deletion without also removing error_events. In practice
-  -- the orphan set is tiny; the ACCESS EXCLUSIVE lock already prevents new
-  -- orphans from arriving during the purge, so no LIMIT loop is needed.
+  -- untouched by the WHERE ee.api_key_id IS NOT NULL guard.
+  -- LEFT JOIN anti-join: rows where the join produces no match (k.id IS NULL)
+  -- are the orphans. The ACCESS EXCLUSIVE lock already prevents new orphans
+  -- from arriving during the purge, so no LIMIT loop is needed.
   DELETE FROM public.error_events
-  WHERE  api_key_id IS NOT NULL
-    AND  NOT EXISTS (
-           SELECT 1 FROM public.api_keys
-           WHERE  id = public.error_events.api_key_id
+  WHERE  id IN (
+           SELECT ee.id
+           FROM   public.error_events  ee
+           LEFT   JOIN public.api_keys k ON k.id = ee.api_key_id
+           WHERE  ee.api_key_id IS NOT NULL
+             AND  k.id IS NULL
          );
 
   -- Drop any existing FK regardless of its current delete rule, then recreate
