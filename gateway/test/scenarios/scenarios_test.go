@@ -15,7 +15,6 @@
 package scenarios_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -134,7 +134,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 		ctx,
 		http.MethodPost,
 		ts.Server.URL+"/v1/echo",
-		bytes.NewBufferString(`{"input":"scenario-test"}`),
+		strings.NewReader(`{"input":"scenario-test"}`),
 	)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -240,17 +240,12 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// The middleware commits the idempotency record synchronously before sending the
-	// response, so drainBody guarantees the key exists. Poll briefly as a defensive
-	// barrier against unexpected commit latency on loaded CI runners.
-	for i := 0; i < 50; i++ {
-		if ts.CountIdempotencyKeys(t, customerID, idempKey) == 1 {
-			break
-		}
-		if i == 49 {
-			t.Fatalf("idempotency_keys row not committed after 500ms; middleware may not have written it")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The idempotency middleware writes the record synchronously before sending the
+	// response, so by the time drainBody returns the key is committed. Verify this
+	// with a direct DB read; if the assertion below fails, the middleware guarantee
+	// is broken, not a test timing issue.
+	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
+		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (middleware must write synchronously)", n)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)
