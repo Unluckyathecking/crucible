@@ -79,10 +79,12 @@ func init() {
 // preventing concurrent test goroutines from observing a partially-mutated route table.
 var routesMu sync.Mutex
 
-// migrateOnce runs migrations once per test process for speed. If the first
-// attempt fails, migrateOnceErr remains set and all subsequent tests in the
-// same process fail; callers must ensure Postgres is ready before running
-// tests. The SQL files use IF NOT EXISTS / DROP IF EXISTS for idempotency.
+// migrateOnce runs migrations exactly once per test process for speed.
+// If the first attempt fails, migrateOnceErr remains set and all subsequent
+// tests in the same process fail; callers must ensure Postgres is ready before
+// running tests. Each migration file is idempotent: for example,
+// 0013_error_events_fk_noaction.sql uses a PL/pgSQL guard to skip the repair
+// work when the FK is already valid, so re-runs are cheap no-ops.
 var (
 	migrateOnce    sync.Once
 	migrateOnceErr error
