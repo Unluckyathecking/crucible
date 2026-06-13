@@ -130,7 +130,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatalf("harness: RedisURL must be a redis:// or rediss:// URL, got: %s", opts.RedisURL)
 	}
 
-	if opts.WorkerTimeoutMS <= 0 {
+	if opts.WorkerTimeoutMS < 0 {
+		t.Fatalf("harness: WorkerTimeoutMS must be >= 0 (use 0 for default %d ms), got: %d", defaultWorkerTimeoutMS, opts.WorkerTimeoutMS)
+	}
+	if opts.WorkerTimeoutMS == 0 {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
 	const maxWorkerTimeoutMS = 300_000 // 5 min; guards against accidentally huge values
