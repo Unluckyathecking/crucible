@@ -498,6 +498,91 @@ func TestWorkerBadResponse(t *testing.T) {
 	}
 }
 
+// TestNoAuthorizationHeader: a request with no Authorization header returns 401 UNAUTHORIZED.
+// This exercises the "missing header" branch of the auth middleware, distinct from
+// TestAuthFailure which sends a key not present in the database.
+func TestNoAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+
+	// Pass a non-empty placeholder to satisfy invoke's empty-key guard, then remove
+	// the Authorization header via a mutator before the request is sent.
+	r := invoke(t, client, ts, "placeholder-key", func(req *http.Request) {
+		req.Header.Del("Authorization")
+	})
+	body := drainBody(t, r)
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
+	}
+	if code := errorCode(t, body); code != "UNAUTHORIZED" {
+		t.Errorf("error.code: got %q, want UNAUTHORIZED", code)
+	}
+}
+
+// TestRequestIDPresent: every response carries an X-Request-ID header set by the
+// RequestID middleware. The value is a valid UUID; clients use it for support-ticket correlation.
+func TestRequestIDPresent(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "reqid-plan", 100, 10000)
+	_, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
+
+	r := invoke(t, client, ts, apiKey)
+	rid := r.Header.Get("X-Request-ID")
+	body := drainBody(t, r)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", r.StatusCode, body)
+	}
+	if rid == "" {
+		t.Fatalf("X-Request-ID header absent on 200 response")
+	}
+	if _, err := uuid.Parse(rid); err != nil {
+		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid, err)
+	}
+}
+
+// TestIdempotencyKeyIsolation: the same Idempotency-Key string shared by two different
+// customers must not cross-contaminate the cache — customer B's first request must reach
+// the worker, not be served from customer A's cached entry (scoped by customer_id).
+func TestIdempotencyKeyIsolation(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	worker, _ := varyingWorker()
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
+	ts.CreatePlan(t, "idemp-iso-plan", 100, 10000)
+	_, keyA := ts.CreateCustomer(t, "idemp-iso-A-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
+	_, keyB := ts.CreateCustomer(t, "idemp-iso-B-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
+
+	sharedKey := "shared-idemp-" + uuid.New().String()
+	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", sharedKey) }
+
+	r1 := invoke(t, client, ts, keyA, withIdemp)
+	replayA := r1.Header.Get("X-Idempotent-Replayed")
+	body1 := drainBody(t, r1)
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("customer A first request: want 200, got %d: %s", r1.StatusCode, body1)
+	}
+	if replayA != "" {
+		t.Errorf("customer A first request: X-Idempotent-Replayed = %q, want absent", replayA)
+	}
+
+	r2 := invoke(t, client, ts, keyB, withIdemp)
+	replayB := r2.Header.Get("X-Idempotent-Replayed")
+	body2 := drainBody(t, r2)
+	if r2.StatusCode != http.StatusOK {
+		t.Fatalf("customer B first request: want 200, got %d: %s", r2.StatusCode, body2)
+	}
+	if replayB != "" {
+		t.Errorf("customer B first request: X-Idempotent-Replayed = %q, want absent (different customer)", replayB)
+	}
+	// varyingWorker embeds an incrementing counter; equal bodies would mean B was served A's cached payload.
+	if string(body1) == string(body2) {
+		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\nbody: %s", body1)
+	}
+}
+
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	t.Parallel()
