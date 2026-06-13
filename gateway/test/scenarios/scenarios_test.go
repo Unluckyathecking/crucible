@@ -112,6 +112,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
+		// defer runs on every function return (both select branches):
+		//   timer.C branch  — timer already fired; Stop() is a no-op, channel already drained.
+		//   Done() branch   — Stop() cancels the timer before it can fire; no goroutine leak.
 		defer timer.Stop()
 		select {
 		case <-timer.C:
