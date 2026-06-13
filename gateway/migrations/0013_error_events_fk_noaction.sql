@@ -1,5 +1,9 @@
 -- Repair error_events.api_key_id FK to ON DELETE NO ACTION.
 --
+-- ON DELETE NO ACTION (confdeltype = 'a') is the desired rule: it preserves the full
+-- audit trail by preventing api_keys deletion while error_events rows reference the key.
+-- This is NOT ON DELETE SET NULL and NOT ON DELETE CASCADE — the row is kept intact.
+--
 -- PostgreSQL confdeltype codes: 'a' = NO ACTION (desired), 'r' = RESTRICT,
 -- 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT.
 -- The guard below is a no-op when the constraint already carries ON DELETE NO ACTION.
