@@ -183,20 +183,17 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	var handler http.Handler
-	if len(opts.Routes) > 0 {
-		// Temporarily swap the package-level V1Routes so NewRouter picks up our
-		// custom descriptors. Both the mutex and the backup restoration are deferred
-		// so a panic inside NewRouter cannot corrupt V1Routes or deadlock the mutex.
-		routesMu.Lock()
-		defer routesMu.Unlock()
+	// routesMu is always held across NewRouter so a concurrent default-path call
+	// cannot read V1Routes while a custom-routes caller has swapped them.
+	// Defers are LIFO: the V1Routes restore (if registered below) runs before Unlock.
+	routesMu.Lock()
+	defer routesMu.Unlock()
+	if opts.Routes != nil {
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
-		handler = server.NewRouter(deps)
-	} else {
-		handler = server.NewRouter(deps)
 	}
+	handler := server.NewRouter(deps)
 
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)
@@ -214,29 +211,57 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // stored as NULL, which pgx scans into int64(0); quota.Tracker.Reserve treats
 // cap<=0 as "always admitted" (no ceiling). Pass monthlyCap>0 for a finite cap.
 // Uses ON CONFLICT DO UPDATE so repeated test runs against the same DB are safe.
-// Registers t.Cleanup to delete the plan row after the test completes.
+// Registers t.Cleanup to restore the plan to its pre-test state: rows that did not
+// exist are deleted; pre-existing rows (e.g. seeded "free" / "pro" plans) have their
+// original rate_limit_per_minute and monthly_unit_cap restored rather than being
+// deleted, so the shared plan table is not corrupted for subsequent tests.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
 	t.Helper()
+	ctx := context.Background()
+
+	// Snapshot any pre-existing plan so cleanup can restore it rather than deleting a
+	// row that wasn't created by this call (e.g. a seeded "free" or "pro" plan).
+	var (
+		prevRate int
+		prevCap  *int64
+		existed  bool
+	)
+	if err := ts.DB.QueryRow(ctx,
+		`SELECT rate_limit_per_minute, monthly_unit_cap FROM plans WHERE id = $1`, id,
+	).Scan(&prevRate, &prevCap); err == nil {
+		existed = true
+	}
+
 	// NULL signals unlimited in the schema; the quota middleware reads this as 0 (always admit).
 	var capPtr *int64
 	if monthlyCap > 0 {
 		capPtr = &monthlyCap
 	}
-	_, err := ts.DB.Exec(context.Background(), `
+	if _, err := ts.DB.Exec(ctx, `
 		INSERT INTO plans (id, display_name, rate_limit_per_minute, monthly_unit_cap)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE
 		  SET rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
-	`, id, fmt.Sprintf("Test Plan %s", id), ratePerMinute, capPtr)
-	if err != nil {
+	`, id, fmt.Sprintf("Test Plan %s", id), ratePerMinute, capPtr); err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
 	}
+
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := ts.DB.Exec(ctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-			t.Logf("harness: cleanup plan %q: %v", id, err)
+		if existed {
+			// Restore the original rate/cap rather than deleting a pre-existing plan row.
+			if _, err := ts.DB.Exec(cctx,
+				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
+				id, prevRate, prevCap,
+			); err != nil {
+				t.Logf("harness: restore plan %q: %v", id, err)
+			}
+		} else {
+			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
+				t.Logf("harness: cleanup plan %q: %v", id, err)
+			}
 		}
 	})
 }
@@ -283,20 +308,26 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 			}
 		}
-		// Child tables before parent (explicit ordering; FK cascade would also work).
+		// Explicit child-before-parent ordering. api_keys comes before error_events because
+		// error_events.api_key_id uses ON DELETE SET NULL (0013_error_events_fk_setnull
+		// migration): deleting api_keys nullifies any error_events reference rather than
+		// blocking with a FK constraint. This also closes the async-goroutine race in
+		// errorlog.Record — any in-flight insert fires after api_keys are gone, hits a FK
+		// violation on the now-absent api_key_id, and logs "error event record failed"
+		// (the existing graceful-failure path), so no row is orphaned.
 		var err error
 		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
 		logErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
 		logErr("idempotency_keys", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
-		logErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 		logErr("webhook_deliveries", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
 		logErr("api_keys", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
+		logErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		logErr("customers", err)
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.

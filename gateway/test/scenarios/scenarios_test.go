@@ -79,15 +79,12 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
-// Uses a timer + select so the handler exits promptly when the proxy cancels the
-// request context (e.g., on timeout), rather than blocking the httptest.Server
-// shutdown goroutine for the full sleep duration.
+// Selects on r.Context().Done() so the handler exits promptly when the proxy
+// cancels the request context, rather than blocking httptest.Server shutdown.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
-		case <-timer.C:
+		case <-time.After(delay):
 		case <-r.Context().Done():
 			return
 		}
@@ -166,10 +163,14 @@ func TestHappyPath(t *testing.T) {
 	}
 
 	var inv struct {
-		BillableUnits uint64 `json:"billable_units"`
+		Payload       json.RawMessage `json:"payload"`
+		BillableUnits uint64          `json:"billable_units"`
 	}
 	if err := json.Unmarshal(body, &inv); err != nil {
 		t.Fatalf("decode response: %v\nbody: %s", err, body)
+	}
+	if len(inv.Payload) == 0 {
+		t.Errorf("payload: missing or empty in 200 response")
 	}
 	if inv.BillableUnits != 3 {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
