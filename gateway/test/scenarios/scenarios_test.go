@@ -39,7 +39,9 @@ var testHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
 	},
 }
 
@@ -118,6 +120,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) 
 		defer timer.Stop()
 		select {
 		case <-timer.C:
+			// Re-check context: if cancelled while we were waiting, don't write.
 			if r.Context().Err() != nil {
 				cancelled.Store(true)
 				return
@@ -165,9 +168,6 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 // drainBody reads and closes the response body, returning its bytes.
 func drainBody(t *testing.T, r *http.Response) []byte {
 	t.Helper()
-	if r == nil {
-		t.Fatal("drainBody: nil response")
-	}
 	defer r.Body.Close()
 	b, err := io.ReadAll(r.Body)
 	if err != nil {

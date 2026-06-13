@@ -39,9 +39,7 @@ BEGIN
     ALTER TABLE public.error_events DROP CONSTRAINT error_events_api_key_id_fkey;
   END IF;
 
-  -- Phase 2: add (or replace) if no constraint with the correct NO ACTION semantics exists.
-  -- Checking confdeltype = 'a' here closes the gap where a same-named constraint with the
-  -- wrong delete action survived Phase 1 (e.g., was added after the Phase 1 window closed).
+  -- Phase 2: add if absent (fresh DB or just dropped by Phase 1 above).
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint c
     JOIN pg_class     et ON et.oid = c.conrelid
@@ -52,19 +50,7 @@ BEGIN
       AND an.nspname = 'public' AND ak.relname = 'api_keys'
       AND c.conname  = 'error_events_api_key_id_fkey'
       AND c.contype  = 'f'
-      AND c.confdeltype = 'a'
   ) THEN
-    -- Drop any stale constraint with the same name before re-adding the correct one.
-    IF EXISTS (
-      SELECT 1 FROM pg_constraint c
-      JOIN pg_class     et ON et.oid = c.conrelid
-      JOIN pg_namespace en ON en.oid = et.relnamespace
-      WHERE en.nspname = 'public' AND et.relname = 'error_events'
-        AND c.conname  = 'error_events_api_key_id_fkey'
-        AND c.contype  = 'f'
-    ) THEN
-      ALTER TABLE public.error_events DROP CONSTRAINT error_events_api_key_id_fkey;
-    END IF;
     ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id);
   END IF;
