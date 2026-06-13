@@ -352,6 +352,12 @@ func TestIdempotentReplay(t *testing.T) {
 // All requests land in the same 60-second window so the overflow is reliably rejected.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
+	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
+	// If we're within 2 s of the next minute, sleep past it so all requests land
+	// in the same window. The sleep is at most 2 s and keeps the test deterministic.
+	if sec := time.Now().Second(); sec >= 58 {
+		time.Sleep(time.Duration(62-sec) * time.Second)
+	}
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
