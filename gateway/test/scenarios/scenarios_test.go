@@ -131,7 +131,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
+		defer func() {
+			if !tmr.Stop() {
+				select {
+				case <-tmr.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-tmr.C:
 			if r.Context().Err() != nil {
@@ -439,12 +446,12 @@ func TestQuotaExceeded(t *testing.T) {
 // TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 5 s delay vs 250 ms proxy timeout: 20× ratio ensures reliable timeout under -race.
-	// The proxy timeout (WorkerTimeoutMS=250) is the bottleneck; client sees 502, not client-side expiry.
+	// 5 s delay vs 500 ms proxy timeout: 10× ratio, reliable under -race with CPU contention.
+	// The proxy timeout (WorkerTimeoutMS=500) is the bottleneck; client sees 502, not client-side expiry.
 	client := newTestHTTPClient(t)
 	worker, invoked := slowWorker(5 * time.Second)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
-		o.WorkerTimeoutMS = 250
+		o.WorkerTimeoutMS = 500
 	}))
 	ts.CreatePlan(t, "timeout-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
