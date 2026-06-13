@@ -337,35 +337,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
-	parsedAddr, err := mail.ParseAddress(email)
-	if err != nil {
-		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
-	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
-	}
-	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
-	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
-	defer planCancel()
-	var dummy int
-	err = ts.DB.QueryRow(planCtx,
-		`SELECT 1 FROM plans WHERE id = $1`, planID,
-	).Scan(&dummy)
-	if errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
-	}
-	if err != nil {
-		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 	now := time.Now().UTC()
 	// Capture both the current and next month now so cleanup never needs to call time.Now()
 	// — avoids a mismatch if cleanup runs across a UTC month boundary.
 	createdMonth := now.Format("2006-01")
 	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
-	// Generate the key before t.Cleanup so the closure always holds a non-empty prefix
-	// regardless of where setup fatals — avoids a zero-value authKey in Redis cleanup.
-	var full, prefix string
-	full, prefix, err = auth.Generate(TestAPIKeyPrefix)
+	// Generate the key and register t.Cleanup before any operations that can t.Fatal.
+	// The closure guards customerID == uuid.Nil so nothing is cleaned up if setup
+	// fatals before the first INSERT.
+	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
@@ -471,6 +454,24 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
 	})
+
+	parsedAddr, err := mail.ParseAddress(email)
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
+	}
+	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
+	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
+	defer planCancel()
+	var dummy int
+	err = ts.DB.QueryRow(planCtx,
+		`SELECT 1 FROM plans WHERE id = $1`, planID,
+	).Scan(&dummy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
+	}
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
+	}
 
 	customerID = uuid.New()
 	insertCtx, insertCancel := context.WithTimeout(context.Background(), 10*time.Second)
