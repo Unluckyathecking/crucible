@@ -107,9 +107,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
-// NewTimer with defer Stop releases the timer in all exit paths. The write and
-// context check are colocated inside the timer.C case so the handler never
-// writes to w after the request context is cancelled.
+// NewTimer with defer Stop releases the timer on all exit paths.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,9 +116,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			if r.Context().Err() != nil {
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -153,6 +148,19 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
 	}
+}
+
+// waitForTrue polls fn every 10 ms until it returns true or timeout elapses.
+func waitForTrue(t *testing.T, fn func() bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for condition after %v", timeout)
 }
 
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
@@ -481,13 +489,12 @@ func TestWorkerTimeout(t *testing.T) {
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
 	}
-	// waitForErrorEvents before invoked.Load: the async errorlog goroutine writes
-	// the error event only after the handler goroutine has run, so waiting for the
-	// event guarantees invoked.Store(true) has already executed.
-	waitForErrorEvents(t, ts, customerID, 1)
+	// Poll invoked directly rather than relying on the error-event ordering.
+	waitForTrue(t, func() bool { return invoked.Load() }, 5*time.Second)
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
+	waitForErrorEvents(t, ts, customerID, 1)
 }
 
 // TestAuthFailure: a key not registered in the database returns 401 UNAUTHORIZED.

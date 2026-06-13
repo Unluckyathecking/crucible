@@ -90,8 +90,9 @@ var routesMu sync.Mutex
 // runs against the same schema are safe — but concurrent NewGatewayTestServer
 // calls against the same DB schema should not be made from parallel processes.
 var (
-	migrateOnce    sync.Once
-	migrateOnceErr error
+	migrateMu   sync.Mutex
+	migrateDone bool
+	migrateErr  error
 )
 
 // Options configures a gateway test server.
@@ -173,13 +174,19 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// keeping the pool open while workerSrv drains in-flight requests.
 	// pgxpool.Pool.Close() has no error return; direct registration is correct.
 	t.Cleanup(pool.Close)
-	migrateOnce.Do(func() {
+	migrateMu.Lock()
+	if !migrateDone {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
-		migrateOnceErr = db.Apply(applyCtx, pool)
+		migrateErr = db.Apply(applyCtx, pool)
 		applyCancel()
-	})
-	if migrateOnceErr != nil {
-		t.Fatalf("harness: apply migrations: %v", migrateOnceErr)
+		if migrateErr == nil {
+			migrateDone = true
+		}
+	}
+	curMigrateErr := migrateErr
+	migrateMu.Unlock()
+	if curMigrateErr != nil {
+		t.Fatalf("harness: apply migrations: %v", curMigrateErr)
 	}
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
