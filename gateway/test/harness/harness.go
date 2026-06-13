@@ -52,6 +52,7 @@ const (
 	defaultDBPoolSize      = 5
 
 	serverBootTimeout = 30 * time.Second
+	cleanupTimeout    = 60 * time.Second // budget for customer cleanup including retry loop
 )
 
 func init() {
@@ -339,7 +340,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		cleanupErr := func(table string, e error) {
 			if e == nil {

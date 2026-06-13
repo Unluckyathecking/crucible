@@ -256,6 +256,10 @@ func TestIdempotentReplay(t *testing.T) {
 	if got := invocations.Load(); got != 1 {
 		t.Errorf("worker invocations: got %d, want 1", got)
 	}
+	// Idempotency row must survive the replay (not be deleted after cache hit).
+	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
+		t.Fatalf("idempotency_keys after replay request: got %d rows, want 1", n)
+	}
 }
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with headers.
