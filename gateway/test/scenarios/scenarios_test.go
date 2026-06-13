@@ -127,11 +127,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // waitForErrorEvents polls CountErrorEvents until want rows exist or a 5-second
 // deadline elapses. The error recorder writes asynchronously, so callers must
 // wait rather than asserting immediately after the triggering request returns.
-// Must be called from the main test goroutine (uses t.Fatalf).
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
+	for time.Now().Before(deadline) {
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
 			return
@@ -139,11 +138,9 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
-		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 }
 
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
@@ -451,6 +448,48 @@ func TestWorkerTimeout(t *testing.T) {
 	waitForErrorEvents(t, ts, customerID, 1)
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
+	}
+}
+
+// TestAuthFailure: a key not registered in the database returns 401 UNAUTHORIZED.
+func TestAuthFailure(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "auth-fail-plan", 10, 1000)
+
+	// The "0" chars in the suffix are outside base32's alphabet (A–Z, 2–7), so this
+	// key can never collide with a legitimately generated key stored in the DB.
+	r := invoke(t, client, ts, "cru_live_0000000000000000000000000")
+	body := drainBody(t, r)
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
+	}
+	if code := errorCode(t, body); code != "UNAUTHORIZED" {
+		t.Errorf("error.code: got %q, want UNAUTHORIZED", code)
+	}
+}
+
+// TestWorkerBadResponse: a worker that returns billable_units=0 gets 502 WORKER_BAD_RESPONSE.
+// The gateway enforces billable_units >= 1 at the trust boundary (internal/server/routes.go)
+// to prevent a buggy or non-SDK worker from granting free usage.
+func TestWorkerBadResponse(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(0)))
+	ts.CreatePlan(t, "bad-resp-plan", 10, 1000)
+	customerID, apiKey := ts.CreateCustomer(t, "bad-resp-"+uuid.New().String()+"@example.com", "bad-resp-plan")
+
+	r := invoke(t, client, ts, apiKey)
+	body := drainBody(t, r)
+	if r.StatusCode != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d: %s", r.StatusCode, body)
+	}
+	if code := errorCode(t, body); code != "WORKER_BAD_RESPONSE" {
+		t.Errorf("error.code: got %q, want WORKER_BAD_RESPONSE", code)
+	}
+	if n := ts.CountUsageEvents(t, customerID); n != 0 {
+		t.Errorf("usage_events after WORKER_BAD_RESPONSE: got %d, want 0", n)
 	}
 }
 
