@@ -51,6 +51,7 @@ func redisURL(t *testing.T) string {
 
 // baseOpts returns a minimal Options for tests that just need the defaults.
 func baseOpts(t *testing.T, worker http.Handler) harness.Options {
+	t.Helper()
 	return harness.Options{
 		WorkerHandler: worker,
 		DSN:           postgresDSN(t),
@@ -261,12 +262,16 @@ func TestRateLimit(t *testing.T) {
 	if code := errorCode(t, body); code != "RATE_LIMITED" {
 		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
 	}
-	// ratelimit.Middleware sets both headers on every 429 response.
+	// ratelimit.Middleware sets Retry-After, RateLimit-Limit, and RateLimit-Remaining
+	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
 	if r.Header.Get("Retry-After") == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
 	}
-	if r.Header.Get("RateLimit-Limit") == "" {
-		t.Error("want RateLimit-Limit header on 429 RATE_LIMITED response")
+	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
+		t.Errorf("RateLimit-Limit: got %q, want 2", v)
+	}
+	if v := r.Header.Get("RateLimit-Remaining"); v != "0" {
+		t.Errorf("RateLimit-Remaining: got %q, want 0", v)
 	}
 }
 

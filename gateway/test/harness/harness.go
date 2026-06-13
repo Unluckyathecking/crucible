@@ -45,7 +45,7 @@ const (
 	// Must be >= 32 bytes (config.Load enforces this at runtime).
 	TestSalt = "crucible-harness-test-salt-min32!!"
 
-	defaultWorkerTimeoutMS = 5000
+	defaultWorkerTimeoutMS = 5000      // generous default; set low in Options to test timeout scenarios
 	defaultProxyPoolSize   = 8
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
 	defaultDBPoolSize      = 5
@@ -118,7 +118,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
 	t.Cleanup(workerSrv.Close)
 
-	// Real Postgres: run migrations to ensure schema is current.
+	// Real Postgres. Apply runs every migration file; each file uses
+	// CREATE TABLE IF NOT EXISTS / INSERT ON CONFLICT DO NOTHING (see
+	// gateway/migrations/*.sql), so it is safe and fast to call repeatedly.
+	// Running it here ensures local test runs work without a separate setup step;
+	// in CI the workflow pre-applies migrations, making this call a quick no-op.
 	pool, err := db.NewPool(ctx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
