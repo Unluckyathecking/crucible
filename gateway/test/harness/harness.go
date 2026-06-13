@@ -379,7 +379,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 		cleanupErr("idempotency_keys", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+		// Include rows written by the async errorlog goroutine that reference api_keys
+		// directly (api_key_id) as well as rows that carry the customer_id FK.
+		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1 OR api_key_id IN (SELECT id FROM api_keys WHERE customer_id = $1)`, customerID)
 		cleanupErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 		cleanupErr("webhook_deliveries", err)
@@ -403,7 +405,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1 OR api_key_id IN (SELECT id FROM api_keys WHERE customer_id = $1)`, customerID)
 				fixCancel()
 				if delErr != nil {
 					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
@@ -418,7 +420,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			break
 		}
 		if finalKeyErr != nil {
+			// api_keys rows remain; customers FK (api_keys.customer_id → customers.id)
+			// means DELETE customers would fail too. Log and skip.
 			t.Logf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
+			return
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
