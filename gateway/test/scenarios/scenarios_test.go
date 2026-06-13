@@ -95,12 +95,19 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Returns the handler and an atomic flag that is set true when the handler is invoked,
 // so callers can verify the proxy reached the worker before timing out.
+// Uses time.NewTimer (not time.After) so the timer goroutine is reclaimed promptly
+// when the request context is cancelled.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
+			if r.Context().Err() != nil {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
@@ -114,8 +121,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // request mutators. Callers must drain and close the body via drainBody.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(
-		context.Background(),
+		ctx,
 		http.MethodPost,
 		ts.Server.URL+"/v1/echo",
 		bytes.NewBufferString(`{"input":"scenario-test"}`),
@@ -390,7 +399,7 @@ func TestWorkerTimeout(t *testing.T) {
 // TestCrossCustomerIsolation: requests from customer A never appear in customer B's
 // usage_events or error_events history, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
-	worker, _ := countingWorker(1)
+	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 	ts.CreatePlan(t, "iso-plan", 100, 10000)
 
@@ -419,6 +428,10 @@ func TestCrossCustomerIsolation(t *testing.T) {
 		t.Fatalf("customer B: want 200, got %d", rB.StatusCode)
 	}
 
+	// Worker must have been invoked exactly once per customer.
+	if got := invocations.Load(); got != 2 {
+		t.Errorf("worker invocations: got %d, want 2", got)
+	}
 	// Each customer has exactly one usage row; neither bleeds into the other.
 	if n := ts.CountUsageEvents(t, custA); n != 1 {
 		t.Errorf("customer A usage_events = %d, want 1", n)

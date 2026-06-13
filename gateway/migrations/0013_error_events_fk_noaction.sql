@@ -17,6 +17,8 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'error_events_api_key_id_fkey'
+      AND conrelid  = 'error_events'::regclass
+      AND confrelid = 'api_keys'::regclass
       AND confdeltype = 'a'
   ) THEN
     ALTER TABLE error_events DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
