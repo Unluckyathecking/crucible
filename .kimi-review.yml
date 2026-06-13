@@ -4,9 +4,13 @@ exclude_patterns:
   - "gateway/go.sum"
   - ".gitignore"
   - "ops/grafana/**"
-  # Build metadata: version bumps trigger false-positive "hallucinated version" prose
-  # that consumes the entire output budget before reaching JSON findings.
-  - "**/*.mod"
+  # Build-metadata files: Go version bumps trigger false-positive "hallucinated version"
+  # prose that consumes the entire output budget before JSON findings are written.
+  # Listed as exact paths because the action's glob engine does not support leading **.
   - "go.work"
-  - "**/Dockerfile"
-  - ".github/workflows/**"
+  - "gateway/go.mod"
+  - "gateway/Dockerfile"
+  - "workers/sdk-go/go.mod"
+  - "workers/stubs/go/go.mod"
+  - "workers/stubs/go/Dockerfile"
+  - ".github/workflows/ci.yml"
