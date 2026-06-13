@@ -9,8 +9,7 @@ BEGIN;
 --
 -- Idempotent via DROP IF EXISTS + ADD: if the constraint is absent or has the wrong
 -- delete action, this restores it. If it already has NO ACTION semantics, the DROP
--- removes it and ADD re-creates it within the same transaction — the brief absence
--- is invisible to concurrent readers outside the transaction boundary.
+-- removes it and ADD re-creates it within the same transaction.
 ALTER TABLE public.error_events
   DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
 ALTER TABLE public.error_events

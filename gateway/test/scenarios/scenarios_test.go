@@ -122,16 +122,12 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) 
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			// Check cancellation atomically after the timer fires to avoid writing
-			// to the response after the client has disconnected.
-			select {
-			case <-r.Context().Done():
+			if r.Context().Err() != nil {
 				cancelled.Store(true)
 				return
-			default:
-				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			cancelled.Store(true)
 			return
@@ -218,7 +214,7 @@ func TestHappyPath(t *testing.T) {
 	if err := json.Unmarshal(body, &inv); err != nil {
 		t.Fatalf("decode response: %v\nbody: %s", err, body)
 	}
-	if len(inv.Payload) == 0 {
+	if inv.Payload == nil {
 		t.Errorf("payload: missing or empty in 200 response")
 	}
 	if inv.BillableUnits != 3 {

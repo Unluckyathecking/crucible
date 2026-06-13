@@ -19,7 +19,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -196,7 +195,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
 	// endpoint is not exercised by the scenario suite. Use a random suffix so the
 	// secret differs per test process and is clearly not a reused static value.
-	webhook := billing.NewWebhook("test-webhook-secret-"+uuid.New().String(), pool)
+	webhook := billing.NewWebhook(uuid.New().String(), pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
@@ -285,7 +284,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		ON CONFLICT (id) DO UPDATE
 		  SET rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
-	`, id, fmt.Sprintf("Test Plan %s", id), ratePerMinute, capPtr); err != nil {
+	`, id, "Test Plan "+id, ratePerMinute, capPtr); err != nil {
 		t.Fatalf("harness: create plan %q: %v", id, err)
 	}
 
@@ -413,7 +412,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 					t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				defer fixCancel()
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 				if delErr != nil {
 					t.Logf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
@@ -422,6 +420,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				if delErr != nil {
 					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
+				fixCancel()
 				continue
 			}
 			// Non-FK error: stop retrying.
