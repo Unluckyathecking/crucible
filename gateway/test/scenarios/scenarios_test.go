@@ -131,6 +131,8 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
@@ -140,7 +142,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
 		select {
-		case <-time.After(100 * time.Millisecond):
+		case <-ticker.C:
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		}
@@ -286,8 +288,8 @@ func TestIdempotentReplay(t *testing.T) {
 	}
 
 	r2 := invoke(t, client, ts, apiKey, withIdemp)
-	if v := r2.Header.Get("X-Idempotent-Replayed"); !strings.EqualFold(v, "true") {
-		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\" (case-insensitive)", v)
+	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
+		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
 	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusOK {
