@@ -2,6 +2,8 @@
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
+  - "workers/sdk-go/go.sum"
+  - "workers/stubs/go/go.sum"
   - ".gitignore"
   - "ops/grafana/**"
   # Build-metadata files: Go version bumps trigger false-positive "hallucinated version"
