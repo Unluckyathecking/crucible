@@ -18,4 +18,5 @@ exclude_patterns:
   - "gateway/migrations/**"
   # Test harness (infrastructure, not scenarios): 630 LOC of complex cleanup
   # code consistently exhausts the Kimi output budget before JSON is written.
-  - "gateway/test/harness/**"
+  # Listed as exact path: the action's glob engine does not support ** patterns.
+  - "gateway/test/harness/harness.go"
