@@ -428,7 +428,7 @@ func TestWorkerTimeout(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if !sawCancel {
-		t.Log("worker did not detect context cancellation within 3s; may indicate proxy leak")
+		t.Errorf("worker did not detect context cancellation within 3s; indicates proxy goroutine leak")
 	}
 }
 

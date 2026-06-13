@@ -64,7 +64,7 @@ const (
 	defaultBodyLimitBytes  = 1 << 20 // 1 MB
 	defaultDBPoolSize      = 5
 
-	serverBootTimeout = 30 * time.Second // time budget for DB pool open + migration apply
+	serverBootTimeout = 30 * time.Second // time budget for migration apply
 )
 
 func init() {
@@ -122,9 +122,6 @@ type TestServer struct {
 // INSERT ON CONFLICT DO NOTHING). Do not call concurrently against the same schema.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	defer cancel()
-
 	if opts.WorkerHandler == nil {
 		t.Fatal("harness: WorkerHandler is required")
 	}
@@ -143,22 +140,24 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
 	t.Cleanup(workerSrv.Close)
 
-	// Real Postgres. Apply runs every migration file; each file uses
-	// CREATE TABLE IF NOT EXISTS / INSERT ON CONFLICT DO NOTHING (see
-	// gateway/migrations/*.sql), so it is safe and fast to call repeatedly.
-	// Running it here ensures local test runs work without a separate setup step;
-	// in CI the workflow pre-applies migrations, making this call a quick no-op.
-	pool, err := db.NewPool(ctx, opts.DSN, defaultDBPoolSize)
+	// Real Postgres. Pool open uses context.Background(): pgxpool manages its own
+	// connection lifetime and the creation context should not constrain ongoing queries.
+	// Migration apply gets its own bounded context so a hung schema change fails loudly.
+	pool, err := db.NewPool(context.Background(), opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	if err := db.Apply(ctx, pool); err != nil {
+	applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	if err := db.Apply(applyCtx, pool); err != nil {
+		applyCancel()
+		pool.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
+	applyCancel()
 	t.Cleanup(pool.Close)
 
 	// Real Redis.
-	rdb, err := cache.NewRedis(ctx, opts.RedisURL)
+	rdb, err := cache.NewRedis(context.Background(), opts.RedisURL)
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
@@ -410,10 +409,18 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
 				if attempt == 3 {
-					t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
+					t.Errorf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 				}
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
-				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
+				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
+				if delErr != nil {
+					t.Logf("harness: cleanup webhook_deliveries retry for customer %s: %v", customerID, delErr)
+				}
+				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
+				if delErr != nil {
+					t.Logf("harness: cleanup webhook_endpoints retry for customer %s: %v", customerID, delErr)
+				}
+				_, delErr = ts.DB.Exec(fixCtx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
 				if delErr != nil {
 					t.Logf("harness: cleanup idempotency_keys retry for customer %s: %v", customerID, delErr)
 				}
