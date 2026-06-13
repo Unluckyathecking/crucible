@@ -344,6 +344,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}
+	if !strings.Contains(email, "@") {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid address", email)
+	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
@@ -370,7 +373,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		customerID, email, planID,
 	)
 	if err != nil {
-		t.Fatalf("harness: insert customer: %v", err)
+		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
 
 	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
@@ -383,7 +386,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		customerID, prefix, hash,
 	)
 	if err != nil {
-		t.Fatalf("harness: insert api key: %v", err)
+		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
 	}
 
 	t.Cleanup(func() {
