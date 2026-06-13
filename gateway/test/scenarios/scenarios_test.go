@@ -107,24 +107,22 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Returns the handler, an invoked flag (set when the handler starts), and a cancelled
-// flag (set when the proxy disconnects and the handler detects context cancellation).
+// flag (set when the handler detects context cancellation, either via the Done branch
+// or when the timer fires after a disconnect).
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) {
 	var invoked, cancelled atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
 		select {
-		case <-timer.C:
+		case <-time.After(delay):
 			if r.Context().Err() != nil {
+				cancelled.Store(true)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			cancelled.Store(true)
-			if !timer.Stop() {
-				<-timer.C
-			}
 			return
 		}
 	})
@@ -383,7 +381,7 @@ func TestQuotaExceeded(t *testing.T) {
 // recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
-	worker, invoked, cancelled := slowWorker(500 * time.Millisecond)
+	worker, invoked, _ := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
