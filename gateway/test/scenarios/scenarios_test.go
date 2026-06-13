@@ -116,7 +116,10 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			return
 		}
@@ -226,8 +229,8 @@ func TestIdempotentReplay(t *testing.T) {
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
 	}
-	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" && v != "false" {
-		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent or false", v)
+	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
 	// The idempotency key row must exist after the first request completes.
@@ -302,8 +305,8 @@ func TestRateLimit(t *testing.T) {
 		n, err := strconv.Atoi(ra)
 		if err != nil {
 			t.Errorf("Retry-After: got %q, want integer seconds", ra)
-		} else if n <= 0 || n > 60 {
-			t.Errorf("Retry-After: got %d, want in [1,60]", n)
+		} else if n <= 0 || n >= 60 {
+			t.Errorf("Retry-After: got %d, want in [1,59]", n)
 		}
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
