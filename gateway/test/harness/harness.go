@@ -2,7 +2,7 @@
 // full gateway middleware chain against real Postgres and Redis with an
 // in-process worker stub. DSN and RedisURL are required; callers set Options
 // fields as needed. Migrations are applied automatically once per test process
-// via sync.Once.
+// via a mutex-guarded idempotent check (not sync.Once; see runMigrations).
 package harness
 
 import (
@@ -78,11 +78,9 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
-// routesMu serializes replacement of server.V1Routes during server.NewRouter calls,
-// preventing concurrent test goroutines from replacing the route table while another
-// is reading it or calling NewRouter.
-// WARNING: Tests that set opts.Routes must NOT call t.Parallel; concurrent
-// mutations of server.V1Routes will race across goroutines.
+// routesMu serializes replacement of server.V1Routes during server.NewRouter calls.
+// Tests that set opts.Routes may use t.Parallel; routesMu ensures exclusive access
+// during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations exactly once per test process for speed.
@@ -124,7 +122,7 @@ func runMigrations(pool *pgxpool.Pool) error {
 // Options configures a gateway test server.
 type Options struct {
 	// Routes overrides server.V1Routes. Nil means use production routes.
-	// Non-nil callers must not use t.Parallel.
+	// Non-nil callers may use t.Parallel; routesMu serializes the swap.
 	Routes []openapi.RouteDescriptor
 
 	// WorkerHandler handles POST /invoke calls forwarded by the gateway proxy.
@@ -355,17 +353,26 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
-			if _, err := ts.DB.Exec(cctx,
-				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-				id, prevRate, prevCap, prevName,
-			); err != nil {
+			// Use two separate queries so monthly_unit_cap is never passed as a Go
+			// pointer: NULL is expressed in SQL directly when prevCap is nil.
+			var err error
+			if prevCap != nil {
+				_, err = ts.DB.Exec(cctx,
+					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
+					id, prevRate, *prevCap, prevName,
+				)
+			} else {
+				_, err = ts.DB.Exec(cctx,
+					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = NULL, display_name = $3 WHERE id = $1`,
+					id, prevRate, prevName,
+				)
+			}
+			if err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
-				return
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
 				t.Logf("harness: cleanup plan %q: %v", id, err)
-				return
 			}
 		}
 	})
