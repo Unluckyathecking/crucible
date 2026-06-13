@@ -340,8 +340,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Delete children before parents to satisfy FK constraints.
 		// error_events.api_key_id REFERENCES api_keys(id) NO ACTION — must delete
 		// error_events before api_keys.
-		var err error
-		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
+		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
 		logErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
 		logErr("idempotency_keys", err)
