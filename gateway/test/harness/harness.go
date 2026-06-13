@@ -267,13 +267,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		logErr := func(table string, err error) {
-			if err != nil {
-				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, err)
+		logErr := func(table string, e error) {
+			if e != nil {
+				t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 			}
 		}
 		// Child tables before parent (explicit ordering; FK cascade would also work).
-		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
+		var err error
+		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
 		logErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
 		logErr("idempotency_keys", err)
