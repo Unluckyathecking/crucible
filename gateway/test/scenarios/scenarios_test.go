@@ -377,13 +377,11 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, ts, apiKey)
 	body := drainBody(t, r)
 
-	// The proxy client timeout surfaces as 502 BadGateway, not 504.
+	// The proxy client timeout surfaces as 502 BadGateway.
 	// server/routes.go calls apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...)
 	// on any proxy error including context deadline exceeded; 502 is confirmed by routes_test.go.
-	// The proxy surfaces a timeout as 502 (WORKER_UNREACHABLE); accept 504 as well
-	// in case the proxy implementation is ever refined to distinguish timeout vs. unreachable.
-	if r.StatusCode != http.StatusBadGateway && r.StatusCode != http.StatusGatewayTimeout {
-		t.Fatalf("want 502 or 504 on proxy timeout, got %d: %s", r.StatusCode, body)
+	if r.StatusCode != http.StatusBadGateway {
+		t.Fatalf("want 502 BadGateway on proxy timeout, got %d: %s", r.StatusCode, body)
 	}
 
 	// The response must be an apierror envelope with WORKER_UNREACHABLE.
