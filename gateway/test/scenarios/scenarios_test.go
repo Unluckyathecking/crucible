@@ -135,20 +135,17 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
 		select {
 		case <-tmr.C:
-			// Re-check context: proxy may have already cancelled it if the
-			// timer and context.Done fired concurrently. Writing to a
-			// cancelled request is harmless in httptest, but the guard makes
-			// the intent explicit.
 			if r.Context().Err() != nil {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			return
+			if !tmr.Stop() {
+				<-tmr.C
+			}
 		}
 	})
 	return h, &invoked
@@ -163,8 +160,6 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
-	ticker := time.NewTicker(errorPollInterval)
-	defer ticker.Stop()
 	for {
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
@@ -174,7 +169,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 		}
 		select {
-		case <-ticker.C:
+		case <-time.After(errorPollInterval):
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		}
