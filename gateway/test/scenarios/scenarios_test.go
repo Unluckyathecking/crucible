@@ -260,13 +260,9 @@ func TestHappyPath(t *testing.T) {
 	if inv.BillableUnits != 3 {
 		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
 	}
-	var payloadObj map[string]json.RawMessage
-	if err := json.Unmarshal(inv.Payload, &payloadObj); err != nil {
-		t.Fatalf("payload unmarshal: %v\nbody: %s", err, body)
-	}
 	// echoWorker returns {} for its payload; verify the proxy forwards it unmodified.
-	if len(payloadObj) != 0 {
-		t.Errorf("payload: got %v, want empty object {}", payloadObj)
+	if got := string(inv.Payload); got != "{}" {
+		t.Errorf("payload: got %s, want {}", got)
 	}
 	if n := ts.CountUsageEvents(t, customerID); n != 1 {
 		t.Errorf("usage_events: got %d, want 1", n)
