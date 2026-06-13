@@ -53,10 +53,11 @@ const (
 	defaultDBPoolSize      = 5
 
 	serverBootTimeout         = 30 * time.Second
-	cleanupTimeout            = 60 * time.Second // budget for customer cleanup including retry loop
+	cleanupTimeout            = 60 * time.Second      // budget for customer cleanup including retry loop
 	maxCleanupRetries         = 3
 	cleanupRetryTimeout       = 10 * time.Second
-	planExistenceCheckTimeout = 5 * time.Second  // plan lookup before customer insert
+	cleanupRetryBackoff       = 50 * time.Millisecond // delay between api_keys delete retries
+	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
 
 	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
 	testPlanDisplayNamePrefix = "Test Plan "
@@ -154,6 +155,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
+	// Register workerSrv.Close immediately so it runs even if a subsequent t.Fatal
+	// (e.g. db.NewPool failure) returns before the LIFO cleanup block below.
+	// The pool.Close registration below re-establishes the correct LIFO ordering:
+	// pool.Close runs last (outermost), workerSrv.Close runs second-to-last.
+	t.Cleanup(workerSrv.Close)
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
@@ -161,10 +167,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// Register pool.Close first so it runs last in LIFO (pool stays open throughout cleanup).
-	// Register workerSrv.Close immediately after so the worker shuts down before pool closes.
+	// Register pool.Close after workerSrv.Close so LIFO runs pool.Close last,
+	// keeping the pool open while workerSrv drains in-flight requests.
 	t.Cleanup(pool.Close)
-	t.Cleanup(workerSrv.Close)
 	migrateOnce.Do(func() {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 		migrateOnceErr = db.Apply(applyCtx, pool)
@@ -277,6 +282,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // the plan to its pre-test state.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CreatePlan called on nil TestServer")
+	}
 	if ts.DB == nil {
 		t.Fatal("harness: CreatePlan called on nil TestServer.DB")
 	}
@@ -344,6 +352,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 // and returns (customerID, rawAPIKey). t.Cleanup removes all rows and Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CreateCustomer called on nil TestServer")
+	}
 	if ts.DB == nil {
 		t.Fatal("harness: CreateCustomer called on nil TestServer.DB")
 	}
@@ -365,8 +376,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
-	if prefix == "" {
-		t.Fatal("harness: auth.Generate returned empty prefix")
+	if full == "" || prefix == "" {
+		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
 	// customerID == uuid.Nil signals setup fataled before the first INSERT.
 	var customerID uuid.UUID
@@ -415,17 +426,19 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
-		var err error
-		_, err = ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
-		cleanupErr("usage_events", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
-		cleanupErr("idempotency_keys", err)
-		_, err = ts.DB.Exec(cctx, errorEventsDeleteSQL, customerID)
-		cleanupErr("error_events", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
-		cleanupErr("webhook_deliveries", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
-		cleanupErr("webhook_endpoints", err)
+		// delErr is a distinct variable name (not `err`) to prevent accidental reuse after
+		// the loop; each call passes its own return value directly to cleanupErr.
+		var delErr error
+		_, delErr = ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
+		cleanupErr("usage_events", delErr)
+		_, delErr = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
+		cleanupErr("idempotency_keys", delErr)
+		_, delErr = ts.DB.Exec(cctx, errorEventsDeleteSQL, customerID)
+		cleanupErr("error_events", delErr)
+		_, delErr = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
+		cleanupErr("webhook_deliveries", delErr)
+		_, delErr = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
+		cleanupErr("webhook_endpoints", delErr)
 		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
 		// error_events row after the DELETE above, causing a transient FK violation.
 		// A short backoff between retries lets the async writer finish before retrying.
@@ -448,7 +461,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				finalKeyErr = cctx.Err()
 				break
 			}
-			if attempt > 1 && !ctxSleep(50*time.Millisecond) {
+			if attempt > 1 && !ctxSleep(cleanupRetryBackoff) {
 				finalKeyErr = cctx.Err()
 				break
 			}
@@ -482,8 +495,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Logf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
 			return
 		}
-		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
-		cleanupErr("customers", err)
+		_, delErr = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
+		cleanupErr("customers", delErr)
 	})
 
 	parsedAddr, err := mail.ParseAddress(email)
@@ -530,6 +543,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 // CountUsageEvents returns the number of usage_events rows for customerID.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CountUsageEvents called on nil TestServer")
+	}
 	if ts.DB == nil {
 		t.Fatal("harness: CountUsageEvents called on nil TestServer.DB")
 	}
@@ -548,6 +564,9 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64
 // CountErrorEvents returns the number of error_events rows for customerID.
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CountErrorEvents called on nil TestServer")
+	}
 	if ts.DB == nil {
 		t.Fatal("harness: CountErrorEvents called on nil TestServer.DB")
 	}
@@ -568,6 +587,9 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 // (customer_id, idempotency_key), the result is always 0 or 1 — a boolean existence check.
 func (ts *TestServer) HasIdempotencyKey(t *testing.T, customerID uuid.UUID, idempotencyKey string) bool {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: HasIdempotencyKey called on nil TestServer")
+	}
 	if ts.DB == nil {
 		t.Fatal("harness: HasIdempotencyKey called on nil TestServer.DB")
 	}
