@@ -147,6 +147,9 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
 	for {
+		if ctx.Err() != nil {
+			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+		}
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
 			return
