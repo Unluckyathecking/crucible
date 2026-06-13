@@ -260,9 +260,15 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
 		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
 		_, _ = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
-		_, _ = ts.DB.Exec(cctx, `DELETE FROM customers          WHERE id = $1`, customerID)
+		if _, err := ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID); err != nil {
+			t.Logf("harness: cleanup api_keys for customer %s: %v", customerID, err)
+		}
+		if _, err := ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID); err != nil {
+			t.Logf("harness: cleanup customers for customer %s: %v", customerID, err)
+		}
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
+		// Key formats mirror production: quota.Tracker uses "quota:<id>:<YYYY-MM>" (tracker.go),
+		// ratelimit.Bucket uses "rl:<id>" (bucket.go).
 		now := time.Now().UTC()
 		quotaKey := "quota:" + customerID.String() + ":" + now.Format("2006-01")
 		rlKey := "rl:" + customerID.String()

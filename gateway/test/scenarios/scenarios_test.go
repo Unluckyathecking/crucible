@@ -87,7 +87,8 @@ func slowWorker(delay time.Duration) http.Handler {
 }
 
 // invoke sends POST /v1/echo to the gateway server with the given API key and optional
-// request mutators. Callers must close the returned response body.
+// request mutators. The response body is registered with t.Cleanup so it is always
+// closed even if the caller fatals before reaching drainBody.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(
@@ -108,6 +109,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
 }
 
@@ -150,6 +152,9 @@ func TestHappyPath(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
 	}
 
 	var inv struct {
@@ -295,7 +300,9 @@ func TestWorkerTimeout(t *testing.T) {
 	r := invoke(t, ts, apiKey)
 	body := drainBody(t, r)
 
-	// The proxy client timeout surfaces as 502 BadGateway (WORKER_UNREACHABLE).
+	// The proxy client timeout surfaces as 502 BadGateway, not 504.
+	// server/routes.go calls apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...)
+	// on any proxy error including context deadline exceeded; 502 is confirmed by routes_test.go.
 	if r.StatusCode != http.StatusBadGateway {
 		t.Fatalf("want 502 BadGateway on proxy timeout, got %d: %s", r.StatusCode, body)
 	}
