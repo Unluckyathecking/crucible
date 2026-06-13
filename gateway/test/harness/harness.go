@@ -358,12 +358,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
 		logErr("webhook_endpoints", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys           WHERE customer_id = $1`, customerID)
-		if err != nil {
-			// Retry: the async errorlog.Record goroutine (2 s timeout) may insert an
+		for attempt := 1; attempt <= 3 && err != nil; attempt++ {
+			// Bounded retry: the async errorlog.Record goroutine (2 s timeout) may insert an
 			// error_events row between the earlier error_events DELETE and this api_keys
 			// DELETE, causing a transient FK violation. Re-delete error_events then retry.
-			logErr("api_keys (first attempt)", err)
-			_, _ = ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+			logErr(fmt.Sprintf("api_keys (attempt %d)", attempt), err)
+			if _, delErr := ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID); delErr != nil {
+				logErr("error_events (retry)", delErr)
+			}
 			_, err = ts.DB.Exec(cctx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 		}
 		logErr("api_keys", err)
