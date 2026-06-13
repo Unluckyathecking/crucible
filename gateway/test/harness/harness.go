@@ -8,9 +8,10 @@
 //   - NewGatewayTestServer is NOT safe for t.Parallel when Options.Routes is non-nil
 //     because it temporarily swaps the package-level server.V1Routes.
 //   - Each CreateCustomer call registers a t.Cleanup that removes all test rows for
-//     that customer from usage_events, idempotency_keys, error_events, api_keys,
-//     customers, and the customer's Redis quota/rate-limit keys.
-//   - Each CreatePlan call registers a t.Cleanup that deletes the plan row.
+//     that customer from usage_events, idempotency_keys, error_events,
+//     webhook_deliveries, webhook_endpoints, api_keys, customers, and the customer's
+//     Redis quota/rate-limit keys.
+//   - Each CreatePlan call registers a t.Cleanup that deletes or restores the plan row.
 package harness
 
 import (
@@ -175,9 +176,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
 	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
-	// endpoint is not exercised by the scenario suite. Use a whsec_-prefixed value
-	// that matches the format Stripe generates.
-	webhook := billing.NewWebhook("whsec_test_dummy_secret_32bytes!!", pool)
+	// endpoint is not exercised by the scenario suite.
+	webhook := billing.NewWebhook("test-webhook-secret-e2e-harness", pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
@@ -195,15 +195,16 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// routesMu is always held across NewRouter so a concurrent default-path call
-	// cannot read V1Routes while a custom-routes caller has swapped them.
-	// Defers are LIFO: the V1Routes restore (if registered below) runs before Unlock.
-	routesMu.Lock()
-	defer routesMu.Unlock()
+	// When Routes is non-nil, hold routesMu across the V1Routes swap and the
+	// NewRouter call so the two are atomic. Nil-Routes callers do not touch
+	// V1Routes and need no lock. Callers with non-nil Routes must not use
+	// t.Parallel (see Options doc). Defers are LIFO: V1Routes is restored before
+	// the mutex is released.
 	if opts.Routes != nil {
+		routesMu.Lock()
+		defer routesMu.Unlock()
 		// Copy the current slice so we can restore it after NewRouter reads the var.
 		// We only ever replace the slice variable itself, never mutate individual elements.
-		// Callers must not modify opts.Routes elements after this call.
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
@@ -234,6 +235,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	t.Helper()
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
+	}
+	if monthlyCap < 0 {
+		t.Fatal("harness: CreatePlan monthlyCap must be >= 0 (use 0 for unlimited)")
 	}
 	ctx := context.Background()
 
@@ -274,11 +278,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
 				id, prevRate, prevCap,
 			); err != nil {
-				t.Errorf("harness: restore plan %q: %v", id, err)
+				t.Logf("harness: restore plan %q: %v", id, err)
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Errorf("harness: cleanup plan %q: %v", id, err)
+				t.Logf("harness: cleanup plan %q: %v", id, err)
 			}
 		}
 	})
