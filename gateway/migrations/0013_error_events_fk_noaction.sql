@@ -6,35 +6,68 @@
 --
 -- PostgreSQL confdeltype codes: 'a' = NO ACTION (desired), 'r' = RESTRICT,
 -- 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT.
--- The guard skips this block when the constraint already has ON DELETE NO ACTION
--- AND is fully validated (convalidated = true), making re-runs a true no-op.
+--
+-- Three guards, in order:
+--   1. Fully-valid constraint: confdeltype = 'a' AND convalidated = true  → RETURN (true no-op)
+--   2. NOT VALID constraint:   confdeltype = 'a' AND convalidated = false → VALIDATE and RETURN
+--      (handles interrupted runs that completed ADD but not VALIDATE)
+--   3. Neither: DROP, ADD NOT VALID, VALIDATE (full repair path)
+--
+-- The pg_namespace join (n.nspname = 'public') guards against name collisions in
+-- multi-schema databases where another schema might have a same-named table/constraint.
 DO $$
 BEGIN
   -- SET LOCAL reverts automatically at transaction end so these settings cannot
-  -- leak to other queries on a pooled connection. Fail fast on stuck locks.
+  -- leak to other queries on a pooled connection.
   SET LOCAL lock_timeout = '10s';
-  SET LOCAL statement_timeout = '30s';
+  -- 5 minutes: the orphan purge and VALIDATE CONSTRAINT scan the full table; 30 s
+  -- is too tight on large datasets. lock_timeout governs the ACCESS EXCLUSIVE wait.
+  SET LOCAL statement_timeout = '5min';
   SET LOCAL search_path = public;
 
-  -- No-op: constraint already has ON DELETE NO ACTION and is fully validated.
+  -- Guard 1: constraint already fully valid with the desired rule — skip everything.
   IF EXISTS (
-    SELECT 1 FROM pg_constraint c
-    JOIN pg_class r ON r.oid = c.conrelid
-    WHERE c.conname      = 'error_events_api_key_id_fkey'
-      AND r.relname      = 'error_events'
-      AND c.confdeltype  = 'a'    -- 'a' = ON DELETE NO ACTION (desired rule)
-      AND c.convalidated = true   -- NOT VALID constraints have convalidated = false
+    SELECT 1
+    FROM   pg_constraint c
+    JOIN   pg_class      r ON r.oid = c.conrelid
+    JOIN   pg_namespace  n ON n.oid = r.relnamespace
+    WHERE  c.conname      = 'error_events_api_key_id_fkey'
+      AND  r.relname      = 'error_events'
+      AND  n.nspname      = 'public'
+      AND  c.confdeltype  = 'a'    -- 'a' = ON DELETE NO ACTION
+      AND  c.convalidated = true   -- fully validated (NOT VALID → false)
   ) THEN RETURN; END IF;
 
-  -- Acquire exclusive lock before purging and altering to prevent concurrent inserts
-  -- of orphaned rows into the drop/add window.
+  -- Guard 2: ADD NOT VALID succeeded but VALIDATE was interrupted. Just finish the
+  -- validate step without re-dropping and re-adding the constraint.
+  IF EXISTS (
+    SELECT 1
+    FROM   pg_constraint c
+    JOIN   pg_class      r ON r.oid = c.conrelid
+    JOIN   pg_namespace  n ON n.oid = r.relnamespace
+    WHERE  c.conname      = 'error_events_api_key_id_fkey'
+      AND  r.relname      = 'error_events'
+      AND  n.nspname      = 'public'
+      AND  c.confdeltype  = 'a'
+      AND  c.convalidated = false
+  ) THEN
+    ALTER TABLE public.error_events
+      VALIDATE CONSTRAINT error_events_api_key_id_fkey;
+    RETURN;
+  END IF;
+
+  -- Full repair path: acquire exclusive lock, purge orphans, recreate the FK.
+  -- ACCESS EXCLUSIVE prevents concurrent inserts of orphaned rows between the
+  -- DROP and ADD steps.
   LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
 
   -- Purge orphaned rows (api_key_id non-NULL but the api_keys row is gone)
   -- before re-adding the FK so VALIDATE CONSTRAINT cannot fail on stale data.
+  -- The WHERE clause is api_key_id IS NOT NULL (skip NULLs, which are valid per
+  -- the FK semantics) AND the referenced row is absent.
   DELETE FROM public.error_events
-  WHERE api_key_id IS NOT NULL
-    AND NOT EXISTS (
+  WHERE  api_key_id IS NOT NULL
+    AND  NOT EXISTS (
       SELECT 1 FROM public.api_keys WHERE id = error_events.api_key_id
     );
 

@@ -157,16 +157,17 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
+	// Register cleanup before migrateOnce.Do so the pool is always closed even
+	// if Apply panics inside the sync.Once body (t.Cleanup runs on panic too).
+	t.Cleanup(pool.Close)
 	migrateOnce.Do(func() {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 		migrateOnceErr = db.Apply(applyCtx, pool)
 		applyCancel()
 	})
 	if migrateOnceErr != nil {
-		pool.Close()
 		t.Fatalf("harness: apply migrations: %v", migrateOnceErr)
 	}
-	t.Cleanup(pool.Close)
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer redisCancel()
