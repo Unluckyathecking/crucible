@@ -108,13 +108,16 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
 // Returns the handler, an invoked flag (set when the handler starts), and a cancelled
 // flag (set when the handler detects context cancellation, either via the Done branch
-// or when the timer fires after a disconnect).
+// or when the timer fires after a disconnect). Uses time.NewTimer with defer Stop so
+// the timer goroutine is released in all exit paths.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) {
 	var invoked, cancelled atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 			if r.Context().Err() != nil {
 				cancelled.Store(true)
 				return
@@ -123,6 +126,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool, *atomic.Bool) 
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			cancelled.Store(true)
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
@@ -381,7 +387,7 @@ func TestQuotaExceeded(t *testing.T) {
 // recorded. The gateway proxy client returns http.StatusBadGateway (502) on timeout
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
-	worker, invoked, _ := slowWorker(500 * time.Millisecond)
+	worker, invoked, cancelledFlag := slowWorker(500 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
@@ -417,10 +423,19 @@ func TestWorkerTimeout(t *testing.T) {
 	if !invoked.Load() {
 		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
 	}
-	// cancelled.Load() is not asserted here: HTTP/1.1 does not guarantee that the
-	// server propagates a client disconnect to the handler's r.Context() immediately
-	// while the handler is blocked in a select. The cancelled flag is set in the
-	// Done branch and is available for callers that wait for it asynchronously.
+	// Poll briefly for context cancellation. HTTP/1.1 does not guarantee immediate
+	// propagation to r.Context(), so we use t.Log (not t.Error) — a miss here
+	// indicates a potential proxy goroutine leak but is not a hard failure.
+	var sawCancel bool
+	for i := 0; i < 20; i++ {
+		if sawCancel = cancelledFlag.Load(); sawCancel {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawCancel {
+		t.Log("worker did not detect context cancellation within 1s; may indicate proxy leak")
+	}
 }
 
 // TestCrossCustomerIsolation: requests from customer A never appear in customer B's

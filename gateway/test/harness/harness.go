@@ -46,11 +46,13 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
-// TestSalt is the API key hash salt used by all harness instances.
+// testSalt is the API key hash salt used by all harness instances.
 // Generated at process start via crypto/rand; guaranteed ≥ 64 chars (32 bytes hex-encoded).
-// Each test process gets a unique salt; auth.Hash(TestSalt, ...) and Store lookups both
-// use this value, so per-process uniqueness is safe.
-var TestSalt string
+var testSalt string
+
+// TestSalt returns the API key hash salt used by all harness instances.
+// Per-process uniqueness is safe: auth.Hash and Store lookups both use this value.
+func TestSalt() string { return testSalt }
 
 const (
 	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
@@ -69,7 +71,7 @@ func init() {
 	if _, err := rand.Read(b); err != nil {
 		panic("harness: failed to generate test salt: " + err.Error())
 	}
-	TestSalt = hex.EncodeToString(b) // 64 hex chars, well above 32-byte minimum
+	testSalt = hex.EncodeToString(b) // 64 hex chars, well above 32-byte minimum
 }
 
 // routesMu guards temporary modifications to server.V1Routes.
@@ -159,7 +161,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	t.Cleanup(func() { _ = rdb.Close() })
+	t.Cleanup(func() {
+		if err := rdb.Close(); err != nil {
+			t.Logf("harness: redis close: %v", err)
+		}
+	})
 
 	// Minimal config: only the fields NewRouter and the middleware chain read.
 	// We build it directly (without config.Load) to avoid requiring Stripe env vars
@@ -169,10 +175,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		DashboardOrigin: "http://localhost:3001",
 		ErrorExposure:   "full", // expose worker error details in tests
 		APIKeyPrefix:    TestAPIKeyPrefix,
-		APIKeyHashSalt:  TestSalt,
+		APIKeyHashSalt:  testSalt,
 	}
 
-	authStore := auth.NewStore(pool, rdb, TestSalt)
+	authStore := auth.NewStore(pool, rdb, testSalt)
 	t.Cleanup(authStore.Close)
 
 	workerClient := proxy.New(
@@ -206,16 +212,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// When Routes is non-nil, hold routesMu across the V1Routes swap and the
-	// NewRouter call so the two are atomic. Nil-Routes callers do not touch
-	// V1Routes and need no lock. Callers with non-nil Routes must not use
-	// t.Parallel (see Options doc). Defers are LIFO: V1Routes is restored before
-	// the mutex is released.
+	// Always hold routesMu across V1Routes reads and the NewRouter call. Even nil-Routes
+	// callers must hold the lock so they see a consistent V1Routes if another goroutine is
+	// currently swapping routes for a custom test. Defers are LIFO: V1Routes is restored
+	// before the mutex is released. Callers with non-nil Routes must not use t.Parallel.
+	routesMu.Lock()
+	defer routesMu.Unlock()
 	if opts.Routes != nil {
-		routesMu.Lock()
-		defer routesMu.Unlock()
 		// Copy the current slice so we can restore it after NewRouter reads the var.
-		// We only ever replace the slice variable itself, never mutate individual elements.
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
@@ -298,11 +302,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3 WHERE id = $1`,
 				id, prevRate, restoredCap,
 			); err != nil {
-				t.Errorf("harness: restore plan %q: %v", id, err)
+				t.Fatalf("harness: restore plan %q: %v", id, err)
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Errorf("harness: cleanup plan %q: %v", id, err)
+				t.Fatalf("harness: cleanup plan %q: %v", id, err)
 			}
 		}
 	})
@@ -339,7 +343,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
-	hash := auth.Hash(TestSalt, full)
+	hash := auth.Hash(testSalt, full)
 	_, err = ts.DB.Exec(ctx,
 		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, $3)`,
 		customerID, prefix, hash,
@@ -349,9 +353,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	t.Cleanup(func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		// 30s gives enough headroom for the 3-attempt api_keys retry loop (3×10s + 3×5s worst-case).
+		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		logErr := func(table string, e error) {
+		cleanupErr := func(table string, e error) {
 			if e == nil {
 				return
 			}
@@ -370,42 +375,54 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Delete children before parents to satisfy FK constraints.
 		// error_events.api_key_id REFERENCES api_keys(id) NO ACTION — must delete
 		// error_events before api_keys.
-		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events      WHERE customer_id = $1`, customerID)
-		logErr("usage_events", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys   WHERE customer_id = $1`, customerID)
-		logErr("idempotency_keys", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events       WHERE customer_id = $1`, customerID)
-		logErr("error_events", err)
+		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
+		cleanupErr("usage_events", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
+		cleanupErr("idempotency_keys", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+		cleanupErr("error_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_deliveries WHERE endpoint_id IN (SELECT id FROM webhook_endpoints WHERE customer_id = $1)`, customerID)
-		logErr("webhook_deliveries", err)
-		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints  WHERE customer_id = $1`, customerID)
-		logErr("webhook_endpoints", err)
+		cleanupErr("webhook_deliveries", err)
+		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
+		cleanupErr("webhook_endpoints", err)
 		// Bounded retry with fresh per-attempt context: the async errorlog.Record goroutine
 		// (2 s timeout) may insert an error_events row between the error_events DELETE
 		// above and this api_keys DELETE, causing a transient FK violation. Re-delete
 		// error_events then retry api_keys. Each attempt gets its own context so an
 		// expired parent deadline does not doom subsequent retries.
-		var apiKeyErr error
+		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
 			retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, apiKeyErr = ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
+			_, err := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
-			if apiKeyErr == nil {
+			if err == nil {
+				finalKeyErr = nil
 				break
 			}
-			logErr(fmt.Sprintf("api_keys (attempt %d)", attempt), apiKeyErr)
-			fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
-			fixCancel()
-			if delErr != nil {
-				logErr("error_events (retry)", delErr)
+			finalKeyErr = err
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				t.Logf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, err)
+				fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
+				fixCancel()
+				if delErr != nil {
+					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
+				}
+				continue
+			}
+			// Non-FK error: fail immediately, retries won't help.
+			t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, err)
+			break
+		}
+		if finalKeyErr != nil {
+			var pgErr *pgconn.PgError
+			if !(errors.As(finalKeyErr, &pgErr) && pgErr.Code == "23503") {
+				t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
 			}
 		}
-		if apiKeyErr != nil {
-			logErr("api_keys", apiKeyErr)
-		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
-		logErr("customers", err)
+		cleanupErr("customers", err)
 		// Flush quota counter and rate-limit key to avoid polluting next run.
 		// Formats verified against production source (do not change without updating both):
 		//   quota key:     quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
