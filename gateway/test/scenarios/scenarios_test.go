@@ -131,7 +131,7 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 		t.Fatal("invoke: apiKey must be non-empty")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel) // cancel runs at test end; keeps context alive while caller reads body
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.Server.URL+"/v1/echo",
 		strings.NewReader(`{"input":"scenario-test"}`),
