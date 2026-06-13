@@ -1,0 +1,340 @@
+// Package scenarios_test exercises the full gateway middleware pipeline end-to-end
+// using real Postgres and Redis via the harness package.
+//
+// Each test creates isolated customers (unique UUIDs) so tests are independent
+// even when run against a shared CI database. Harness t.Cleanup removes all rows
+// and Redis keys belonging to test customers after each test.
+//
+// Environment variables required:
+//
+//	POSTGRES_DSN  — real Postgres DSN (same one the CI "Apply gateway migrations" step uses)
+//	REDIS_URL     — real Redis URL
+//
+// Tests skip (not fail) when either variable is unset, so they are safe to run locally
+// without infra configured and always green in CI where the vars are always set.
+package scenarios_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Unluckyathecking/crucible/gateway/test/harness"
+)
+
+// ---- helpers ----------------------------------------------------------------
+
+func postgresDSN(t *testing.T) string {
+	t.Helper()
+	v := os.Getenv("POSTGRES_DSN")
+	if v == "" {
+		t.Skip("POSTGRES_DSN not set; skipping integration test")
+	}
+	return v
+}
+
+func redisURL(t *testing.T) string {
+	t.Helper()
+	v := os.Getenv("REDIS_URL")
+	if v == "" {
+		t.Skip("REDIS_URL not set; skipping integration test")
+	}
+	return v
+}
+
+// baseOpts returns a minimal Options for tests that just need the defaults.
+func baseOpts(t *testing.T, worker http.Handler) harness.Options {
+	return harness.Options{
+		WorkerHandler: worker,
+		DSN:           postgresDSN(t),
+		RedisURL:      redisURL(t),
+	}
+}
+
+// echoWorker returns a handler that responds to POST /invoke with a fixed billable_units payload.
+func echoWorker(billableUnits uint64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+	})
+}
+
+// countingWorker wraps echoWorker with an atomic invocation counter.
+func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
+	var count atomic.Int64
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+	})
+	return h, &count
+}
+
+// slowWorker sleeps for delay before responding — used to trigger the proxy timeout.
+func slowWorker(delay time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+	})
+}
+
+// invoke sends POST /v1/echo to the gateway server with the given API key and optional
+// request mutators. Callers must close the returned response body.
+func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		ts.Server.URL+"/v1/echo",
+		bytes.NewBufferString(`{"input":"scenario-test"}`),
+	)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	for _, fn := range mutators {
+		fn(req)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	return resp
+}
+
+// drainBody reads and closes the response body, returning its bytes.
+func drainBody(t *testing.T, r *http.Response) []byte {
+	t.Helper()
+	defer r.Body.Close()
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return b
+}
+
+// errorCode extracts the top-level error.code from an apierror envelope.
+func errorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode apierror envelope: %v\nbody: %s", err, body)
+	}
+	return env.Error.Code
+}
+
+// ---- scenarios --------------------------------------------------------------
+
+// TestHappyPath: authenticated POST /v1/echo → 200, response carries the worker's
+// billable_units value, and exactly one usage_events row is written for that customer.
+func TestHappyPath(t *testing.T) {
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
+	ts.CreatePlan(t, "hp-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "happy-path@example.com", "hp-plan")
+
+	resp := invoke(t, ts, apiKey)
+	body := drainBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var inv struct {
+		BillableUnits uint64 `json:"billable_units"`
+	}
+	if err := json.Unmarshal(body, &inv); err != nil {
+		t.Fatalf("decode response: %v\nbody: %s", err, body)
+	}
+	if inv.BillableUnits != 3 {
+		t.Errorf("billable_units: got %d, want 3", inv.BillableUnits)
+	}
+
+	// usage.Recorder.Record is synchronous within the request handler, so the row
+	// is committed before the HTTP response is written.
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("usage_events row count: got %d, want 1", n)
+	}
+}
+
+// TestIdempotentReplay: sending the same Idempotency-Key twice returns the stored
+// response on the second call and invokes the worker exactly once.
+func TestIdempotentReplay(t *testing.T) {
+	worker, invocations := countingWorker(1)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
+	ts.CreatePlan(t, "ir-plan", 100, 10000)
+	_, apiKey := ts.CreateCustomer(t, "idempotent-replay@example.com", "ir-plan")
+
+	idempKey := "scenario-idemp-" + t.Name()
+	withIdemp := func(r *http.Request) { r.Header.Set("Idempotency-Key", idempKey) }
+
+	r1 := invoke(t, ts, apiKey, withIdemp)
+	body1 := drainBody(t, r1)
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
+	}
+
+	r2 := invoke(t, ts, apiKey, withIdemp)
+	body2 := drainBody(t, r2)
+	if r2.StatusCode != http.StatusOK {
+		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
+	}
+
+	if string(body1) != string(body2) {
+		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
+	}
+	if got := invocations.Load(); got != 1 {
+		t.Errorf("worker invocations: got %d, want 1", got)
+	}
+	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
+		t.Errorf("X-Idempotent-Replayed: got %q, want \"true\"", v)
+	}
+}
+
+// TestRateLimit: the (limit+1)-th request inside the window returns 429 with
+// Retry-After and/or RateLimit-* headers and the RATE_LIMITED error code.
+func TestRateLimit(t *testing.T) {
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
+	_, apiKey := ts.CreateCustomer(t, "rate-limit@example.com", "rl-2-plan")
+
+	// First two requests must succeed (rate=2/min).
+	for i := 0; i < 2; i++ {
+		r := invoke(t, ts, apiKey)
+		b := drainBody(t, r)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: want 200, got %d: %s", i+1, r.StatusCode, b)
+		}
+	}
+
+	// Third request must hit the limit.
+	r := invoke(t, ts, apiKey)
+	body := drainBody(t, r)
+	if r.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("third request: want 429, got %d: %s", r.StatusCode, body)
+	}
+	if code := errorCode(t, body); code != "RATE_LIMITED" {
+		t.Errorf("error.code: got %q, want RATE_LIMITED", code)
+	}
+	// Either header form is acceptable; the middleware sets both.
+	if r.Header.Get("Retry-After") == "" && r.Header.Get("RateLimit-Limit") == "" {
+		t.Error("want Retry-After or RateLimit-Limit header on 429 RATE_LIMITED response")
+	}
+}
+
+// TestQuotaExceeded: a request that would exceed the seeded monthly cap returns
+// 429 QUOTA_EXCEEDED and leaves no usage_events row for the rejected call.
+func TestQuotaExceeded(t *testing.T) {
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	// monthlyCap=1: the quota middleware reserves +1 (counter→1, admitted since 1≤1),
+	// then the recorder adds +1 (counter→2). The second request reserves (counter→3 > 1)
+	// and is denied immediately with no usage row.
+	ts.CreatePlan(t, "quota-1-plan", 100, 1)
+	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded@example.com", "quota-1-plan")
+
+	// First request succeeds and consumes the cap.
+	r1 := invoke(t, ts, apiKey)
+	body1 := drainBody(t, r1)
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
+	}
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("after first request: usage_events count = %d, want 1", n)
+	}
+
+	// Second request must be denied by the quota middleware.
+	r2 := invoke(t, ts, apiKey)
+	body2 := drainBody(t, r2)
+	if r2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second request: want 429, got %d: %s", r2.StatusCode, body2)
+	}
+	if code := errorCode(t, body2); code != "QUOTA_EXCEEDED" {
+		t.Errorf("error.code: got %q, want QUOTA_EXCEEDED", code)
+	}
+
+	// No additional usage_events row for the denied request.
+	if n := ts.CountUsageEvents(t, customerID); n != 1 {
+		t.Errorf("after denied request: usage_events count = %d, want 1 (no row for rejected call)", n)
+	}
+}
+
+// TestWorkerTimeout: a worker that sleeps past the proxy deadline causes a 5xx response
+// in the apierror envelope shape, and no usage_events row is recorded.
+func TestWorkerTimeout(t *testing.T) {
+	ts := harness.NewGatewayTestServer(t, harness.Options{
+		WorkerHandler:   slowWorker(500 * time.Millisecond),
+		DSN:             postgresDSN(t),
+		RedisURL:        redisURL(t),
+		WorkerTimeoutMS: 100, // times out well before the 500ms worker sleep
+	})
+	ts.CreatePlan(t, "timeout-plan", 100, 10000)
+	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout@example.com", "timeout-plan")
+
+	r := invoke(t, ts, apiKey)
+	body := drainBody(t, r)
+
+	if r.StatusCode < 500 || r.StatusCode > 599 {
+		t.Fatalf("want 5xx, got %d: %s", r.StatusCode, body)
+	}
+
+	// The apierror envelope must be present and have a non-empty error code.
+	code := errorCode(t, body)
+	if code == "" {
+		t.Errorf("expected non-empty error.code in timeout envelope; body: %s", body)
+	}
+
+	// No usage row: the worker never responded, so Record was never called.
+	if n := ts.CountUsageEvents(t, customerID); n != 0 {
+		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
+	}
+}
+
+// TestCrossCustomerIsolation: requests from customer A never appear in customer B's
+// usage_events history and vice versa.
+func TestCrossCustomerIsolation(t *testing.T) {
+	worker, _ := countingWorker(1)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
+	ts.CreatePlan(t, "iso-plan", 100, 10000)
+
+	custA, keyA := ts.CreateCustomer(t, "isolation-A@example.com", "iso-plan")
+	custB, keyB := ts.CreateCustomer(t, "isolation-B@example.com", "iso-plan")
+
+	// Customer A makes a request.
+	rA := invoke(t, ts, keyA)
+	drainBody(t, rA)
+	if rA.StatusCode != http.StatusOK {
+		t.Fatalf("customer A: want 200, got %d", rA.StatusCode)
+	}
+
+	// Customer B's usage is unaffected.
+	if n := ts.CountUsageEvents(t, custB); n != 0 {
+		t.Errorf("after A's request: customer B usage_events = %d, want 0", n)
+	}
+
+	// Customer B makes a request.
+	rB := invoke(t, ts, keyB)
+	drainBody(t, rB)
+	if rB.StatusCode != http.StatusOK {
+		t.Fatalf("customer B: want 200, got %d", rB.StatusCode)
+	}
+
+	// Each customer has exactly one row; neither bleeds into the other.
+	if n := ts.CountUsageEvents(t, custA); n != 1 {
+		t.Errorf("customer A usage_events = %d, want 1", n)
+	}
+	if n := ts.CountUsageEvents(t, custB); n != 1 {
+		t.Errorf("customer B usage_events = %d, want 1", n)
+	}
+}
