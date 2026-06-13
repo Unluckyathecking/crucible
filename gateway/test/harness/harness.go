@@ -356,8 +356,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	t.Cleanup(func() {
-		// 30s gives enough headroom for the 3-attempt api_keys retry loop (3×10s + 3×5s worst-case).
-		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// 60s: worst-case 3 retry attempts × (10s query + 5s fix) = 45s, plus slack.
+		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		cleanupErr := func(table string, e error) {
 			if e == nil {
@@ -456,8 +456,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 // Useful in assertions after a request to verify billing side-effects.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var n int
-	err := ts.DB.QueryRow(t.Context(),
+	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
@@ -471,8 +473,10 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 // into another customer's error history.
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var n int
-	err := ts.DB.QueryRow(t.Context(),
+	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM error_events WHERE customer_id = $1`, customerID,
 	).Scan(&n)
 	if err != nil {
@@ -482,18 +486,13 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows for the
-// given customerID and idempotencyKey value.
-//
-// Schema (gateway/migrations/0007_idempotency_keys.sql):
-//
-//	idempotency_key TEXT NOT NULL
-//	UNIQUE (customer_id, idempotency_key)
-//
-// This count is always 0 or 1 for a successful call.
+// given customerID and idempotency_key value.
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var n int
-	err := ts.DB.QueryRow(t.Context(),
+	err := ts.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM idempotency_keys WHERE customer_id = $1 AND idempotency_key = $2`,
 		customerID, idempotencyKey,
 	).Scan(&n)
