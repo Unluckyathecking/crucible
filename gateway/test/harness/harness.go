@@ -514,8 +514,8 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64
 	return n
 }
 
-// CountIdempotencyKeys returns the number of idempotency_keys rows for customerID and key.
-// Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
+// CountIdempotencyKeys returns the number of idempotency_keys rows matching customerID and the
+// idempotency_key value (the TEXT column defined in migrations/0007_idempotency_keys.sql).
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int64 {
 	t.Helper()
 	if ts == nil || ts.DB == nil {
@@ -541,6 +541,8 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 type redisPinger struct{ c *redis.Client }
 
 func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err() }
+
+var _ server.HealthChecker = (*redisPinger)(nil)
 
 // pgPinger adapts *pgxpool.Pool to server.HealthChecker.
 type pgPinger struct{ p *pgxpool.Pool }

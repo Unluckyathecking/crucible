@@ -288,6 +288,7 @@ func TestRateLimit(t *testing.T) {
 	ts.CreatePlan(t, "rl-2-plan", 2, 10000)
 	_, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
+	reqTime := time.Now().Unix()
 	for i := 0; i < 2; i++ {
 		r := invoke(t, client, ts, apiKey)
 		b := drainBody(t, r)
@@ -296,7 +297,6 @@ func TestRateLimit(t *testing.T) {
 		}
 	}
 
-	reqTime := time.Now().Unix()
 	r := invoke(t, client, ts, apiKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusTooManyRequests {
