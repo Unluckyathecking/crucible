@@ -84,9 +84,10 @@ var routesMu sync.Mutex
 // migrateOnce runs migrations exactly once per test process for speed.
 // If the first attempt fails, migrateOnceErr remains set and all subsequent
 // tests in the same process fail; callers must ensure Postgres is ready before
-// running tests. Each migration file is idempotent: for example,
-// 0013_error_events_fk_noaction.sql uses a PL/pgSQL guard to skip the repair
-// work when the FK is already valid, so re-runs are cheap no-ops.
+// running tests. Migration files in this project are individually idempotent
+// (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING / PL/pgSQL guards), so repeated
+// runs against the same schema are safe — but concurrent NewGatewayTestServer
+// calls against the same DB schema should not be made from parallel processes.
 var (
 	migrateOnce    sync.Once
 	migrateOnceErr error

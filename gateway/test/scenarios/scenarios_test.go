@@ -188,6 +188,9 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
+	// Guarantee the body is closed even if the caller fatals before reaching drainBody.
+	// drainBody also calls Close; double-close on http.Response.Body is idempotent.
+	t.Cleanup(func() { resp.Body.Close() })
 	return resp
 }
 
@@ -209,7 +212,8 @@ func errorCode(t *testing.T, body []byte) string {
 	t.Helper()
 	var env struct {
 		Error *struct {
-			Code string `json:"code"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -217,6 +221,9 @@ func errorCode(t *testing.T, body []byte) string {
 	}
 	if env.Error == nil || env.Error.Code == "" {
 		t.Fatalf("apierror envelope missing error.code\nbody: %s", body)
+	}
+	if env.Error.Message == "" {
+		t.Fatalf("apierror envelope missing error.message\nbody: %s", body)
 	}
 	return env.Error.Code
 }
