@@ -200,8 +200,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 				t.Logf("harness: redis close: %v", err)
 			}
 		}()
-		// auth.Store.Close drains the background goroutine; returns no error.
-		// Registered exactly once, so no double-close risk.
+		// auth.Store.Close() signature: func (s *Store) Close() — no error return.
+		// Registered exactly once via this t.Cleanup; no double-close risk.
 		authStore.Close()
 	})
 
