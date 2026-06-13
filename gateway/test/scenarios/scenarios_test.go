@@ -107,20 +107,16 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
+// time.After is intentional: the goroutine it spawns exits after delay and is
+// garbage-collected; no explicit Stop is needed because nobody reads the channel
+// when r.Context().Done() wins the select.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
 		select {
-		case <-timer.C:
-			timer.Stop()
+		case <-time.After(delay):
 		case <-r.Context().Done():
-			// Drain the channel if Stop reports the timer already fired, to avoid
-			// a later receive on timer.C blocking or a goroutine observing stale state.
-			if !timer.Stop() {
-				<-timer.C
-			}
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			return
