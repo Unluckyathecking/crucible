@@ -112,12 +112,15 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			// Drain the timer to allow its goroutine to exit cleanly.
+			if !timer.Stop() {
+				<-timer.C
+			}
 			// Return without writing to w. The HTTP server closes the connection
 			// with no response, which the gateway proxy maps to 502 WORKER_UNREACHABLE.
 			return

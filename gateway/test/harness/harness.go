@@ -365,11 +365,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
-	now := time.Now().UTC()
-	// Capture both the current and next month now so cleanup never needs to call time.Now()
-	// — avoids a mismatch if cleanup runs across a UTC month boundary.
-	createdMonth := now.Format("2006-01")
-	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
 	parsedAddr, err := mail.ParseAddress(email)
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
@@ -413,16 +408,24 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		defer func() {
 			rctx, rcancel := context.WithTimeout(context.Background(), redisCleanupTimeout)
 			defer rcancel()
+			// Months computed at cleanup time so the quota keys match what
+			// quota.Tracker wrote at request time, even if cleanup runs across
+			// a UTC month boundary. Both current and next month are deleted to
+			// cover requests that landed just before a boundary.
 			// Key formats mirror the production packages (verified against source):
 			//   quota.Tracker: "quota:<customerID>:<YYYY-MM>"  (internal/quota/tracker.go)
 			//   ratelimit.Bucket: "rl:<customerID>"            (internal/ratelimit/bucket.go)
 			//   auth.Store: "auth:<prefix>"                    (internal/auth/store.go)
+			now := time.Now().UTC()
 			cid := customerID.String()
-			quotaKey := "quota:" + cid + ":" + createdMonth
-			nextQuotaKey := "quota:" + cid + ":" + nextMonth
-			rlKey := "rl:" + cid
-			authKey := "auth:" + prefix
-			if delErr := ts.Redis.Del(rctx, quotaKey, nextQuotaKey, rlKey, authKey).Err(); delErr != nil {
+			month := now.Format("2006-01")
+			nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
+			if delErr := ts.Redis.Del(rctx,
+				"quota:"+cid+":"+month,
+				"quota:"+cid+":"+nextMonth,
+				"rl:"+cid,
+				"auth:"+prefix,
+			).Err(); delErr != nil {
 				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
 		}()
