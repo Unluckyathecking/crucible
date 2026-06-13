@@ -104,23 +104,14 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
-		timer := time.NewTimer(delay)
 		select {
-		case <-timer.C:
+		case <-time.After(delay):
 			if r.Context().Err() != nil {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			// Drain timer.C if it fired concurrently so the channel does not
-			// remain buffered after the goroutine exits.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			return
 		}
 	})
@@ -331,8 +322,8 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if n := time.Now().Unix(); resetUnix < n-60 || resetUnix > n+120 {
-		t.Errorf("RateLimit-Reset: got %d, want within ~1 minute of now (%d)", resetUnix, n)
+	} else if n := time.Now().Unix(); resetUnix < n || resetUnix > n+60 {
+		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 60s of now (%d)", resetUnix, n)
 	}
 }
 

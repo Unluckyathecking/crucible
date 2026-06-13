@@ -486,7 +486,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 }
 
 // CountUsageEvents returns the number of usage_events rows for customerID.
-func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
+func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
 	if ts == nil {
 		t.Fatal("harness: CountUsageEvents called on nil TestServer")
@@ -500,11 +500,11 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	if err != nil {
 		t.Fatalf("harness: count usage_events: %v", err)
 	}
-	return int(n)
+	return n
 }
 
 // CountErrorEvents returns the number of error_events rows for customerID.
-func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
+func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int64 {
 	t.Helper()
 	if ts == nil {
 		t.Fatal("harness: CountErrorEvents called on nil TestServer")
@@ -518,12 +518,12 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	if err != nil {
 		t.Fatalf("harness: count error_events: %v", err)
 	}
-	return int(n)
+	return n
 }
 
 // CountIdempotencyKeys returns the number of idempotency_keys rows for customerID and key.
 // Column name idempotency_key matches the schema (migrations/0007_idempotency_keys.sql).
-func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
+func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int64 {
 	t.Helper()
 	if ts == nil {
 		t.Fatal("harness: CountIdempotencyKeys called on nil TestServer")
@@ -541,7 +541,7 @@ func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, i
 	if err != nil {
 		t.Fatalf("harness: count idempotency_keys: %v", err)
 	}
-	return int(n)
+	return n
 }
 
 // redisPinger adapts *redis.Client to server.HealthChecker.
