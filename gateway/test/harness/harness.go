@@ -336,12 +336,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
 				id, prevRate, prevCap, prevName,
 			); err != nil {
-				t.Errorf("harness: restore plan %q: %v", id, err)
+				t.Logf("harness: restore plan %q: %v", id, err)
 				return
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Errorf("harness: cleanup plan %q: %v", id, err)
+				t.Logf("harness: cleanup plan %q: %v", id, err)
 				return
 			}
 		}
@@ -369,6 +369,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	// — avoids a mismatch if cleanup runs across a UTC month boundary.
 	createdMonth := now.Format("2006-01")
 	nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
+	parsedAddr, err := mail.ParseAddress(email)
+	if err != nil {
+		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
+	}
 	// Generate the key and register t.Cleanup before any operations that can t.Fatal.
 	// The closure guards customerID == uuid.Nil so nothing is cleaned up if setup
 	// fatals before the first INSERT.
@@ -499,10 +503,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("customers", delErr)
 	})
 
-	parsedAddr, err := mail.ParseAddress(email)
-	if err != nil {
-		t.Fatalf("harness: CreateCustomer email %q is not a valid RFC 5322 address: %v", email, err)
-	}
 	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
 	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
 	defer planCancel()

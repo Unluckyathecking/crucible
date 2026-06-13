@@ -112,7 +112,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			w.Header().Set("Content-Type", "application/json")
@@ -121,6 +120,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			// Intentionally return without writing to simulate a worker that
 			// never responds before the gateway proxy deadline. The gateway proxy
 			// maps the resulting transport error to 502 WORKER_UNREACHABLE.
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
