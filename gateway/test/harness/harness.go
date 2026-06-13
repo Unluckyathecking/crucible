@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -356,9 +357,13 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
+			var capArg pgtype.Int8
+			if prevCap != nil {
+				capArg = pgtype.Int8{Int64: *prevCap, Valid: true}
+			}
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-				id, prevRate, prevCap, prevName,
+				id, prevRate, capArg, prevName,
 			); err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
 				return
