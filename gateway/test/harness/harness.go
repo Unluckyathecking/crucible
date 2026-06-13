@@ -499,6 +499,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// the select, not the for loop, requiring a labelled break to leave the loop.
 		// The closure avoids that label while keeping context-cancellation support.
 		ctxSleep := func(d time.Duration) bool {
+			if cctx.Err() != nil {
+				return false
+			}
 			tmr := time.NewTimer(d)
 			defer tmr.Stop()
 			select {

@@ -285,8 +285,9 @@ func TestHappyPath(t *testing.T) {
 	if got := resp.Header.Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options: got %q, want DENY", got)
 	}
-	if got := resp.Header.Get("Permissions-Policy"); got == "" {
-		t.Errorf("Permissions-Policy header absent")
+	const wantPermissionsPolicy = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+	if got := resp.Header.Get("Permissions-Policy"); got != wantPermissionsPolicy {
+		t.Errorf("Permissions-Policy: got %q, want %q", got, wantPermissionsPolicy)
 	}
 }
 
