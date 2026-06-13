@@ -250,6 +250,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 // the plan to its pre-test state.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, monthlyCap int64) {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CreatePlan called on nil TestServer")
+	}
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
 	}
@@ -319,6 +322,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 // and returns (customerID, rawAPIKey). t.Cleanup removes all rows and Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
+	if ts == nil {
+		t.Fatal("harness: CreateCustomer called on nil TestServer")
+	}
 	if email == "" {
 		t.Fatal("harness: CreateCustomer email must be non-empty")
 	}

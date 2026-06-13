@@ -100,10 +100,9 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker waits for delay before responding — triggers the proxy timeout.
-// The deferred drain (Stop + non-blocking receive) is the standard Go pattern
-// for safe timer cleanup: if the context fires first, Stop may return false
-// (timer already fired concurrently) leaving an unread value in the buffered
-// channel; the non-blocking receive discards it without blocking.
+// Standard safe timer cleanup: if Stop returns false, the timer already fired
+// and sent to its buffered channel; the non-blocking receive discards that
+// pending send so the timer can be garbage-collected cleanly.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

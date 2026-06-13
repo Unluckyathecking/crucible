@@ -61,9 +61,20 @@ BEGIN
       DROP CONSTRAINT error_events_api_key_id_fkey;
   END IF;
 
-  ALTER TABLE public.error_events
-    ADD CONSTRAINT error_events_api_key_id_fkey
-      FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
+  -- Guard: re-verify absence before adding so a concurrent migration run
+  -- that already added the correct constraint is tolerated without error.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_namespace n ON n.oid = c.connamespace
+    JOIN pg_class r     ON r.oid = c.conrelid
+    WHERE c.conname = 'error_events_api_key_id_fkey'
+      AND n.nspname = 'public'
+      AND r.relname = 'error_events'
+  ) THEN
+    ALTER TABLE public.error_events
+      ADD CONSTRAINT error_events_api_key_id_fkey
+        FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
+  END IF;
 END $$;
 
 COMMIT;
