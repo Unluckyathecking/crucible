@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
-	"strings"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -132,14 +132,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if opts.DSN == "" {
 		t.Fatal("harness: DSN is required")
 	}
-	if !strings.HasPrefix(opts.DSN, "postgres://") && !strings.HasPrefix(opts.DSN, "postgresql://") {
-		t.Fatalf("harness: DSN must be a postgres:// or postgresql:// URL, got: %s", opts.DSN)
+	if dsnURL, err := url.Parse(opts.DSN); err != nil || (dsnURL.Scheme != "postgres" && dsnURL.Scheme != "postgresql") || dsnURL.Host == "" {
+		t.Fatalf("harness: DSN must be a valid postgres:// or postgresql:// URL, got: %s", opts.DSN)
 	}
 	if opts.RedisURL == "" {
 		t.Fatal("harness: RedisURL is required")
 	}
-	if !strings.HasPrefix(opts.RedisURL, "redis://") && !strings.HasPrefix(opts.RedisURL, "rediss://") {
-		t.Fatalf("harness: RedisURL must be a redis:// or rediss:// URL, got: %s", opts.RedisURL)
+	if redisURL, err := url.Parse(opts.RedisURL); err != nil || (redisURL.Scheme != "redis" && redisURL.Scheme != "rediss") || redisURL.Host == "" {
+		t.Fatalf("harness: RedisURL must be a valid redis:// or rediss:// URL, got: %s", opts.RedisURL)
 	}
 
 	if opts.WorkerTimeoutMS < 0 {
@@ -154,7 +154,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
-	t.Cleanup(workerSrv.Close)
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
@@ -162,9 +161,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// Register cleanup before migrateOnce.Do so the pool is always closed even
-	// if Apply panics inside the sync.Once body (t.Cleanup runs on panic too).
+	// Register pool.Close first so it runs last in LIFO (pool stays open throughout cleanup).
+	// Register workerSrv.Close immediately after so the worker shuts down before pool closes.
 	t.Cleanup(pool.Close)
+	t.Cleanup(workerSrv.Close)
 	migrateOnce.Do(func() {
 		applyCtx, applyCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 		migrateOnceErr = db.Apply(applyCtx, pool)
@@ -434,7 +434,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				break
 			}
 			if attempt > 1 {
-				time.Sleep(250 * time.Millisecond)
+				select {
+				case <-time.After(50 * time.Millisecond):
+				case <-cctx.Done():
+					finalKeyErr = cctx.Err()
+					break
+				}
 			}
 			retryCtx, retryCancel := context.WithTimeout(cctx, cleanupRetryTimeout)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
