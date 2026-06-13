@@ -100,22 +100,22 @@ var (
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
-// process. The defer inside the closure keeps the lock scope narrow: it is
-// released as soon as the migration check/apply block exits, before Redis,
-// auth-store, or any other initialisation begins. This avoids a serialisation
-// bottleneck for parallel tests where migrations are already done on subsequent
-// calls (migrateDone == true, so the lock-hold time is near-zero).
+// process. The IIFE keeps the lock scope narrow: the mutex is released when
+// the IIFE exits, before Redis, auth-store, or any other initialisation begins.
+// On subsequent calls migrateDone is already true so the lock-hold is near-zero.
 func runMigrations(pool *pgxpool.Pool) error {
 	migrateMu.Lock()
-	defer migrateMu.Unlock()
-	if !migrateDone {
-		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-		migrateErr = db.Apply(ctx, pool)
-		cancel()
-		if migrateErr == nil {
-			migrateDone = true
+	func() {
+		defer migrateMu.Unlock()
+		if !migrateDone {
+			ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+			defer cancel()
+			migrateErr = db.Apply(ctx, pool)
+			if migrateErr == nil {
+				migrateDone = true
+			}
 		}
-	}
+	}()
 	return migrateErr
 }
 
