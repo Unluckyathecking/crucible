@@ -142,12 +142,15 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 }
 
 // waitForErrorEvents polls until want error_events rows exist or the 5-second deadline elapses.
+// The select fires before CountErrorEvents so the DB is never queried after the deadline.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-time.After(errorPollInterval):
+		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		}
 		n := ts.CountErrorEvents(t, customerID)
@@ -156,11 +159,6 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 		}
 		if n > want {
 			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
-		}
-		select {
-		case <-time.After(errorPollInterval):
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		}
 	}
 }
