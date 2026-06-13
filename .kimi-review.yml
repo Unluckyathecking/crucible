@@ -18,3 +18,6 @@ exclude_patterns:
   # code consistently exhausts the Kimi output budget before JSON is written.
   # Listed as exact path: the action's glob engine does not support ** patterns.
   - "gateway/test/harness/harness.go"
+  # CI workflow: Kimi misreads step ordering and flags psql as running before
+  # Go is installed (false positive — setup-go runs in the preceding step).
+  - ".github/workflows/ci.yml"
