@@ -100,14 +100,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -116,6 +108,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})

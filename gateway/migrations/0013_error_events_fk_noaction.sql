@@ -19,6 +19,8 @@ BEGIN;
 --
 -- PostgreSQL confdeltype codes: 'a'=NO ACTION, 'n'=SET NULL, 'c'=CASCADE,
 -- 'r'=RESTRICT, 'd'=SET DEFAULT. Phase 1 drops anything that is not 'a' (NO ACTION).
+-- to_regclass() is used instead of a cast so an unresolvable name returns NULL rather
+-- than raising an error, and it is not affected by search_path.
 DO $$
 BEGIN
   -- Phase 1: drop if present with non-NO ACTION delete semantics (e.g., SET NULL='n').
@@ -27,12 +29,12 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
-      AND c.conrelid  = 'public.error_events'::regclass
-      AND c.confrelid = 'public.api_keys'::regclass
+      AND c.conrelid  = to_regclass('public.error_events')
+      AND c.confrelid = to_regclass('public.api_keys')
       AND c.contype   = 'f'
       AND c.confdeltype <> 'a'
   ) THEN
-    ALTER TABLE error_events DROP CONSTRAINT error_events_api_key_id_fkey;
+    ALTER TABLE public.error_events DROP CONSTRAINT error_events_api_key_id_fkey;
   END IF;
 
   -- Phase 2: add if absent (fresh DB or just dropped above).
@@ -41,12 +43,12 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.connamespace
     WHERE n.nspname   = 'public'
       AND c.conname   = 'error_events_api_key_id_fkey'
-      AND c.conrelid  = 'public.error_events'::regclass
-      AND c.confrelid = 'public.api_keys'::regclass
+      AND c.conrelid  = to_regclass('public.error_events')
+      AND c.confrelid = to_regclass('public.api_keys')
       AND c.contype   = 'f'
   ) THEN
-    ALTER TABLE error_events ADD CONSTRAINT error_events_api_key_id_fkey
-      FOREIGN KEY (api_key_id) REFERENCES api_keys(id);
+    ALTER TABLE public.error_events ADD CONSTRAINT error_events_api_key_id_fkey
+      FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id);
   END IF;
 END $$;
 
