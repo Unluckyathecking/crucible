@@ -98,10 +98,15 @@ func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Optio
 }
 
 // echoWorker responds to POST /invoke with a fixed billable_units payload.
+// Content-Length is set explicitly so HTTP/1.1 clients see a framed response
+// without relying on chunked encoding or connection-close.
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := fmt.Sprintf(`{"payload":{},"billable_units":%d}`, billableUnits)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
 	})
 }
 
@@ -110,8 +115,11 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	var count atomic.Int64
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count.Add(1)
+		body := fmt.Sprintf(`{"payload":{},"billable_units":%d}`, billableUnits)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
 	})
 	return h, &count
 }
@@ -121,8 +129,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	var count atomic.Int64
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := count.Add(1)
+		body := fmt.Sprintf(`{"payload":{"n":%d},"billable_units":1}`, n)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
 	})
 	return h, &count
 }
@@ -135,18 +146,28 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
+		defer func() {
+			// Drain the channel if Stop races with a fired timer to avoid
+			// leaving a stale value in the buffered channel.
+			if !tmr.Stop() {
+				select {
+				case <-tmr.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-tmr.C:
 			// Re-check context: proxy may have already cancelled it if the
-			// timer and context.Done fired concurrently. Writing to a
-			// cancelled request is harmless in httptest, but the guard makes
-			// the intent explicit.
+			// timer and context.Done fired concurrently.
 			if r.Context().Err() != nil {
 				return
 			}
+			body := `{"payload":{},"billable_units":1}`
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body))
 		case <-r.Context().Done():
 			return
 		}
