@@ -105,14 +105,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}()
+		defer timer.Stop()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -341,7 +334,10 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-// TestQuotaExceeded: second request exceeds cap of 1; returns 429 QUOTA_EXCEEDED; no additional usage row written.
+// TestQuotaExceeded: second request exceeds monthly cap of 1 billable unit; returns 429 QUOTA_EXCEEDED.
+// The quota tracker (quota.Add) increments a per-customer Redis counter; the usage recorder writes
+// usage_events rows only for accepted requests. Because cap is 1 and the first request consumed 1 unit,
+// the second request is rejected before reaching the worker and no additional usage_events row is written.
 func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient()

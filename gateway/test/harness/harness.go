@@ -222,15 +222,14 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// Validate Routes before locking. t.Fatal calls runtime.Goexit which unwinds
-	// defers in this goroutine, so the Unlock in the defer below would still execute.
-	// The validation is here for clarity, not for lock safety.
+	// Validate before acquiring the lock; t.Fatal here never holds routesMu.
 	if opts.Routes != nil && len(opts.Routes) == 0 {
 		t.Fatal("harness: Routes must be non-empty; use nil for production routes")
 	}
-	// routesMu is held through server.NewRouter so no concurrent caller can read
-	// server.V1Routes while we have temporarily replaced it with opts.Routes.
-	// The lock must cover the NewRouter call because NewRouter reads V1Routes.
+	// routesMu serializes mutation of server.V1Routes and holds the lock during
+	// server.NewRouter so the router reads a consistent, fully-replaced route table.
+	// The original slice is restored in defer before unlock, so no subsequent caller
+	// observes test-specific routes after NewRouter returns.
 	routesMu.Lock()
 	// Copy the original slice so the restore in defer is not affected by any
 	// concurrent append/replace to server.V1Routes that happens to share the
@@ -377,14 +376,16 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		// Redis keys are always cleaned up on function exit, regardless of whether DB
-		// cleanup succeeds. The defer below runs before cancel() (LIFO), so cctx is valid.
-		// DEL on non-existent keys returns 0 (not an error), so this is always safe.
+		// cleanup succeeds. A fresh context is used so DB timeout exhaustion cannot
+		// cancel the Redis DEL. DEL on non-existent keys returns 0 (not an error).
 		defer func() {
+			rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rcancel()
 			quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 			nextQuotaKey := "quota:" + customerID.String() + ":" + nextMonth
 			rlKey := "rl:" + customerID.String()
 			authKey := "auth:" + prefix
-			if delErr := ts.Redis.Del(cctx, quotaKey, nextQuotaKey, rlKey, authKey).Err(); delErr != nil {
+			if delErr := ts.Redis.Del(rctx, quotaKey, nextQuotaKey, rlKey, authKey).Err(); delErr != nil {
 				t.Logf("harness: redis cleanup for customer %s: %v", customerID, delErr)
 			}
 		}()
@@ -392,20 +393,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			if opErr == nil {
 				return
 			}
-			// FK violations on error_events_api_key_id_fkey (23503) are expected from the
-			// async errorlog.Record goroutine and logged only; the retry loop handles api_keys.
-			var pgErr *pgconn.PgError
-			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "error_events_api_key_id_fkey" {
-				t.Logf("harness: cleanup FK violation %s for customer %s (async errorlog): %v", table, customerID, opErr)
-				return
-			}
-			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
-				t.Errorf("harness: cleanup unexpected FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
-				return
-			}
 			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
 			if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
 				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
+				return
+			}
+			var pgErr *pgconn.PgError
+			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
+				t.Errorf("harness: cleanup FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
 				return
 			}
 			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)

@@ -9,6 +9,11 @@
 -- The guard below is a no-op when the constraint already carries ON DELETE NO ACTION.
 DO $$
 BEGIN
+  -- Fail fast rather than blocking the deployment indefinitely if error_events
+  -- is actively locked. 30 s statement_timeout covers the full block.
+  SET LOCAL lock_timeout = '10s';
+  SET LOCAL statement_timeout = '30s';
+
   -- No-op: constraint already has ON DELETE NO ACTION (confdeltype = 'a').
   IF EXISTS (
     SELECT 1 FROM pg_constraint c
