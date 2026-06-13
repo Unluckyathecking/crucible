@@ -153,7 +153,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
 	t.Cleanup(workerSrv.Close)
 
-	pool, err := db.NewPool(context.Background(), opts.DSN, defaultDBPoolSize)
+	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	defer poolCancel()
+	pool, err := db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
@@ -233,20 +235,23 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// server.NewRouter so the router reads a consistent, fully-replaced route table.
 	// The original slice is restored in defer before unlock, so no subsequent caller
 	// observes test-specific routes after NewRouter returns.
-	routesMu.Lock()
-	// Copy the original slice so the restore in defer is not affected by any
-	// concurrent append/replace to server.V1Routes that happens to share the
-	// underlying array. The structs themselves are value types; *Schema pointers
-	// are read-only once registered, so a shallow element copy is safe here.
-	orig := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
-	if opts.Routes != nil {
-		server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
-	}
-	defer func() {
-		server.V1Routes = orig
-		routesMu.Unlock()
+	// Narrow the lock scope to just the V1Routes mutation and NewRouter call so
+	// routesMu is released before httptest.NewServer (which doesn't access routes).
+	// The IIFE's defer restores V1Routes and unlocks even if NewRouter panics.
+	handler := func() http.Handler {
+		routesMu.Lock()
+		// Shallow copy is safe: RouteDescriptor structs are value types and *Schema
+		// pointers are read-only once registered.
+		orig := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
+		defer func() {
+			server.V1Routes = orig
+			routesMu.Unlock()
+		}()
+		if opts.Routes != nil {
+			server.V1Routes = append([]openapi.RouteDescriptor(nil), opts.Routes...)
+		}
+		return server.NewRouter(deps)
 	}()
-	handler := server.NewRouter(deps)
 
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)
