@@ -1,20 +1,6 @@
-// Package harness provides NewGatewayTestServer, a reusable test helper that boots
-// the full gateway middleware chain (server.NewRouter) against real Postgres and Redis,
-// plus an in-process worker stub. Tests that exercise real storage catch schema-query
-// drift and middleware interaction effects that mocks cannot.
-//
-// Usage contract:
-//   - DSN must be a postgres:// or postgresql:// URL pointing at a real service.
-//   - RedisURL must be a redis:// or rediss:// URL pointing at a real service.
-//   - NewGatewayTestServer is safe for t.Parallel when Options.Routes is nil.
-//     Tests that set Options.Routes must NOT use t.Parallel because they temporarily
-//     swap the package-level server.V1Routes under routesMu.
-//   - Each CreateCustomer call registers a t.Cleanup that removes all test rows for
-//     that customer from usage_events, idempotency_keys, error_events,
-//     webhook_deliveries, webhook_endpoints, api_keys, customers, and the customer's
-//     Redis quota/rate-limit keys.
-//   - Each CreatePlan call registers a t.Cleanup that deletes or restores the plan row.
-//   - CreateCustomer validates that the planID exists before inserting the customer.
+// Package harness provides NewGatewayTestServer: a test helper that boots the
+// full gateway middleware chain against real Postgres and Redis with an in-process
+// worker stub. DSN and RedisURL are required; callers set Options fields as needed.
 package harness
 
 import (
@@ -51,26 +37,21 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
-// testSalt is the API key hash salt used by all harness instances.
-// Generated at process start via crypto/rand; guaranteed ≥ 64 chars (32 bytes hex-encoded).
 var testSalt string
 
-// TestSalt returns the API key hash salt used by all harness instances.
-// Per-process uniqueness is safe: auth.Hash and Store lookups both use this value.
+// TestSalt returns the per-process API key hash salt used by all harness instances.
 func TestSalt() string { return testSalt }
 
 const (
-	// TestAPIKeyPrefix is the API key prefix used by all harness instances.
-	// Mirrors config.Config.APIKeyPrefix set inside NewGatewayTestServer so both
-	// the gateway auth middleware and CreateCustomer use the identical value.
+	// TestAPIKeyPrefix is the key prefix configured in every harness server.
 	TestAPIKeyPrefix = "cru_"
 
-	defaultWorkerTimeoutMS = 5000      // generous default; set low in Options to test timeout scenarios
+	defaultWorkerTimeoutMS = 5000
 	defaultProxyPoolSize   = 8
-	defaultBodyLimitBytes  = 1 << 20 // 1 MB
+	defaultBodyLimitBytes  = 1 << 20
 	defaultDBPoolSize      = 5
 
-	serverBootTimeout = 30 * time.Second // time budget for migration apply
+	serverBootTimeout = 30 * time.Second
 )
 
 func init() {
@@ -78,61 +59,48 @@ func init() {
 	if _, err := rand.Read(b); err != nil {
 		panic("harness: failed to generate test salt: " + err.Error())
 	}
-	testSalt = hex.EncodeToString(b) // 64 hex chars, well above 32-byte minimum
+	testSalt = hex.EncodeToString(b)
 }
 
 // routesMu guards temporary modifications to server.V1Routes.
-// NewRouter reads the package-level var at call time, so any caller that
-// injects custom routes must hold this lock across the NewRouter call.
 var routesMu sync.Mutex
 
-// migrateMu serialises migration runs so concurrent t.Parallel tests do not
-// race on ALTER TABLE / CREATE TABLE between them.
+// migrateMu serialises migration runs across parallel tests.
 var migrateMu sync.Mutex
 
 // Options configures a gateway test server.
 type Options struct {
-	// Routes overrides server.V1Routes for this server's lifetime.
-	// Nil means use the production V1Routes unchanged.
-	// When non-nil: NewGatewayTestServer holds routesMu across NewRouter; callers
-	// must not call it concurrently with t.Parallel when Routes is set.
+	// Routes overrides server.V1Routes. Nil means use production routes.
+	// Non-nil callers must not use t.Parallel.
 	Routes []openapi.RouteDescriptor
 
-	// WorkerHandler handles POST /invoke calls the gateway proxies to the worker.
+	// WorkerHandler handles POST /invoke calls forwarded by the gateway proxy.
 	WorkerHandler http.Handler
 
-	// DSN is a real Postgres connection string (e.g. from POSTGRES_DSN env var).
+	// DSN is a real Postgres connection string.
 	DSN string
 
-	// RedisURL is a real Redis connection string (e.g. from REDIS_URL env var).
+	// RedisURL is a real Redis connection string.
 	RedisURL string
 
-	// WorkerTimeoutMS caps the gateway→worker HTTP call. Defaults to 5000 ms.
-	// Set this low (e.g. 100) combined with a slow WorkerHandler to trigger the
-	// timeout scenario without blocking the test for a long time.
+	// WorkerTimeoutMS caps the gateway→worker call. Defaults to 5000 ms.
 	WorkerTimeoutMS int
 }
 
 // TestServer is a running gateway backed by real Postgres and Redis.
-// All resources are registered with t.Cleanup; callers need not close anything manually.
 type TestServer struct {
-	// Server is the gateway httptest.Server. Use Server.URL to construct request URLs.
+	// Server is the gateway httptest.Server.
 	Server *httptest.Server
-	// Worker is the in-process worker httptest.Server (available for inspection).
+	// Worker is the in-process worker httptest.Server.
 	Worker *httptest.Server
-	// DB gives direct Postgres access for assertion queries (e.g. COUNT usage_events).
+	// DB gives direct Postgres access for assertion queries.
 	DB *pgxpool.Pool
 	// Redis gives direct Redis access for assertion queries.
 	Redis *redis.Client
 }
 
-// NewGatewayTestServer boots the full gateway middleware chain via server.NewRouter against
-// real Postgres and Redis and returns the started test server. Migrations are applied on
-// every call (serialised via migrateMu); this is intentional — it mirrors the production
-// boot path and ensures schema-level bugs surface in integration tests. The cost is a
-// brief serialisation point per parallel test; acceptable for a CI suite of this size.
-// Each migration file must be idempotent (CREATE TABLE IF NOT EXISTS,
-// INSERT ON CONFLICT DO NOTHING).
+// NewGatewayTestServer boots the full gateway middleware chain via server.NewRouter
+// against real Postgres and Redis and returns the started test server.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
 	if opts.WorkerHandler == nil {
@@ -155,13 +123,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
 
-	// In-process worker: the gateway proxies /invoke calls here.
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
 	t.Cleanup(workerSrv.Close)
 
-	// Real Postgres. Pool open uses context.Background(): pgxpool manages its own
-	// connection lifetime and the creation context should not constrain ongoing queries.
-	// Migration apply gets its own bounded context so a hung schema change fails loudly.
 	pool, err := db.NewPool(context.Background(), opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
@@ -177,7 +141,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 	t.Cleanup(pool.Close)
 
-	// Real Redis.
 	rdb, err := cache.NewRedis(context.Background(), opts.RedisURL)
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
@@ -188,13 +151,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		}
 	})
 
-	// Minimal config: only the fields NewRouter and the middleware chain read.
-	// We build it directly (without config.Load) to avoid requiring Stripe env vars
-	// that are irrelevant for end-to-end functional testing.
 	cfg := &config.Config{
 		BodyLimitBytes:  defaultBodyLimitBytes,
 		DashboardOrigin: "http://localhost:3001",
-		ErrorExposure:   "full", // expose worker error details in tests
+		ErrorExposure:   "full",
 		APIKeyPrefix:    TestAPIKeyPrefix,
 		APIKeyHashSalt:  testSalt,
 	}
@@ -212,9 +172,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	plans := billing.NewPlanCache(pool)
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
-	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
-	// endpoint is not exercised by the scenario suite. Use the whsec_test_ prefix and a
-	// random suffix so the secret differs per test process and is not a reused static value.
+	// dummy secret: no real Stripe webhook calls in tests; prefix differs per process.
 	webhook := billing.NewWebhook("whsec_test_"+uuid.New().String(), pool)
 
 	deps := &server.Deps{
@@ -228,19 +186,15 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		Quota:         quotaTracker,
 		Redis:         &redisPinger{rdb},
 		PG:            &pgPinger{pool},
-		// DB non-nil: activates the idempotency middleware and webhookDeliveries route.
 		DB:            pool,
 		ErrorRecorder: errorlog.New(pool),
 	}
 
-	// Always hold routesMu across V1Routes reads and the NewRouter call. Even nil-Routes
-	// callers must hold the lock so they see a consistent V1Routes if another goroutine is
-	// currently swapping routes for a custom test. Defers are LIFO: V1Routes is restored
-	// before the mutex is released. Callers with non-nil Routes must not use t.Parallel.
+	// Hold routesMu across the V1Routes read and NewRouter call so custom-routes
+	// tests and default-routes tests cannot race on the package-level var.
 	routesMu.Lock()
 	defer routesMu.Unlock()
 	if opts.Routes != nil {
-		// Copy the current slice so we can restore it after NewRouter reads the var.
 		backup := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() { server.V1Routes = backup }()
 		server.V1Routes = opts.Routes
@@ -258,15 +212,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 }
 
-// CreatePlan inserts or updates a plan row for use in tests.
-// ratePerMinute=0 means unlimited. monthlyCap=0 means unlimited: the column is
-// stored as NULL, which pgx scans into int64(0); quota.Tracker.Reserve treats
-// cap<=0 as "always admitted" (no ceiling). Pass monthlyCap>0 for a finite cap.
-// Uses ON CONFLICT DO UPDATE so repeated test runs against the same DB are safe.
-// Registers t.Cleanup to restore the plan to its pre-test state: rows that did not
-// exist are deleted; pre-existing rows (e.g. seeded "free" / "pro" plans) have their
-// original rate_limit_per_minute and monthly_unit_cap restored rather than being
-// deleted, so the shared plan table is not corrupted for subsequent tests.
+// CreatePlan inserts or updates a plan row. ratePerMinute=0 means unlimited;
+// monthlyCap=0 means unlimited (stored as NULL). Registers t.Cleanup to restore
+// the plan to its pre-test state.
 func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, monthlyCap int64) {
 	t.Helper()
 	if id == "" {
@@ -280,11 +228,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	}
 	ctx := context.Background()
 
-	// Snapshot any pre-existing plan so cleanup can restore it rather than deleting a
-	// row that wasn't created by this call (e.g. a seeded "free" or "pro" plan).
 	var (
 		prevRate int
-		prevCap  pgtype.Int8 // nullable int8; Valid=false when NULL (unlimited)
+		prevCap  pgtype.Int8
 		prevName string
 		existed  bool
 	)
@@ -296,7 +242,6 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		t.Fatalf("harness: snapshot plan %q: %v", id, err)
 	}
 
-	// NULL signals unlimited in the schema; the quota middleware reads this as 0 (always admit).
 	var capPtr *int64
 	if monthlyCap > 0 {
 		capPtr = &monthlyCap
@@ -315,8 +260,6 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if existed {
-			// Restore the original rate/cap/name. prevCap.Valid=false means the
-			// original cap was NULL (unlimited); restore NULL via nil *int64.
 			var restoredCap *int64
 			if prevCap.Valid {
 				v := prevCap.Int64
@@ -338,11 +281,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	})
 }
 
-// CreateCustomer inserts a customer on planID, generates and persists an API key hashed
-// with TestSalt, and returns (customerID, rawAPIKey). rawAPIKey is the full Bearer token
-// value; use it directly in Authorization headers.
-//
-// t.Cleanup removes all DB rows belonging to this customer and flushes their Redis keys.
+// CreateCustomer inserts a customer on planID, generates and persists an API key,
+// and returns (customerID, rawAPIKey). t.Cleanup removes all rows and Redis keys.
 func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.UUID, string) {
 	t.Helper()
 	if email == "" {
@@ -354,9 +294,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
 	}
-	// Verify plan exists so a typo gives a clear message instead of a FK violation.
-	// SELECT 1 + Scan(new(int)) is the idiomatic pgx existence check; avoid SELECT true
-	// which requires a bool scan and can confuse linters or future type-safety audits.
+	// Existence check: SELECT 1 + Scan(new(int)) is the idiomatic pgx check.
 	var planFound int
 	planCtx, planCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer planCancel()
@@ -369,8 +307,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
-	// Capture the month now so the cleanup closure deletes the same month's quota key
-	// even if the test happens to span a UTC month boundary.
+	// Capture month now so cleanup deletes the correct quota key even across UTC month boundaries.
 	createdMonth := time.Now().UTC().Format("2006-01")
 
 	customerID := uuid.New()
@@ -398,18 +335,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 
 	t.Cleanup(func() {
-		// 60s: worst-case 3 retry attempts × (10s query + 5s fix) = 45s, plus slack.
 		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		cleanupErr := func(table string, e error) {
 			if e == nil {
 				return
 			}
-			// Transient FK violations (PostgreSQL code 23503) are expected when the async
-			// errorlog.Record goroutine inserts an error_events row between the
-			// error_events DELETE and the api_keys DELETE. Log only; the retry loop
-			// handles the FK case. Unexpected errors (schema bugs, connection failures,
-			// permission issues) are failures and must not be silently swallowed.
+			// Transient FK violations (23503) from the async errorlog.Record goroutine are
+			// expected and logged only; the retry loop below handles the api_keys case.
 			var pgErr *pgconn.PgError
 			if errors.As(e, &pgErr) && pgErr.Code == "23503" {
 				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, e)
@@ -417,9 +350,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 		}
-		// Delete children before parents to satisfy FK constraints.
-		// error_events.api_key_id REFERENCES api_keys(id) NO ACTION — must delete
-		// error_events before api_keys.
+		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
 		cleanupErr("usage_events", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM idempotency_keys WHERE customer_id = $1`, customerID)
@@ -430,12 +361,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		cleanupErr("webhook_deliveries", err)
 		_, err = ts.DB.Exec(cctx, `DELETE FROM webhook_endpoints WHERE customer_id = $1`, customerID)
 		cleanupErr("webhook_endpoints", err)
-		// Bounded retry with fresh per-attempt context: the async errorlog.Record goroutine
-		// (2 s timeout) may insert an error_events row between the DELETE above and this
-		// api_keys DELETE, causing a transient FK violation (error_events.api_key_id
-		// REFERENCES api_keys(id) ON DELETE NO ACTION). Re-delete error_events then retry.
-		// Each attempt gets its own context derived from cctx so retries respect the
-		// overall cleanup deadline.
+		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
+		// error_events row after the DELETE above, causing a transient FK violation.
 		var finalKeyErr error
 		for attempt := 1; attempt <= 3; attempt++ {
 			if cctx.Err() != nil {
@@ -455,9 +382,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				if attempt == 3 {
 					t.Errorf("harness: cleanup FK violation api_keys (attempt %d) for customer %s: %v", attempt, customerID, retryErr)
 				}
-				// Only error_events can be re-inserted asynchronously (errorlog.Record
-				// goroutine, 2 s timeout). Webhook and idempotency tables are written
-				// synchronously in the request path and cannot race here.
 				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				if delErr != nil {
@@ -466,7 +390,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				fixCancel()
 				continue
 			}
-			// Non-FK error: stop retrying.
 			break
 		}
 		if finalKeyErr != nil {
@@ -477,11 +400,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
-		// Flush quota, rate-limit, and auth-cache keys to avoid polluting next run.
-		// Formats verified against production source (do not change without updating both):
-		//   quota key:     quota/tracker.go monthKey()  → "quota:<uuid>:<YYYY-MM>"
-		//   ratelimit key: ratelimit/bucket.go Allow()  → "rl:<uuid>"
-		//   auth cache:    auth/store.go cacheKey()     → "auth:<prefix>"
+		// Key formats (must match production source):
+		//   quota:<uuid>:<YYYY-MM>  quota/tracker.go monthKey()
+		//   rl:<uuid>               ratelimit/bucket.go Allow()
+		//   auth:<prefix>           auth/store.go cacheKey()
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
 		authKey := "auth:" + prefix
@@ -499,8 +421,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	return customerID, full
 }
 
-// CountUsageEvents returns the number of usage_events rows written for customerID.
-// Useful in assertions after a request to verify billing side-effects.
+// CountUsageEvents returns the number of usage_events rows for customerID.
 func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -515,9 +436,7 @@ func (ts *TestServer) CountUsageEvents(t *testing.T, customerID uuid.UUID) int {
 	return n
 }
 
-// CountErrorEvents returns the number of error_events rows written for customerID.
-// Useful in isolation assertions to verify that one customer's errors don't bleed
-// into another customer's error history.
+// CountErrorEvents returns the number of error_events rows for customerID.
 func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -532,8 +451,7 @@ func (ts *TestServer) CountErrorEvents(t *testing.T, customerID uuid.UUID) int {
 	return n
 }
 
-// CountIdempotencyKeys returns the number of idempotency_keys rows for the
-// given customerID and idempotency_key value.
+// CountIdempotencyKeys returns the number of idempotency_keys rows for customerID and key.
 func (ts *TestServer) CountIdempotencyKeys(t *testing.T, customerID uuid.UUID, idempotencyKey string) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
