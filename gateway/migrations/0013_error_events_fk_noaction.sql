@@ -1,18 +1,15 @@
 -- Repair error_events.api_key_id FK to ON DELETE NO ACTION.
+-- ON DELETE NO ACTION enforces referential integrity by preventing deletion
+-- of api_keys rows that error_events rows still reference.
 --
--- ON DELETE NO ACTION enforces referential integrity: it prevents deleting
--- api_keys rows while error_events rows reference them.
---
--- Runs on every gateway boot; the guard returns immediately when the FK is
--- already fully valid, making the common case a single cheap catalog query.
--- All table names are fully qualified (public.*) to avoid search_path dependency.
---
--- PostgreSQL confdeltype codes: 'a' = NO ACTION, 'r' = RESTRICT,
--- 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT.
--- convalidated = true means the constraint covers all existing rows.
+-- Idempotent: the guard exits immediately when the FK is already correct,
+-- making the common case a single cheap catalog query with no locking.
+-- Fully qualified table names (public.*) guard against search_path surprises.
 DO $$
 BEGIN
-  -- Guard: skip if already fully valid with ON DELETE NO ACTION.
+  -- Skip the repair if the FK already exists with ON DELETE NO ACTION and is
+  -- validated (covers all existing rows). confdeltype='a' is PostgreSQL's
+  -- internal code for ON DELETE NO ACTION — the same rule we ADD below.
   IF EXISTS (
     SELECT 1
     FROM   pg_constraint c
@@ -21,28 +18,28 @@ BEGIN
     WHERE  c.conname      = 'error_events_api_key_id_fkey'
       AND  r.relname      = 'error_events'
       AND  n.nspname      = 'public'
-      AND  c.confdeltype  = 'a'
+      AND  c.confdeltype  = 'a'     -- 'a' = ON DELETE NO ACTION
       AND  c.convalidated = true
   ) THEN RETURN; END IF;
 
-  -- Lock both tables before the orphan purge. Locking api_keys prevents a
-  -- concurrent DELETE from api_keys creating a new orphan between the purge
-  -- and the ADD CONSTRAINT validation scan.
+  -- Lock both tables before the orphan scan to prevent a concurrent api_keys
+  -- DELETE from creating a new orphan between the purge and FK validation.
   LOCK TABLE public.error_events, public.api_keys IN ACCESS EXCLUSIVE MODE;
 
-  -- Remove orphaned rows: api_key_id non-NULL but the referenced api_keys row
-  -- no longer exists. NULL api_key_id is valid per FK semantics (no reference)
-  -- and is preserved by the IS NOT NULL guard. The alias 'orphan' makes the
-  -- correlated reference in the subquery unambiguous.
+  -- Purge rows where api_key_id is non-NULL but the referenced api_keys row no
+  -- longer exists. Such rows cannot satisfy ON DELETE NO ACTION and must be
+  -- removed before the constraint can be added. NULL api_key_id rows are left
+  -- untouched (the WHERE requires IS NOT NULL). The alias makes the correlated
+  -- subquery reference unambiguous.
   DELETE FROM public.error_events AS orphan
   WHERE  orphan.api_key_id IS NOT NULL
     AND  NOT EXISTS (
       SELECT 1 FROM public.api_keys WHERE id = orphan.api_key_id
     );
 
-  -- Drop any existing FK (regardless of its current delete rule) then recreate
-  -- with ON DELETE NO ACTION. ADD CONSTRAINT validates existing rows inline
-  -- under the ACCESS EXCLUSIVE lock, so no separate VALIDATE step is needed.
+  -- Drop any existing FK regardless of its current delete rule, then recreate
+  -- it with ON DELETE NO ACTION. ADD CONSTRAINT validates all rows inline under
+  -- the ACCESS EXCLUSIVE lock, so no separate VALIDATE step is needed.
   ALTER TABLE public.error_events
     DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
 
@@ -50,5 +47,4 @@ BEGIN
     ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id)
       ON DELETE NO ACTION;
-
 END $$;
