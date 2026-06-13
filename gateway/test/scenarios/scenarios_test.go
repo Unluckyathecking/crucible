@@ -100,18 +100,6 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer func() {
-			// Stop returns false when the timer already fired (value in channel).
-			// The default branch handles the case where the main select already
-			// consumed the value from timer.C — the channel is then empty and a
-			// blocking read would deadlock.
-			if !timer.Stop() {
-				select {
-				case <-timer.C: // drain if value not yet consumed by select below
-				default:        // timer.C already read by select; nothing to drain
-				}
-			}
-		}()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -120,6 +108,7 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			timer.Stop()
 			return
 		}
 	})
@@ -156,6 +145,9 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 // drainBody reads and closes the response body, returning its bytes.
 func drainBody(t *testing.T, r *http.Response) []byte {
 	t.Helper()
+	if r == nil {
+		t.Fatal("drainBody: nil response")
+	}
 	defer r.Body.Close()
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -317,11 +309,13 @@ func TestRateLimit(t *testing.T) {
 	// on every 429 response (confirmed via httputil.SetRateLimitHeaders).
 	if ra := r.Header.Get("Retry-After"); ra == "" {
 		t.Error("want Retry-After header on 429 RATE_LIMITED response")
-	} else if n, err := strconv.Atoi(ra); err == nil && n >= 1 && n <= 60 {
-		// ok — integer seconds, sliding window is 60 s
-	} else if _, err := http.ParseTime(ra); err == nil {
-		// ok — RFC 7231 HTTP-date format also valid
-	} else {
+	} else if n, err := strconv.Atoi(ra); err == nil {
+		// Integer-seconds format: verify it falls within the 60-second sliding window.
+		if n < 1 || n > 60 {
+			t.Errorf("Retry-After: got integer %d, want in [1,60]", n)
+		}
+	} else if _, err := http.ParseTime(ra); err != nil {
+		// Not integer and not a valid RFC 7231 HTTP-date.
 		t.Errorf("Retry-After: got %q, want integer in [1,60] or HTTP-date", ra)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {

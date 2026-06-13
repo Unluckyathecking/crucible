@@ -176,8 +176,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	quotaTracker := quota.New(rdb)
 	recorder := usage.NewRecorder(pool, quotaTracker)
 	// dummy secret: no real Stripe calls are made in e2e tests; the /webhooks/stripe
-	// endpoint is not exercised by the scenario suite.
-	webhook := billing.NewWebhook("test-webhook-secret-e2e-harness", pool)
+	// endpoint is not exercised by the scenario suite. Use a random suffix so the
+	// secret differs per test process and is clearly not a reused static value.
+	webhook := billing.NewWebhook("test-webhook-secret-"+uuid.New().String(), pool)
 
 	deps := &server.Deps{
 		Cfg:           cfg,
