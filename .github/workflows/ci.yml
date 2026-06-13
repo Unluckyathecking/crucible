@@ -41,7 +41,7 @@ jobs:
             workers/sdk-go/go.sum
             workers/stubs/go/go.sum
       - name: go.work sync
-        run: go work sync
+        run: go work sync  # keeps the workspace consistent after any go.mod change
       - name: Apply gateway migrations
         run: |
           for f in gateway/migrations/*.sql; do

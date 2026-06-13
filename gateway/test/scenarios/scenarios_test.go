@@ -154,8 +154,8 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 }
 
 // invoke sends POST /v1/echo to the gateway. client must be created once per test
-// via newTestHTTPClient() and reused across calls. Callers must drain and close the
-// response body via drainBody.
+// via newTestHTTPClient() and reused across calls. drainBody is the sole closer of
+// the response body; no t.Cleanup is registered here for body close.
 func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	if ts == nil || ts.Server == nil {
