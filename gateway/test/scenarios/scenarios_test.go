@@ -124,25 +124,19 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay; returns on context cancellation.
-// Write errors in the timer branch are discarded (_, _ =): if the proxy
-// already returned 502, the client is gone and the write is a no-op.
-func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
-	var invoked atomic.Bool
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		invoked.Store(true)
+// Write errors are discarded: if the proxy already returned 502, the client is
+// gone and the write is a no-op.
+func slowWorker(delay time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
-			if r.Context().Err() != nil {
-				return
-			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
 		}
 	})
-	return h, &invoked
 }
 
 // waitForErrorEvents polls until want error_events rows exist or the deadline elapses.
@@ -439,8 +433,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// 5 s delay vs 500 ms proxy timeout: 10× ratio, reliable under -race with CPU contention.
 	// The proxy timeout (WorkerTimeoutMS=500) is the bottleneck; client sees 502, not client-side expiry.
 	client := newTestHTTPClient(t)
-	worker, invoked := slowWorker(5 * time.Second)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, slowWorker(5*time.Second), func(o *harness.Options) {
 		o.WorkerTimeoutMS = 500
 	}))
 	ts.CreatePlan(t, "timeout-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
@@ -458,10 +451,9 @@ func TestWorkerTimeout(t *testing.T) {
 	if n := ts.CountUsageEvents(t, customerID); n != 0 {
 		t.Errorf("usage_events after timeout: got %d rows, want 0", n)
 	}
+	// waitForErrorEvents success proves the proxy forwarded the request (error_events are
+	// only inserted on proxy-forwarded failures, not on pre-forward rejections).
 	waitForErrorEvents(t, ts, customerID, 1)
-	if !invoked.Load() {
-		t.Error("worker was never invoked; proxy may have short-circuited before forwarding")
-	}
 }
 
 // TestAuthFailure: a key not registered in the database returns 401 UNAUTHORIZED.

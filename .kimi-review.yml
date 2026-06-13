@@ -20,5 +20,3 @@ exclude_patterns:
   # CI workflow: Kimi misreads step ordering and flags psql as running before
   # Go is installed (false positive — setup-go runs in the preceding step).
   - ".github/workflows/ci.yml"
-  # Self-exclude so the action does not send this config file to Kimi for review.
-  - ".kimi-review.yml"
