@@ -356,16 +356,11 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
-			// Pass monthly_unit_cap via an untyped nil (any) so pgx sends SQL NULL when
-			// prevCap is nil (unlimited). A typed *int64 nil is encoded as the pointer
-			// address by some pgx versions, not as NULL.
-			var capArg any
-			if prevCap != nil {
-				capArg = *prevCap
-			}
+			// prevCap is *int64; pgx v5 encodes a nil *int64 as SQL NULL and a
+			// non-nil pointer as the int64 value — pass it directly.
 			if _, err := ts.DB.Exec(cctx,
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-				id, prevRate, capArg, prevName,
+				id, prevRate, prevCap, prevName,
 			); err != nil {
 				t.Logf("harness: restore plan %q: %v", id, err)
 				return
