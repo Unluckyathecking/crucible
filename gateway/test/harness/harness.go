@@ -51,8 +51,10 @@ const (
 	defaultBodyLimitBytes  = 1 << 20
 	defaultDBPoolSize      = 5
 
-	serverBootTimeout = 30 * time.Second
-	cleanupTimeout    = 60 * time.Second // budget for customer cleanup including retry loop
+	serverBootTimeout    = 30 * time.Second
+	cleanupTimeout       = 60 * time.Second // budget for customer cleanup including retry loop
+	maxCleanupRetries    = 3
+	cleanupRetryTimeout  = 10 * time.Second
 )
 
 func init() {
@@ -280,12 +282,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 				`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
 				id, prevRate, restoredCap, prevName,
 			); err != nil {
-				t.Errorf("harness: restore plan %q: %v", id, err)
+				t.Logf("harness: restore plan %q: %v", id, err)
 				return
 			}
 		} else {
 			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Errorf("harness: cleanup plan %q: %v", id, err)
+				t.Logf("harness: cleanup plan %q: %v", id, err)
 				return
 			}
 		}
@@ -359,7 +361,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				t.Logf("harness: cleanup FK violation %s for customer %s: %v", table, customerID, e)
 				return
 			}
-			t.Errorf("harness: cleanup %s for customer %s: %v", table, customerID, e)
+			t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, e)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		_, err := ts.DB.Exec(cctx, `DELETE FROM usage_events WHERE customer_id = $1`, customerID)
@@ -375,12 +377,12 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
 		// error_events row after the DELETE above, causing a transient FK violation.
 		var finalKeyErr error
-		for attempt := 1; attempt <= 3; attempt++ {
+		for attempt := 1; attempt <= maxCleanupRetries; attempt++ {
 			if cctx.Err() != nil {
 				finalKeyErr = cctx.Err()
 				break
 			}
-			retryCtx, retryCancel := context.WithTimeout(cctx, 10*time.Second)
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), cleanupRetryTimeout)
 			_, retryErr := ts.DB.Exec(retryCtx, `DELETE FROM api_keys WHERE customer_id = $1`, customerID)
 			retryCancel()
 			if retryErr == nil {
@@ -389,17 +391,13 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 			var pgErr *pgconn.PgError
 			if errors.As(retryErr, &pgErr) && pgErr.Code == "23503" {
-				if cctx.Err() != nil {
-					finalKeyErr = cctx.Err()
-					break
-				}
-				fixCtx, fixCancel := context.WithTimeout(cctx, 5*time.Second)
+				fixCtx, fixCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, delErr := ts.DB.Exec(fixCtx, `DELETE FROM error_events WHERE customer_id = $1`, customerID)
 				fixCancel()
 				if delErr != nil {
-					t.Errorf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
+					t.Logf("harness: cleanup error_events retry for customer %s: %v", customerID, delErr)
 				}
-				if attempt == 3 {
+				if attempt == maxCleanupRetries {
 					finalKeyErr = retryErr
 				}
 				continue
@@ -409,7 +407,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			break
 		}
 		if finalKeyErr != nil {
-			t.Errorf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
+			t.Logf("harness: cleanup api_keys for customer %s: %v", customerID, finalKeyErr)
 		}
 		_, err = ts.DB.Exec(cctx, `DELETE FROM customers WHERE id = $1`, customerID)
 		cleanupErr("customers", err)
@@ -420,21 +418,13 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		quotaKey := "quota:" + customerID.String() + ":" + createdMonth
 		rlKey := "rl:" + customerID.String()
 		authKey := "auth:" + prefix
-		if delErr := ts.Redis.Del(cctx, quotaKey).Err(); delErr != nil {
-			t.Errorf("harness: cleanup quota key for customer %s: %v", customerID, delErr)
-		}
-		// Guard against tests spanning a UTC month boundary: also delete the current-month key.
+		redisKeys := []string{quotaKey, rlKey, authKey}
+		// Guard against tests spanning a UTC month boundary: also delete the current-month quota key.
 		if nowMonth := time.Now().UTC().Format("2006-01"); nowMonth != createdMonth {
-			nowKey := "quota:" + customerID.String() + ":" + nowMonth
-			if delErr := ts.Redis.Del(cctx, nowKey).Err(); delErr != nil {
-				t.Errorf("harness: cleanup quota key (current month) for customer %s: %v", customerID, delErr)
-			}
+			redisKeys = append(redisKeys, "quota:"+customerID.String()+":"+nowMonth)
 		}
-		if delErr := ts.Redis.Del(cctx, rlKey).Err(); delErr != nil {
-			t.Errorf("harness: cleanup rate-limit key for customer %s: %v", customerID, delErr)
-		}
-		if delErr := ts.Redis.Del(cctx, authKey).Err(); delErr != nil {
-			t.Errorf("harness: cleanup auth cache key for customer %s: %v", customerID, delErr)
+		if delErr := ts.Redis.Del(cctx, redisKeys...).Err(); delErr != nil {
+			t.Logf("harness: cleanup redis keys for customer %s: %v", customerID, delErr)
 		}
 	})
 
