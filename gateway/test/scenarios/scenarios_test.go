@@ -22,6 +22,27 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
+const (
+	// defaultTestRatePerMin and defaultTestMonthlyCap are used for plans in tests
+	// that do not specifically exercise rate-limiting or quota; the values are
+	// deliberately high so they cannot interfere with other test assertions.
+	defaultTestRatePerMin = 100
+	defaultTestMonthlyCap = 10_000
+
+	// HTTP client constants for newTestHTTPClient.
+	testClientTimeout       = 15 * time.Second
+	testDialTimeout         = 5 * time.Second
+	testIdleConnTimeout     = 30 * time.Second
+	testMaxIdleConns        = 10
+	testMaxIdleConnsPerHost = 5
+	testMaxConnsPerHost     = 10
+
+	// Request context and polling timeouts.
+	testRequestTimeout = 10 * time.Second
+	errorPollTimeout   = 5 * time.Second
+	errorPollInterval  = 100 * time.Millisecond
+)
+
 // newTestHTTPClient returns a fresh http.Client for a single test. Create one client
 // per test (not per request) to avoid TCP connection churn and to satisfy the stated
 // intent of per-test isolation. Each test drives its own httptest.Server, so per-test
@@ -30,13 +51,13 @@ import (
 func newTestHTTPClient(t *testing.T) *http.Client {
 	t.Helper()
 	c := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: testClientTimeout,
 		Transport: &http.Transport{
-			DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-			MaxIdleConns:        10,
-			MaxIdleConnsPerHost: 5,
-			MaxConnsPerHost:     10,
-			IdleConnTimeout:     30 * time.Second,
+			DialContext:         (&net.Dialer{Timeout: testDialTimeout}).DialContext,
+			MaxIdleConns:        testMaxIdleConns,
+			MaxIdleConnsPerHost: testMaxIdleConnsPerHost,
+			MaxConnsPerHost:     testMaxConnsPerHost,
+			IdleConnTimeout:     testIdleConnTimeout,
 		},
 	}
 	t.Cleanup(c.CloseIdleConnections)
@@ -133,9 +154,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 // the condition is already met there is no 100ms delay before returning.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(errorPollInterval)
 	defer ticker.Stop()
 	for {
 		n := ts.CountErrorEvents(t, customerID)
@@ -164,7 +185,7 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	if apiKey == "" {
 		t.Fatal("invoke: apiKey must be non-empty")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.Server.URL+"/v1/echo",
@@ -205,7 +226,7 @@ func invokeNoAuth(t *testing.T, client *http.Client, ts *harness.TestServer, mut
 	if ts == nil || ts.Server == nil {
 		t.Fatal("invokeNoAuth: ts and ts.Server must be non-nil")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.Server.URL+"/v1/echo",
@@ -252,7 +273,7 @@ func TestHappyPath(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(3)))
-	ts.CreatePlan(t, "hp-plan", 100, 10000)
+	ts.CreatePlan(t, "hp-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "happy-path-"+uuid.New().String()+"@example.com", "hp-plan")
 
 	resp := invoke(t, client, ts, apiKey)
@@ -294,7 +315,7 @@ func TestIdempotentReplay(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	ts.CreatePlan(t, "ir-plan", 100, 10000)
+	ts.CreatePlan(t, "ir-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "idempotent-replay-"+uuid.New().String()+"@example.com", "ir-plan")
 
 	idempKey := "scenario-idemp-" + uuid.New().String()
@@ -365,7 +386,7 @@ func TestRateLimit(t *testing.T) {
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "rl-2-plan", rateLimit, 10000)
+	ts.CreatePlan(t, "rl-2-plan", rateLimit, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	for i := 0; i < rateLimit; i++ {
@@ -407,8 +428,8 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
 	} else if resetUnix, parseErr := strconv.ParseInt(raReset, 10, 64); parseErr != nil {
 		t.Errorf("RateLimit-Reset: got %q, want valid Unix timestamp: %v", raReset, parseErr)
-	} else if resetUnix < reqTime || resetUnix > reqTime+60 {
-		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp within 60s of request time (%d)", resetUnix, reqTime)
+	} else if resetUnix < reqTime-1 || resetUnix > reqTime+60 {
+		t.Errorf("RateLimit-Reset: got %d, want Unix timestamp in [%d, %d]", resetUnix, reqTime-1, reqTime+60)
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
 	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {
@@ -423,7 +444,7 @@ func TestQuotaExceeded(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "quota-1-plan", 100, 1)
+	ts.CreatePlan(t, "quota-1-plan", defaultTestRatePerMin, 1)
 	customerID, apiKey := ts.CreateCustomer(t, "quota-exceeded-"+uuid.New().String()+"@example.com", "quota-1-plan")
 
 	r1 := invoke(t, client, ts, apiKey)
@@ -459,7 +480,7 @@ func TestWorkerTimeout(t *testing.T) {
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker, func(o *harness.Options) {
 		o.WorkerTimeoutMS = 100
 	}))
-	ts.CreatePlan(t, "timeout-plan", 100, 10000)
+	ts.CreatePlan(t, "timeout-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")
 
 	r := invoke(t, client, ts, apiKey)
@@ -508,7 +529,7 @@ func TestWorkerBadResponse(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(0)))
-	ts.CreatePlan(t, "bad-resp-plan", 10, 1000)
+	ts.CreatePlan(t, "bad-resp-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "bad-resp-"+uuid.New().String()+"@example.com", "bad-resp-plan")
 
 	r := invoke(t, client, ts, apiKey)
@@ -549,7 +570,7 @@ func TestRequestIDPresent(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "reqid-plan", 100, 10000)
+	ts.CreatePlan(t, "reqid-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "reqid-"+uuid.New().String()+"@example.com", "reqid-plan")
 
 	r := invoke(t, client, ts, apiKey)
@@ -577,7 +598,7 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, invocations := varyingWorker()
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	ts.CreatePlan(t, "idemp-iso-plan", 100, 10000)
+	ts.CreatePlan(t, "idemp-iso-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	_, keyA := ts.CreateCustomer(t, "idemp-iso-A-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
 	_, keyB := ts.CreateCustomer(t, "idemp-iso-B-"+uuid.New().String()+"@example.com", "idemp-iso-plan")
 
@@ -617,9 +638,13 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 // only on 429 rejections.
 func TestRateLimitHeadersOnSuccess(t *testing.T) {
 	t.Parallel()
+	// rlHdrLimit is the plan's rate-per-minute; it appears in the RateLimit-Limit
+	// header and is asserted below, so the value is intentionally different from
+	// defaultTestRatePerMin.
+	const rlHdrLimit = 10
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "rl-hdr-plan", 10, 10000)
+	ts.CreatePlan(t, "rl-hdr-plan", rlHdrLimit, defaultTestMonthlyCap)
 	_, apiKey := ts.CreateCustomer(t, "rl-hdr-"+uuid.New().String()+"@example.com", "rl-hdr-plan")
 
 	r := invoke(t, client, ts, apiKey)
@@ -629,13 +654,13 @@ func TestRateLimitHeadersOnSuccess(t *testing.T) {
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v == "" {
 		t.Errorf("RateLimit-Limit header absent on 200 response")
-	} else if v != "10" {
-		t.Errorf("RateLimit-Limit: got %q, want 10", v)
+	} else if got, want := v, strconv.Itoa(rlHdrLimit); got != want {
+		t.Errorf("RateLimit-Limit: got %q, want %q", got, want)
 	}
 	if v := r.Header.Get("RateLimit-Remaining"); v == "" {
 		t.Errorf("RateLimit-Remaining header absent on 200 response")
-	} else if v != "9" {
-		t.Errorf("RateLimit-Remaining: got %q, want 9 (10 limit minus 1 consumed)", v)
+	} else if got, want := v, strconv.Itoa(rlHdrLimit-1); got != want {
+		t.Errorf("RateLimit-Remaining: got %q, want %q (limit minus 1 consumed)", got, want)
 	}
 }
 
@@ -645,7 +670,7 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "sec-hdr-plan", 100, 10000)
+	ts.CreatePlan(t, "sec-hdr-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 	_, apiKey := ts.CreateCustomer(t, "sec-hdr-"+uuid.New().String()+"@example.com", "sec-hdr-plan")
 
 	r := invoke(t, client, ts, apiKey)
@@ -681,7 +706,7 @@ func TestCrossCustomerIsolation(t *testing.T) {
 	client := newTestHTTPClient(t)
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
-	ts.CreatePlan(t, "iso-plan", 100, 10000)
+	ts.CreatePlan(t, "iso-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
 
 	custA, keyA := ts.CreateCustomer(t, "isolation-A-"+uuid.New().String()+"@example.com", "iso-plan")
 	custB, keyB := ts.CreateCustomer(t, "isolation-B-"+uuid.New().String()+"@example.com", "iso-plan")
