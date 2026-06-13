@@ -248,13 +248,13 @@ func TestIdempotentReplay(t *testing.T) {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	// Determinism guarantee: idempotency/middleware.go calls store.Finalize (line 218)
-	// before cw.flush(w) (line 237). The HTTP response is written to the socket only
-	// after Finalize completes, so when drainBody returns the DB row is committed.
-	// Assertion failure here means the middleware's finalize-before-flush ordering
-	// is broken — it is not a timing race in this test.
+	// Determinism guarantee: idempotency/middleware.go calls store.Finalize before
+	// writing the HTTP response to the client (cw.flush). The row is committed before
+	// the socket write completes, so when drainBody returns the DB record is visible.
+	// Assertion failure here means the middleware's finalize-before-flush contract is
+	// broken — it is not a timing race.
 	if n := ts.CountIdempotencyKeys(t, customerID, idempKey); n != 1 {
-		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (Finalize runs before flush in idempotency middleware)", n)
+		t.Fatalf("idempotency_keys after first request: got %d rows, want 1 (store.Finalize must precede response flush)", n)
 	}
 
 	r2 := invoke(t, ts, apiKey, withIdemp)
@@ -385,12 +385,12 @@ func TestQuotaExceeded(t *testing.T) {
 // via routes.go invoke → apierror.Write(w, rid, http.StatusBadGateway, WORKER_UNREACHABLE, ...).
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	worker, invoked := slowWorker(500 * time.Millisecond)
+	worker, invoked := slowWorker(750 * time.Millisecond)
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler:   worker,
 		DSN:             postgresDSN(t),
 		RedisURL:        redisURL(t),
-		WorkerTimeoutMS: 100, // times out well before the 500ms worker sleep
+		WorkerTimeoutMS: 250, // 3:1 ratio with worker sleep gives reliable scheduling margin on shared CI runners
 	})
 	ts.CreatePlan(t, "timeout-plan", 100, 10000)
 	customerID, apiKey := ts.CreateCustomer(t, "worker-timeout-"+uuid.New().String()+"@example.com", "timeout-plan")

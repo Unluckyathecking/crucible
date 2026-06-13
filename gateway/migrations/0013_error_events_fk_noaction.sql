@@ -32,11 +32,15 @@ BEGIN
   -- guarantee structural rather than operational.
   LOCK TABLE public.error_events IN ACCESS EXCLUSIVE MODE;
 
-  -- confdeltype='a' is PostgreSQL's catalog code for NO ACTION (the desired
-  -- state). Skip DROP+ADD if the correct constraint already exists.
-  -- Include table scoping via pg_class join so the check is unambiguous even if
-  -- another table coincidentally carries a constraint with the same name.
-  -- Safe to use here: both tables verified above, so pg_class rows exist.
+  -- pg_constraint.confdeltype letter codes (PostgreSQL catalog reference):
+  --   'a' = NO ACTION  ← the correct state this migration enforces
+  --   'r' = RESTRICT
+  --   'c' = CASCADE
+  --   'n' = SET NULL   ← the incorrect state a previous migration left behind
+  --   'd' = SET DEFAULT
+  --
+  -- Skip DROP+ADD if error_events_api_key_id_fkey already has confdeltype='a'
+  -- (NO ACTION). The pg_class join scopes the check to this table specifically.
   IF NOT EXISTS (
     SELECT 1
     FROM   pg_constraint c
@@ -44,15 +48,18 @@ BEGIN
     JOIN   pg_namespace  n ON n.oid = t.relnamespace
     WHERE  c.conname     = 'error_events_api_key_id_fkey'
       AND  c.contype     = 'f'
-      AND  c.confdeltype = 'a'
+      AND  c.confdeltype = 'a'   -- 'a' = NO ACTION (desired state)
       AND  t.relname     = 'error_events'
       AND  n.nspname     = 'public'
   ) THEN
+    RAISE NOTICE 'migration 0013: fixing error_events FK from SET NULL to NO ACTION';
     ALTER TABLE public.error_events
       DROP CONSTRAINT IF EXISTS error_events_api_key_id_fkey;
     ALTER TABLE public.error_events
       ADD CONSTRAINT error_events_api_key_id_fkey
       FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE NO ACTION;
+  ELSE
+    RAISE NOTICE 'migration 0013: error_events FK already NO ACTION, skipping';
   END IF;
 END $$;
 
