@@ -35,8 +35,7 @@ func newTestHTTPClient() *http.Client {
 			MaxIdleConns:        10,
 			MaxIdleConnsPerHost: 5,
 			MaxConnsPerHost:     10,
-			IdleConnTimeout:     30 * time.Second,
-			ForceAttemptHTTP2:   false, // httptest.Server uses HTTP/1.1
+			IdleConnTimeout: 30 * time.Second,
 		},
 	}
 }
@@ -101,12 +100,15 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay to trigger the proxy timeout.
+// The canonical Go timer drain pattern is used: Stop in the Done branch
+// prevents the timer from firing; if it already fired, drain the buffered
+// item so the timer's memory can be reclaimed. No defer is needed because
+// the timer.C branch already consumed the channel item.
 func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 	var invoked atomic.Bool
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invoked.Store(true)
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
 			if r.Context().Err() != nil {
@@ -115,6 +117,9 @@ func slowWorker(delay time.Duration) (http.Handler, *atomic.Bool) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
 		}
 	})
