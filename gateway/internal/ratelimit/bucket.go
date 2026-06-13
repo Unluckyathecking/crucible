@@ -11,7 +11,6 @@ package ratelimit
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,11 +77,15 @@ const noRemaining = -1
 // when the count is unreliable (unlimited plan or Redis error — fail-open).
 // Returns (0, ErrLimited) when the customer has exceeded their limit.
 // perMinute <= 0 means "no limit".
+// RateLimitKey returns the Redis sorted-set key for a customer's sliding-window rate limit.
+// Exported so test-harness cleanup can delete the key using the same format as production.
+func RateLimitKey(customerID string) string { return "rl:" + customerID }
+
 func (b *Bucket) Allow(ctx context.Context, customerID string, perMinute int) (int, error) {
 	if perMinute <= 0 {
 		return noRemaining, nil
 	}
-	key := fmt.Sprintf("rl:%s", customerID)
+	key := RateLimitKey(customerID)
 	now := time.Now().UnixMilli()
 	member := uuid.NewString()
 

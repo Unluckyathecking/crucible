@@ -26,6 +26,10 @@ func monthKey(customerID uuid.UUID, now time.Time) string {
 	return fmt.Sprintf("quota:%s:%s", customerID, now.UTC().Format("2006-01"))
 }
 
+// MonthKey is the exported form of monthKey, used by test-harness cleanup to
+// construct the same Redis key without duplicating the format string.
+func MonthKey(customerID uuid.UUID, t time.Time) string { return monthKey(customerID, t) }
+
 func expireAt(now time.Time) time.Time {
 	// Month()+1 == 13 in December; time.Date normalises 13 → January of year+1,
 	// which is the correct result for a December quota key.

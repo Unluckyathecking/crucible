@@ -87,8 +87,7 @@ func slowWorker(delay time.Duration) http.Handler {
 }
 
 // invoke sends POST /v1/echo to the gateway server with the given API key and optional
-// request mutators. The response body is registered with t.Cleanup so it is always
-// closed even if the caller fatals before reaching drainBody.
+// request mutators. Callers must drain and close the body via drainBody.
 func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(
@@ -109,7 +108,6 @@ func invoke(t *testing.T, ts *harness.TestServer, apiKey string, mutators ...fun
 	if err != nil {
 		t.Fatalf("do request: %v", err)
 	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
 }
 

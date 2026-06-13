@@ -216,7 +216,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int, mon
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = ts.DB.Exec(ctx, `DELETE FROM plans WHERE id = $1`, id)
+		if _, err := ts.DB.Exec(ctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
+			t.Logf("harness: cleanup plan %q: %v", id, err)
+		}
 	})
 }
 
@@ -267,11 +269,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			t.Logf("harness: cleanup customers for customer %s: %v", customerID, err)
 		}
 		// Flush quota counter and rate-limit sorted set to avoid polluting next run.
-		// Key formats mirror production: quota.Tracker uses "quota:<id>:<YYYY-MM>" (tracker.go),
-		// ratelimit.Bucket uses "rl:<id>" (bucket.go).
+		// Keys are constructed via the same exported functions as production to ensure
+		// this cleanup targets exactly the keys the middleware touches.
 		now := time.Now().UTC()
-		quotaKey := "quota:" + customerID.String() + ":" + now.Format("2006-01")
-		rlKey := "rl:" + customerID.String()
+		quotaKey := quota.MonthKey(customerID, now)
+		rlKey := ratelimit.RateLimitKey(customerID.String())
 		if err := ts.Redis.Del(cctx, quotaKey, rlKey).Err(); err != nil {
 			// Log but do not fail: stale Redis keys expire naturally and UUID-scoped
 			// keys cannot pollute other customers.
