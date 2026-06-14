@@ -146,9 +146,10 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		if len(kv) != 2 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
-		// Reject empty keys and empty values universally. No header field has an
-		// empty key or an empty value. Mirrors TypeScript's idx<=0 guard for
-		// cross-language parity.
+		// Universal empty-value guard — runs before the switch, so it applies to
+		// ALL keys: t=, v1=, AND any unknown future key (e.g. v2=). A part like
+		// "foo=" is rejected here; "foo=bar" falls through to the default case and
+		// is silently ignored. Mirrors TypeScript's universal val==="" guard.
 		if len(kv[0]) == 0 || len(kv[1]) == 0 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
@@ -169,7 +170,9 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 				continue
 			}
 			sigs = append(sigs, kv[1])
-		// Unknown keys (e.g. future v2=) are silently ignored for forward compatibility.
+		default:
+			// Unknown keys with non-empty values (e.g. future v2=…) are silently ignored
+			// for forward compatibility. Empty values are caught by the universal guard above.
 		}
 	}
 	if timestamp == "" || len(sigs) == 0 {
