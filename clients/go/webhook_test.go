@@ -29,11 +29,12 @@ const sha256HexLen = sha256.Size * 2
 // HMAC produced offline. If VerifyWebhook's algorithm ever drifts from the gateway
 // signer, the known-good vector test catches it regardless of testSign.
 //
-// Nil body: mac.Write(nil) writes zero bytes, identical to mac.Write([]byte{}).
-// TestVerifyWebhook_nilBody verifies this round-trips correctly.
+// Nil body: testSign mirrors VerifyWebhook's explicit nil→[]byte{} normalisation
+// so both paths remain visibly aligned. TestVerifyWebhook_nilBody verifies the
+// round-trip: a nil-body signature produced by testSign verifies successfully.
 func testSign(secret []byte, timestamp string, body []byte) string {
-	// Mirror VerifyWebhook's nil→[]byte{} normalisation so both paths produce
-	// an identical HMAC for nil body: zero body bytes after "timestamp.".
+	// Explicit nil guard keeps testSign aligned with VerifyWebhook — both normalise
+	// nil to []byte{} before HMAC so test signatures match the verifier input exactly.
 	if body == nil {
 		body = []byte{}
 	}
