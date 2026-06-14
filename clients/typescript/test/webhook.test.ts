@@ -154,7 +154,9 @@ describe("verifyWebhook", () => {
       .map((s) => `v1=${s}`)
       .join(",");
     const header = `t=${ts},${fakeSigs},v1=${validSig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+    // The valid sig is dropped (not parsed) due to the candidate cap, so no
+    // candidate matches — the error must be "no matching v1 signature", not "malformed".
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("throws on missing header", () => {
