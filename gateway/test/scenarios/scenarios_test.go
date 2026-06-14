@@ -386,11 +386,17 @@ func TestRateLimit(t *testing.T) {
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
-	// Loop until we're safely below second 57; a second pass handles goroutines
-	// descheduled mid-sleep that wake too close to the next minute boundary.
-	for now := time.Now(); now.Second() >= 57; now = time.Now() {
-		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-		time.Sleep(time.Until(nextMinute) + 200*time.Millisecond)
+	// Cap iterations so a severely starved goroutine cannot loop indefinitely.
+	const maxSyncAttempts = 3
+	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
+		if now := time.Now(); now.Second() < 57 {
+			break
+		} else if attempt == maxSyncAttempts {
+			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
+		} else {
+			nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+			time.Sleep(time.Until(nextMinute) + 200*time.Millisecond)
+		}
 	}
 	// Snapshot the window start once; RateLimit-Reset must fall in [windowStart, windowStart+60].
 	// Capturing before requests avoids a spurious failure if time advances past windowStart+60
