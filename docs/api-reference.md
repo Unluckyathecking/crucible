@@ -327,6 +327,88 @@ Stripe webhooks handle:
 
 All webhook events are HMAC-verified and deduplicated against the `webhook_events` table.
 
+## Verifying Webhooks
+
+When you register a webhook endpoint in the dashboard, every delivery is signed with HMAC-SHA256 so you can verify the request originated from the gateway and has not been tampered with.
+
+### Headers
+
+| Header | Description |
+|---|---|
+| `X-Crucible-Signature` | `t=<unix_ts>,v1=<hex_hmac_sha256>` — signature and timestamp in one header |
+| `X-Crucible-Timestamp` | Unix timestamp (seconds). Redundant with `t=` in the signature header; provided for logging convenience. |
+| `X-Webhook-Event-ID` | UUID for idempotent delivery. Use this to deduplicate at-least-once deliveries. |
+| `X-Webhook-Event-Type` | Event type string (e.g. `invoice.paid`). |
+
+### Verification Algorithm
+
+1. Extract `t=<ts>` and one or more `v1=<sig>` values from `X-Crucible-Signature`.
+2. Reject if the timestamp `t` is older than your tolerance window (default: 5 minutes).
+3. Compute `HMAC-SHA256(secret_bytes, ts + "." + raw_body)`.
+4. Constant-time compare the digest against each `v1=` candidate.
+
+The signing secret (`secret_hex`) is shown once at endpoint creation time in the dashboard. Store it as an environment variable.
+
+**Important:** Always pass the raw request body bytes to the verifier before any JSON parsing. Re-serialising the parsed body changes whitespace and field order, which invalidates the signature.
+
+### Go
+
+```go
+import (
+    "io"
+    "net/http"
+    "os"
+    "time"
+
+    crucible "github.com/Unluckyathecking/crucible/clients/go"
+)
+
+func handleWebhook(w http.ResponseWriter, r *http.Request) {
+    body, _ := io.ReadAll(r.Body)
+    err := crucible.VerifyWebhook(
+        os.Getenv("WEBHOOK_SECRET"),
+        r.Header.Get("X-Crucible-Signature"),
+        body,
+        5*time.Minute,
+    )
+    if err != nil {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+    // process event ...
+}
+```
+
+### TypeScript / Node.js
+
+```typescript
+import { verifyWebhook, WebhookVerificationError } from "@crucible/client";
+
+// Express example — ensure you use express.raw() or similar to capture the raw body.
+app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  try {
+    verifyWebhook(
+      process.env.WEBHOOK_SECRET!,
+      req.headers["x-crucible-signature"] as string,
+      req.body as Buffer,
+    );
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) {
+      res.status(401).json({ error: "invalid signature" });
+      return;
+    }
+    throw err;
+  }
+  // process event ...
+});
+```
+
+### Security Notes
+
+- The gateway caps the number of `v1=` candidates it parses to prevent header-stuffing DoS attacks. Your verifier does the same.
+- The 5-minute tolerance window matches the gateway's inbound Stripe webhook replay protection. Do not widen it.
+- Use constant-time comparison (`hmac.Equal` in Go, `crypto.timingSafeEqual` in Node.js) — the SDK helpers handle this for you.
+
 ## Request ID
 
 Every request receives an `X-Request-ID` header. If you send one (max 64 characters), it is echoed back. Otherwise the gateway generates a UUID.

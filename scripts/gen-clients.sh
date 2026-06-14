@@ -14,7 +14,7 @@ if [[ ! -f "${SPEC}" ]]; then
 fi
 
 python3 - "${SPEC}" "${REPO_ROOT}" <<'PYEOF'
-import json, os, sys
+import json, os, re, sys
 
 SPEC_PATH = sys.argv[1]
 REPO_ROOT  = sys.argv[2]
@@ -852,7 +852,18 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
     f'{type_export_line}'
     f'export {{ ApiError }} from "./errors";\n'
     f'export type {{ ErrorBody }} from "./errors";\n'
+    f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS }} from "./webhook";\n'
 ))
+
+# Update package.json test script to run both generated and non-generated test files.
+pkg_path = os.path.join(TS_DIR, "package.json")
+if os.path.exists(pkg_path):
+    with open(pkg_path) as _pf:
+        pkg_content = _pf.read()
+    _new_test = "npm run build && node --test dist/test/client.test.js dist/test/webhook.test.js"
+    pkg_content = re.sub(r'"test":\s*"[^"]*"', f'"test": "{_new_test}"', pkg_content)
+    with open(pkg_path, "w") as _pf:
+        _pf.write(pkg_content)
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────
 
