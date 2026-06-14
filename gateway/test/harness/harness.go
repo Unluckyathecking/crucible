@@ -414,7 +414,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 			if prevCap.Valid {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-					planID, prevRate, prevCap.Int64, prevName,
+					planID, prevRate, pgtype.Int8{Int64: prevCap.Int64, Valid: true}, prevName,
 				)
 			} else {
 				_, err = ts.DB.Exec(cctx,
