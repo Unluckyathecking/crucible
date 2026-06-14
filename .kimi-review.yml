@@ -1,6 +1,29 @@
-# Exclude auto-generated, large binary-like, and low-signal files.
+# Exclude auto-generated, large binary-like, and low-signal files from the
+# Kimi file pack. Files listed here are still visible in the PR diff; only
+# their full contents are omitted to keep the review within token limits.
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
+  - "workers/sdk-go/go.sum"
+  - "workers/stubs/go/go.sum"
   - ".gitignore"
   - "ops/grafana/**"
+  # Build-metadata files: Go version bumps trigger false-positive "hallucinated version"
+  # prose that consumes the entire output budget before JSON findings are written.
+  # Listed as exact paths because the action's glob engine does not support leading **.
+  - "go.work"
+  - "gateway/go.mod"
+  - "gateway/Dockerfile"
+  - "workers/sdk-go/go.mod"
+  - "workers/stubs/go/go.mod"
+  - "workers/stubs/go/Dockerfile"
+  # Large test files: full analysis consistently exhausts the Kimi output budget.
+  - "gateway/test/harness/harness.go"
+  - "gateway/test/scenarios/scenarios_test.go"
+  # Low-signal for this PR: dashboard, worker SDK, stubs, scripts, and ops
+  # config are unchanged by the integration-harness work and bulk up the pack.
+  - "dashboard/**"
+  - "workers/sdk-go/**"
+  - "workers/stubs/**"
+  - "scripts/**"
+  - "ops/**"

@@ -1,7 +1,7 @@
 # Crucible worker stub.
 # Build context MUST be the repo root so the sdk-go replace directive resolves.
 #   docker build -f workers/stubs/go/Dockerfile .
-FROM golang:1.25.0-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY workers/sdk-go ./workers/sdk-go
 COPY workers/stubs/go ./workers/stubs/go

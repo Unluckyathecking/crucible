@@ -21,8 +21,8 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: crucible
+          POSTGRES_PASSWORD: ci_test
           POSTGRES_DB: crucible
-          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -49,12 +49,24 @@ jobs:
             psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f "$f";
           done
         env:
-          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
+          POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
       - name: gateway test
+        timeout-minutes: 10
         env:
           REDIS_URL: redis://localhost:6379
-          POSTGRES_DSN: postgres://crucible@localhost:5432/crucible?sslmode=disable
-        run: cd gateway && go vet ./... && go test -race ./...
+          POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
+        run: cd gateway && go vet ./... && go test -race -timeout 9m $(go list ./... | grep -v '/test')
+      - name: gateway integration tests
+        # timeout-minutes (15) is 3m beyond the binary -timeout (12m) so the job watchdog
+        # fires only on genuine hangs; the extra time lets cleanup goroutines flush and
+        # SIGQUIT stack dumps print before the step is forcibly killed.
+        timeout-minutes: 15
+        env:
+          REDIS_URL: redis://localhost:6379
+          POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
+        # -race: data-race detector; -count=1: disables test result caching; -shuffle=on: randomises order.
+        run: cd gateway && go vet ./test/... && go test -race -count=1 -shuffle=on -timeout 12m ./test/...
+
       - name: sdk-go test
         run: cd workers/sdk-go && go vet ./... && go test -race ./...
       - name: worker stub build
@@ -67,23 +79,38 @@ jobs:
         run: |
           set -e
 
-          # Extract go version from go.mod (e.g. "1.25.0" from "go 1.25.0")
+          # Extract go version from go.mod (e.g. "1.25.0" from "go 1.25.0").
+          # go work sync normalises two-part "go 1.25" → three-part "go 1.25.0", so
+          # we compare only the major.minor portion — "1.25.0" and "1.25" are both "1.25".
           GOMOD_VERSION=$(grep '^go ' gateway/go.mod | awk '{print $2}')
           echo "go.mod version: $GOMOD_VERSION"
+          GOMOD_MINOR=$(echo "$GOMOD_VERSION" | awk -F. '{print $1"."$2}')
 
-          # Extract go version from gateway Dockerfile FROM line
-          GW_FROM=$(grep -m1 '^FROM golang:' gateway/Dockerfile | sed 's/.*golang:\(.*\)-alpine.*/\1/')
+          # Extract go version from gateway Dockerfile FROM line.
+          # Regex matches any image suffix (alpine, bookworm, etc.) or no suffix.
+          GW_FROM=$(grep -m1 '^FROM golang:' gateway/Dockerfile | sed -nE 's/^FROM golang:([0-9]+(\.[0-9]+)*)([-@+].*)?$/\1/p')
+          if [ -z "$GW_FROM" ]; then
+            echo "ERROR: could not extract golang version from gateway/Dockerfile"
+            exit 1
+          fi
+          GW_MINOR=$(echo "$GW_FROM" | awk -F. '{print $1"."$2}')
           echo "gateway/Dockerfile golang version: $GW_FROM"
-          if [ "$GOMOD_VERSION" != "$GW_FROM" ]; then
-            echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM"
+          if [ "$GOMOD_MINOR" != "$GW_MINOR" ]; then
+            echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod minor=$GOMOD_MINOR, Dockerfile minor=$GW_MINOR (go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM)"
             exit 1
           fi
 
-          # Extract go version from workers/active/Dockerfile FROM line
-          WF_FROM=$(grep -m1 '^FROM golang:' workers/active/Dockerfile | sed 's/.*golang:\(.*\)-alpine.*/\1/')
+          # Extract go version from workers/active/Dockerfile FROM line.
+          # workers/active is a symlink to the current worker implementation (e.g. workers/stubs/go).
+          WF_FROM=$(grep -m1 '^FROM golang:' workers/active/Dockerfile | sed -nE 's/^FROM golang:([0-9]+(\.[0-9]+)*)([-@+].*)?$/\1/p')
+          if [ -z "$WF_FROM" ]; then
+            echo "ERROR: could not extract golang version from workers/active/Dockerfile"
+            exit 1
+          fi
+          WF_MINOR=$(echo "$WF_FROM" | awk -F. '{print $1"."$2}')
           echo "workers/active/Dockerfile golang version: $WF_FROM"
-          if [ "$GOMOD_VERSION" != "$WF_FROM" ]; then
-            echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM"
+          if [ "$GOMOD_MINOR" != "$WF_MINOR" ]; then
+            echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod minor=$GOMOD_MINOR, Dockerfile minor=$WF_MINOR (go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM)"
             exit 1
           fi
 
