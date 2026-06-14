@@ -185,17 +185,19 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	defer poolCancel()
 	pool, err := db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
-		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
+		workerSrv.Close()
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	t.Cleanup(workerSrv.Close)
-	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
-	t.Cleanup(func() { pool.Close() })
 	if err := runMigrations(pool); err != nil {
 		pool.Close()
 		workerSrv.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
+	// Register cleanups only after both pool creation and migrations succeed so that
+	// manual closes in the error paths above are the sole owners; no double-close.
+	t.Cleanup(workerSrv.Close)
+	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
+	t.Cleanup(func() { pool.Close() })
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer redisCancel()
