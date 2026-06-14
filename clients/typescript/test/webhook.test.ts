@@ -37,8 +37,8 @@ function expectWebhookError(fn: () => void, messageSubstring?: string): void {
     );
     if (messageSubstring) {
       assert.ok(
-        (err as WebhookVerificationError).message.includes(messageSubstring),
-        `expected error message to include "${messageSubstring}", got "${(err as WebhookVerificationError).message}"`,
+        err.message.includes(messageSubstring),
+        `expected error message to include "${messageSubstring}", got "${err.message}"`,
       );
     }
     return true;
