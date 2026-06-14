@@ -196,17 +196,47 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatalf("harness: WorkerTimeoutMS %d exceeds maximum %d ms", opts.WorkerTimeoutMS, maxWorkerTimeoutMS)
 	}
 
-	workerSrv := httptest.NewServer(opts.WorkerHandler)
-	t.Cleanup(workerSrv.Close)
+	// Declare all closeable resources upfront so the single cleanup closure
+	// below can guard each with a nil check, regardless of where setup exits.
+	var (
+		workerSrv *httptest.Server
+		pool      *pgxpool.Pool
+		rdb       *redis.Client
+		authStore *auth.Store
+		gw        *httptest.Server
+	)
+	// Single cleanup registered before any resource is created: closes everything
+	// in dependency order (gw → authStore → rdb → pool → workerSrv) even when
+	// setup panics or fatals mid-way. Nil checks skip resources never initialised.
+	t.Cleanup(func() {
+		if gw != nil {
+			gw.Close()
+		}
+		if authStore != nil {
+			authStore.Close()
+		}
+		if rdb != nil {
+			if err := rdb.Close(); err != nil {
+				t.Errorf("harness: redis close: %v", err)
+			}
+		}
+		if pool != nil {
+			pool.Close()
+		}
+		if workerSrv != nil {
+			workerSrv.Close()
+		}
+	})
+
+	workerSrv = httptest.NewServer(opts.WorkerHandler)
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
-	pool, err := db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
+	var err error
+	pool, err = db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
-	t.Cleanup(func() { pool.Close() })
 
 	if err := runMigrations(pool); err != nil {
 		t.Fatalf("harness: apply migrations: %v", err)
@@ -214,18 +244,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer redisCancel()
-	rdb, err := cache.NewRedis(redisCtx, opts.RedisURL)
+	rdb, err = cache.NewRedis(redisCtx, opts.RedisURL)
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	// rdb is registered before authStore: in LIFO order authStore.Close() runs
-	// first (draining its background goroutine), then rdb.Close() runs while
-	// Redis is still open, then pool.Close() runs last.
-	t.Cleanup(func() {
-		if err := rdb.Close(); err != nil {
-			t.Errorf("harness: redis close: %v", err)
-		}
-	})
 
 	cfg := &config.Config{
 		BodyLimitBytes:  defaultBodyLimitBytes,
@@ -235,13 +257,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		APIKeyHashSalt:  testSalt,
 	}
 
-	authStore := auth.NewStore(pool, rdb, testSalt)
-	// authStore is registered last so LIFO runs it first: drains the background
-	// last_used_at goroutine while both Redis and Postgres are still open.
-	// Cleanup order: authStore.Close → rdb.Close → pool.Close.
-	// Wrapped in a closure so a future error-return on Close() surfaces as a
-	// compile error rather than a silent discard.
-	t.Cleanup(func() { authStore.Close() })
+	authStore = auth.NewStore(pool, rdb, testSalt)
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
@@ -307,8 +323,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		return server.NewRouter(deps)
 	}()
 
-	gw := httptest.NewServer(handler)
-	t.Cleanup(gw.Close)
+	gw = httptest.NewServer(handler)
 
 	return &TestServer{
 		Server: gw,
