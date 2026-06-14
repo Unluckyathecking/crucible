@@ -54,8 +54,7 @@ func (e *WebhookError) Message() string { return e.msg }
 func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Duration) error {
 	if tolerance == 0 {
 		tolerance = DefaultTolerance
-	}
-	if tolerance < 0 {
+	} else if tolerance < 0 {
 		return &WebhookError{"negative tolerance not allowed"}
 	}
 	if len(secretHex) == 0 || len(secretHex)%2 != 0 {

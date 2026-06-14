@@ -111,14 +111,14 @@ describe("verifyWebhook", () => {
     const oldTs = Math.floor((Date.now() - 10 * 60 * 1000) / 1000).toString();
     const sig = testSign(secret, oldTs, body);
     const header = `t=${oldTs},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000), "too old");
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, DEFAULT_TOLERANCE_MS), "too old");
   });
 
   it("rejects future timestamp", () => {
     const futureTs = Math.floor((Date.now() + 10 * 60 * 1000) / 1000).toString();
     const sig = testSign(secret, futureTs, body);
     const header = `t=${futureTs},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000), "future");
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, DEFAULT_TOLERANCE_MS), "future");
   });
 
   it("accepts second v1= candidate when first is invalid", () => {

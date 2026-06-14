@@ -224,9 +224,9 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 		secret  string
 		wantMsg string
 	}{
-		{"", "must be non-empty"},   // empty string
-		{"zz", "non-hex"},           // even length but non-hex
-		{"abc", "must be non-empty"}, // odd length
+		{"", "must be non-empty"},  // empty string
+		{"zz", "non-hex"},          // even length but non-hex
+		{"abc", "even-length"},     // odd length
 	}
 	for _, tc := range cases {
 		err := crucible.VerifyWebhook(tc.secret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
