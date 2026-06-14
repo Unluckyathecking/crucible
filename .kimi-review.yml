@@ -11,10 +11,9 @@ exclude_patterns:
   # Build-metadata files: Go version bumps trigger false-positive "hallucinated version"
   # prose that consumes the entire output budget before JSON findings are written.
   # Listed as exact paths because the action's glob engine does not support leading **.
-  # gateway/Dockerfile is included (not excluded) so Kimi can verify the golang image
-  # version is consistent with go.mod; excluding it caused hallucinated criticals.
   - "go.work"
   - "gateway/go.mod"
+  - "gateway/Dockerfile"
   - "workers/sdk-go/go.mod"
   - "workers/stubs/go/go.mod"
   - "workers/stubs/go/Dockerfile"
