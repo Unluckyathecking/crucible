@@ -459,7 +459,7 @@ func TestInvokeMethodConformanceDirect(t *testing.T) {
 		t.Fatalf("crucible.Handler: %v", err)
 	}
 	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+	defer srv.Close()
 	client := harnessClient()
 
 	assertHealthz(t, srv, client)

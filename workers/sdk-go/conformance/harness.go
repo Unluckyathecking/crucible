@@ -142,7 +142,7 @@ func assertHealthz(t tb, srv *httptest.Server, client *http.Client) {
 // with 405 Method Not Allowed (invokeHandler enforces POST-only per the frozen contract).
 func assertInvokeMethodNotAllowed(t tb, srv *httptest.Server, client *http.Client) {
 	t.Helper()
-	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions, http.MethodTrace} {
 		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
 		if err != nil {
 			t.Fatalf("%s /invoke: build request: %v", method, err)
