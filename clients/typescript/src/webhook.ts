@@ -37,6 +37,9 @@ export function verifyWebhook(
   body: Buffer | string,
   toleranceMs: number = DEFAULT_TOLERANCE_MS,
 ): void {
+  if (toleranceMs < 0) {
+    throw new WebhookVerificationError("negative tolerance not allowed");
+  }
   if (!secretHex || secretHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(secretHex)) {
     throw new WebhookVerificationError(
       "invalid secretHex: must be non-empty even-length hex string",
@@ -53,7 +56,7 @@ export function verifyWebhook(
   }
   const ts = parseInt(timestamp, 10);
   // Reject non-finite or non-safe-integer timestamps to prevent overflow in ts*1000.
-  if (!Number.isFinite(ts) || !Number.isSafeInteger(ts) || ts < 0) {
+  if (!Number.isFinite(ts) || !Number.isSafeInteger(ts)) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const nowMs = Date.now();
@@ -72,14 +75,12 @@ export function verifyWebhook(
   mac.update(bodyBuf);
   const expected = mac.digest();
 
-  // Always call timingSafeEqual (even for malformed candidates) to avoid leaking
-  // which candidate position failed due to length vs. HMAC mismatch.
-  const dummy = Buffer.alloc(32);
   for (const sig of sigs) {
     const candidate = Buffer.from(sig, "hex");
-    // Non-hex chars cause Buffer.from to produce a shorter buffer.
-    const cmp = candidate.length === 32 ? candidate : dummy;
-    if (timingSafeEqual(cmp, expected) && candidate.length === 32) return;
+    // Non-hex chars cause Buffer.from to produce a shorter buffer; timingSafeEqual
+    // throws on length mismatch, so we must filter before calling it.
+    if (candidate.length !== 32) continue;
+    if (timingSafeEqual(candidate, expected)) return;
   }
   throw new WebhookVerificationError("no matching v1 signature");
 }
@@ -92,13 +93,17 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
   const sigs: string[] = [];
   for (const part of header.split(",")) {
     const idx = part.indexOf("=");
-    if (idx < 0) continue;
+    if (idx < 0) {
+      throw new WebhookVerificationError("malformed X-Crucible-Signature header");
+    }
     const key = part.slice(0, idx);
     const val = part.slice(idx + 1);
     if (key === "t") {
       timestamp = val;
-    } else if (key === "v1" && sigs.length < MAX_SIG_CANDIDATES) {
-      sigs.push(val);
+    } else if (key === "v1") {
+      if (sigs.length < MAX_SIG_CANDIDATES) sigs.push(val);
+    } else {
+      throw new WebhookVerificationError("malformed X-Crucible-Signature header");
     }
   }
   if (!timestamp || sigs.length === 0) {

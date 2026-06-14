@@ -44,6 +44,9 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if tolerance < 0 {
 		return &WebhookError{"negative tolerance not allowed"}
 	}
+	if len(secretHex) == 0 || len(secretHex)%2 != 0 {
+		return &WebhookError{"invalid secretHex: must be non-empty even-length hex string"}
+	}
 	secret, hexErr := hex.DecodeString(secretHex)
 	if hexErr != nil {
 		return &WebhookError{"invalid secretHex: " + hexErr.Error()}
@@ -92,7 +95,7 @@ func parseSignatureHeader(header string) (timestamp string, sigs []string, err e
 	for _, part := range strings.Split(header, ",") {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
-			continue
+			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 		switch kv[0] {
 		case "t":
@@ -101,6 +104,8 @@ func parseSignatureHeader(header string) (timestamp string, sigs []string, err e
 			if len(sigs) < maxSigCandidates {
 				sigs = append(sigs, kv[1])
 			}
+		default:
+			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 	}
 	if timestamp == "" || len(sigs) == 0 {

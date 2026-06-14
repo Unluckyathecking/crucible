@@ -163,4 +163,11 @@ describe("verifyWebhook", () => {
   it("exposes DEFAULT_TOLERANCE_MS as 5 minutes", () => {
     assert.equal(DEFAULT_TOLERANCE_MS, 5 * 60 * 1000);
   });
+
+  it("rejects negative toleranceMs", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, -1));
+  });
 });

@@ -336,7 +336,7 @@ When you register a webhook endpoint in the dashboard, every delivery is signed 
 | Header | Description |
 |---|---|
 | `X-Crucible-Signature` | `t=<unix_ts>,v1=<hex_hmac_sha256>` — signature and timestamp in one header |
-| `X-Crucible-Timestamp` | Unix timestamp (seconds). Redundant with `t=` in the signature header; provided for logging convenience. |
+| `X-Crucible-Timestamp` | Unix timestamp (seconds). **Do not use for verification** — use `t=` in `X-Crucible-Signature`. Provided for logging/tracing convenience only. |
 | `X-Webhook-Event-ID` | UUID for idempotent delivery. Use this to deduplicate at-least-once deliveries. |
 | `X-Webhook-Event-Type` | Event type string (e.g. `invoice.paid`). |
 
