@@ -472,7 +472,13 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	// named variable makes clear which value the Redis DEL key is derived from.
 	cleanupPrefix := prefix
 
+	// inserted is set to true only after both DB inserts succeed. The cleanup
+	// closure checks it so it no-ops if CreateCustomer fatals before the rows exist.
+	var inserted bool
 	t.Cleanup(func() {
+		if !inserted {
+			return
+		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		// Redis keys are always cleaned up on function exit, regardless of whether DB
@@ -600,6 +606,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
 	}
+	inserted = true
 
 	return customerID, apiKey
 }
