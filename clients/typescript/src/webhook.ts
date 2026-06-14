@@ -45,14 +45,14 @@ export class WebhookVerificationError extends Error {
  *
  * @param secretHex - hex-encoded signing secret from the dashboard endpoint page
  * @param sigHeader - raw value of the X-Crucible-Signature header (t=<ts>,v1=<hex>)
- * @param body - unmodified request body as Buffer or string
+ * @param body - unmodified request body as Buffer (raw bytes from the HTTP framework)
  * @param toleranceMs - maximum age in ms; pass 0 to use DEFAULT_TOLERANCE_MS (5 min)
  * @throws {WebhookVerificationError} when the signature does not match or is expired
  */
 export function verifyWebhook(
   secretHex: string,
   sigHeader: string,
-  body: Buffer | string,
+  body: Buffer,
   toleranceMs?: number,
 ): void {
   // Mirror Go's tolerance==0 sentinel: undefined (omitted) and explicit 0 both
@@ -111,16 +111,13 @@ export function verifyWebhook(
     throw new WebhookVerificationError("webhook timestamp too old (replay protection)");
   }
 
-  // Buffer is used verbatim (zero-copy, raw bytes preserved).
-  // WARNING: String inputs are for testing only. Non-ASCII characters may fail
-  // verification if the string encoding does not match the gateway's raw bytes
-  // exactly. Production webhook handlers must pass the raw Buffer from the HTTP
-  // framework (e.g. express.raw()) to avoid any encoding ambiguity.
-  const bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
+  // Body is used verbatim (zero-copy, raw bytes preserved). Always pass the raw
+  // Buffer from the HTTP framework (e.g. express.raw()) — re-serialising a parsed
+  // JSON body changes whitespace and field order, which invalidates the signature.
   const mac = createHmac("sha256", secret);
   mac.update(timestamp);
   mac.update(".");
-  mac.update(bodyBuf);
+  mac.update(body);
   const expected = mac.digest();
 
   for (const sig of sigs) {

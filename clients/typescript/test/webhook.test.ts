@@ -77,13 +77,13 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
-  it("accepts body as string (auto-encodes to Buffer before hashing)", () => {
+  it("accepts body as Buffer created from a UTF-8 string", () => {
     const ts = nowTs();
     const bodyStr = '{"event":"string-body"}';
-    // Signature computed on the UTF-8 bytes the verifier will produce from the string.
-    const sig = testSign(secret, ts, Buffer.from(bodyStr, "utf8"));
+    const bodyBuf = Buffer.from(bodyStr, "utf8");
+    const sig = testSign(secret, ts, bodyBuf);
     const header = `t=${ts},v1=${sig}`;
-    const result = verifyWebhook(secretHex, header, bodyStr);
+    const result = verifyWebhook(secretHex, header, bodyBuf);
     assert.equal(result, undefined);
   });
 
@@ -347,14 +347,12 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
-  it("verifies body with multi-byte UTF-8 characters passed as string", () => {
+  it("verifies body with multi-byte UTF-8 characters as Buffer", () => {
     const ts = nowTs();
-    const utf8Str = '{"message":"hello 🎉 你好"}';
-    const utf8Body = Buffer.from(utf8Str, "utf8");
+    const utf8Body = Buffer.from('{"message":"hello 🎉 你好"}', "utf8");
     const sig = testSign(secret, ts, utf8Body);
     const header = `t=${ts},v1=${sig}`;
-    // Buffer.from(str, 'utf8') must produce byte-identical output to the Buffer path.
-    const result = verifyWebhook(secretHex, header, utf8Str);
+    const result = verifyWebhook(secretHex, header, utf8Body);
     assert.equal(result, undefined);
   });
 
