@@ -347,13 +347,18 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
-  it("verifies body with multi-byte UTF-8 characters as Buffer", () => {
+  it("rejects body with wrong encoding (latin1 bytes vs utf-8 signature)", () => {
+    // Sign over the UTF-8 byte sequence; verify with latin1 bytes (different byte
+    // values for non-ASCII code points) → HMAC mismatch.
     const ts = nowTs();
-    const utf8Body = Buffer.from('{"message":"hello 🎉 你好"}', "utf8");
+    const utf8Body = Buffer.from('{"msg":"hello 🎉"}', "utf8");
+    const latin1Body = Buffer.from('{"msg":"hello 🎉"}', "latin1");
     const sig = testSign(secret, ts, utf8Body);
     const header = `t=${ts},v1=${sig}`;
-    const result = verifyWebhook(secretHex, header, utf8Body);
-    assert.equal(result, undefined);
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, latin1Body),
+      "no matching v1 signature",
+    );
   });
 
   it("exposes SIGNATURE_HEADER constant with correct value", () => {
@@ -372,12 +377,16 @@ describe("verifyWebhook", () => {
     assert.equal(WEBHOOK_EVENT_TYPE_HEADER, "X-Webhook-Event-Type");
   });
 
-  it("uses DEFAULT_TOLERANCE_MS when toleranceMs is explicitly undefined", () => {
+  it("rejects null toleranceMs (exercises !Number.isFinite guard)", () => {
+    // null is not caught by the === undefined or === 0 sentinels, so it falls
+    // through to the !Number.isFinite check (Number.isFinite(null) === false).
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    const result = verifyWebhook(secretHex, header, body, undefined);
-    assert.equal(result, undefined);
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, body, null as unknown as number),
+      "finite",
+    );
   });
 
   it("accepts exactly maxSigCandidates candidates (7 fake + 1 valid = 8)", () => {
