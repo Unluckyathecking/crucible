@@ -345,9 +345,12 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		t.Fatalf("harness: snapshot plan %q: %v", id, err)
 	}
 
-	var capArg *int64
+	// Use pgtype.Int8 so the SQL parameter is NULL (Valid=false) when monthlyCap==0
+	// (unlimited) rather than taking &monthlyCap which leaves a pointer into a
+	// function-parameter slot that could look like a loop-variable capture to later readers.
+	capArg := pgtype.Int8{}
 	if monthlyCap > 0 {
-		capArg = &monthlyCap
+		capArg = pgtype.Int8{Int64: monthlyCap, Valid: true}
 	}
 	if _, err := ts.DB.Exec(ctx, `
 		INSERT INTO plans (id, display_name, rate_limit_per_minute, monthly_unit_cap)
