@@ -21,8 +21,8 @@ exclude_patterns:
   # Large test files: full analysis consistently exhausts the Kimi output budget.
   - "gateway/test/harness/harness.go"
   - "gateway/test/scenarios/scenarios_test.go"
-  # CI workflow: Kimi misreads step ordering and flags psql as running before
-  # Go is installed (false positive — setup-go runs in the preceding step).
+  # CI workflow: excluded to avoid false positives around step ordering
+  # (psql appears before setup-go in the file, but setup-go runs first at runtime).
   - ".github/workflows/ci.yml"
   # Low-signal for this PR: dashboard, worker SDK, stubs, scripts, and ops
   # config are unchanged by the integration-harness work and bulk up the pack.

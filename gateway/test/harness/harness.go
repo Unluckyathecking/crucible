@@ -120,30 +120,6 @@ func ctxSleep(ctx context.Context, d time.Duration) bool {
 // during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
-// migrateOnce + migrateErr guarantee runMigrations runs exactly once per test
-// process. sync.Once is used rather than a mutex+bool so there is no ambiguity
-// about lock ownership across concurrent callers. Migration files are
-// individually idempotent (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING), so
-// a successful run is always safe to observe from multiple goroutines.
-// All concurrent callers in the same process must target the same Postgres
-// schema; do not use this harness from multiple packages in the same go test
-// invocation unless they share the same DSN.
-var (
-	migrateOnce sync.Once
-	migrateErr  error
-)
-
-// runMigrations applies schema migrations against pool exactly once per test
-// process. migrateErr is written inside the Do closure and is read-only after
-// Do returns, so no additional synchronisation is needed.
-func runMigrations(pool *pgxpool.Pool) error {
-	migrateOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-		defer cancel()
-		migrateErr = db.Apply(ctx, pool)
-	})
-	return migrateErr
-}
 
 // Options configures a gateway test server.
 type Options struct {
@@ -248,7 +224,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
 
-	if err := runMigrations(pool); err != nil {
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	defer migrateCancel()
+	if err := db.Apply(migrateCtx, pool); err != nil {
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
