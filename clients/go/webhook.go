@@ -140,7 +140,9 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 	if header == "" {
 		return "", nil, &WebhookError{"missing X-Crucible-Signature header"}
 	}
-	parts := strings.Split(header, ",")
+	// SplitN bounds allocation to maxHeaderParts+1 elements before the length check,
+	// preventing a large slice allocation on attacker-controlled input with many commas.
+	parts := strings.SplitN(header, ",", maxHeaderParts+1)
 	if len(parts) > maxHeaderParts {
 		return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 	}

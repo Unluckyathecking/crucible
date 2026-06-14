@@ -155,7 +155,9 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
   if (!header) {
     throw new WebhookVerificationError("missing X-Crucible-Signature header");
   }
-  const parts = header.split(",");
+  // split with limit bounds allocation to MAX_HEADER_PARTS+1 elements before the
+  // length check, preventing a large array allocation on attacker-controlled input.
+  const parts = header.split(",", MAX_HEADER_PARTS + 1);
   if (parts.length > MAX_HEADER_PARTS) {
     throw new WebhookVerificationError("malformed X-Crucible-Signature header");
   }

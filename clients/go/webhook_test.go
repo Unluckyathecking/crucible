@@ -20,12 +20,13 @@ const sha256HexLen = sha256.Size * 2
 
 // testSign replicates gateway/internal/webhookout.Sign locally so tests build
 // the positive vector without importing the gateway package tree.
-// Three separate mac.Write calls mirror the production signing algorithm exactly.
+// A single Write with pre-concatenated bytes independently verifies that the
+// implementation's three streaming Writes produce the same HMAC as the naive
+// concatenation, avoiding a tautological copy of the implementation.
 func testSign(secret []byte, timestamp string, body []byte) string {
+	payload := append(append([]byte(timestamp), '.'), body...)
 	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(timestamp))
-	_, _ = mac.Write([]byte("."))
-	_, _ = mac.Write(body)
+	_, _ = mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

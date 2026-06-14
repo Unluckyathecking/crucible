@@ -389,7 +389,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 ### TypeScript / Node.js
 
 ```typescript
-import { verifyWebhook, WebhookVerificationError, SIGNATURE_HEADER, DEFAULT_TOLERANCE_MS } from "@crucible/client";
+import { verifyWebhook, WebhookVerificationError, SIGNATURE_HEADER } from "@crucible/client";
 
 // Express example — ensure you use express.raw() or similar to capture the raw body.
 app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
@@ -408,7 +408,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
     return;
   }
   try {
-    verifyWebhook(secret, sigHeader, req.body, DEFAULT_TOLERANCE_MS);
+    verifyWebhook(secret, sigHeader, req.body); // toleranceMs omitted → DEFAULT_TOLERANCE_MS
   } catch (err) {
     if (err instanceof WebhookVerificationError) {
       res.status(401).json({ error: "invalid signature" });
