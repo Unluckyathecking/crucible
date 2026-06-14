@@ -117,11 +117,13 @@ func runMigrations(pool *pgxpool.Pool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
-	migrateErr = db.Apply(ctx, pool)
-	if migrateErr == nil {
-		migrateDone = true
+	if err := db.Apply(ctx, pool); err != nil {
+		migrateErr = err
+		return err
 	}
-	return migrateErr
+	migrateErr = nil
+	migrateDone = true
+	return nil
 }
 
 // Options configures a gateway test server.
@@ -200,7 +202,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
-		workerSrv.Close() // t.Cleanup not guaranteed to run on fatal; close explicitly
+		workerSrv.Close()
+		pool.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
