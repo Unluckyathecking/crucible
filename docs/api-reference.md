@@ -394,8 +394,8 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
     res.status(500).json({ error: "webhook secret not configured" });
     return;
   }
-  const sigHeader = req.headers["x-crucible-signature"];
-  if (typeof sigHeader !== "string") {
+  const sigHeader = req.get(SIGNATURE_HEADER);
+  if (!sigHeader) {
     res.status(401).json({ error: "missing signature header" });
     return;
   }

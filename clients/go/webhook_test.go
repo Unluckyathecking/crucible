@@ -15,11 +15,15 @@ import (
 
 // testSign replicates gateway/internal/webhookout.Sign locally so tests build
 // the positive vector without importing the gateway package tree.
+// Payload is built as a single contiguous slice to avoid any dependency on the
+// production code's Write ordering — the test is an independent oracle.
 func testSign(secret []byte, timestamp string, body []byte) string {
+	payload := make([]byte, 0, len(timestamp)+1+len(body))
+	payload = append(payload, []byte(timestamp)...)
+	payload = append(payload, '.')
+	payload = append(payload, body...)
 	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(timestamp))
-	_, _ = mac.Write([]byte("."))
-	_, _ = mac.Write(body)
+	_, _ = mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -198,6 +202,23 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
 		}
 		mustBeWebhookError(t, err)
+	}
+}
+
+func TestVerifyWebhook_uppercaseSecretHex(t *testing.T) {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	secretHexLower := hex.EncodeToString(secret)
+	secretHexUpper := strings.ToUpper(secretHexLower)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	if err := crucible.VerifyWebhook(secretHexUpper, header, body, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with uppercase secretHex: %v", err)
 	}
 }
 

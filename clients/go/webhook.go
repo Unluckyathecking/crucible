@@ -14,6 +14,10 @@ import (
 // comparisons by stuffing the header with many candidates.
 const maxSigCandidates = 8
 
+// maxHeaderParts caps the total comma-separated segments to prevent unbounded
+// iteration over attacker-controlled input before the v1 candidate cap applies.
+const maxHeaderParts = 16
+
 // DefaultTolerance is the maximum webhook age accepted by VerifyWebhook.
 // Equals the gateway's 5-minute inbound replay window.
 const DefaultTolerance = 5 * time.Minute
@@ -91,11 +95,11 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	return &WebhookError{"no matching v1 signature"}
 }
 
-// maxHeaderParts caps the total comma-separated segments to prevent unbounded
-// iteration over attacker-controlled input before the v1 candidate cap applies.
-const maxHeaderParts = 16
-
-func parseSignatureHeader(header string) (timestamp string, sigs []string, err error) {
+func parseSignatureHeader(header string) (string, []string, error) {
+	var (
+		timestamp string
+		sigs      []string
+	)
 	if header == "" {
 		return "", nil, &WebhookError{"missing X-Crucible-Signature header"}
 	}

@@ -5,16 +5,17 @@ import {
   verifyWebhook,
   WebhookVerificationError,
   DEFAULT_TOLERANCE_MS,
+  SIGNATURE_HEADER,
+  TIMESTAMP_HEADER,
 } from "../src/webhook";
 
 // testSign replicates gateway/internal/webhookout.Sign so tests build the
 // positive vector without importing the gateway package tree.
+// Payload is pre-concatenated so the test is an independent oracle of the
+// signing algorithm, not a structural mirror of the production Write sequence.
 function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
-  const mac = createHmac("sha256", secret);
-  mac.update(timestamp);
-  mac.update(".");
-  mac.update(body);
-  return mac.digest("hex");
+  const payload = Buffer.concat([Buffer.from(timestamp), Buffer.from("."), body]);
+  return createHmac("sha256", secret).update(payload).digest("hex");
 }
 
 function nowTs(): string {
@@ -185,5 +186,22 @@ describe("verifyWebhook", () => {
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
     expectWebhookError(() => verifyWebhook(secretHex, header, body, -1));
+  });
+
+  it("accepts uppercase secretHex", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    const upperSecret = secretHex.toUpperCase();
+    const result = verifyWebhook(upperSecret, header, body);
+    assert.equal(result, undefined);
+  });
+
+  it("exposes SIGNATURE_HEADER constant with correct value", () => {
+    assert.equal(SIGNATURE_HEADER, "X-Crucible-Signature");
+  });
+
+  it("exposes TIMESTAMP_HEADER constant with correct value", () => {
+    assert.equal(TIMESTAMP_HEADER, "X-Crucible-Timestamp");
   });
 });

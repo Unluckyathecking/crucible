@@ -49,16 +49,12 @@ export function verifyWebhook(
 
   const { timestamp, sigs } = parseSignatureHeader(sigHeader);
 
-  // Validate before parsing: reject whitespace, hex prefixes, and non-digit chars.
-  // /^\d+$/ is consistent with Go's strconv.ParseInt strict decimal parsing.
-  if (!/^\d+$/.test(timestamp)) {
+  // /^\d{1,15}$/ rejects non-decimal chars (whitespace, "0x") and bounds the string
+  // to 15 digits — well above any real Unix timestamp, comfortably within safe-integer range.
+  if (!/^\d{1,15}$/.test(timestamp)) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const ts = parseInt(timestamp, 10);
-  // Reject non-finite or non-safe-integer timestamps to prevent overflow in ts*1000.
-  if (!Number.isFinite(ts) || !Number.isSafeInteger(ts)) {
-    throw new WebhookVerificationError("bad timestamp in signature header");
-  }
   const nowMs = Date.now();
   const tsMs = ts * 1000;
   if (tsMs > nowMs) {
