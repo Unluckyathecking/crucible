@@ -48,9 +48,9 @@ const (
 	// It prevents httptest.Server.Close() deadlocks when the request context is
 	// not cancelled first (e.g. if the proxy timeout fires after Close starts).
 	// hungWorkerFallback must exceed WorkerTimeoutMS (500 ms in TestWorkerTimeout)
-	// but need not be large. 2 s is 4× the proxy timeout and avoids long wait
-	// paths when the proxy timeout itself fails to fire.
-	hungWorkerFallback = 2 * time.Second
+	// but need not be large. 5 s gives adequate margin under -race scheduling
+	// variance without imposing a long wait when the proxy timeout itself fires.
+	hungWorkerFallback = 5 * time.Second
 )
 
 // newTestHTTPClient returns an http.Client for a single test (one per test, not per request).
@@ -215,6 +215,7 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	for _, fn := range mutators {
 		fn(req)
 	}
