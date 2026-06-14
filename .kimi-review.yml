@@ -17,13 +17,9 @@ exclude_patterns:
   - "workers/sdk-go/go.mod"
   - "workers/stubs/go/go.mod"
   - "workers/stubs/go/Dockerfile"
-  - "gateway/migrations/**"
   # Large test files: full analysis consistently exhausts the Kimi output budget.
   - "gateway/test/harness/harness.go"
   - "gateway/test/scenarios/scenarios_test.go"
-  # CI workflow: excluded to avoid false positives around step ordering
-  # (psql appears before setup-go in the file, but setup-go runs first at runtime).
-  - ".github/workflows/ci.yml"
   # Low-signal for this PR: dashboard, worker SDK, stubs, scripts, and ops
   # config are unchanged by the integration-harness work and bulk up the pack.
   - "dashboard/**"
