@@ -860,3 +860,24 @@ func TestVerifyWebhook_v1TooShort(t *testing.T) {
 		t.Fatalf("expected 'no matching v1 signature' for short v1, got: %v", wErr)
 	}
 }
+
+func TestVerifyWebhook_embeddedEqualInV1Value(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	// "v1=ab=cd" has an embedded '=' in the signature value. The parser uses
+	// SplitN(part, "=", 2) then checks strings.Contains(kv[1], "=") — this guard
+	// fires and rejects the header as malformed. Mirrors the t=1=2 test and verifies
+	// the guard applies equally to v1= parts. Cross-language parity with the TypeScript
+	// test that exercises the same indexOf("=", idx+1) !== -1 guard.
+	header := "t=" + ts + ",v1=ab=cd"
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for embedded '=' in v1 value, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "malformed") {
+		t.Fatalf("expected 'malformed' for embedded '=' in v1 value, got: %v", wErr)
+	}
+}

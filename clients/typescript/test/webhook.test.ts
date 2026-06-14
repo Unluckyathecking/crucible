@@ -507,4 +507,18 @@ describe("verifyWebhook", () => {
     const header = `t=${ts},${fakeSigs},v1=${validSig}`;
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
+
+  it("rejects duplicate t= that appears after maxSigCandidates v1= (loop keeps validating after cap)", () => {
+    const ts = nowTs();
+    // 8 v1= candidates saturate the cap; a duplicate t= appended afterward must
+    // still be caught — the parse loop must not stop early when the cap is reached.
+    // This is the TypeScript counterpart of the Go internal test
+    // TestParseSignatureHeader_enforcesMaxSigCandidates/continues_validating_after_cap.
+    const fakeSigs = Array<string>(8)
+      .fill("d".repeat(SHA256_HEX_LEN))
+      .map((s) => `v1=${s}`)
+      .join(",");
+    const header = `t=${ts},${fakeSigs},t=9999999999`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
 });
