@@ -375,6 +375,10 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	if monthlyCap < 0 {
 		t.Fatal("harness: CreatePlan monthlyCap must be >= 0 (use 0 for unlimited)")
 	}
+	// planID is an explicit local copy of the id parameter so the t.Cleanup
+	// closure below captures a named variable rather than the parameter slot,
+	// making the capture-by-value intent unambiguous to readers and tools.
+	planID := id
 	// A t.Cleanup registered at the end of this function restores the plan to its
 	// pre-call state (or deletes it if it did not exist before) after the test ends.
 	ctx, cancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
@@ -387,16 +391,13 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		existed  bool
 	)
 	if err := ts.DB.QueryRow(ctx,
-		`SELECT rate_limit_per_minute, monthly_unit_cap, display_name FROM plans WHERE id = $1`, id,
+		`SELECT rate_limit_per_minute, monthly_unit_cap, display_name FROM plans WHERE id = $1`, planID,
 	).Scan(&prevRate, &prevCap, &prevName); err == nil {
 		existed = true
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("harness: snapshot plan %q: %v", id, err)
+		t.Fatalf("harness: snapshot plan %q: %v", planID, err)
 	}
 
-	// Use pgtype.Int8 so the SQL parameter is NULL (Valid=false) when monthlyCap==0
-	// (unlimited) rather than taking &monthlyCap which leaves a pointer into a
-	// function-parameter slot that could look like a loop-variable capture to later readers.
 	capArg := pgtype.Int8{}
 	if monthlyCap > 0 {
 		capArg = pgtype.Int8{Int64: monthlyCap, Valid: true}
@@ -408,8 +409,8 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		  SET display_name          = EXCLUDED.display_name,
 		      rate_limit_per_minute = EXCLUDED.rate_limit_per_minute,
 		      monthly_unit_cap      = EXCLUDED.monthly_unit_cap
-	`, id, testPlanDisplayNamePrefix+id, ratePerMinute, capArg); err != nil {
-		t.Fatalf("harness: create plan %q: %v", id, err)
+	`, planID, testPlanDisplayNamePrefix+planID, ratePerMinute, capArg); err != nil {
+		t.Fatalf("harness: create plan %q: %v", planID, err)
 	}
 
 	t.Cleanup(func() {
@@ -422,20 +423,20 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 			if prevCap.Valid {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-					id, prevRate, prevCap.Int64, prevName,
+					planID, prevRate, prevCap.Int64, prevName,
 				)
 			} else {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = NULL, display_name = $3 WHERE id = $1`,
-					id, prevRate, prevName,
+					planID, prevRate, prevName,
 				)
 			}
 			if err != nil {
-				t.Logf("harness: restore plan %q: %v", id, err)
+				t.Logf("harness: restore plan %q: %v", planID, err)
 			}
 		} else {
-			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, id); err != nil {
-				t.Logf("harness: cleanup plan %q: %v", id, err)
+			if _, err := ts.DB.Exec(cctx, `DELETE FROM plans WHERE id = $1`, planID); err != nil {
+				t.Logf("harness: cleanup plan %q: %v", planID, err)
 			}
 		}
 	})
