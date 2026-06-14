@@ -61,8 +61,8 @@ describe("verifyWebhook", () => {
     const vectorSecretHex = "00".repeat(32);
     const vectorBody = Buffer.from('{"event":"test"}');
     const header = `t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5`;
-    // 4-year tolerance covers the fixed 2023 timestamp
-    const vectorTolerance = 4 * 365 * 24 * 60 * 60 * 1000;
+    // 50-year tolerance covers the fixed 2023 timestamp for decades
+    const vectorTolerance = 50 * 365 * 24 * 60 * 60 * 1000;
     const result = verifyWebhook(vectorSecretHex, header, vectorBody, vectorTolerance);
     assert.equal(result, undefined);
   });
