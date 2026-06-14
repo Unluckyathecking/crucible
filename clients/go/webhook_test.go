@@ -28,10 +28,10 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// nowTS returns a Unix timestamp 10 seconds in the past. The margin absorbs
-// goroutine descheduling and minor clock skew without approaching the 5-minute
-// tolerance window used by the tests.
-func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-10*time.Second).Unix()) }
+// nowTS returns a Unix timestamp 30 seconds in the past. The 30-second margin
+// absorbs goroutine descheduling and CI load spikes without approaching the
+// 5-minute tolerance window used by the tests.
+func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-30*time.Second).Unix()) }
 
 // assertWebhookError asserts err is a *crucible.WebhookError. Use when the
 // error message does not need further inspection.
@@ -496,17 +496,45 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 }
 
 func TestWebhookError_Message(t *testing.T) {
-	// Verify both exported methods on WebhookError behave as documented.
-	err := crucible.VerifyWebhook("", "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute)
-	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Message(), "secretHex") {
-		t.Errorf("Message() should contain 'secretHex', got %q", wErr.Message())
+	// WebhookError.Error() must have the "crucible webhook:" prefix and embed the raw
+	// message. WebhookError.Message() must return the raw message without prefix.
+	// Verify for multiple error paths since msg is unexported (can't construct directly).
+	cases := []struct {
+		name    string
+		fn      func() error
+		wantMsg string
+	}{
+		{
+			name:    "invalid secretHex",
+			fn:      func() error { return crucible.VerifyWebhook("", "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			wantMsg: "secretHex",
+		},
+		{
+			name: "no matching v1 signature",
+			fn: func() error {
+				secret := make([]byte, 32)
+				return crucible.VerifyWebhook(hex.EncodeToString(secret), "t="+nowTS()+",v1="+strings.Repeat("a", sha256HexLen), []byte("body"), 5*time.Minute)
+			},
+			wantMsg: "no matching v1 signature",
+		},
 	}
-	if !strings.Contains(wErr.Error(), "crucible webhook:") {
-		t.Errorf("Error() should have 'crucible webhook:' prefix, got %q", wErr.Error())
-	}
-	if !strings.Contains(wErr.Error(), wErr.Message()) {
-		t.Errorf("Error() should contain Message(), got Error=%q Message=%q", wErr.Error(), wErr.Message())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.fn()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			wErr := mustBeWebhookError(t, err)
+			if !strings.Contains(wErr.Message(), tc.wantMsg) {
+				t.Errorf("Message() should contain %q, got %q", tc.wantMsg, wErr.Message())
+			}
+			if !strings.Contains(wErr.Error(), "crucible webhook:") {
+				t.Errorf("Error() should have 'crucible webhook:' prefix, got %q", wErr.Error())
+			}
+			if !strings.Contains(wErr.Error(), wErr.Message()) {
+				t.Errorf("Error() should contain Message(), got Error=%q Message=%q", wErr.Error(), wErr.Message())
+			}
+		})
 	}
 }
 

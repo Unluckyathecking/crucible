@@ -378,7 +378,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         secret,
         r.Header.Get(crucible.SignatureHeader),
         body,
-        5*time.Minute,
+        crucible.DefaultTolerance,
     ); err != nil {
         http.Error(w, "invalid signature", http.StatusUnauthorized)
         return

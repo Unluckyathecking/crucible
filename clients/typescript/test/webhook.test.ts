@@ -64,8 +64,8 @@ describe("verifyWebhook", () => {
   it("accepts body as string (auto-encodes to Buffer before hashing)", () => {
     const ts = nowTs();
     const bodyStr = '{"event":"string-body"}';
-    const bodyBuf = Buffer.from(bodyStr);
-    const sig = testSign(secret, ts, bodyBuf);
+    // Signature computed on the UTF-8 bytes the verifier will produce from the string.
+    const sig = testSign(secret, ts, Buffer.from(bodyStr, "utf8"));
     const header = `t=${ts},v1=${sig}`;
     const result = verifyWebhook(secretHex, header, bodyStr);
     assert.equal(result, undefined);
