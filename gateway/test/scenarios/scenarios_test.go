@@ -416,26 +416,26 @@ func TestRateLimit(t *testing.T) {
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
-	// Guard against the 60-second sliding window resetting mid-test: if the first
-	// request lands near second 59 and the third lands after second 0, the window
-	// may have slid enough to reset the counter, making the overflow request succeed.
-	// Require at least 15 s remaining in the current second to ensure all three
-	// requests complete in the same 60-second window, even under -race slowdown.
-	// In the worst case this sleeps up to ~45 s waiting for the next minute; that
-	// delay is expected and is bounded by maxSyncAttempts × 60 s.
+	// Guard against the 60-second window resetting mid-test: if the first request
+	// lands near the end of a window and the overflow request arrives in the next
+	// window, the counter resets and the overflow request succeeds unexpectedly.
+	// Require at least 15 s remaining in the window to ensure all three requests
+	// complete in the same 60-second span, even under -race slowdown.
+	// Unix-modulo is used (not time.Now().Second()) so the boundary aligns with
+	// the rate limiter's Unix-second window, not the local clock minute.
 	const (
 		maxSyncAttempts    = 3
-		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
+		windowSafetyMargin = 45 // sleep if >= 45 s into the 60-second window
 	)
 	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
-		now := time.Now()
-		if now.Second() < windowSafetyMargin {
+		now := time.Now().Unix()
+		if int(now%60) < windowSafetyMargin {
 			break
 		} else if attempt == maxSyncAttempts {
 			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
 		} else {
-			next := now.Truncate(time.Minute).Add(time.Minute)
-			time.Sleep(time.Until(next) + 200*time.Millisecond)
+			next := (now/60 + 1) * 60
+			time.Sleep(time.Until(time.Unix(next, 0)) + 200*time.Millisecond)
 		}
 	}
 	// Capture windowStart immediately before the first request so the elapsed time
