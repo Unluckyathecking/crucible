@@ -211,7 +211,7 @@ describe("verifyWebhook", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body, -1));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, -1), "negative tolerance");
   });
 
   it("rejects NaN toleranceMs (would disable replay protection via IEEE 754 comparisons)", () => {

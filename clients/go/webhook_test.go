@@ -266,7 +266,10 @@ func TestVerifyWebhook_negativeTolerance(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative tolerance, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "negative tolerance") {
+		t.Fatalf("expected 'negative tolerance' in error, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_emptyBody(t *testing.T) {
