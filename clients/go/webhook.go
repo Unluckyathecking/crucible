@@ -100,10 +100,13 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
-	age := now.Sub(time.Unix(ts, 0))
-	if age < 0 {
+	tsTime := time.Unix(ts, 0)
+	// Explicit future-timestamp rejection before computing age, so age is
+	// always non-negative and the direction of the comparison is unambiguous.
+	if now.Before(tsTime) {
 		return &WebhookError{"webhook timestamp in the future"}
 	}
+	age := now.Sub(tsTime) // always >= 0 because now >= tsTime
 	if age > tolerance {
 		return &WebhookError{"webhook timestamp too old (replay protection)"}
 	}
