@@ -113,6 +113,12 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 		return &WebhookError{"webhook timestamp too old (replay protection)"}
 	}
 
+	// Normalise nil body to empty slice so mac.Write has unambiguous input.
+	// A nil body is semantically equivalent to an empty body: both produce
+	// zero body bytes in the HMAC payload (timestamp + "." + body).
+	if body == nil {
+		body = []byte{}
+	}
 	mac := hmac.New(sha256.New, secret)
 	// hash.Hash.Write never returns an error; blank identifiers are explicit acknowledgement.
 	_, _ = mac.Write([]byte(timestamp))
@@ -130,6 +136,7 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 		if hexErr != nil || len(candidate) != sha256.Size {
 			continue
 		}
+		// hmac.Equal delegates to crypto/subtle.ConstantTimeCompare — timing-safe.
 		if hmac.Equal(candidate, expected) {
 			return nil
 		}
