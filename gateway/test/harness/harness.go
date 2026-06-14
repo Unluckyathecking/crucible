@@ -195,7 +195,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
 	t.Cleanup(func() { pool.Close() })
 	if err := runMigrations(pool); err != nil {
-		pool.Close()
 		workerSrv.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
@@ -452,7 +451,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				"quota:"+cid+":"+nextMonth,
 				"rl:"+cid,
 				"auth:"+prefix,
-			).Err(); delErr != nil {
+			).Err(); delErr != nil && !errors.Is(delErr, context.DeadlineExceeded) && !errors.Is(delErr, context.Canceled) {
 				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
 		}()
