@@ -192,7 +192,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
 	t.Cleanup(workerSrv.Close)
-	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
+	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
+	t.Cleanup(func() { pool.Close() })
 	if err := runMigrations(pool); err != nil {
 		pool.Close()
 		workerSrv.Close()
@@ -416,11 +417,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 
-	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
+	rawKey, prefix, err := auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
-	if full == "" || prefix == "" {
+	if rawKey == "" || prefix == "" {
 		t.Fatal("harness: auth.Generate returned empty key or prefix")
 	}
 	customerID := uuid.New()
@@ -566,7 +567,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
 
-	hash := auth.Hash(TestSalt(), full)
+	// rawKey is the complete API key (product prefix + random suffix) as returned
+	// by auth.Generate. auth.Hash is SHA-256(salt||rawKey) with no further prefix
+	// manipulation — the prefix is already part of rawKey.
+	hash := auth.Hash(TestSalt(), rawKey)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
 	defer keyCancel()
 	_, err = ts.DB.Exec(keyCtx,
@@ -577,7 +581,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
 	}
 
-	return customerID, full
+	return customerID, rawKey
 }
 
 // CountUsageEvents returns the number of usage_events rows for customerID.
