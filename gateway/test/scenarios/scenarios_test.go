@@ -149,38 +149,23 @@ func hungWorker() http.Handler {
 }
 
 // waitForErrorEvents polls until want error_events rows exist or the deadline elapses.
-// Checks immediately on entry, then at errorPollInterval, so fast paths complete
-// without waiting for the first ticker fire.
+// All logic runs in the calling goroutine; there are no spawned goroutines here.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
-	defer cancel()
+	deadline := time.Now().Add(errorPollTimeout)
 	var last int64
-	check := func() bool {
-		n := ts.CountErrorEvents(t, customerID)
-		last = n
-		if n == want {
-			return true
-		}
-		if n > want {
-			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
-		}
-		return false
-	}
-	if check() {
-		return
-	}
-	ticker := time.NewTicker(errorPollInterval)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for %d error_events for customer %s; last count: %d", want, customerID, last)
-		case <-ticker.C:
-			if check() {
-				return
-			}
+		last = ts.CountErrorEvents(t, customerID)
+		if last == want {
+			return
 		}
+		if last > want {
+			t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, last, want)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for %d error_events for customer %s; last count: %d", want, customerID, last)
+		}
+		time.Sleep(errorPollInterval)
 	}
 }
 
