@@ -145,7 +145,17 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(hungWorkerFallback)
-		defer tmr.Stop()
+		defer func() {
+			if !tmr.Stop() {
+				// Drain the buffered channel so no value lingers after the
+				// handler returns, even if the timer fired concurrently with
+				// r.Context().Done().
+				select {
+				case <-tmr.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-r.Context().Done():
 		case <-tmr.C:
@@ -424,12 +434,13 @@ func TestRateLimit(t *testing.T) {
 		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
 	)
 	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
-		if time.Now().Second() < windowSafetyMargin {
+		now := time.Now()
+		if now.Second() < windowSafetyMargin {
 			break
 		} else if attempt == maxSyncAttempts {
 			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
 		} else {
-			next := time.Now().Truncate(time.Minute).Add(time.Minute)
+			next := now.Truncate(time.Minute).Add(time.Minute)
 			time.Sleep(time.Until(next) + 200*time.Millisecond)
 		}
 	}
