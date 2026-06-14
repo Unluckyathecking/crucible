@@ -120,38 +120,29 @@ func ctxSleep(ctx context.Context, d time.Duration) bool {
 // during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
-// migrateMu + migrateDone guard runMigrations so that migrations run exactly
-// once per test process for speed. Unlike sync.Once, the mutex + bool pattern
-// allows retry: on failure migrateDone stays false so the next caller retries.
-// Migration files are individually idempotent (CREATE IF NOT EXISTS / ON
-// CONFLICT DO NOTHING / PL/pgSQL guards), so repeated runs are safe.
+// migrateOnce + migrateErr guarantee runMigrations runs exactly once per test
+// process. sync.Once is used rather than a mutex+bool so there is no ambiguity
+// about lock ownership across concurrent callers. Migration files are
+// individually idempotent (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING), so
+// a successful run is always safe to observe from multiple goroutines.
 // All concurrent callers in the same process must target the same Postgres
 // schema; do not use this harness from multiple packages in the same go test
 // invocation unless they share the same DSN.
 var (
-	migrateMu   sync.Mutex
-	migrateDone bool
+	migrateOnce sync.Once
+	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
-// process. The mutex is held for the full call: on the first invocation it
-// serialises the migration; on subsequent calls migrateDone is already true
-// so the locked section is near-zero and returns immediately.
-// Unlike sync.Once, the mutex+bool pattern allows retry: migrateDone is set
-// only on success, so a failed first attempt is retried by the next caller.
+// process. migrateErr is written inside the Do closure and is read-only after
+// Do returns, so no additional synchronisation is needed.
 func runMigrations(pool *pgxpool.Pool) error {
-	migrateMu.Lock()
-	defer migrateMu.Unlock()
-	if migrateDone {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	defer cancel()
-	if err := db.Apply(ctx, pool); err != nil {
-		return err
-	}
-	migrateDone = true
-	return nil
+	migrateOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+		defer cancel()
+		migrateErr = db.Apply(ctx, pool)
+	})
+	return migrateErr
 }
 
 // Options configures a gateway test server.
