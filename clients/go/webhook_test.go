@@ -28,10 +28,10 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// nowTS returns a Unix timestamp 3 seconds in the past. The 3-second margin
-// prevents flaky failures where a descheduled goroutine causes VerifyWebhook's
-// time.Now() to sample a later instant than the timestamp was recorded.
-func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-3*time.Second).Unix()) }
+// nowTS returns a Unix timestamp 10 seconds in the past. The margin absorbs
+// goroutine descheduling and minor clock skew without approaching the 5-minute
+// tolerance window used by the tests.
+func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-10*time.Second).Unix()) }
 
 // assertWebhookError asserts err is a *crucible.WebhookError. Use when the
 // error message does not need further inspection.
@@ -507,5 +507,25 @@ func TestWebhookError_Message(t *testing.T) {
 	}
 	if !strings.Contains(wErr.Error(), wErr.Message()) {
 		t.Errorf("Error() should contain Message(), got Error=%q Message=%q", wErr.Error(), wErr.Message())
+	}
+}
+
+func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	// 64-char string where first char is non-hex ('g'): correct length but
+	// hex.DecodeString fails, so no candidate matches.
+	nonHexSig := "g" + strings.Repeat("0", sha256HexLen-1)
+	header := "t=" + ts + ",v1=" + nonHexSig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for non-hex v1 candidate, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
