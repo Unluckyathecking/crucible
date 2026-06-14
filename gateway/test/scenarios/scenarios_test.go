@@ -1,7 +1,7 @@
-// Package scenarios_test exercises the full gateway middleware pipeline end-to-end
+// Package scenarios exercises the full gateway middleware pipeline end-to-end
 // using real Postgres and Redis via the harness package.
 // Requires POSTGRES_DSN and REDIS_URL; tests fail when either is unset.
-package scenarios_test
+package scenarios
 
 import (
 	"context"
@@ -130,19 +130,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // gateway proxy is responsible for returning 502 BadGateway.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		timer := time.NewTimer(delay)
-		defer func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		}()
-		select {
-		case <-r.Context().Done():
+		ctx, cancel := context.WithTimeout(r.Context(), delay)
+		defer cancel()
+		<-ctx.Done()
+		if ctx.Err() != context.DeadlineExceeded {
 			return
-		case <-timer.C:
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
@@ -286,11 +278,17 @@ func TestHappyPath(t *testing.T) {
 		t.Errorf("usage_events: got %d, want 1", n)
 	}
 
-	// X-Request-ID must be a valid UUID on every response.
-	if rid := resp.Header.Get("X-Request-ID"); rid == "" {
+	// X-Request-ID must be a valid UUID on every response and unique across requests.
+	rid1 := resp.Header.Get("X-Request-ID")
+	if rid1 == "" {
 		t.Errorf("X-Request-ID absent")
-	} else if _, err := uuid.Parse(rid); err != nil {
-		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid, err)
+	} else if _, err := uuid.Parse(rid1); err != nil {
+		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid1, err)
+	}
+	resp2 := invoke(t, client, ts, apiKey)
+	drainBody(t, resp2)
+	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
+		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
 
 	// Security headers set by the SecurityHeaders middleware.
@@ -370,6 +368,13 @@ func TestIdempotentReplay(t *testing.T) {
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with rate-limit headers.
 // All requests land in the same 60-second window so the overflow is reliably rejected.
 func TestRateLimit(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	const rateLimit = 2
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "rl-2-plan", rateLimit, defaultTestMonthlyCap)
+	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
+
 	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
 	// If we're within 2 s of the next minute, sleep until we're safely into the new
 	// minute (plus 100 ms buffer). Uses sub-second precision to avoid under-sleeping.
@@ -377,11 +382,6 @@ func TestRateLimit(t *testing.T) {
 		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
 		time.Sleep(time.Until(nextMinute) + 100*time.Millisecond)
 	}
-	client := newTestHTTPClient(t)
-	const rateLimit = 2
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
-	ts.CreatePlan(t, "rl-2-plan", rateLimit, defaultTestMonthlyCap)
-	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
