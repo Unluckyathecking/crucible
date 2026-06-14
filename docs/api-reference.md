@@ -379,7 +379,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         body,
         crucible.DefaultTolerance,
     ); err != nil {
-        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        http.Error(w, "invalid signature", http.StatusBadRequest)
         return
     }
     // process event ...
