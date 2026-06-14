@@ -58,7 +58,7 @@ const (
 	maxCleanupRetries         = 3
 	cleanupRetryTimeout       = 10 * time.Second      // timeout for each api_keys DELETE retry attempt
 	redisCleanupTimeout       = 10 * time.Second      // timeout for the Redis DEL in customer cleanup
-	cleanupRetryBackoff       = 50 * time.Millisecond // delay between api_keys delete retries
+	cleanupRetryBackoff       = 500 * time.Millisecond // delay between api_keys delete retries; allows async errorlog goroutine to finish
 	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
 	customerInsertTimeout     = 10 * time.Second      // customer + api_key INSERT in CreateCustomer
 
