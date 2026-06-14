@@ -130,7 +130,7 @@ func TestVerifyWebhook_tamperedBody(t *testing.T) {
 		t.Fatal("expected error for tampered body, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
@@ -155,7 +155,7 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 		t.Fatal("expected error for wrong secret, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
@@ -174,7 +174,7 @@ func TestVerifyWebhook_futureTimestamp(t *testing.T) {
 		t.Fatal("expected error for future timestamp, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "future") {
+	if !strings.Contains(wErr.Message(), "future") {
 		t.Fatalf("expected error to mention 'future', got: %v", wErr)
 	}
 }
@@ -193,7 +193,7 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 		t.Fatal("expected error for expired timestamp, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "too old") {
+	if !strings.Contains(wErr.Message(), "too old") {
 		t.Fatalf("expected 'too old' in error, got: %v", wErr)
 	}
 }
@@ -236,7 +236,7 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 	wErr := mustBeWebhookError(t, err)
 	// The 9th candidate (validSig) must have been dropped; the error should be
 	// "no matching v1 signature", not "malformed header" or anything else.
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
@@ -247,7 +247,7 @@ func TestVerifyWebhook_missingHeader(t *testing.T) {
 		t.Fatal("expected error for missing header, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "missing") {
+	if !strings.Contains(wErr.Message(), "missing") {
 		t.Fatalf("expected 'missing' in error for empty header, got: %v", wErr)
 	}
 }
@@ -270,7 +270,7 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", tc.secret)
 		}
 		wErr := mustBeWebhookError(t, err)
-		if !strings.Contains(wErr.Error(), tc.wantMsg) {
+		if !strings.Contains(wErr.Message(), tc.wantMsg) {
 			t.Fatalf("invalid secretHex %q: expected %q in error, got: %v", tc.secret, tc.wantMsg, wErr)
 		}
 	}
@@ -306,7 +306,7 @@ func TestVerifyWebhook_negativeTolerance(t *testing.T) {
 		t.Fatal("expected error for negative tolerance, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "negative tolerance") {
+	if !strings.Contains(wErr.Message(), "negative tolerance") {
 		t.Fatalf("expected 'negative tolerance' in error, got: %v", wErr)
 	}
 }
@@ -338,7 +338,7 @@ func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
 		t.Fatal("expected error for header missing t=, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' for header missing t=, got: %v", wErr)
 	}
 }
@@ -354,7 +354,7 @@ func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
 		t.Fatal("expected error for header missing v1=, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' for header missing v1=, got: %v", wErr)
 	}
 }
@@ -386,7 +386,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 			t.Fatalf("expected error for malformed timestamp %q, got nil", tc.badTS)
 		}
 		wErr := mustBeWebhookError(t, err)
-		if !strings.Contains(wErr.Error(), tc.wantMsg) {
+		if !strings.Contains(wErr.Message(), tc.wantMsg) {
 			t.Fatalf("malformed timestamp %q: expected %q in error, got: %v", tc.badTS, tc.wantMsg, wErr)
 		}
 	}
@@ -405,7 +405,7 @@ func TestVerifyWebhook_ancientTimestamp(t *testing.T) {
 		t.Fatal("expected error for ancient timestamp, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "too old") {
+	if !strings.Contains(wErr.Message(), "too old") {
 		t.Fatalf("expected 'too old' in error, got: %v", wErr)
 	}
 }
@@ -429,7 +429,7 @@ func TestVerifyWebhook_maxHeaderParts_exceeded(t *testing.T) {
 		t.Fatal("expected error for header exceeding maxHeaderParts, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' in error, got: %v", wErr)
 	}
 }
@@ -468,7 +468,7 @@ func TestVerifyWebhook_v1TooLong(t *testing.T) {
 		t.Fatal("expected error for too-long v1 sig, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
@@ -487,7 +487,7 @@ func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
 		t.Fatal("expected error for duplicate t= key, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' in error, got: %v", wErr)
 	}
 }
@@ -516,7 +516,7 @@ func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
 			t.Fatalf("expected error for timestamp %q, got nil", tc.ts)
 		}
 		wErr := mustBeWebhookError(t, err)
-		if !strings.Contains(wErr.Error(), tc.wantMsg) {
+		if !strings.Contains(wErr.Message(), tc.wantMsg) {
 			t.Fatalf("timestamp %q: expected %q in error, got: %v", tc.ts, tc.wantMsg, wErr)
 		}
 	}
@@ -535,7 +535,7 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 		t.Fatal("expected error for empty v1= value, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' for empty v1= value, got: %v", wErr)
 	}
 }
@@ -553,7 +553,7 @@ func TestVerifyWebhook_emptyKey(t *testing.T) {
 		t.Fatal("expected error for empty-key part, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' for empty-key part, got: %v", wErr)
 	}
 }
@@ -572,7 +572,7 @@ func TestVerifyWebhook_unknownKeyEmptyValue(t *testing.T) {
 		t.Fatal("expected error for unknown key with empty value, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "malformed") {
+	if !strings.Contains(wErr.Message(), "malformed") {
 		t.Fatalf("expected 'malformed' for unknown key with empty value, got: %v", wErr)
 	}
 }
@@ -635,7 +635,7 @@ func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
 		t.Fatal("expected error for non-hex v1 candidate, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
@@ -676,7 +676,7 @@ func TestVerifyWebhook_maxValidTimestamp(t *testing.T) {
 		t.Fatal("expected error for far-future max-length timestamp, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "future") {
+	if !strings.Contains(wErr.Message(), "future") {
 		t.Fatalf("expected 'future' in error for max-length timestamp, got: %v", wErr)
 	}
 }
@@ -696,7 +696,27 @@ func TestVerifyWebhook_timestampZero(t *testing.T) {
 		t.Fatal("expected error for epoch timestamp, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "too old") {
+	if !strings.Contains(wErr.Message(), "too old") {
 		t.Fatalf("expected 'too old' for epoch timestamp, got: %v", wErr)
+	}
+}
+
+func TestVerifyWebhook_v1TooShort(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	// 32 hex chars (16 bytes) — half the expected SHA-256 length; rejected by the
+	// len(sigHex) != sha256.Size*2 guard, so no candidate matches.
+	shortSig := strings.Repeat("a", sha256HexLen/2)
+	header := "t=" + ts + ",v1=" + shortSig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for short v1 candidate, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature' for short v1, got: %v", wErr)
 	}
 }

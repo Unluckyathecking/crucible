@@ -63,7 +63,8 @@ describe("verifyWebhook", () => {
     const header = `t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5`;
     // Compute the actual age of the 2023 reference vector plus a 1-hour buffer so
     // this test stays valid indefinitely without a hardcoded expiry constant.
-    const vectorTolerance = Date.now() - 1700000000 * 1000 + 3600_000;
+    // Math.max ensures a positive tolerance even if the system clock has extreme skew.
+    const vectorTolerance = Math.max(3600_000, Date.now() - 1700000000 * 1000 + 3600_000);
     const result = verifyWebhook(vectorSecretHex, header, vectorBody, vectorTolerance);
     assert.equal(result, undefined);
   });
@@ -369,5 +370,26 @@ describe("verifyWebhook", () => {
 
   it("exposes WEBHOOK_EVENT_TYPE_HEADER constant with correct value", () => {
     assert.equal(WEBHOOK_EVENT_TYPE_HEADER, "X-Webhook-Event-Type");
+  });
+
+  it("uses DEFAULT_TOLERANCE_MS when toleranceMs is explicitly undefined", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    const result = verifyWebhook(secretHex, header, body, undefined);
+    assert.equal(result, undefined);
+  });
+
+  it("accepts exactly maxSigCandidates candidates (7 fake + 1 valid = 8)", () => {
+    const ts = nowTs();
+    const validSig = testSign(secret, ts, body);
+    const fakeSigs = Array<string>(7)
+      .fill("b".repeat(SHA256_HEX_LEN))
+      .map((s) => `v1=${s}`)
+      .join(",");
+    const header = `t=${ts},${fakeSigs},v1=${validSig}`;
+    // 8th candidate (index 7) is within sigs.length < MAX_SIG_CANDIDATES, so accepted.
+    const result = verifyWebhook(secretHex, header, body);
+    assert.equal(result, undefined);
   });
 });
