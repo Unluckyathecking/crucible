@@ -1,6 +1,6 @@
 // Package scenarios_test exercises the full gateway middleware pipeline end-to-end
 // using real Postgres and Redis via the harness package.
-// Requires POSTGRES_DSN and REDIS_URL; tests skip when either is unset.
+// Requires POSTGRES_DSN and REDIS_URL; tests fail when either is unset.
 package scenarios_test
 
 import (
@@ -150,16 +150,14 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	for {
 		select {
 		case <-ctx.Done():
-			t.Errorf("timeout waiting for %d error_events for customer %s", want, customerID)
-			return
+			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
 		case <-tick.C:
 			n := ts.CountErrorEvents(t, customerID)
 			if n == want {
 				return
 			}
 			if n > want {
-				t.Errorf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
-				return
+				t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 			}
 		}
 	}
