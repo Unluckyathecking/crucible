@@ -1,4 +1,6 @@
-# Exclude auto-generated, large binary-like, and low-signal files.
+# Exclude auto-generated, large binary-like, and low-signal files from the
+# Kimi file pack. Files listed here are still visible in the PR diff; only
+# their full contents are omitted to keep the review within token limits.
 exclude_patterns:
   - "docs-internal/**"
   - "gateway/go.sum"
