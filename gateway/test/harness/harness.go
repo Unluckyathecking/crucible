@@ -51,6 +51,7 @@ const (
 	TestAPIKeyPrefix = "cru_"
 
 	defaultWorkerTimeoutMS = 5000
+	maxWorkerTimeoutMS     = 300_000 // 5 min; matches production gateway proxy max
 	defaultProxyPoolSize   = 8
 	defaultBodyLimitBytes  = 1 << 20
 	defaultDBPoolSize      = 5
@@ -180,7 +181,6 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if opts.WorkerTimeoutMS == 0 {
 		opts.WorkerTimeoutMS = defaultWorkerTimeoutMS
 	}
-	const maxWorkerTimeoutMS = 300_000 // 5 min; matches production gateway proxy max, prevents accidentally huge values
 	if opts.WorkerTimeoutMS > maxWorkerTimeoutMS {
 		t.Fatalf("harness: WorkerTimeoutMS %d exceeds maximum %d ms", opts.WorkerTimeoutMS, maxWorkerTimeoutMS)
 	}
@@ -312,6 +312,9 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 	if ts.DB == nil {
 		t.Fatal("harness: CreatePlan called on nil TestServer.DB")
+	}
+	if ts.Redis == nil {
+		t.Fatal("harness: CreatePlan called on nil TestServer.Redis")
 	}
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
