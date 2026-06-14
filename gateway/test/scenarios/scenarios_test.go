@@ -130,13 +130,20 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // hungWorker is a handler that never writes a response; it blocks until the
-// request context is cancelled by the gateway proxy timeout or server shutdown.
-// TestWorkerTimeout uses WorkerTimeoutMS=500, so the proxy cancels r.Context()
-// long before any external deadline; the goroutine exits as soon as the gateway
-// closes the upstream connection.
+// request context is cancelled or a 5-second fallback timer fires.
+// TestWorkerTimeout uses WorkerTimeoutMS=500, so the proxy closes the connection
+// to the worker well before the fallback; in practice r.Context() fires first.
+// The fallback guards against httptest.Server.Close() deadlocking: Close() calls
+// wg.Wait() before CloseClientConnections(), so without a bounded exit the
+// handler would block indefinitely and the test suite would time out.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		tmr := time.NewTimer(5 * time.Second)
+		defer tmr.Stop()
+		select {
+		case <-r.Context().Done():
+		case <-tmr.C:
+		}
 	})
 }
 
