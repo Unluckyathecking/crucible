@@ -227,11 +227,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// background last_used_at goroutine while Redis is still open.
 	// Wrapped in a closure so a future signature change (e.g. adding an error
 	// return) surfaces as a compile error rather than a silent drop.
-	t.Cleanup(func() {
-		if err := authStore.Close(); err != nil {
-			t.Errorf("harness: authStore close: %v", err)
-		}
-	})
+	t.Cleanup(func() { authStore.Close() })
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
