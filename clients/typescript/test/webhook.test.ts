@@ -437,6 +437,16 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
+  it("rejects v1 candidate longer than 64 hex chars (66 chars)", () => {
+    const ts = nowTs();
+    // 66-char hex string is 2 chars over the expected SHA-256 hex length; rejected by the
+    // sig.length !== SHA256_HEX_LEN guard independently of hex validity. Mirrors Go's
+    // TestVerifyWebhook_v1TooLong which tests valid-hex-but-wrong-length candidates.
+    const longSig = "a".repeat(SHA256_HEX_LEN + 2);
+    const header = `t=${ts},v1=${longSig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
+  });
+
   it("rejects part with embedded '=' in value (t=1=2 is structurally invalid)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
