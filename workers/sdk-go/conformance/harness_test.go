@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -448,10 +447,10 @@ func TestHarnessPlainErrorWrapped(t *testing.T) {
 	checkErrorEnvelopeAt(t, srv, client, reqBody, "INTERNAL")
 }
 
-// TestInvokeMethodConformanceDirect pins the three cases from the method-rejection
-// transport contract against a live in-process SDK worker: GET /invoke → 405,
-// PUT /invoke → 405, and GET /healthz → 200 (health probing unaffected by method
-// enforcement on /invoke). Catches a refactor that silently drops the POST-only guard.
+// TestInvokeMethodConformanceDirect pins the method-rejection transport contract against
+// a live in-process SDK worker: non-POST methods on /invoke must return 405, and
+// GET /healthz must return 200 (health probing unaffected). Catches a refactor that
+// silently drops the POST-only guard in crucible.go.
 func TestInvokeMethodConformanceDirect(t *testing.T) {
 	mux, err := crucible.Handler(func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{Payload: map[string]string{"ok": "true"}, BillableUnits: 1}, nil
@@ -465,20 +464,5 @@ func TestInvokeMethodConformanceDirect(t *testing.T) {
 	t.Cleanup(client.CloseIdleConnections)
 
 	assertHealthz(t, srv, client)
-
-	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
-		if err != nil {
-			t.Fatalf("%s /invoke: build request: %v", method, err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("%s /invoke: %v", method, err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("%s /invoke: expected 405 Method Not Allowed, got %d", method, resp.StatusCode)
-		}
-	}
+	assertInvokeMethodNotAllowed(t, srv, client)
 }
