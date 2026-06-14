@@ -201,6 +201,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
+		workerSrv.Close() // t.Cleanup not guaranteed to run on fatal; close explicitly
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
@@ -417,15 +418,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
 	defer planCancel()
 	var dummy int
-	var planErr error
-	planErr = ts.DB.QueryRow(planCtx,
-		`SELECT 1 FROM plans WHERE id = $1`, planID,
-	).Scan(&dummy)
-	if errors.Is(planErr, pgx.ErrNoRows) {
+	if err := ts.DB.QueryRow(planCtx, `SELECT 1 FROM plans WHERE id = $1`, planID).Scan(&dummy); errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("harness: CreateCustomer planID %q does not exist", planID)
-	}
-	if planErr != nil {
-		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, planErr)
+	} else if err != nil {
+		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 
 	full, prefix, err := auth.Generate(TestAPIKeyPrefix)
