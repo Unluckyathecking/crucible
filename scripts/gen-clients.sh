@@ -852,7 +852,7 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
     f'{type_export_line}'
     f'export {{ ApiError }} from "./errors";\n'
     f'export type {{ ErrorBody }} from "./errors";\n'
-    f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER }} from "./webhook";\n'
+    f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER, WEBHOOK_EVENT_ID_HEADER, WEBHOOK_EVENT_TYPE_HEADER }} from "./webhook";\n'
 ))
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────

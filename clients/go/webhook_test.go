@@ -411,7 +411,7 @@ func TestVerifyWebhook_v1TooLong(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	ts := nowTS()
 	validSig := testSign(secret, ts, body)
-	// 66 chars: valid 64-char sig + "00" — must be rejected by the len guard on line 88.
+	// 66 chars: valid 64-char sig + "00" — must be rejected by the len guard in VerifyWebhook.
 	tooLongSig := validSig + "00"
 	header := "t=" + ts + ",v1=" + tooLongSig
 

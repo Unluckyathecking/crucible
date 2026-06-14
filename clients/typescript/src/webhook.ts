@@ -45,7 +45,7 @@ export class WebhookVerificationError extends Error {
  * @param secretHex - hex-encoded signing secret from the dashboard endpoint page
  * @param sigHeader - raw value of the X-Crucible-Signature header (t=<ts>,v1=<hex>)
  * @param body - unmodified request body as Buffer or string
- * @param toleranceMs - maximum age in ms; defaults to DEFAULT_TOLERANCE_MS (5 min)
+ * @param toleranceMs - maximum age in ms; pass 0 to use DEFAULT_TOLERANCE_MS (5 min)
  * @throws {WebhookVerificationError} when the signature does not match or is expired
  */
 export function verifyWebhook(
@@ -54,6 +54,11 @@ export function verifyWebhook(
   body: Buffer | string,
   toleranceMs: number = DEFAULT_TOLERANCE_MS,
 ): void {
+  // Mirror Go's tolerance==0 sentinel: explicit 0 means "use default", matching
+  // the documented pass 0 to use DefaultTolerance contract across both SDKs.
+  if (toleranceMs === 0) {
+    toleranceMs = DEFAULT_TOLERANCE_MS;
+  }
   if (toleranceMs < 0) {
     throw new WebhookVerificationError("negative tolerance not allowed");
   }

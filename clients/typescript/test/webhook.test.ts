@@ -80,6 +80,15 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
+  it("uses DEFAULT_TOLERANCE_MS when toleranceMs is explicitly 0 (mirrors Go tolerance==0 sentinel)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    // tolerance=0 is the cross-language sentinel for "use default", same as Go.
+    const result = verifyWebhook(secretHex, header, body, 0);
+    assert.equal(result, undefined);
+  });
+
   it("rejects tampered body", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
