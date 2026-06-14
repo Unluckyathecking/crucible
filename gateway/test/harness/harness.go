@@ -512,11 +512,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				return false
 			}
 			tmr := time.NewTimer(d)
+			defer tmr.Stop()
 			select {
 			case <-tmr.C:
 				return true
 			case <-cctx.Done():
-				tmr.Stop()
 				return false
 			}
 		}
