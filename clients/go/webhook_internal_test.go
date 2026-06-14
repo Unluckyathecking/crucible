@@ -15,10 +15,12 @@ import (
 // maxSigCandidates (8), silently dropping any extras. This ensures the
 // DoS defense lives in the parser, not only in the HMAC comparison loop.
 //
-// Two sub-cases are tested:
+// Three sub-cases are tested:
 //  1. Header at the maxHeaderParts boundary (1 t= + 15 v1= = 16 total parts).
 //  2. Header well below maxHeaderParts (1 t= + 10 v1= = 11 total parts),
 //     verifying the cap works independently of the max-parts limit.
+//  3. Header where a duplicate t= appears after the cap — verifies the loop
+//     continues validating remaining parts even once the v1 cap is full.
 func TestParseSignatureHeader_enforcesMaxSigCandidates(t *testing.T) {
 	const sigHex = sha256.Size * 2 // 64
 
@@ -57,6 +59,25 @@ func TestParseSignatureHeader_enforcesMaxSigCandidates(t *testing.T) {
 		if len(sigs) != maxSigCandidates {
 			t.Fatalf("got %d sig candidates, want %d (maxSigCandidates); "+
 				"excess were not dropped at parse time", len(sigs), maxSigCandidates)
+		}
+	})
+
+	t.Run("continues_validating_after_cap", func(t *testing.T) {
+		// 1 t= + maxSigCandidates v1= + 1 duplicate t= — total parts still ≤ maxHeaderParts.
+		// After the v1 cap fills, the loop must keep running and catch the duplicate t=.
+		parts := []string{"t=1234567890"}
+		for i := 0; i < maxSigCandidates; i++ {
+			parts = append(parts, fmt.Sprintf("v1=%s", strings.Repeat("a", sigHex)))
+		}
+		parts = append(parts, "t=9999999999") // duplicate t= after cap
+		header := strings.Join(parts, ",")
+
+		_, _, err := parseSignatureHeader(header)
+		if err == nil {
+			t.Fatal("expected malformed error for duplicate t= after cap, got nil")
+		}
+		if !strings.Contains(err.Message(), "malformed") {
+			t.Fatalf("expected 'malformed' error message, got: %q", err.Message())
 		}
 	})
 }

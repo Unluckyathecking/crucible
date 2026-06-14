@@ -203,11 +203,13 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 			//   - Dropping ensures the verifier always attempts the first maxSigCandidates
 			//     candidates, which cover every legitimate gateway delivery (1–2 sigs).
 			//
-			// Remaining parts continue to be validated (no break) to catch a duplicate
-			// t= or other malformed fields that appear after the cap is reached.
+			// Remaining parts continue to be validated — the explicit `continue`
+			// below keeps the loop running to catch a duplicate t= or other
+			// malformed fields that appear after the cap is reached.
 			if len(sigs) < maxSigCandidates {
 				sigs = append(sigs, kv[1])
 			}
+			continue // keep validating subsequent parts regardless of cap
 		default:
 			// Unknown keys with non-empty values (e.g. future v2=…) are silently ignored
 			// for forward compatibility. Empty values are caught by the universal guard above.
