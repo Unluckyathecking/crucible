@@ -138,6 +138,10 @@ func slowWorker(delay time.Duration) http.Handler {
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
+			// The proxy timeout (500ms) is far shorter than delay (5s); this branch
+			// should never fire in practice. Writing 200 here makes the path visible
+			// in test output if the proxy somehow fails to time out.
+			w.WriteHeader(http.StatusOK)
 		case <-r.Context().Done():
 		}
 	})
