@@ -159,8 +159,10 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
   const sigs: string[] = [];
   for (const part of parts) {
     const idx = part.indexOf("=");
-    // idx <= 0 rejects both missing "=" (idx === -1) and empty key ("=value", idx === 0).
-    if (idx <= 0) {
+    // idx <= 0 rejects missing "=" and empty key. Second indexOf rejects embedded "="
+    // in the value (e.g. "t=1=2") — none of the current key types allow it, and
+    // accepting it creates parser ambiguity for future protocol extensions.
+    if (idx <= 0 || part.indexOf("=", idx + 1) !== -1) {
       throw new WebhookVerificationError("malformed X-Crucible-Signature header");
     }
     const key = part.slice(0, idx);

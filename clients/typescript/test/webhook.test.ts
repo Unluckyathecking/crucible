@@ -30,19 +30,25 @@ function nowTs(): string {
 }
 
 function expectWebhookError(fn: () => void, messageSubstring?: string): void {
-  assert.throws(fn, (err: unknown) => {
+  let thrown: unknown;
+  try {
+    fn();
+  } catch (e) {
+    thrown = e;
+  }
+  if (thrown === undefined) {
+    assert.fail("expected WebhookVerificationError, but no error was thrown");
+  }
+  assert.ok(
+    thrown instanceof WebhookVerificationError,
+    `expected WebhookVerificationError, got ${thrown}`,
+  );
+  if (messageSubstring) {
     assert.ok(
-      err instanceof WebhookVerificationError,
-      `expected WebhookVerificationError, got ${err}`,
+      thrown.message.includes(messageSubstring),
+      `expected error message to include "${messageSubstring}", got "${thrown.message}"`,
     );
-    if (messageSubstring) {
-      assert.ok(
-        err.message.includes(messageSubstring),
-        `expected error message to include "${messageSubstring}", got "${err.message}"`,
-      );
-    }
-    return true;
-  });
+  }
 }
 
 /** SHA-256 hex digest length: 32 bytes × 2 hex chars each. */

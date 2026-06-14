@@ -173,7 +173,7 @@ func TestVerifyWebhook_futureTimestamp(t *testing.T) {
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
 	future := time.Now().Add(10 * time.Minute)
-	ts := fmt.Sprintf("%d", future.Unix())
+	ts := strconv.FormatInt(future.Unix(), 10)
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
@@ -192,7 +192,7 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
 	old := time.Now().Add(-10 * time.Minute)
-	ts := fmt.Sprintf("%d", old.Unix())
+	ts := strconv.FormatInt(old.Unix(), 10)
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 

@@ -143,7 +143,10 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 	}
 	for _, part := range parts {
 		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
+		// Embedded "=" in a value (e.g. "t=1=2") is structurally invalid — none of
+		// the current key types (t, v1) allow it, and accepting it creates parser
+		// ambiguity for future protocol extensions.
+		if len(kv) != 2 || strings.Contains(kv[1], "=") {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 		// Universal empty-value guard — runs before the switch, so it applies to
