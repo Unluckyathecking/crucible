@@ -499,8 +499,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// If the select were inlined in the for body, break inside select would exit
 		// the select, not the for loop, requiring a labelled break to leave the loop.
 		// The closure avoids that label while keeping context-cancellation support.
-		ctxSleep := func(d time.Duration) bool {
-			if cctx.Err() != nil {
+		ctxSleep := func(ctx context.Context, d time.Duration) bool {
+			if ctx.Err() != nil {
 				return false
 			}
 			tmr := time.NewTimer(d)
@@ -508,7 +508,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			select {
 			case <-tmr.C:
 				return true
-			case <-cctx.Done():
+			case <-ctx.Done():
 				return false
 			}
 		}
@@ -518,7 +518,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				finalKeyErr = cctx.Err()
 				break
 			}
-			if attempt > 1 && !ctxSleep(cleanupRetryBackoff) {
+			if attempt > 1 && !ctxSleep(cctx, cleanupRetryBackoff) {
 				finalKeyErr = cctx.Err()
 				break
 			}
