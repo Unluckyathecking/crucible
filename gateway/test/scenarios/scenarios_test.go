@@ -147,6 +147,9 @@ func slowWorker(delay time.Duration) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.Context().Err() != nil {
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 }
