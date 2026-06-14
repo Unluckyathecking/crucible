@@ -177,10 +177,14 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 			// verify with whichever key they currently hold. maxSigCandidates bounds the
 			// number of HMAC comparisons to prevent header-stuffing DoS. This is the
 			// intentional asymmetry with t=, which is always singular.
-			if len(sigs) >= maxSigCandidates {
-				continue
+			//
+			// Positive-guard pattern (mirrors TypeScript): append only when under the cap,
+			// then fall through so subsequent parts are still validated. We do NOT break
+			// here because remaining parts may include a duplicate t= (malformed) or future
+			// protocol fields — skipping them silently would hide header integrity issues.
+			if len(sigs) < maxSigCandidates {
+				sigs = append(sigs, kv[1])
 			}
-			sigs = append(sigs, kv[1])
 		default:
 			// Unknown keys with non-empty values (e.g. future v2=…) are silently ignored
 			// for forward compatibility. Empty values are caught by the universal guard above.

@@ -15,24 +15,48 @@ import (
 // maxSigCandidates (8), silently dropping any extras. This ensures the
 // DoS defense lives in the parser, not only in the HMAC comparison loop.
 //
-// The header is constructed with 1 t= + 15 v1= = 16 total parts, which is
-// exactly at the maxHeaderParts boundary so the header is accepted as valid.
-// Of the 15 v1= values, only the first 8 (maxSigCandidates) should appear in
-// the returned sigs slice.
+// Two sub-cases are tested:
+//  1. Header at the maxHeaderParts boundary (1 t= + 15 v1= = 16 total parts).
+//  2. Header well below maxHeaderParts (1 t= + 10 v1= = 11 total parts),
+//     verifying the cap works independently of the max-parts limit.
 func TestParseSignatureHeader_enforcesMaxSigCandidates(t *testing.T) {
 	const sigHex = sha256.Size * 2 // 64
-	parts := []string{"t=1234567890"}
-	for i := 0; i < 15; i++ {
-		parts = append(parts, fmt.Sprintf("v1=%s", strings.Repeat("a", sigHex)))
-	}
-	header := strings.Join(parts, ",")
 
-	_, sigs, err := parseSignatureHeader(header)
-	if err != nil {
-		t.Fatalf("unexpected parse error: %v", err)
-	}
-	if len(sigs) != maxSigCandidates {
-		t.Fatalf("parseSignatureHeader: got %d sig candidates, want exactly %d (maxSigCandidates); "+
-			"excess candidates were not dropped at parse time", len(sigs), maxSigCandidates)
-	}
+	t.Run("at_maxHeaderParts_boundary", func(t *testing.T) {
+		// 1 t= + 15 v1= = 16 total parts — exactly at maxHeaderParts.
+		parts := []string{"t=1234567890"}
+		for i := 0; i < 15; i++ {
+			parts = append(parts, fmt.Sprintf("v1=%s", strings.Repeat("a", sigHex)))
+		}
+		header := strings.Join(parts, ",")
+
+		_, sigs, err := parseSignatureHeader(header)
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+		if len(sigs) != maxSigCandidates {
+			t.Fatalf("got %d sig candidates, want %d (maxSigCandidates); "+
+				"excess were not dropped at parse time", len(sigs), maxSigCandidates)
+		}
+	})
+
+	t.Run("below_maxHeaderParts", func(t *testing.T) {
+		// 1 t= + 10 v1= = 11 total parts — well below maxHeaderParts (16) but
+		// still exceeds maxSigCandidates (8). Verifies the cap is enforced
+		// independently of the max-parts limit.
+		parts := []string{"t=1234567890"}
+		for i := 0; i < 10; i++ {
+			parts = append(parts, fmt.Sprintf("v1=%s", strings.Repeat("b", sigHex)))
+		}
+		header := strings.Join(parts, ",")
+
+		_, sigs, err := parseSignatureHeader(header)
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+		if len(sigs) != maxSigCandidates {
+			t.Fatalf("got %d sig candidates, want %d (maxSigCandidates); "+
+				"excess were not dropped at parse time", len(sigs), maxSigCandidates)
+		}
+	})
 }
