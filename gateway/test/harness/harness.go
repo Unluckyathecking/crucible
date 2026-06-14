@@ -460,10 +460,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			if opErr == nil {
 				return
 			}
-			if ts == nil || ts.DB == nil {
-				t.Logf("harness: cleanup %s skipped: nil TestServer or DB", table)
-				return
-			}
 			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
 			if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
 				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
