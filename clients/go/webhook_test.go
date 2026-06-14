@@ -244,7 +244,10 @@ func TestVerifyWebhook_missingHeader(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing header, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "missing") {
+		t.Fatalf("expected 'missing' in error for empty header, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
@@ -332,7 +335,10 @@ func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for header missing t=, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' for header missing t=, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
@@ -345,7 +351,10 @@ func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for header missing v1=, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' for header missing v1=, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_malformedTimestamp(t *testing.T) {

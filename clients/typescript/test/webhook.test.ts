@@ -188,6 +188,15 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, `v1=${sig}`, body));
   });
 
+  it("rejects unknown key with empty value (foo=)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // Mirrors Go's TestVerifyWebhook_unknownKeyEmptyValue: unknown keys with empty
+    // values must be rejected, not silently ignored.
+    const header = `t=${ts},v1=${sig},foo=`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
+
   it("rejects part with empty key (=value at position 0)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);

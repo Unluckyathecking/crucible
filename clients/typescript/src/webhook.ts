@@ -153,6 +153,11 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
     }
     const key = part.slice(0, idx);
     const val = part.slice(idx + 1);
+    // Reject empty values universally — mirrors Go's len(kv[1])==0 guard for cross-language
+    // parity. Known keys (t=, v1=) also check individually below for defence-in-depth.
+    if (val === "") {
+      throw new WebhookVerificationError("malformed X-Crucible-Signature header");
+    }
     if (key === "t") {
       if (timestamp !== "" || val === "") {
         throw new WebhookVerificationError("malformed X-Crucible-Signature header");
