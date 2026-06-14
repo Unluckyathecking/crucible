@@ -128,25 +128,19 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // slowWorker sleeps for delay before responding. The proxy times out before
 // delay elapses, so the 200 response is never received by the caller; the
 // gateway proxy is responsible for returning 502 BadGateway.
-// The select on r.Context().Done() lets the goroutine exit immediately when
-// the gateway closes the connection rather than sleeping the full delay.
+// Selecting on r.Context().Done() lets the goroutine exit promptly when the
+// gateway closes the connection rather than sleeping for the full delay.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
 			return
 		}
-		// Guard against the race where both tmr.C and r.Context().Done() fired
-		// simultaneously and select chose tmr.C: writing to a disconnected client
-		// produces a no-op error but generates noisy log output from net/http.
-		if r.Context().Err() != nil {
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 }
 
