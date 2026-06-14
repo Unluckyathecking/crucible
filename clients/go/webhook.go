@@ -55,7 +55,7 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 	secret, hexErr := hex.DecodeString(secretHex)
 	if hexErr != nil {
-		return &WebhookError{"invalid secretHex: must be non-empty even-length hex string"}
+		return &WebhookError{"invalid secretHex: contains non-hex characters"}
 	}
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
@@ -63,6 +63,11 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 		return parseErr
 	}
 
+	// Bound length to match the TypeScript /^\d{1,15}$/ guard: 15 digits covers
+	// all real Unix timestamps and prevents ParseInt from processing monster strings.
+	if len(timestamp) > 15 {
+		return &WebhookError{"bad timestamp in signature header"}
+	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}

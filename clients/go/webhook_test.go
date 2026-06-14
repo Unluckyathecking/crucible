@@ -307,6 +307,49 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_maxHeaderParts_exceeded(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+
+	// 1 t= + 1 v1= + 15 unknown filler = 17 parts → exceeds maxHeaderParts
+	parts := []string{"t=" + ts, "v1=" + sig}
+	for i := 0; i < 15; i++ {
+		parts = append(parts, fmt.Sprintf("x%d=y", i))
+	}
+	header := strings.Join(parts, ",")
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for header exceeding maxHeaderParts, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' in error, got: %v", wErr)
+	}
+}
+
+func TestVerifyWebhook_maxHeaderParts_atBoundary(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+
+	// 1 t= + 1 v1= + 14 unknown filler = 16 parts → exactly maxHeaderParts
+	parts := []string{"t=" + ts, "v1=" + sig}
+	for i := 0; i < 14; i++ {
+		parts = append(parts, fmt.Sprintf("x%d=y", i))
+	}
+	header := strings.Join(parts, ",")
+
+	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with 16-part header (at boundary): %v", err)
+	}
+}
+
 func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

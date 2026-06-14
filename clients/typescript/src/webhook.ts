@@ -4,6 +4,13 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // on header-stuffed requests. Mirrors gateway verifySignature.
 const MAX_SIG_CANDIDATES = 8;
 
+// maxHeaderParts caps total comma-separated segments to bound parsing over
+// attacker-controlled input before the v1 candidate cap takes effect.
+const MAX_HEADER_PARTS = 16;
+
+// Pre-compiled so the regex is not re-allocated on every verifyWebhook call.
+const SECRET_HEX_RE = /^[0-9a-fA-F]+$/;
+
 /** Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window. */
 export const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
 
@@ -40,7 +47,7 @@ export function verifyWebhook(
   if (toleranceMs < 0) {
     throw new WebhookVerificationError("negative tolerance not allowed");
   }
-  if (!secretHex || secretHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(secretHex)) {
+  if (!secretHex || secretHex.length % 2 !== 0 || !SECRET_HEX_RE.test(secretHex)) {
     throw new WebhookVerificationError(
       "invalid secretHex: must be non-empty even-length hex string",
     );
@@ -83,10 +90,6 @@ export function verifyWebhook(
   }
   throw new WebhookVerificationError("no matching v1 signature");
 }
-
-// maxHeaderParts caps total comma-separated segments to bound parsing over
-// attacker-controlled input before the v1 candidate cap takes effect.
-const MAX_HEADER_PARTS = 16;
 
 function parseSignatureHeader(header: string): { timestamp: string; sigs: string[] } {
   if (!header) {

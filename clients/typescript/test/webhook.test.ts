@@ -194,6 +194,25 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body, -1));
   });
 
+  it("rejects header exceeding MAX_HEADER_PARTS (17 segments)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // 1 t= + 1 v1= + 15 unknown filler = 17 parts → exceeds MAX_HEADER_PARTS
+    const filler = Array.from({ length: 15 }, (_, i) => `x${i}=y`).join(",");
+    const header = `t=${ts},v1=${sig},${filler}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
+
+  it("accepts header at MAX_HEADER_PARTS boundary (16 segments)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // 1 t= + 1 v1= + 14 unknown filler = 16 parts → exactly MAX_HEADER_PARTS
+    const filler = Array.from({ length: 14 }, (_, i) => `x${i}=y`).join(",");
+    const header = `t=${ts},v1=${sig},${filler}`;
+    const result = verifyWebhook(secretHex, header, body);
+    assert.equal(result, undefined);
+  });
+
   it("accepts uppercase secretHex", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
