@@ -250,6 +250,12 @@ func errorCode(t *testing.T, body []byte) string {
 	return env.Error.Code
 }
 
+// invocationResponse is the JSON shape returned by every worker in this suite.
+type invocationResponse struct {
+	Payload       json.RawMessage `json:"payload"`
+	BillableUnits uint64          `json:"billable_units"`
+}
+
 // ---- scenarios --------------------------------------------------------------
 
 // TestHappyPath: authenticated POST → 200, correct payload/billable_units, one usage row,
@@ -274,10 +280,7 @@ func TestHappyPath(t *testing.T) {
 		t.Errorf("X-Idempotent-Replayed: got %q, want absent", v)
 	}
 
-	var inv struct {
-		Payload       json.RawMessage `json:"payload"`
-		BillableUnits uint64          `json:"billable_units"`
-	}
+	var inv invocationResponse
 	if err := json.Unmarshal(body, &inv); err != nil {
 		t.Fatalf("decode response: %v\nbody: %s", err, body)
 	}
@@ -326,10 +329,7 @@ func TestHappyPath(t *testing.T) {
 	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
 		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
-	var inv2 struct {
-		Payload       json.RawMessage `json:"payload"`
-		BillableUnits uint64          `json:"billable_units"`
-	}
+	var inv2 invocationResponse
 	if err := json.Unmarshal(body2, &inv2); err != nil {
 		t.Fatalf("second request: decode response: %v\nbody: %s", err, body2)
 	}
