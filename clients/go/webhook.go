@@ -80,10 +80,10 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if len(timestamp) > 15 {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
-	// Reject leading zeros for consistency with TypeScript's ts.toString() round-trip
-	// check: the gateway never emits padded timestamps, and accepting them would create
-	// cross-language divergence that could confuse signature-debugging.
-	if strings.HasPrefix(timestamp, "0") && len(timestamp) > 1 {
+	// Reject leading zeros: multi-digit timestamps starting with '0' (e.g. "01234")
+	// diverge from the gateway's output and TypeScript's ts.toString() round-trip.
+	// Single-digit "0" (Unix epoch) is intentionally allowed — len == 1 short-circuits.
+	if len(timestamp) > 1 && timestamp[0] == '0' {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
 	// Reject non-digit leading character: ParseInt("+123") returns 123 without error,

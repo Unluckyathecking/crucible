@@ -83,6 +83,10 @@ export function verifyWebhook(
     throw new WebhookVerificationError("invalid secretHex: decode produced unexpected length");
   }
 
+  // Capture clock before any attacker-controlled parsing so the sampled instant
+  // is not shifted by header-parsing time — mirrors Go's time.Now() placement.
+  const nowMs = Date.now();
+
   const { timestamp, sigs } = parseSignatureHeader(sigHeader);
 
   // /^\d{1,15}$/ rejects non-decimal chars (whitespace, "0x") and bounds the string
@@ -96,7 +100,6 @@ export function verifyWebhook(
   if (!Number.isSafeInteger(ts) || ts.toString() !== timestamp) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
-  const nowMs = Date.now();
   const tsMs = ts * 1000;
   // ts * 1000 can exceed MAX_SAFE_INTEGER for timestamps beyond year ~2255 even when
   // ts itself is safe. Such a timestamp is definitively in the future, so reject with
