@@ -544,6 +544,22 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations: got %d, want 2 (one per customer)", got)
 	}
+
+	// B replays with the same key: must be served from B's cache, not forwarded.
+	r3 := invoke(t, client, ts, keyB, withIdemp)
+	body3 := drainBody(t, r3)
+	if r3.StatusCode != http.StatusOK {
+		t.Fatalf("customer B replay: want 200, got %d: %s", r3.StatusCode, body3)
+	}
+	if v := r3.Header.Get("X-Idempotent-Replayed"); v != "true" {
+		t.Errorf("customer B replay: X-Idempotent-Replayed = %q, want \"true\"", v)
+	}
+	if string(body2) != string(body3) {
+		t.Errorf("customer B replay body mismatch:\n  first:  %s\n  replay: %s", body2, body3)
+	}
+	if got := invocations.Load(); got != 2 {
+		t.Errorf("worker invocations after B replay: got %d, want 2 (replay must not call worker)", got)
+	}
 }
 
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
