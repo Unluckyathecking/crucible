@@ -81,18 +81,6 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
-// redisQuotaKey mirrors the key format used by internal/quota/tracker.go (monthKey).
-// Format: "quota:<customerID>:<YYYY-MM>"
-func redisQuotaKey(customerID, month string) string { return "quota:" + customerID + ":" + month }
-
-// redisRateLimitKey mirrors the key format used by internal/ratelimit/bucket.go.
-// Format: "rl:<customerID>"
-func redisRateLimitKey(customerID string) string { return "rl:" + customerID }
-
-// redisAuthKey mirrors the key format used by internal/auth/store.go.
-// Format: "auth:<prefix>"
-func redisAuthKey(prefix string) string { return "auth:" + prefix }
-
 // routesMu serializes replacement of server.V1Routes during server.NewRouter calls.
 // Tests that set opts.Routes may use t.Parallel; routesMu ensures exclusive access
 // during the swap-and-restore so no goroutine observes intermediate route state.
@@ -113,6 +101,7 @@ var routesMu sync.Mutex
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool
+	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
@@ -122,17 +111,15 @@ var (
 func runMigrations(pool *pgxpool.Pool) error {
 	migrateMu.Lock()
 	defer migrateMu.Unlock()
-	if migrateDone {
-		return nil // already succeeded in this process; migrations are idempotent
+	if !migrateDone {
+		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+		defer cancel()
+		migrateErr = db.Apply(ctx, pool)
+		if migrateErr == nil {
+			migrateDone = true
+		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	defer cancel()
-	if err := db.Apply(ctx, pool); err != nil {
-		// migrateDone stays false so the next caller can retry with a fresh pool.
-		return err
-	}
-	migrateDone = true
-	return nil
+	return migrateErr
 }
 
 // Options configures a gateway test server.
@@ -210,7 +197,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// the worker can drain any in-flight proxy requests while Postgres is still open.
 	// The pool-failure error path on line above closes workerSrv manually before
 	// t.Fatalf, so both resources are cleaned up even on boot failures.
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
 		t.Fatalf("harness: apply migrations: %v", err)
@@ -426,7 +413,8 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	planCtx, planCancel := context.WithTimeout(context.Background(), planExistenceCheckTimeout)
 	defer planCancel()
 	var dummy int
-	planErr := ts.DB.QueryRow(planCtx,
+	var planErr error
+	planErr = ts.DB.QueryRow(planCtx,
 		`SELECT 1 FROM plans WHERE id = $1`, planID,
 	).Scan(&dummy)
 	if errors.Is(planErr, pgx.ErrNoRows) {
@@ -454,20 +442,23 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		defer func() {
 			rctx, rcancel := context.WithTimeout(context.Background(), redisCleanupTimeout)
 			defer rcancel()
-			// Months computed at cleanup time so quota keys match what quota.Tracker
-			// wrote at request time, even across a UTC month boundary. Both current
-			// and next month are deleted to cover requests that straddled a boundary.
-			// Key format functions (redisQuotaKey, redisRateLimitKey, redisAuthKey)
-			// are defined above and must be kept in sync with the internal packages.
+			// Months computed at cleanup time so the quota keys match what
+			// quota.Tracker wrote at request time, even if cleanup runs across
+			// a UTC month boundary. Both current and next month are deleted to
+			// cover requests that landed just before a boundary.
+			// Key formats mirror the production packages (verified against source):
+			//   quota.Tracker: "quota:<customerID>:<YYYY-MM>"  (internal/quota/tracker.go)
+			//   ratelimit.Bucket: "rl:<customerID>"            (internal/ratelimit/bucket.go)
+			//   auth.Store: "auth:<prefix>"                    (internal/auth/store.go)
 			now := time.Now().UTC()
 			cid := customerID.String()
 			month := now.Format("2006-01")
 			nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
 			if delErr := ts.Redis.Del(rctx,
-				redisQuotaKey(cid, month),
-				redisQuotaKey(cid, nextMonth),
-				redisRateLimitKey(cid),
-				redisAuthKey(prefix),
+				"quota:"+cid+":"+month,
+				"quota:"+cid+":"+nextMonth,
+				"rl:"+cid,
+				"auth:"+prefix,
 			).Err(); delErr != nil {
 				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
