@@ -312,12 +312,14 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
   });
 
-  it("rejects timestamp where ts*1000 exceeds MAX_SAFE_INTEGER (tsMs precision loss guard)", () => {
-    // 9007199254741 * 1000 = 9007199254741000 > Number.MAX_SAFE_INTEGER (~9.007e15)
+  it("rejects timestamp where ts*1000 exceeds MAX_SAFE_INTEGER as future (cross-language parity)", () => {
+    // 9007199254741 * 1000 = 9007199254741000 > Number.MAX_SAFE_INTEGER (~9.007e15).
+    // Such a timestamp is far in the future (~year 2255), so we report "future" to
+    // match Go's behavior (time.Unix rejects with "future", not "bad timestamp").
     const ts = "9007199254741";
     const sig = "a".repeat(SHA256_HEX_LEN);
     const header = `t=${ts},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "future");
   });
 
   it("rejects empty v1= value (rejected at parse time as malformed)", () => {

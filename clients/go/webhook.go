@@ -147,22 +147,18 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		}
 		// Reject empty keys and empty values universally. No header field has an
 		// empty key or an empty value. Mirrors TypeScript's idx<=0 guard for
-		// cross-language parity. Known keys (t=, v1=) are also guarded individually
-		// below for defence-in-depth.
+		// cross-language parity.
 		if len(kv[0]) == 0 || len(kv[1]) == 0 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 		switch kv[0] {
 		case "t":
 			// Exactly one timestamp per delivery: duplicate t= is invalid.
-			if timestamp != "" || len(kv[1]) == 0 {
+			if timestamp != "" {
 				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 			}
 			timestamp = kv[1]
 		case "v1":
-			if len(kv[1]) == 0 {
-				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
-			}
 			// Multiple v1= values are accepted intentionally: during secret rotation the
 			// gateway may include two signatures (old key + new key) so receivers can
 			// verify with whichever key they currently hold. maxSigCandidates bounds the

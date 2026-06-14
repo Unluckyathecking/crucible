@@ -97,11 +97,12 @@ export function verifyWebhook(
   }
   const nowMs = Date.now();
   const tsMs = ts * 1000;
-  // ts * 1000 can exceed MAX_SAFE_INTEGER for far-future timestamps even when ts
-  // itself is safe (e.g., ts = 9007199254741 → tsMs = 9007199254741000 > MAX_SAFE_INTEGER).
-  // Reject rather than risk silent precision loss in the age comparison.
+  // ts * 1000 can exceed MAX_SAFE_INTEGER for timestamps beyond year ~2255 even when
+  // ts itself is safe. Such a timestamp is definitively in the future, so reject with
+  // the same error the age comparison would produce — mirrors Go's "future" rejection
+  // and avoids silent precision loss in the subsequent comparisons.
   if (!Number.isSafeInteger(tsMs)) {
-    throw new WebhookVerificationError("bad timestamp in signature header");
+    throw new WebhookVerificationError("webhook timestamp in the future");
   }
   if (tsMs > nowMs) {
     throw new WebhookVerificationError("webhook timestamp in the future");
