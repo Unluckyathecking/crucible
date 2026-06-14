@@ -437,7 +437,8 @@ func TestRateLimit(t *testing.T) {
 	// between the reference timestamp and the rejected request is minimised.
 	// The rate limiter uses a 60-second sliding window (resetAt = time.Now().Add(time.Minute)),
 	// so RateLimit-Reset ≈ windowStart+60; the +62 s upper bound absorbs test overhead.
-	windowStart := time.Now().Unix()
+	// time.Now() preserves the monotonic reading; .Unix() is used only at assertion time.
+	windowStart := time.Now()
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
@@ -482,8 +483,9 @@ func TestRateLimit(t *testing.T) {
 		// moment of rejection. Between the alignment checkpoint and the rejected
 		// request, up to two allowed requests execute plus scheduling overhead,
 		// so allow 2 s of slack on the upper bound.
-		if resetTS < windowStart || resetTS > windowStart+62 {
-			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (±2s for test overhead)", resetTS, windowStart, windowStart+62)
+		lo, hi := windowStart.Unix(), windowStart.Add(62*time.Second).Unix()
+		if resetTS < lo || resetTS > hi {
+			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (±2s for test overhead)", resetTS, lo, hi)
 		}
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
