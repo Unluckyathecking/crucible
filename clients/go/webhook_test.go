@@ -756,6 +756,23 @@ func TestVerifyWebhook_timestampZero(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_embeddedEqualInValue(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	// "t=1=2" has an embedded '=' in the timestamp value. The parser uses SplitN(part, "=", 2)
+	// and then checks strings.Contains(kv[1], "=") — this guard fires and rejects the header.
+	// Mirrors the TypeScript test for cross-language parity.
+	err := crucible.VerifyWebhook(secretHex, "t=1=2,v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for embedded '=' in timestamp value, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "malformed") {
+		t.Fatalf("expected 'malformed' for embedded '=', got: %v", wErr)
+	}
+}
+
 func TestVerifyWebhook_v1TooShort(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

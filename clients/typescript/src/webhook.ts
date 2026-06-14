@@ -59,7 +59,7 @@ export function verifyWebhook(
   // Catch common Express misconfiguration (forgetting express.raw()) early.
   // TypeScript enforces Buffer at compile time, but JavaScript callers and
   // body-parser middleware can pass objects or strings at runtime.
-  if (!Buffer.isBuffer(body)) {
+  if (body === null || !Buffer.isBuffer(body)) {
     throw new WebhookVerificationError(
       "body must be a Buffer; pass raw request bytes before any parsing",
     );
@@ -133,8 +133,8 @@ export function verifyWebhook(
   // Buffer from the HTTP framework (e.g. express.raw()) — re-serialising a parsed
   // JSON body changes whitespace and field order, which invalidates the signature.
   const mac = createHmac("sha256", secret);
-  mac.update(timestamp);
-  mac.update(".");
+  mac.update(Buffer.from(timestamp));
+  mac.update(Buffer.from("."));
   mac.update(body);
   const expected = mac.digest();
 

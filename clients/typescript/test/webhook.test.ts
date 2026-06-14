@@ -421,6 +421,26 @@ describe("verifyWebhook", () => {
     );
   });
 
+  it("rejects part with embedded '=' in value (t=1=2 is structurally invalid)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // "t=1=2" has an embedded '=' in the timestamp value. The parser rejects any
+    // key=value pair where the value itself contains '=', for cross-language parity
+    // with Go's strings.Contains(kv[1], "=") guard.
+    const header = `t=1=2,v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
+
+  it("rejects null body (explicit null guard, not just isBuffer falsy check)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, null as unknown as Buffer),
+      "body must be a Buffer",
+    );
+  });
+
   it("accepts exactly maxSigCandidates candidates (7 fake + 1 valid = 8)", () => {
     const ts = nowTs();
     const validSig = testSign(secret, ts, body);
