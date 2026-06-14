@@ -277,6 +277,14 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
   });
 
+  it("rejects timestamp where ts*1000 exceeds MAX_SAFE_INTEGER (tsMs precision loss guard)", () => {
+    // 9007199254741 * 1000 = 9007199254741000 > Number.MAX_SAFE_INTEGER (~9.007e15)
+    const ts = "9007199254741";
+    const sig = "a".repeat(SHA256_HEX_LEN);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
+  });
+
   it("rejects empty v1= value (too short to be valid HMAC hex)", () => {
     const ts = nowTs();
     // v1= with no value should be filtered by the SHA256_HEX_LEN length guard
