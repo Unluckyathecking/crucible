@@ -140,11 +140,15 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // after hungWorkerFallback if the proxy does not cancel first. Using
 // context.WithTimeout avoids the timer-channel drain race: defer cancel()
 // stops the underlying timer correctly regardless of which deadline fires.
+// WriteHeader(503) is called after ctx.Done() so the handler never returns
+// with Go's implicit 200; by this point the gateway has already closed its
+// outgoing connection, so the write is a no-op on the gateway side.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), hungWorkerFallback)
 		defer cancel()
 		<-ctx.Done()
+		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 }
 
@@ -312,7 +316,7 @@ func TestHappyPath(t *testing.T) {
 		t.Fatalf("X-Request-ID absent on second response")
 	}
 	if _, err := uuid.Parse(rid2); err != nil {
-		t.Errorf("second response X-Request-ID %q is not a valid UUID: %v", rid2, err)
+		t.Fatalf("second response X-Request-ID %q is not a valid UUID: %v", rid2, err)
 	}
 	if rid2 == rid1 {
 		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
