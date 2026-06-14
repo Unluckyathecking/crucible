@@ -1,6 +1,6 @@
 module github.com/Unluckyathecking/crucible/workers/sdk-go
 
-go 1.25
+go 1.25.0
 toolchain go1.25.11
 
 require github.com/rs/zerolog v1.33.0

@@ -79,9 +79,12 @@ jobs:
         run: |
           set -e
 
-          # Extract go version from go.mod (e.g. "1.25.0" from "go 1.25.0")
+          # Extract go version from go.mod (e.g. "1.25.0" from "go 1.25.0").
+          # go work sync normalises two-part "go 1.25" → three-part "go 1.25.0", so
+          # we compare only the major.minor portion — "1.25.0" and "1.25" are both "1.25".
           GOMOD_VERSION=$(grep '^go ' gateway/go.mod | awk '{print $2}')
           echo "go.mod version: $GOMOD_VERSION"
+          GOMOD_MINOR=$(echo "$GOMOD_VERSION" | awk -F. '{print $1"."$2}')
 
           # Extract go version from gateway Dockerfile FROM line.
           # Regex matches any image suffix (alpine, bookworm, etc.) or no suffix.
@@ -90,8 +93,9 @@ jobs:
             echo "ERROR: could not extract golang version from gateway/Dockerfile"
             exit 1
           fi
+          GW_MINOR=$(echo "$GW_FROM" | awk -F. '{print $1"."$2}')
           echo "gateway/Dockerfile golang version: $GW_FROM"
-          if [ "$GOMOD_VERSION" != "$GW_FROM" ]; then
+          if [ "$GOMOD_MINOR" != "$GW_MINOR" ]; then
             echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM"
             exit 1
           fi
@@ -103,8 +107,9 @@ jobs:
             echo "ERROR: could not extract golang version from workers/active/Dockerfile"
             exit 1
           fi
+          WF_MINOR=$(echo "$WF_FROM" | awk -F. '{print $1"."$2}')
           echo "workers/active/Dockerfile golang version: $WF_FROM"
-          if [ "$GOMOD_VERSION" != "$WF_FROM" ]; then
+          if [ "$GOMOD_MINOR" != "$WF_MINOR" ]; then
             echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM"
             exit 1
           fi
