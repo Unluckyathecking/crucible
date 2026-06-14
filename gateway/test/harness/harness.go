@@ -120,7 +120,6 @@ func ctxSleep(ctx context.Context, d time.Duration) bool {
 // during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
-
 // Options configures a gateway test server.
 type Options struct {
 	// Routes overrides server.V1Routes. Nil means use production routes.
