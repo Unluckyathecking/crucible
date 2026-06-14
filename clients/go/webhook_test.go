@@ -115,7 +115,10 @@ func TestVerifyWebhook_futureTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for future timestamp, got nil")
 	}
-	mustBeWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "future") {
+		t.Fatalf("expected error to mention 'future', got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
@@ -188,6 +191,79 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 		err := crucible.VerifyWebhook(badSecret, "t="+ts+",v1="+strings.Repeat("a", 64), body, 5*time.Minute)
 		if err == nil {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
+		}
+		mustBeWebhookError(t, err)
+	}
+}
+
+func TestVerifyWebhook_negativeTolerance(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, -1*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for negative tolerance, got nil")
+	}
+	mustBeWebhookError(t, err)
+}
+
+func TestVerifyWebhook_emptyBody(t *testing.T) {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = 0x11
+	}
+	secretHex := hex.EncodeToString(secret)
+	body := []byte{}
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with empty body: %v", err)
+	}
+}
+
+func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	header := "v1=" + strings.Repeat("a", 64)
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for header missing t=, got nil")
+	}
+	mustBeWebhookError(t, err)
+}
+
+func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	header := "t=" + nowTS()
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for header missing v1=, got nil")
+	}
+	mustBeWebhookError(t, err)
+}
+
+func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+
+	for _, badTS := range []string{"abc", "1.5", "0x10", ""} {
+		sig := strings.Repeat("a", 64)
+		header := "t=" + badTS + ",v1=" + sig
+		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+		if err == nil {
+			t.Fatalf("expected error for malformed timestamp %q, got nil", badTS)
 		}
 		mustBeWebhookError(t, err)
 	}

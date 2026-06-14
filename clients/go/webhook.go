@@ -38,8 +38,11 @@ func (e *WebhookError) Error() string { return "crucible webhook: " + e.msg }
 // tolerance is the maximum accepted age; pass 0 to use DefaultTolerance.
 // All errors are *WebhookError. A non-nil error means the payload must not be trusted.
 func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Duration) error {
-	if tolerance <= 0 {
+	if tolerance == 0 {
 		tolerance = DefaultTolerance
+	}
+	if tolerance < 0 {
+		return &WebhookError{"negative tolerance not allowed"}
 	}
 	secret, hexErr := hex.DecodeString(secretHex)
 	if hexErr != nil {
@@ -55,11 +58,11 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
-	age := time.Since(time.Unix(ts, 0))
-	if age < 0 {
-		age = -age
+	now := time.Now().Unix()
+	if ts > now {
+		return &WebhookError{"webhook timestamp in the future"}
 	}
-	if age > tolerance {
+	if time.Duration(now-ts)*time.Second > tolerance {
 		return &WebhookError{"webhook timestamp too old (replay protection)"}
 	}
 

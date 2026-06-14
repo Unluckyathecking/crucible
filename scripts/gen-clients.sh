@@ -855,19 +855,6 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
     f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER }} from "./webhook";\n'
 ))
 
-# Update package.json scripts.test to include the non-generated webhook test file.
-# JSON parse-and-write is used (not regex) so only the target field is mutated and
-# the file is only rewritten when the value actually changed (idempotent).
-pkg_path = os.path.join(TS_DIR, "package.json")
-if os.path.exists(pkg_path):
-    with open(pkg_path) as _pf:
-        _pkg = json.load(_pf)
-    _new_test = "npm run build && node --test dist/test/client.test.js dist/test/webhook.test.js"
-    if _pkg.get("scripts", {}).get("test") != _new_test:
-        _pkg.setdefault("scripts", {})["test"] = _new_test
-        with open(pkg_path, "w") as _pf:
-            _pf.write(json.dumps(_pkg, indent=2) + "\n")
-
 # ── test/client.test.ts ───────────────────────────────────────────────────────
 
 def ts_test_method(op):

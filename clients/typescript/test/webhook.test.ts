@@ -87,6 +87,13 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000));
   });
 
+  it("rejects future timestamp", () => {
+    const futureTs = Math.floor((Date.now() + 10 * 60 * 1000) / 1000).toString();
+    const sig = testSign(secret, futureTs, body);
+    const header = `t=${futureTs},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000));
+  });
+
   it("accepts second v1= candidate when first is invalid", () => {
     const ts = nowTs();
     const validSig = testSign(secret, ts, body);
@@ -109,6 +116,26 @@ describe("verifyWebhook", () => {
 
   it("throws on missing header", () => {
     expectWebhookError(() => verifyWebhook(secretHex, "", body));
+  });
+
+  it("rejects header with timestamp but no signature", () => {
+    const ts = nowTs();
+    expectWebhookError(() => verifyWebhook(secretHex, `t=${ts}`, body));
+  });
+
+  it("rejects header with signature but no timestamp", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    expectWebhookError(() => verifyWebhook(secretHex, `v1=${sig}`, body));
+  });
+
+  it("verifies empty body", () => {
+    const ts = nowTs();
+    const emptyBody = Buffer.alloc(0);
+    const sig = testSign(secret, ts, emptyBody);
+    const header = `t=${ts},v1=${sig}`;
+    const result = verifyWebhook(secretHex, header, emptyBody);
+    assert.equal(result, undefined);
   });
 
   it("rejects empty secretHex", () => {

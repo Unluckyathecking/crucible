@@ -52,11 +52,16 @@ export function verifyWebhook(
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const ts = parseInt(timestamp, 10);
-  if (!Number.isFinite(ts)) {
+  // Reject non-finite or non-safe-integer timestamps to prevent overflow in ts*1000.
+  if (!Number.isFinite(ts) || !Number.isSafeInteger(ts) || ts < 0) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
-  const ageMs = Math.abs(Date.now() - ts * 1000);
-  if (ageMs > toleranceMs) {
+  const nowMs = Date.now();
+  const tsMs = ts * 1000;
+  if (tsMs > nowMs) {
+    throw new WebhookVerificationError("webhook timestamp in the future");
+  }
+  if (nowMs - tsMs > toleranceMs) {
     throw new WebhookVerificationError("webhook timestamp too old (replay protection)");
   }
 
@@ -67,13 +72,14 @@ export function verifyWebhook(
   mac.update(bodyBuf);
   const expected = mac.digest();
 
+  // Always call timingSafeEqual (even for malformed candidates) to avoid leaking
+  // which candidate position failed due to length vs. HMAC mismatch.
+  const dummy = Buffer.alloc(32);
   for (const sig of sigs) {
-    if (sig.length !== 64) continue;
     const candidate = Buffer.from(sig, "hex");
-    // Non-hex chars cause Buffer.from to produce a shorter buffer; timingSafeEqual
-    // throws on length mismatch, so we must filter before calling it.
-    if (candidate.length !== 32) continue;
-    if (timingSafeEqual(candidate, expected)) return;
+    // Non-hex chars cause Buffer.from to produce a shorter buffer.
+    const cmp = candidate.length === 32 ? candidate : dummy;
+    if (timingSafeEqual(cmp, expected) && candidate.length === 32) return;
   }
   throw new WebhookVerificationError("no matching v1 signature");
 }

@@ -394,12 +394,13 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
     res.status(500).json({ error: "webhook secret not configured" });
     return;
   }
+  const sigHeader = req.headers[SIGNATURE_HEADER.toLowerCase()];
+  if (typeof sigHeader !== "string") {
+    res.status(401).json({ error: "missing signature header" });
+    return;
+  }
   try {
-    verifyWebhook(
-      secret,
-      req.headers[SIGNATURE_HEADER.toLowerCase()] as string,
-      req.body as Buffer,
-    );
+    verifyWebhook(secret, sigHeader, req.body as Buffer);
   } catch (err) {
     if (err instanceof WebhookVerificationError) {
       res.status(401).json({ error: "invalid signature" });
