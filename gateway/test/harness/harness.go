@@ -84,13 +84,11 @@ func init() {
 // during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
-// migrateOnce runs migrations exactly once per test process for speed.
-// Unlike sync.Once, we use a mutex + bool so that a successful migration is
-// skipped by all subsequent callers. On failure, migrateDone stays false and
-// the next caller retries. Callers must ensure Postgres is ready before tests.
-// Migration files in this project are individually idempotent
-// (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING / PL/pgSQL guards), so repeated
-// runs against the same schema are safe.
+// migrateMu + migrateDone guard runMigrations so that migrations run exactly
+// once per test process for speed. Unlike sync.Once, the mutex + bool pattern
+// allows retry: on failure migrateDone stays false so the next caller retries.
+// Migration files are individually idempotent (CREATE IF NOT EXISTS / ON
+// CONFLICT DO NOTHING / PL/pgSQL guards), so repeated runs are safe.
 // All concurrent callers in the same process must target the same Postgres
 // schema; do not use this harness from multiple packages in the same go test
 // invocation unless they share the same DSN.
@@ -439,10 +437,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: generate api key: %v", err)
 	}
 	customerID := uuid.New()
-	// Explicit copy so the cleanup closure does not capture the outer `prefix`
-	// variable by reference; `prefix` is also used after this closure registration
-	// (for the DB insert below), and the copy makes the closure's captured value
-	// unambiguous — it is the value at Generate time and is never overwritten.
+	// cleanupPrefix names the prefix value used in the cleanup closure; strings
+	// are value-copied by Go closures so no reference-capture risk exists, but the
+	// named variable makes clear which value the Redis DEL key is derived from.
 	cleanupPrefix := prefix
 
 	t.Cleanup(func() {
