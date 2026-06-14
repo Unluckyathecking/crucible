@@ -176,7 +176,9 @@ func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, []byte(`{"event":"tampered"}`), 5*time.Minute)
+	// Use a wide tolerance so the test fails exclusively on signature mismatch,
+	// not on an expired timestamp from slow CI scheduling.
+	err := crucible.VerifyWebhook(secretHex, header, []byte(`{"event":"tampered"}`), 30*time.Minute)
 	if err == nil {
 		t.Fatal("expected error for tampered body, got nil")
 	}

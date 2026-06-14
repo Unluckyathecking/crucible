@@ -495,4 +495,16 @@ describe("verifyWebhook", () => {
     const result = verifyWebhook(secretHex, header, body);
     assert.equal(result, undefined);
   });
+
+  it("rejects when valid sig is 9th candidate (beyond maxSigCandidates=8)", () => {
+    const ts = nowTs();
+    const validSig = testSign(secret, ts, body);
+    // 8 fakes consume the full candidate cap; the 9th (valid) sig is dropped.
+    const fakeSigs = Array<string>(8)
+      .fill("c".repeat(SHA256_HEX_LEN))
+      .map((s) => `v1=${s}`)
+      .join(",");
+    const header = `t=${ts},${fakeSigs},v1=${validSig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
+  });
 });
