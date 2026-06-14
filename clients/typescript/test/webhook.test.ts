@@ -287,12 +287,12 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
   });
 
-  it("rejects empty v1= value (too short to be valid HMAC hex)", () => {
+  it("rejects empty v1= value (rejected at parse time as malformed)", () => {
     const ts = nowTs();
-    // v1= with no value should be filtered by the SHA256_HEX_LEN length guard
-    // and produce "no matching v1 signature".
+    // v1= with no value is rejected at parse time — not silently passed to the
+    // length guard — so the error is "malformed", not "no matching v1 signature".
     const header = `t=${ts},v1=`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
   });
 
   it("rejects duplicate t= keys in header", () => {

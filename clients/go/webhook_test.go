@@ -471,7 +471,7 @@ func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
 			t.Fatalf("expected error for timestamp %q, got nil", tc.ts)
 		}
 		wErr := mustBeWebhookError(t, err)
-		if tc.wantMsg != "" && !strings.Contains(wErr.Error(), tc.wantMsg) {
+		if !strings.Contains(wErr.Error(), tc.wantMsg) {
 			t.Fatalf("timestamp %q: expected %q in error, got: %v", tc.ts, tc.wantMsg, wErr)
 		}
 	}
@@ -482,15 +482,30 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
 	ts := nowTS()
-	// v1= with no value appends an empty string; it should not verify (too short
-	// to be a valid HMAC hex), resulting in "no matching v1 signature".
+	// v1= with no value is rejected at parse time as malformed — the parser
+	// never produces an empty-string candidate for the verifier to discard.
 	header := "t=" + ts + ",v1="
 	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
 	if err == nil {
 		t.Fatal("expected error for empty v1= value, got nil")
 	}
 	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
-		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' for empty v1= value, got: %v", wErr)
+	}
+}
+
+func TestWebhookError_Message(t *testing.T) {
+	// Verify both exported methods on WebhookError behave as documented.
+	err := crucible.VerifyWebhook("", "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "secretHex") {
+		t.Errorf("Message() should contain 'secretHex', got %q", wErr.Message())
+	}
+	if !strings.Contains(wErr.Error(), "crucible webhook:") {
+		t.Errorf("Error() should have 'crucible webhook:' prefix, got %q", wErr.Error())
+	}
+	if !strings.Contains(wErr.Error(), wErr.Message()) {
+		t.Errorf("Error() should contain Message(), got Error=%q Message=%q", wErr.Error(), wErr.Message())
 	}
 }

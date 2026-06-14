@@ -152,6 +152,9 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 			}
 			timestamp = kv[1]
 		case "v1":
+			if len(kv[1]) == 0 {
+				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
+			}
 			if len(sigs) >= maxSigCandidates {
 				continue
 			}

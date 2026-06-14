@@ -158,6 +158,7 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
       }
       timestamp = val;
     } else if (key === "v1") {
+      if (val === "") throw new WebhookVerificationError("malformed X-Crucible-Signature header");
       if (sigs.length < MAX_SIG_CANDIDATES) sigs.push(val);
     }
     // Unknown keys (e.g. future v2=) are silently ignored for forward compatibility.
