@@ -134,7 +134,7 @@ describe("verifyWebhook", () => {
     const ts = nowTs();
     const nonHexSig = "g".repeat(SHA256_HEX_LEN);
     const header = `t=${ts},v1=${nonHexSig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("rejects v1 candidate that is 65 chars (valid hex + trailing non-hex)", () => {

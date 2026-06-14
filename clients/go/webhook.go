@@ -89,7 +89,9 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 	// Reject non-digit leading character: ParseInt("+123") returns 123 without error,
 	// but TypeScript's /^\d{1,15}$/ rejects '+'. Enforce digit-only for cross-language parity.
-	if timestamp[0] < '0' || timestamp[0] > '9' {
+	// len==0 is guaranteed non-reachable (parseSignatureHeader rejects empty timestamps),
+	// but the guard is kept here for defence-in-depth.
+	if len(timestamp) == 0 || timestamp[0] < '0' || timestamp[0] > '9' {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
@@ -147,7 +149,7 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		}
 		switch kv[0] {
 		case "t":
-			if timestamp != "" {
+			if timestamp != "" || len(kv[1]) == 0 {
 				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 			}
 			timestamp = kv[1]

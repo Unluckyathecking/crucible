@@ -529,3 +529,23 @@ func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
 		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
 	}
 }
+
+func TestVerifyWebhook_timestampZero(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	// Unix timestamp 0 = 1970-01-01 00:00:00 UTC — valid decimal, no leading zero
+	// issue, but far outside any replay window → rejected as "too old".
+	ts := "0"
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for epoch timestamp, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "too old") {
+		t.Fatalf("expected 'too old' for epoch timestamp, got: %v", wErr)
+	}
+}
