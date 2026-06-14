@@ -32,6 +32,11 @@ const sha256HexLen = sha256.Size * 2
 // Nil body: mac.Write(nil) writes zero bytes, identical to mac.Write([]byte{}).
 // TestVerifyWebhook_nilBody verifies this round-trips correctly.
 func testSign(secret []byte, timestamp string, body []byte) string {
+	// Mirror VerifyWebhook's nil→[]byte{} normalisation so both paths produce
+	// an identical HMAC for nil body: zero body bytes after "timestamp.".
+	if body == nil {
+		body = []byte{}
+	}
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(timestamp))
 	_, _ = mac.Write([]byte("."))
