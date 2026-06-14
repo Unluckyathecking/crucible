@@ -24,3 +24,10 @@ exclude_patterns:
   # CI workflow: Kimi misreads step ordering and flags psql as running before
   # Go is installed (false positive — setup-go runs in the preceding step).
   - ".github/workflows/ci.yml"
+  # Low-signal for this PR: dashboard, worker SDK, stubs, scripts, and ops
+  # config are unchanged by the integration-harness work and bulk up the pack.
+  - "dashboard/**"
+  - "workers/sdk-go/**"
+  - "workers/stubs/**"
+  - "scripts/**"
+  - "ops/**"
