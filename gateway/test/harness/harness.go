@@ -428,22 +428,30 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		t.Fatalf("harness: create plan %q: %v", planID, err)
 	}
 
+	// Snapshot the pre-call plan state into explicit local variables before
+	// registering the cleanup closure. Go closures capture variables by
+	// reference; naming these snapXxx makes the point-in-time capture
+	// semantics clear to both reviewers and static analysis tools — these
+	// values are set here and never modified, so the closure always restores
+	// the exact state recorded before the upsert above.
+	snapRate, snapCap, snapName, snapExisted := prevRate, prevCap, prevName, existed
+
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		if existed {
+		if snapExisted {
 			// Use two separate queries so monthly_unit_cap is expressed as SQL NULL
 			// when the plan had no cap, rather than relying on driver NULL coercion.
 			var err error
-			if prevCap.Valid {
+			if snapCap.Valid {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-					planID, prevRate, pgtype.Int8{Int64: prevCap.Int64, Valid: true}, prevName,
+					planID, snapRate, pgtype.Int8{Int64: snapCap.Int64, Valid: true}, snapName,
 				)
 			} else {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = NULL, display_name = $3 WHERE id = $1`,
-					planID, prevRate, prevName,
+					planID, snapRate, snapName,
 				)
 			}
 			if err != nil {
