@@ -17,7 +17,7 @@ export class WebhookVerificationError extends Error {
 }
 
 /**
- * verifyWebhook verifies the X-Crucible-Signature on an inbound webhook delivery.
+ * verifyWebhook verifies the X-Crucible-Signature on a webhook delivery from the gateway.
  *
  * @param secretHex - hex-encoded signing secret from the dashboard endpoint page
  * @param sigHeader - raw value of the X-Crucible-Signature header (t=<ts>,v1=<hex>)
@@ -31,11 +31,18 @@ export function verifyWebhook(
   body: Buffer | string,
   toleranceMs: number = DEFAULT_TOLERANCE_MS,
 ): void {
+  if (!secretHex || secretHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(secretHex)) {
+    throw new WebhookVerificationError(
+      "invalid secretHex: must be non-empty even-length hex string",
+    );
+  }
   const secret = Buffer.from(secretHex, "hex");
+
   const { timestamp, sigs } = parseSignatureHeader(sigHeader);
 
   const ts = parseInt(timestamp, 10);
-  if (!Number.isFinite(ts)) {
+  // Strict check: rejects whitespace padding, hex prefixes, and truncated strings.
+  if (!Number.isFinite(ts) || ts.toString() !== timestamp) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const ageMs = Math.abs(Date.now() - ts * 1000);
@@ -53,7 +60,9 @@ export function verifyWebhook(
   for (const sig of sigs) {
     if (sig.length !== 64) continue;
     const candidate = Buffer.from(sig, "hex");
-    if (candidate.length !== 32) continue; // non-hex chars produce a shorter buffer
+    // Non-hex chars cause Buffer.from to produce a shorter buffer; timingSafeEqual
+    // throws on length mismatch, so we must filter before calling it.
+    if (candidate.length !== 32) continue;
     if (timingSafeEqual(candidate, expected)) return;
   }
   throw new WebhookVerificationError("no matching v1 signature");

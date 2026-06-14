@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -26,19 +25,19 @@ type WebhookError struct {
 
 func (e *WebhookError) Error() string { return "crucible webhook: " + e.msg }
 
-// VerifyWebhook verifies the X-Crucible-Signature on an inbound outbound-webhook delivery.
+// VerifyWebhook verifies the X-Crucible-Signature on a webhook delivery from the gateway.
 // secretHex is the hex-encoded signing secret shown on the dashboard endpoint page.
 // sigHeader is the raw value of the X-Crucible-Signature header (format: t=<ts>,v1=<hex>).
 // body is the unmodified request body bytes.
 // tolerance is the maximum accepted age; pass 0 to use DefaultTolerance.
-// A non-nil error means the payload must not be trusted.
+// All errors are *WebhookError. A non-nil error means the payload must not be trusted.
 func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Duration) error {
 	if tolerance <= 0 {
 		tolerance = DefaultTolerance
 	}
-	secret, err := hex.DecodeString(secretHex)
-	if err != nil {
-		return fmt.Errorf("crucible webhook: invalid secretHex: %w", err)
+	secret, hexErr := hex.DecodeString(secretHex)
+	if hexErr != nil {
+		return &WebhookError{"invalid secretHex: " + hexErr.Error()}
 	}
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
@@ -59,9 +58,10 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(body)
+	// hash.Hash.Write never returns an error; blank identifiers are explicit acknowledgement.
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
 	expected := mac.Sum(nil)
 
 	for _, sig := range sigs {

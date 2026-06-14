@@ -14,7 +14,7 @@ if [[ ! -f "${SPEC}" ]]; then
 fi
 
 python3 - "${SPEC}" "${REPO_ROOT}" <<'PYEOF'
-import json, os, re, sys
+import json, os, sys
 
 SPEC_PATH = sys.argv[1]
 REPO_ROOT  = sys.argv[2]
@@ -855,15 +855,18 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
     f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS }} from "./webhook";\n'
 ))
 
-# Update package.json test script to run both generated and non-generated test files.
+# Update package.json scripts.test to include the non-generated webhook test file.
+# JSON parse-and-write is used (not regex) so only the target field is mutated and
+# the file is only rewritten when the value actually changed (idempotent).
 pkg_path = os.path.join(TS_DIR, "package.json")
 if os.path.exists(pkg_path):
     with open(pkg_path) as _pf:
-        pkg_content = _pf.read()
+        _pkg = json.load(_pf)
     _new_test = "npm run build && node --test dist/test/client.test.js dist/test/webhook.test.js"
-    pkg_content = re.sub(r'"test":\s*"[^"]*"', f'"test": "{_new_test}"', pkg_content)
-    with open(pkg_path, "w") as _pf:
-        _pf.write(pkg_content)
+    if _pkg.get("scripts", {}).get("test") != _new_test:
+        _pkg.setdefault("scripts", {})["test"] = _new_test
+        with open(pkg_path, "w") as _pf:
+            _pf.write(json.dumps(_pkg, indent=2) + "\n")
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,10 +17,22 @@ import (
 // the positive vector without importing the gateway package tree.
 func testSign(secret []byte, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(body)
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// nowTS returns the current Unix timestamp as a decimal string.
+func nowTS() string { return fmt.Sprintf("%d", time.Now().Unix()) }
+
+func mustBeWebhookError(t *testing.T, err error) *crucible.WebhookError {
+	t.Helper()
+	var wErr *crucible.WebhookError
+	if !errors.As(err, &wErr) {
+		t.Fatalf("expected *crucible.WebhookError, got %T: %v", err, err)
+	}
+	return wErr
 }
 
 func TestVerifyWebhook_valid(t *testing.T) {
@@ -29,7 +42,7 @@ func TestVerifyWebhook_valid(t *testing.T) {
 	}
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"delivery.succeeded","data":{"id":1}}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := nowTS()
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
@@ -38,11 +51,25 @@ func TestVerifyWebhook_valid(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_defaultTolerance(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	// tolerance=0 should use DefaultTolerance (5 min) and accept a current timestamp
+	if err := crucible.VerifyWebhook(secretHex, header, body, 0); err != nil {
+		t.Fatalf("VerifyWebhook with tolerance=0: %v", err)
+	}
+}
+
 func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"original"}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := nowTS()
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
@@ -50,6 +77,7 @@ func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for tampered body, got nil")
 	}
+	mustBeWebhookError(t, err)
 }
 
 func TestVerifyWebhook_wrongSecret(t *testing.T) {
@@ -63,13 +91,15 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	}
 	secretHex := hex.EncodeToString(correctSecret)
 	body := []byte(`{"event":"test"}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := nowTS()
 	sig := testSign(wrongSecret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err == nil {
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
 		t.Fatal("expected error for wrong secret, got nil")
 	}
+	mustBeWebhookError(t, err)
 }
 
 func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
@@ -81,9 +111,11 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err == nil {
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
 		t.Fatal("expected error for expired timestamp, got nil")
 	}
+	mustBeWebhookError(t, err)
 }
 
 func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
@@ -93,7 +125,7 @@ func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
 	}
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"multi"}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := nowTS()
 	validSig := testSign(secret, ts, body)
 	invalidSig := strings.Repeat("a", 64)
 	header := "t=" + ts + ",v1=" + invalidSig + ",v1=" + validSig
@@ -107,7 +139,7 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := nowTS()
 	validSig := testSign(secret, ts, body)
 
 	parts := []string{"t=" + ts}
@@ -117,13 +149,30 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 	parts = append(parts, "v1="+validSig)
 	header := strings.Join(parts, ",")
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err == nil {
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
 		t.Fatal("expected error when valid sig is beyond maxSigCandidates, got nil")
 	}
+	mustBeWebhookError(t, err)
 }
 
 func TestVerifyWebhook_missingHeader(t *testing.T) {
-	if err := crucible.VerifyWebhook("aabb", "", []byte("body"), 5*time.Minute); err == nil {
+	err := crucible.VerifyWebhook("aabb", "", []byte("body"), 5*time.Minute)
+	if err == nil {
 		t.Fatal("expected error for missing header, got nil")
+	}
+	mustBeWebhookError(t, err)
+}
+
+func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+
+	for _, badSecret := range []string{"", "zz", "abc"} { // non-hex or odd-length
+		err := crucible.VerifyWebhook(badSecret, "t="+ts+",v1="+strings.Repeat("a", 64), body, 5*time.Minute)
+		if err == nil {
+			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
+		}
+		mustBeWebhookError(t, err)
 	}
 }
