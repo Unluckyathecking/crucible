@@ -183,14 +183,21 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		case "v1":
 			// Multiple v1= values are accepted intentionally: during secret rotation the
 			// gateway may include two signatures (old key + new key) so receivers can
-			// verify with whichever key they currently hold. maxSigCandidates bounds the
-			// number of HMAC comparisons to prevent header-stuffing DoS. This is the
-			// intentional asymmetry with t=, which is always singular.
+			// verify with whichever key they currently hold.
 			//
-			// Positive-guard pattern (mirrors TypeScript): append only when under the cap,
-			// then fall through so subsequent parts are still validated. We do NOT break
-			// here because remaining parts may include a duplicate t= (malformed) or future
-			// protocol fields — skipping them silently would hide header integrity issues.
+			// Gateway contract: the gateway never emits more than 2 v1= candidates
+			// (current key + previous key during rotation). maxSigCandidates=8 is a
+			// generous upper bound — the valid signature is always within the first 8
+			// positions, so the cap never prevents a legitimate delivery from verifying.
+			//
+			// Excess candidates beyond the cap are silently dropped (not rejected) because:
+			//   - Rejecting the header would let an attacker DoS receivers by prepending
+			//     ≥maxSigCandidates junk v1= values, blocking all legitimate webhooks.
+			//   - Dropping ensures the verifier always attempts the first maxSigCandidates
+			//     candidates, which cover every legitimate gateway delivery (1–2 sigs).
+			//
+			// Remaining parts continue to be validated (no break) to catch a duplicate
+			// t= or other malformed fields that appear after the cap is reached.
 			if len(sigs) < maxSigCandidates {
 				sigs = append(sigs, kv[1])
 			}

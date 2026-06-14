@@ -140,6 +140,28 @@ func TestVerifyWebhook_defaultTolerance(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_defaultTolerance_futureTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	future := time.Now().Add(10 * time.Minute)
+	ts := strconv.FormatInt(future.Unix(), 10)
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	// tolerance=0 maps to DefaultTolerance (5 min), but future-timestamp rejection
+	// happens before the age check — a future ts must be rejected regardless of the
+	// sentinel expansion. Verifies the sentinel path does not mask future rejection.
+	err := crucible.VerifyWebhook(secretHex, header, body, 0)
+	if err == nil {
+		t.Fatal("expected error for future timestamp with tolerance=0, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "future") {
+		t.Fatalf("expected 'future' error with tolerance=0, got: %v", wErr)
+	}
+}
+
 func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
