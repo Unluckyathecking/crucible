@@ -148,17 +148,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(hungWorkerFallback)
-		defer func() {
-			if !tmr.Stop() {
-				// Drain the buffered channel so no value lingers after the
-				// handler returns, even if the timer fired concurrently with
-				// r.Context().Done().
-				select {
-				case <-tmr.C:
-				default:
-				}
-			}
-		}()
+		defer tmr.Stop()
 		select {
 		case <-r.Context().Done():
 		case <-tmr.C:
@@ -417,10 +407,8 @@ func TestIdempotentReplay(t *testing.T) {
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with rate-limit headers.
 // All requests land in the same 60-second window so the overflow is reliably rejected.
-// t.Parallel is intentionally omitted: the test relies on wall-clock alignment and
-// sleeping to a minute boundary; parallel execution under -race could cause
-// unpredictable scheduling delays that invalidate the timing assumptions.
 func TestRateLimit(t *testing.T) {
+	t.Parallel()
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
