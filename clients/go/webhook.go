@@ -154,6 +154,7 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		}
 		switch kv[0] {
 		case "t":
+			// Exactly one timestamp per delivery: duplicate t= is invalid.
 			if timestamp != "" || len(kv[1]) == 0 {
 				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 			}
@@ -162,6 +163,11 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 			if len(kv[1]) == 0 {
 				return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 			}
+			// Multiple v1= values are accepted intentionally: during secret rotation the
+			// gateway may include two signatures (old key + new key) so receivers can
+			// verify with whichever key they currently hold. maxSigCandidates bounds the
+			// number of HMAC comparisons to prevent header-stuffing DoS. This is the
+			// intentional asymmetry with t=, which is always singular.
 			if len(sigs) >= maxSigCandidates {
 				continue
 			}
