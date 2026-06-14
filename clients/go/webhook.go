@@ -68,7 +68,8 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 
 	// Capture clock before any attacker-controlled parsing so the sampled instant
 	// is not shifted by header-parsing time.
-	now := time.Now()
+	// Truncate(0) strips the monotonic reading so both operands in Sub use wall-clock time.
+	now := time.Now().Truncate(0)
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
 	if parseErr != nil {

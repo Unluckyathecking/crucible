@@ -441,6 +441,36 @@ func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+
+	cases := []struct {
+		ts      string
+		wantMsg string
+	}{
+		// 16 digits: exceeds the 15-char length guard → "bad timestamp"
+		{"1000000000000000", "bad timestamp"},
+		// Negative sign: ParseInt succeeds but age < 0 check fires first;
+		// the length guard (>15) does not fire because "-1" is 2 chars.
+		// Either "future" or "bad timestamp" is acceptable — just must be a WebhookError.
+		{"-1", ""},
+	}
+	for _, tc := range cases {
+		sig := strings.Repeat("a", sha256HexLen)
+		header := "t=" + tc.ts + ",v1=" + sig
+		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+		if err == nil {
+			t.Fatalf("expected error for timestamp %q, got nil", tc.ts)
+		}
+		wErr := mustBeWebhookError(t, err)
+		if tc.wantMsg != "" && !strings.Contains(wErr.Error(), tc.wantMsg) {
+			t.Fatalf("timestamp %q: expected %q in error, got: %v", tc.ts, tc.wantMsg, wErr)
+		}
+	}
+}
+
 func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

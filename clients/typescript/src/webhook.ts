@@ -84,8 +84,9 @@ export function verifyWebhook(
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const ts = parseInt(timestamp, 10);
-  // Defense in depth: if the regex bound were ever relaxed, catch precision loss early.
-  if (!Number.isSafeInteger(ts)) {
+  // Defense in depth: isSafeInteger guards precision loss; the round-trip check
+  // catches parseInt's silent truncation of leading-zero or whitespace variants.
+  if (!Number.isSafeInteger(ts) || ts.toString() !== timestamp) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const nowMs = Date.now();
