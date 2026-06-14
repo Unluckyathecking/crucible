@@ -1,8 +1,5 @@
-// Package harness provides NewGatewayTestServer: a test helper that boots the
-// full gateway middleware chain against real Postgres and Redis with an
-// in-process worker stub. DSN and RedisURL are required; callers set Options
-// fields as needed. Migrations are applied automatically once per test process
-// via a mutex-guarded idempotent check (not sync.Once; see runMigrations).
+// Package harness provides a test helper that boots the full gateway middleware
+// chain against real Postgres and Redis with an in-process worker stub.
 package harness
 
 import (
@@ -195,6 +192,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
 	t.Cleanup(func() { pool.Close() })
 	if err := runMigrations(pool); err != nil {
+		pool.Close()
 		workerSrv.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
