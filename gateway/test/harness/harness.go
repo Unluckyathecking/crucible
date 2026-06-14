@@ -291,9 +291,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// The IIFE's defer restores V1Routes and unlocks even if NewRouter panics.
 	handler := func() http.Handler {
 		routesMu.Lock()
-		// Deep copy of slice header (new backing array). RouteDescriptor structs are
-		// value types and *Schema pointers are read-only once registered, so copying
-		// the slice elements is sufficient to protect server.V1Routes from mutation.
+		// Copy slice elements into a new backing array so mutations don't affect
+		// server.V1Routes. RouteDescriptor structs are value types and *Schema
+		// pointers are read-only once registered, so element-level copy is sufficient.
 		orig := append([]openapi.RouteDescriptor(nil), server.V1Routes...)
 		defer func() {
 			server.V1Routes = orig
