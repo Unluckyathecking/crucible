@@ -100,7 +100,9 @@ func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Optio
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		if _, err := fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits); err != nil {
+			panic("worker: write failed: " + err.Error())
+		}
 	})
 }
 
@@ -110,7 +112,9 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
+		if _, err := fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits); err != nil {
+			panic("worker: write failed: " + err.Error())
+		}
 	})
 	return h, &count
 }
@@ -121,7 +125,9 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
+		if _, err := fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n); err != nil {
+			panic("varyingWorker: write failed: " + err.Error())
+		}
 	})
 	return h, &count
 }
@@ -132,20 +138,14 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // The test asserts on the gateway's 502, not on anything this handler writes.
 // Selecting on r.Context().Done() lets the goroutine exit as soon as the
 // gateway closes the upstream connection.
-// slowWorker blocks for delay then returns without writing any response.
-// TestWorkerTimeout uses WorkerTimeoutMS=500 and delay=5s, so the gateway
-// proxy fires its timeout and returns 502 long before the timer elapses.
-// The test asserts on the gateway's 502, not on anything this handler writes.
-// Selecting on r.Context().Done() lets the goroutine exit as soon as the
-// gateway closes the upstream connection rather than blocking for the full delay.
-func slowWorker(delay time.Duration) http.Handler {
+// hungWorker is a handler that never writes a response; it blocks until the
+// request context is cancelled by the gateway proxy timeout or server shutdown.
+// TestWorkerTimeout uses WorkerTimeoutMS=500, so the proxy cancels r.Context()
+// long before any external deadline; the goroutine exits as soon as the gateway
+// closes the upstream connection.
+func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
-		select {
-		case <-tmr.C:
-		case <-r.Context().Done():
-		}
+		<-r.Context().Done()
 	})
 }
 
@@ -490,7 +490,7 @@ func TestWorkerTimeout(t *testing.T) {
 	// 5 s delay vs 500 ms proxy timeout: 10× ratio, reliable under -race with CPU contention.
 	// The proxy timeout (WorkerTimeoutMS=500) is the bottleneck; client sees 502, not client-side expiry.
 	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, slowWorker(5*time.Second), func(o *harness.Options) {
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, hungWorker(), func(o *harness.Options) {
 		o.WorkerTimeoutMS = 500
 	}))
 	ts.CreatePlan(t, "timeout-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
