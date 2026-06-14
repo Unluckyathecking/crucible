@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
@@ -518,10 +519,15 @@ func TestAuthFailure(t *testing.T) {
 	worker, invocations := countingWorker(1)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 
-	// Synthesise a key that matches the production prefix format but is guaranteed
-	// absent from the database: prefix + 32 uppercase zeros (not base32-random) +
-	// UUID suffix ensures uniqueness without depending on key generation internals.
-	r := invoke(t, client, ts, harness.TestAPIKeyPrefix+strings.Repeat("A", 32)+uuid.New().String())
+	// Generate a structurally valid key that is guaranteed absent from the database:
+	// auth.Generate produces the canonical format the middleware expects, but we
+	// never call CreateCustomer so no matching hash row exists. The gateway looks
+	// up by prefix, finds no row, and returns 401 — exercising the DB-absent path.
+	absentKey, _, authErr := auth.Generate(harness.TestAPIKeyPrefix)
+	if authErr != nil {
+		t.Fatalf("generate absent key: %v", authErr)
+	}
+	r := invoke(t, client, ts, absentKey)
 	body := drainBody(t, r)
 	if r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d: %s", r.StatusCode, body)
