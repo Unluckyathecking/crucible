@@ -18,15 +18,17 @@ import (
 // Using sha256.Size*2 instead of the magic number 64 keeps tests resilient to algorithm changes.
 const sha256HexLen = sha256.Size * 2
 
-// testSign replicates gateway/internal/webhookout.Sign locally so tests build
-// the positive vector without importing the gateway package tree.
-// A single Write with pre-concatenated bytes independently verifies that the
-// implementation's three streaming Writes produce the same HMAC as the naive
-// concatenation, avoiding a tautological copy of the implementation.
+// testSign replicates the signing algorithm from gateway/internal/webhookout.Sign
+// so tests can build positive vectors without importing the gateway package tree.
+// It mirrors the three streaming Write calls used in VerifyWebhook so that the
+// vectors are produced by the same signing path the gateway uses.
+// Algorithm-independent correctness is verified by TestVerifyWebhook_knownGoodVector,
+// which checks a pre-computed hardcoded HMAC against a fixed known-good vector.
 func testSign(secret []byte, timestamp string, body []byte) string {
-	payload := append(append([]byte(timestamp), '.'), body...)
 	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write(payload)
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

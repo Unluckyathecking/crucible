@@ -118,12 +118,17 @@ describe("verifyWebhook", () => {
 
   it("explicit toleranceMs=0 is zero-width tolerance, not a default sentinel", () => {
     // Unlike Go (where tolerance==0 maps to DefaultTolerance via zero-value sentinel),
-    // TypeScript uses undefined as the "use default" signal. Explicit 0 means zero-width
-    // tolerance, which rejects any timestamp that is not exactly current.
+    // TypeScript uses undefined as the "use default" signal. Explicit 0 must mean
+    // zero-width tolerance, rejecting any timestamp that is not exactly current.
+    //
+    // Distinguishing zero-width (0 ms) from the DEFAULT (5 min = 300,000 ms):
+    //   nowTs() is 10 s (10,000 ms) in the past.
+    //   - With 0 ms tolerance: 10,000 > 0 → rejected ✓ (what this test asserts)
+    //   - With DEFAULT (300,000 ms): 10,000 < 300,000 → accepted → test would FAIL
+    //   (no error thrown when one is expected) — so this test distinguishes the two.
     const ts = nowTs(); // 10 seconds in the past
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    // nowTs() is 10 s old; 0 ms tolerance → immediately "too old"
     expectWebhookError(() => verifyWebhook(secretHex, header, body, 0), "too old");
   });
 
@@ -419,6 +424,16 @@ describe("verifyWebhook", () => {
       () => verifyWebhook(secretHex, header, body, null as unknown as number),
       "finite",
     );
+  });
+
+  it("rejects v1 candidate shorter than 64 hex chars (32 chars = 16 bytes)", () => {
+    const ts = nowTs();
+    // 32-char hex string is half the expected SHA-256 output length; rejected by the
+    // sig.length !== SHA256_HEX_LEN guard before Buffer.from is called, so timingSafeEqual
+    // never sees a length mismatch. Mirrors Go's TestVerifyWebhook_v1TooShort.
+    const shortSig = "a".repeat(SHA256_HEX_LEN / 2);
+    const header = `t=${ts},v1=${shortSig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("rejects part with embedded '=' in value (t=1=2 is structurally invalid)", () => {
