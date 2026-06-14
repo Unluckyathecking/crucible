@@ -145,9 +145,11 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		if len(kv) != 2 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
-		// Reject empty values universally — no header field has a legitimately empty value.
-		// Known keys (t=, v1=) are also guarded individually below for defence-in-depth.
-		if len(kv[1]) == 0 {
+		// Reject empty keys and empty values universally. No header field has an
+		// empty key or an empty value. Mirrors TypeScript's idx<=0 guard for
+		// cross-language parity. Known keys (t=, v1=) are also guarded individually
+		// below for defence-in-depth.
+		if len(kv[0]) == 0 || len(kv[1]) == 0 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 		switch kv[0] {

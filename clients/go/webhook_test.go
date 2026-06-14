@@ -529,6 +529,24 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_emptyKey(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	// "=value" has empty key — matches TypeScript's idx<=0 rejection.
+	header := "t=" + ts + ",v1=" + sig + ",=extra"
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for empty-key part, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' for empty-key part, got: %v", wErr)
+	}
+}
+
 func TestVerifyWebhook_unknownKeyEmptyValue(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
