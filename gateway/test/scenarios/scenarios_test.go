@@ -118,7 +118,7 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// varyingWorker embeds the invocation count in the payload so each response is unique.
+// varyingWorker embeds an incrementing counter in payload.n so each response is unique.
 func varyingWorker() (http.Handler, *atomic.Int64) {
 	var count atomic.Int64
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
