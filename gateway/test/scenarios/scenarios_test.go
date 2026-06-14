@@ -392,6 +392,10 @@ func TestRateLimit(t *testing.T) {
 		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
 		time.Sleep(time.Until(nextMinute) + 100*time.Millisecond)
 	}
+	// Snapshot the window start once; RateLimit-Reset must fall in [windowStart, windowStart+60].
+	// Capturing before requests avoids a spurious failure if time advances past windowStart+60
+	// between the request and the assertion.
+	windowStart := time.Now().Unix()
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
@@ -432,9 +436,8 @@ func TestRateLimit(t *testing.T) {
 	} else if resetTS, err := strconv.ParseInt(v, 10, 64); err != nil {
 		t.Errorf("RateLimit-Reset: got %q, want Unix timestamp: %v", v, err)
 	} else {
-		now := time.Now().Unix()
-		if resetTS < now || resetTS > now+60 {
-			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (current window boundary)", resetTS, now, now+60)
+		if resetTS < windowStart || resetTS > windowStart+60 {
+			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (current window boundary)", resetTS, windowStart, windowStart+60)
 		}
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
@@ -590,6 +593,22 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	}
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations: got %d, want 2 (one per customer)", got)
+	}
+
+	// A replays with the same key: must be served from A's cache, not forwarded to the worker.
+	r1Replay := invoke(t, client, ts, keyA, withIdemp)
+	body1Replay := drainBody(t, r1Replay)
+	if r1Replay.StatusCode != http.StatusOK {
+		t.Fatalf("customer A replay: want 200, got %d: %s", r1Replay.StatusCode, body1Replay)
+	}
+	if v := r1Replay.Header.Get("X-Idempotent-Replayed"); v != "true" {
+		t.Errorf("customer A replay: X-Idempotent-Replayed = %q, want \"true\"", v)
+	}
+	if string(body1) != string(body1Replay) {
+		t.Errorf("customer A replay body mismatch:\n  first:  %s\n  replay: %s", body1, body1Replay)
+	}
+	if got := invocations.Load(); got != 2 {
+		t.Errorf("worker invocations after A replay: got %d, want 2 (replay must not call worker)", got)
 	}
 
 	// B replays with the same key: must be served from B's cache, not forwarded.
