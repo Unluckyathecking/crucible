@@ -56,8 +56,10 @@ func (e *WebhookError) Message() string { return e.msg }
 // role, and explicit 0 means zero-width tolerance instead).
 // All errors are *WebhookError. A non-nil error means the payload must not be trusted.
 func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Duration) error {
-	// Capture clock as the very first action — before all validation and attacker-controlled
-	// header parsing — so the sampled instant is not shifted by processing time.
+	// Capture clock once as the very first action, before any validation or
+	// attacker-controlled header parsing. Reusing the same now for both the
+	// future-rejection check (now.Before) and the age computation (now.Sub)
+	// eliminates any TOCTOU race at the tolerance boundary.
 	now := time.Now()
 
 	if tolerance == 0 {
