@@ -33,10 +33,9 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// nowTS returns a Unix timestamp 30 seconds in the past. The 30-second margin
+// nowTS returns a Unix timestamp 2 minutes in the past. The 2-minute margin
 // absorbs goroutine descheduling and CI load spikes without approaching the
-// 5-minute tolerance window used by the tests. The 2-minute margin absorbs
-// goroutine descheduling and CI load spikes without approaching the tolerance boundary.
+// 5-minute tolerance boundary used by the tests.
 func nowTS() string { return strconv.FormatInt(time.Now().Add(-2*time.Minute).Unix(), 10) }
 
 // assertWebhookError asserts err is a non-nil *crucible.WebhookError. Use when
