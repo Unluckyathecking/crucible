@@ -389,10 +389,15 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 ### TypeScript / Node.js
 
 ```typescript
+import express from "express";
 import { verifyWebhook, WebhookVerificationError, SIGNATURE_HEADER } from "@crucible/client";
 
-// Express example — ensure you use express.raw() or similar to capture the raw body.
-app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+const app = express();
+
+// express.raw() is required to capture the raw body bytes before any parsing.
+// JSON.parse or body-parser re-serialise the body, changing whitespace and field
+// order and invalidating the HMAC signature.
+app.post("/webhook", express.raw({ type: "application/json" }), (req: express.Request, res: express.Response) => {
   const secret = process.env.WEBHOOK_SECRET;
   if (!secret) {
     res.status(500).json({ error: "webhook secret not configured" });

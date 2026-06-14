@@ -132,9 +132,12 @@ export function verifyWebhook(
   // Body is used verbatim (zero-copy, raw bytes preserved). Always pass the raw
   // Buffer from the HTTP framework (e.g. express.raw()) — re-serialising a parsed
   // JSON body changes whitespace and field order, which invalidates the signature.
+  // Node.js Hmac.update() accepts strings directly (UTF-8 by default); no Buffer
+  // allocation is needed for the ASCII timestamp and separator. Only body, which
+  // is already a Buffer, is passed as-is.
   const mac = createHmac("sha256", secret);
-  mac.update(Buffer.from(timestamp));
-  mac.update(Buffer.from("."));
+  mac.update(timestamp);
+  mac.update(".");
   mac.update(body);
   const expected = mac.digest();
 

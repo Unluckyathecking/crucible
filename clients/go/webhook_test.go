@@ -773,6 +773,24 @@ func TestVerifyWebhook_embeddedEqualInValue(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_nilBody(t *testing.T) {
+	// In Go, nil and []byte{} are distinct but both valid as hash.Write inputs.
+	// mac.Write(nil) is a no-op (zero bytes written), same as mac.Write([]byte{}).
+	// Verify that a nil body signed correctly round-trips through VerifyWebhook.
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = 0x33
+	}
+	secretHex := hex.EncodeToString(secret)
+	ts := nowTS()
+	sig := testSign(secret, ts, nil) // nil body → HMAC over timestamp + "."
+	header := "t=" + ts + ",v1=" + sig
+
+	if err := crucible.VerifyWebhook(secretHex, header, nil, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with nil body: %v", err)
+	}
+}
+
 func TestVerifyWebhook_v1TooShort(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
