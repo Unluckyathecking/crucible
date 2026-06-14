@@ -568,7 +568,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
 
-	hash := auth.Hash(testSalt, full)
+	hash := auth.Hash(TestSalt(), full)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
 	defer keyCancel()
 	_, err = ts.DB.Exec(keyCtx,
