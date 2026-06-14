@@ -153,7 +153,7 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
     const key = part.slice(0, idx);
     const val = part.slice(idx + 1);
     if (key === "t") {
-      if (timestamp !== "") {
+      if (timestamp !== "" || val === "") {
         throw new WebhookVerificationError("malformed X-Crucible-Signature header");
       }
       timestamp = val;
