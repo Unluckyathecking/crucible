@@ -47,7 +47,10 @@ const (
 	// hungWorkerFallback is the maximum time hungWorker blocks before exiting.
 	// It prevents httptest.Server.Close() deadlocks when the request context is
 	// not cancelled first (e.g. if the proxy timeout fires after Close starts).
-	hungWorkerFallback = 5 * time.Second
+	// hungWorkerFallback must exceed WorkerTimeoutMS (500 ms in TestWorkerTimeout)
+	// but need not be large. 2 s is 4× the proxy timeout and avoids long wait
+	// paths when the proxy timeout itself fails to fire.
+	hungWorkerFallback = 2 * time.Second
 )
 
 // newTestHTTPClient returns an http.Client for a single test (one per test, not per request).
@@ -414,8 +417,10 @@ func TestIdempotentReplay(t *testing.T) {
 
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with rate-limit headers.
 // All requests land in the same 60-second window so the overflow is reliably rejected.
+// t.Parallel is intentionally omitted: the test relies on wall-clock alignment and
+// sleeping to a minute boundary; parallel execution under -race could cause
+// unpredictable scheduling delays that invalidate the timing assumptions.
 func TestRateLimit(t *testing.T) {
-	t.Parallel()
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
