@@ -96,7 +96,7 @@ jobs:
           GW_MINOR=$(echo "$GW_FROM" | awk -F. '{print $1"."$2}')
           echo "gateway/Dockerfile golang version: $GW_FROM"
           if [ "$GOMOD_MINOR" != "$GW_MINOR" ]; then
-            echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM"
+            echo "ERROR: gateway/Dockerfile golang version mismatch. go.mod minor=$GOMOD_MINOR, Dockerfile minor=$GW_MINOR (go.mod=$GOMOD_VERSION, Dockerfile=$GW_FROM)"
             exit 1
           fi
 
@@ -110,7 +110,7 @@ jobs:
           WF_MINOR=$(echo "$WF_FROM" | awk -F. '{print $1"."$2}')
           echo "workers/active/Dockerfile golang version: $WF_FROM"
           if [ "$GOMOD_MINOR" != "$WF_MINOR" ]; then
-            echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM"
+            echo "ERROR: workers/active/Dockerfile golang version mismatch. go.mod minor=$GOMOD_MINOR, Dockerfile minor=$WF_MINOR (go.mod=$GOMOD_VERSION, Dockerfile=$WF_FROM)"
             exit 1
           fi
 
