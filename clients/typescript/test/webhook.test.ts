@@ -21,8 +21,10 @@ function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
     .digest("hex");
 }
 
+// 1 second in the past avoids a flaky race where verifyWebhook samples the
+// next second and treats a "current" timestamp as being in the future.
 function nowTs(): string {
-  return Math.floor(Date.now() / 1000).toString();
+  return Math.floor((Date.now() - 1000) / 1000).toString();
 }
 
 function expectWebhookError(fn: () => void, messageSubstring?: string): void {
@@ -80,8 +82,9 @@ describe("verifyWebhook", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    expectWebhookError(() =>
-      verifyWebhook(secretHex, header, Buffer.from('{"event":"tampered"}')),
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, Buffer.from('{"event":"tampered"}')),
+      "no matching v1 signature",
     );
   });
 
@@ -90,7 +93,7 @@ describe("verifyWebhook", () => {
     const wrongSecret = Buffer.alloc(32, 0xff);
     const sig = testSign(wrongSecret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("rejects expired timestamp", () => {
@@ -226,6 +229,14 @@ describe("verifyWebhook", () => {
     const upperSecret = secretHex.toUpperCase();
     const result = verifyWebhook(upperSecret, header, body);
     assert.equal(result, undefined);
+  });
+
+  it("rejects empty v1= value (too short to be valid HMAC hex)", () => {
+    const ts = nowTs();
+    // v1= with no value should be filtered by the SHA256_HEX_LEN length guard
+    // and produce "no matching v1 signature".
+    const header = `t=${ts},v1=`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("rejects duplicate t= keys in header", () => {

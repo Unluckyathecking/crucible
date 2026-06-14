@@ -85,6 +85,9 @@ export function verifyWebhook(
     throw new WebhookVerificationError("webhook timestamp too old (replay protection)");
   }
 
+  // Buffer is used verbatim (zero-copy, raw bytes preserved).
+  // String is a testing convenience; production webhook handlers should always
+  // pass the raw Buffer from the HTTP framework to avoid any encoding ambiguity.
   const bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
   const mac = createHmac("sha256", secret);
   mac.update(timestamp);

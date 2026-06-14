@@ -28,8 +28,10 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// nowTS returns the current Unix timestamp as a decimal string.
-func nowTS() string { return fmt.Sprintf("%d", time.Now().Unix()) }
+// nowTS returns a Unix timestamp 1 second in the past. Using a slightly-past
+// timestamp avoids a flaky race where time.Now() inside VerifyWebhook samples
+// the next second and treats a "current" timestamp as being in the future.
+func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-1*time.Second).Unix()) }
 
 // assertWebhookError asserts err is a *crucible.WebhookError. Use when the
 // error message does not need further inspection.
@@ -94,7 +96,10 @@ func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for tampered body, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_wrongSecret(t *testing.T) {
@@ -154,7 +159,10 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for expired timestamp, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "too old") {
+		t.Fatalf("expected 'too old' in error, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
@@ -212,12 +220,23 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	ts := nowTS()
 
-	for _, badSecret := range []string{"", "zz", "abc"} { // non-hex or odd-length
-		err := crucible.VerifyWebhook(badSecret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
+	cases := []struct {
+		secret  string
+		wantMsg string
+	}{
+		{"", "must be non-empty"},   // empty string
+		{"zz", "non-hex"},           // even length but non-hex
+		{"abc", "must be non-empty"}, // odd length
+	}
+	for _, tc := range cases {
+		err := crucible.VerifyWebhook(tc.secret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
 		if err == nil {
-			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
+			t.Fatalf("expected error for invalid secretHex %q, got nil", tc.secret)
 		}
-		assertWebhookError(t, err)
+		wErr := mustBeWebhookError(t, err)
+		if !strings.Contains(wErr.Error(), tc.wantMsg) {
+			t.Fatalf("invalid secretHex %q: expected %q in error, got: %v", tc.secret, tc.wantMsg, wErr)
+		}
 	}
 }
 
@@ -300,14 +319,28 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
 
-	for _, badTS := range []string{"abc", "1.5", "0x10", ""} {
+	// empty timestamp causes "malformed header" (empty t= value, caught by final check);
+	// non-empty non-decimal values fail ParseInt with "bad timestamp".
+	tsCases := []struct {
+		badTS   string
+		wantMsg string
+	}{
+		{"abc", "bad timestamp"},
+		{"1.5", "bad timestamp"},
+		{"0x10", "bad timestamp"},
+		{"", "malformed"},
+	}
+	for _, tc := range tsCases {
 		sig := strings.Repeat("a", sha256HexLen)
-		header := "t=" + badTS + ",v1=" + sig
+		header := "t=" + tc.badTS + ",v1=" + sig
 		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
 		if err == nil {
-			t.Fatalf("expected error for malformed timestamp %q, got nil", badTS)
+			t.Fatalf("expected error for malformed timestamp %q, got nil", tc.badTS)
 		}
-		assertWebhookError(t, err)
+		wErr := mustBeWebhookError(t, err)
+		if !strings.Contains(wErr.Error(), tc.wantMsg) {
+			t.Fatalf("malformed timestamp %q: expected %q in error, got: %v", tc.badTS, tc.wantMsg, wErr)
+		}
 	}
 }
 
@@ -323,7 +356,10 @@ func TestVerifyWebhook_ancientTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for ancient timestamp, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "too old") {
+		t.Fatalf("expected 'too old' in error, got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_maxHeaderParts_exceeded(t *testing.T) {
