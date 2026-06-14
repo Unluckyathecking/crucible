@@ -447,12 +447,23 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
   });
 
-  it("rejects null body (explicit null guard, not just isBuffer falsy check)", () => {
+  it("rejects null body (Buffer.isBuffer(null) returns false, caught by the guard)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
     expectWebhookError(
       () => verifyWebhook(secretHex, header, null as unknown as Buffer),
+      "body must be a Buffer",
+    );
+  });
+
+  it("rejects Uint8Array body (Buffer.isBuffer rejects TypedArrays that are not Buffers)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    const uint8 = new Uint8Array(body);
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, uint8 as unknown as Buffer),
       "body must be a Buffer",
     );
   });
