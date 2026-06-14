@@ -23,12 +23,18 @@ package crucible
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,16 +73,33 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 // HandlerFunc is the worker's single entry point.
 type HandlerFunc func(ctx context.Context, in Request) (Response, error)
 
+// HandlerConfig holds optional configuration for the worker HTTP handler.
+type HandlerConfig struct {
+	// SharedSecret is the HMAC-SHA256 key for inbound /invoke request verification.
+	// Empty disables verification (today's behaviour). When Handler() is called
+	// directly, WORKER_SHARED_SECRET from the environment is used automatically.
+	SharedSecret string
+}
+
 // Handler returns an http.Handler that serves /healthz and /invoke for h.
+// When WORKER_SHARED_SECRET is set in the environment, inbound /invoke requests
+// are verified against an HMAC-SHA256 signature before the handler is called.
 // The returned handler can be used with httptest.NewServer or http.Server directly.
 // Returns an error only if h is nil.
 func Handler(h HandlerFunc) (http.Handler, error) {
+	return HandlerWithConfig(h, HandlerConfig{SharedSecret: os.Getenv("WORKER_SHARED_SECRET")})
+}
+
+// HandlerWithConfig returns an http.Handler with explicit configuration.
+// Use this in tests or when configuring the secret programmatically rather than
+// via the WORKER_SHARED_SECRET environment variable.
+func HandlerWithConfig(h HandlerFunc, cfg HandlerConfig) (http.Handler, error) {
 	if h == nil {
 		return nil, errors.New("crucible.Handler: nil HandlerFunc")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/invoke", invokeHandler(h))
+	mux.HandleFunc("/invoke", invokeHandler(h, cfg.SharedSecret))
 	return mux, nil
 }
 
@@ -121,17 +144,100 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-func invokeHandler(h HandlerFunc) http.HandlerFunc {
+// workerSigHeader is the header carrying the inbound channel-auth signature.
+// Format: t=<unix-seconds>,v1=<hex-sha256-hmac>
+// Signing payload: HMAC-SHA256(secret, timestamp + "." + body) — byte-identical
+// to the outbound webhook scheme so the same scheme is used in both directions.
+const workerSigHeader = "X-Worker-Signature"
+
+// workerSigWindow is the maximum age (or future skew) allowed for a signed request.
+// Mirrors the Stripe webhook replay window used in billing/webhook.go.
+const workerSigWindow = 5 * time.Minute
+
+// verifyWorkerSig verifies the X-Worker-Signature header against body using secret.
+// It parses the "t=<ts>,v1=<hex>" format, checks the timestamp window, and does a
+// constant-time HMAC comparison. Returns a non-nil error on any verification failure.
+// The error text is never forwarded to the caller; only UNAUTHORIZED is surfaced.
+func verifyWorkerSig(header string, body []byte, secret []byte) error {
+	if header == "" {
+		return errors.New("missing signature header")
+	}
+
+	var tsStr, sigHex string
+	for _, part := range strings.Split(header, ",") {
+		switch {
+		case strings.HasPrefix(part, "t="):
+			tsStr = part[2:]
+		case strings.HasPrefix(part, "v1="):
+			sigHex = part[3:]
+		}
+	}
+	if tsStr == "" || sigHex == "" {
+		return errors.New("malformed signature header")
+	}
+
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		return errors.New("invalid timestamp in signature header")
+	}
+
+	now := time.Now().Unix()
+	diff := now - ts
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > int64(workerSigWindow.Seconds()) {
+		return errors.New("stale timestamp in signature header")
+	}
+
+	provided, err := hex.DecodeString(sigHex)
+	if err != nil || len(provided) != sha256.Size {
+		return errors.New("invalid signature value")
+	}
+
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(tsStr))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
+
+	if !hmac.Equal(provided, mac.Sum(nil)) {
+		return errors.New("signature mismatch")
+	}
+	return nil
+}
+
+func invokeHandler(h HandlerFunc, secret string) http.HandlerFunc {
+	var secretBytes []byte
+	if secret != "" {
+		secretBytes = []byte(secret)
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
+		// Read raw body first so the signature can be verified before JSON decode.
+		// http.MaxBytesReader limits to 10 MiB and returns an error on overrun.
+		rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10<<20))
+		if err != nil {
+			writeStructuredError(w, &Error{Code: "BAD_REQUEST", Message: "invalid request body"})
+			return
+		}
+
+		// Verify the HMAC-SHA256 channel-auth signature when configured.
+		// Empty secretBytes → verification disabled → today's behaviour preserved.
+		if len(secretBytes) > 0 {
+			if err := verifyWorkerSig(r.Header.Get(workerSigHeader), rawBody, secretBytes); err != nil {
+				// Surface only a stable code; the signature detail is never echoed.
+				writeStructuredError(w, &Error{Code: "UNAUTHORIZED", Message: "invalid request signature"})
+				return
+			}
+		}
+
 		var req Request
-		// 10 MiB cap; gateway enforces a smaller per-route limit upstream.
-		body := http.MaxBytesReader(w, r.Body, 10<<20)
-		if err := json.NewDecoder(body).Decode(&req); err != nil {
+		if err := json.Unmarshal(rawBody, &req); err != nil {
 			writeStructuredError(w, &Error{Code: "BAD_REQUEST", Message: "invalid request body"})
 			return
 		}

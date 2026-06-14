@@ -19,6 +19,11 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
 5. **`docs/guides/`** — product-specific MDX docs.
 
 6. **`.env`** — set `API_KEY_PREFIX` (e.g. `vat_`), Stripe keys, worker URL.
+   Optionally set `WORKER_SHARED_SECRET` to the same value on **both** the gateway
+   and the worker to enable HMAC-SHA256 channel authentication on `/invoke`.
+   Leave unset to preserve today's behaviour (no signing). When set, every worker
+   that serves this gateway must share the same secret — a mismatch causes all
+   calls to be rejected with UNAUTHORIZED.
 
 7. **Stripe dashboard** — create the product + prices matching the migration above.
 

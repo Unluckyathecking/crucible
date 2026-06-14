@@ -2,11 +2,16 @@ package proxy
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -876,6 +881,143 @@ func TestInvoke_BreakerOpensOnDeadlineExceeded(t *testing.T) {
 	}
 	if c.breaker.CurrentState() != resilience.StateOpen {
 		t.Errorf("breaker state = %v, want StateOpen: context.DeadlineExceeded must be recorded as a failure", c.breaker.CurrentState())
+	}
+}
+
+// --- Worker channel auth (X-Worker-Signature) tests ---
+
+// TestInvoke_SignatureHeaderAbsentWhenNoSecret verifies that no X-Worker-Signature
+// header is added when the client has no shared secret (today's default behaviour).
+func TestInvoke_SignatureHeaderAbsentWhenNoSecret(t *testing.T) {
+	var capturedSig string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSig = r.Header.Get(workerSigHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0) // no WithSecret → disabled
+	if _, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "op"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if capturedSig != "" {
+		t.Errorf("expected no %s header when secret is not configured, got %q", workerSigHeader, capturedSig)
+	}
+}
+
+// TestInvoke_SignatureHeaderPresentWhenSecretSet verifies that X-Worker-Signature
+// is injected when WithSecret is called with a non-empty secret.
+func TestInvoke_SignatureHeaderPresentWhenSecretSet(t *testing.T) {
+	var capturedSig string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSig = r.Header.Get(workerSigHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0).WithSecret("test-worker-secret")
+	if _, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "op"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if capturedSig == "" {
+		t.Fatalf("expected %s header when secret is configured, got none", workerSigHeader)
+	}
+	if !strings.HasPrefix(capturedSig, "t=") || !strings.Contains(capturedSig, ",v1=") {
+		t.Errorf("%s = %q, want t=<ts>,v1=<hex> format", workerSigHeader, capturedSig)
+	}
+}
+
+// TestInvoke_SignatureValueDerivation verifies that the HMAC-SHA256 digest in
+// X-Worker-Signature is correct: HMAC-SHA256(secret, ts + "." + body).
+// This test captures the outgoing body and reconstructs the expected signature,
+// ensuring cross-language parity (sdk-go / sdk-rust / sdk-ts all use the same scheme).
+func TestInvoke_SignatureValueDerivation(t *testing.T) {
+	const secret = "derivation-test-secret"
+
+	var capturedSig string
+	var capturedBody []byte
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSig = r.Header.Get(workerSigHeader)
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0).WithSecret(secret)
+	in := &InvokeRequest{RequestID: "r-sig", Operation: "verify-sig"}
+	if _, err := c.Invoke(context.Background(), in); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	// Parse t=<ts>,v1=<hex> from the captured header.
+	var tsStr, sigHex string
+	for _, part := range strings.SplitN(capturedSig, ",", -1) {
+		if strings.HasPrefix(part, "t=") {
+			tsStr = part[2:]
+		} else if strings.HasPrefix(part, "v1=") {
+			sigHex = part[3:]
+		}
+	}
+	if tsStr == "" || sigHex == "" {
+		t.Fatalf("could not parse %s: %q", workerSigHeader, capturedSig)
+	}
+
+	// Recompute expected HMAC-SHA256(secret, ts + "." + body).
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(tsStr))
+	mac.Write([]byte("."))
+	mac.Write(capturedBody)
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	if sigHex != expected {
+		t.Errorf("signature mismatch:\n got  %q\n want %q", sigHex, expected)
+	}
+
+	// Timestamp must be a valid Unix second within the last 60s.
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		t.Fatalf("timestamp %q is not a valid integer: %v", tsStr, err)
+	}
+	now := time.Now().Unix()
+	if ts < now-60 || ts > now+5 {
+		t.Errorf("timestamp %d is not near now (%d)", ts, now)
+	}
+}
+
+// TestInvoke_OtherHeadersSurviveWithSigning verifies that X-Request-ID and
+// traceparent are preserved when X-Worker-Signature is added. Signing must not
+// remove or overwrite the existing headers.
+func TestInvoke_OtherHeadersSurviveWithSigning(t *testing.T) {
+	tp, _ := newProxyTestProvider(t)
+	ctx, span := tp.Tracer("test").Start(context.Background(), "parent")
+	defer span.End()
+
+	var capturedSig, capturedRID, capturedTraceparent string
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSig = r.Header.Get(workerSigHeader)
+		capturedRID = r.Header.Get("X-Request-ID")
+		capturedTraceparent = r.Header.Get("traceparent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{},"billable_units":1}`))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0).WithSecret("survival-test-secret")
+	if _, err := c.Invoke(ctx, &InvokeRequest{RequestID: "rid-123", Operation: "op"}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+
+	if capturedSig == "" {
+		t.Error("X-Worker-Signature header missing")
+	}
+	if capturedRID != "rid-123" {
+		t.Errorf("X-Request-ID = %q, want rid-123 — signing must not remove it", capturedRID)
+	}
+	if capturedTraceparent == "" {
+		t.Error("traceparent header missing — signing must not remove it")
 	}
 }
 

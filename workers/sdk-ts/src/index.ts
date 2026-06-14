@@ -14,6 +14,7 @@
 //     billable_units: 1,
 //   }));
 
+import * as crypto from 'crypto';
 import * as http from 'http';
 
 /** Mirrors InvokeRequest from the frozen worker proto contract. */
@@ -54,16 +55,31 @@ export class WorkerError extends Error {
 export type WorkerHandler = (req: Request) => Promise<Response> | Response;
 
 /**
+ * Optional configuration for the worker HTTP server.
+ * All fields are optional; the zero value preserves today's behaviour.
+ */
+export interface ServerConfig {
+  /**
+   * HMAC-SHA256 key for inbound /invoke request verification.
+   * When set, unsigned or forged calls are rejected with UNAUTHORIZED.
+   * Empty/undefined (the default) disables verification — opt-in only.
+   * Falls back to WORKER_SHARED_SECRET from the environment when omitted.
+   */
+  sharedSecret?: string;
+}
+
+/**
  * Creates a Node.js HTTP server pre-wired to the worker contract:
- *   POST /invoke  — decodes, calls handler, encodes response.
+ *   POST /invoke  — decodes, verifies signature (if configured), calls handler.
  *   GET  /healthz — returns 200 OK.
  *
  * Use serve() for the standard lifecycle (signal handling, graceful drain).
  * Use createServer() when you need to manage the server lifecycle yourself.
  */
-export function createServer(handler: WorkerHandler): http.Server {
+export function createServer(handler: WorkerHandler, config: ServerConfig = {}): http.Server {
+  const secret = config.sharedSecret ?? process.env['WORKER_SHARED_SECRET'] ?? '';
   return http.createServer((req, res) => {
-    void dispatch(req, res, handler);
+    void dispatch(req, res, handler, secret);
   });
 }
 
@@ -71,8 +87,8 @@ export function createServer(handler: WorkerHandler): http.Server {
  * Runs the worker on the given port and blocks until SIGINT/SIGTERM,
  * then drains in-flight requests for up to 10 s.
  */
-export function serve(port: number, handler: WorkerHandler): Promise<void> {
-  const server = createServer(handler);
+export function serve(port: number, handler: WorkerHandler, config: ServerConfig = {}): Promise<void> {
+  const server = createServer(handler, config);
 
   return new Promise<void>((resolve, reject) => {
     server.listen(port, () => {
@@ -99,10 +115,57 @@ export function serve(port: number, handler: WorkerHandler): Promise<void> {
   });
 }
 
+/** Maximum age (or future skew) of a signed request in seconds. Mirrors the Stripe replay window. */
+const WORKER_SIG_WINDOW = 300;
+
+/** Header carrying the inbound channel-auth signature (lowercase — Node normalises). */
+const WORKER_SIG_HEADER = 'x-worker-signature';
+
+/**
+ * Verify the X-Worker-Signature header against body using secret.
+ * Throws on any verification failure. Returns void on success.
+ * The thrown error detail is never forwarded to the caller.
+ *
+ * Signing scheme (byte-identical across Go/Rust/TS):
+ *   HMAC-SHA256(secret, timestamp + "." + body)
+ *   Header: t=<unix-seconds>,v1=<hex-digest>
+ */
+function verifyWorkerSig(header: string, body: Buffer, secret: string): void {
+  let tsStr: string | undefined;
+  let sigHex: string | undefined;
+
+  for (const part of header.split(',')) {
+    if (part.startsWith('t=')) tsStr = part.slice(2);
+    else if (part.startsWith('v1=')) sigHex = part.slice(3);
+  }
+
+  if (!tsStr || !sigHex) throw new Error('missing timestamp or signature in header');
+
+  const ts = parseInt(tsStr, 10);
+  if (!Number.isFinite(ts)) throw new Error('invalid timestamp');
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > WORKER_SIG_WINDOW) throw new Error('stale timestamp');
+
+  // Compute expected HMAC-SHA256(secret, ts + "." + body).
+  const expected = crypto
+    .createHmac('sha256', Buffer.from(secret, 'utf8'))
+    .update(tsStr + '.')
+    .update(body)
+    .digest();
+
+  const provided = Buffer.from(sigHex, 'hex');
+  if (provided.length !== 32) throw new Error('invalid signature length');
+
+  // Constant-time comparison — must be same-length buffers.
+  if (!crypto.timingSafeEqual(expected, provided)) throw new Error('signature mismatch');
+}
+
 async function dispatch(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   handler: WorkerHandler,
+  secret: string,
 ): Promise<void> {
   if (req.url === '/healthz' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -116,17 +179,34 @@ async function dispatch(
     return;
   }
 
-  let raw: string;
+  let rawBuffer: Buffer;
   try {
-    raw = (await readBody(req, 10 * 1024 * 1024)).toString('utf8');
+    rawBuffer = await readBody(req, 10 * 1024 * 1024);
   } catch {
     writeError(res, { code: 'BAD_REQUEST', message: 'request body too large', retryable: false });
     return;
   }
 
+  // Verify the HMAC-SHA256 channel-auth signature when configured.
+  // Empty secret → skip verification → today's behaviour preserved (opt-in only).
+  if (secret) {
+    const sigHeader = req.headers[WORKER_SIG_HEADER];
+    try {
+      verifyWorkerSig(
+        typeof sigHeader === 'string' ? sigHeader : '',
+        rawBuffer,
+        secret,
+      );
+    } catch {
+      // Surface only a stable code; the signature detail is never echoed.
+      writeError(res, { code: 'UNAUTHORIZED', message: 'invalid request signature', retryable: false });
+      return;
+    }
+  }
+
   let workerReq: Request;
   try {
-    workerReq = JSON.parse(raw) as Request;
+    workerReq = JSON.parse(rawBuffer.toString('utf8')) as Request;
   } catch {
     writeError(res, { code: 'BAD_REQUEST', message: 'invalid request body', retryable: false });
     return;

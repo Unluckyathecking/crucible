@@ -46,6 +46,12 @@ type Config struct {
 	APIKeyHashSalt  string `envconfig:"API_KEY_HASH_SALT"  required:"true"`
 	DashboardOrigin string `envconfig:"DASHBOARD_ORIGIN"   default:"http://localhost:3001"`
 
+	// Worker channel authentication — opt-in HMAC-SHA256 /invoke request signing.
+	// Empty (the default) disables signing, preserving today's behaviour.
+	// When set, the gateway signs every /invoke request; the worker SDK verifies it.
+	// Generate with: openssl rand -hex 32
+	WorkerSharedSecret string `envconfig:"WORKER_SHARED_SECRET" default:""`
+
 	// Error handling
 	ErrorExposure string `envconfig:"WORKER_ERROR_EXPOSURE" default:"sanitized"`
 
