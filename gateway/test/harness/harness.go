@@ -509,11 +509,14 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	// named variable makes clear which value the Redis DEL key is derived from.
 	cleanupPrefix := prefix
 
-	// inserted is set to true only after both DB inserts succeed. The cleanup
-	// closure checks it so it no-ops if CreateCustomer fatals before the rows exist.
-	var inserted bool
+	// insertedCustomer is set to true after the customers row is inserted.
+	// The cleanup closure checks it so it no-ops if CreateCustomer fatals
+	// before any rows exist. Setting it before the api_keys insert ensures
+	// the customers row is removed even if the api_keys insert fails, since
+	// DELETE FROM api_keys WHERE customer_id=$1 is safe when no rows exist.
+	var insertedCustomer bool
 	t.Cleanup(func() {
-		if !inserted {
+		if !insertedCustomer {
 			return
 		}
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
@@ -619,6 +622,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
+	insertedCustomer = true
 
 	hash := auth.Hash(TestSalt(), apiKey)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
@@ -630,7 +634,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
 	}
-	inserted = true
 
 	return customerID, apiKey
 }
