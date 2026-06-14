@@ -529,6 +529,25 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_unknownKeyEmptyValue(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	// Unknown key with empty value (foo=) must be rejected as malformed,
+	// consistent with t= and v1= which already reject empty values explicitly.
+	header := "t=" + ts + ",v1=" + sig + ",foo="
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for unknown key with empty value, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' for unknown key with empty value, got: %v", wErr)
+	}
+}
+
 func TestWebhookError_Message(t *testing.T) {
 	// WebhookError.Error() must have the "crucible webhook:" prefix and embed the raw
 	// message. WebhookError.Message() must return the raw message without prefix.

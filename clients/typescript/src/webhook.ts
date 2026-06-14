@@ -147,7 +147,8 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
   const sigs: string[] = [];
   for (const part of parts) {
     const idx = part.indexOf("=");
-    if (idx < 0) {
+    // idx <= 0 rejects both missing "=" (idx === -1) and empty key ("=value", idx === 0).
+    if (idx <= 0) {
       throw new WebhookVerificationError("malformed X-Crucible-Signature header");
     }
     const key = part.slice(0, idx);

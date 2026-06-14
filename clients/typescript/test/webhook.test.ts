@@ -188,6 +188,14 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, `v1=${sig}`, body));
   });
 
+  it("rejects part with empty key (=value at position 0)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // "=foo" has indexOf("=") === 0, which would pass idx < 0 but must fail idx <= 0.
+    const header = `t=${ts},v1=${sig},=extra`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
+
   it("verifies empty body", () => {
     const ts = nowTs();
     const emptyBody = Buffer.alloc(0);
