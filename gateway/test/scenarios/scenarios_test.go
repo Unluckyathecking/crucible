@@ -130,12 +130,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // gateway proxy is responsible for returning 502 BadGateway.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), delay)
-		defer cancel()
-		<-ctx.Done()
-		if ctx.Err() != context.DeadlineExceeded {
-			return
-		}
+		time.Sleep(delay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
@@ -285,13 +280,8 @@ func TestHappyPath(t *testing.T) {
 	} else if _, err := uuid.Parse(rid1); err != nil {
 		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid1, err)
 	}
-	resp2 := invoke(t, client, ts, apiKey)
-	drainBody(t, resp2)
-	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
-		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
-	}
 
-	// Security headers set by the SecurityHeaders middleware.
+	// Security headers set by the SecurityHeaders middleware; check against resp (first response).
 	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options: got %q, want nosniff", got)
 	}
@@ -301,6 +291,12 @@ func TestHappyPath(t *testing.T) {
 	const wantPermissionsPolicy = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
 	if got := resp.Header.Get("Permissions-Policy"); got != wantPermissionsPolicy {
 		t.Errorf("Permissions-Policy: got %q, want %q", got, wantPermissionsPolicy)
+	}
+
+	resp2 := invoke(t, client, ts, apiKey)
+	drainBody(t, resp2)
+	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
+		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
 }
 
