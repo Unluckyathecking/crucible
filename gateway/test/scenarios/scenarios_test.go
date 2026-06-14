@@ -132,20 +132,26 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // hungWorker is a handler that never writes a response; it blocks until the
-// request context is cancelled or a 5-second fallback timer fires.
-// TestWorkerTimeout uses WorkerTimeoutMS=500, so the proxy closes the connection
-// to the worker well before the fallback; in practice r.Context() fires first.
-// The fallback guards against httptest.Server.Close() deadlocking: Close() calls
-// wg.Wait() before CloseClientConnections(), so without a bounded exit the
-// handler would block indefinitely and the test suite would time out.
+// request context is cancelled or the hungWorkerFallback timer fires.
+// TestWorkerTimeout sets WorkerTimeoutMS=500, so the proxy cancels the worker
+// request context well before the fallback elapses; r.Context() fires first in
+// the normal case.
+// The fallback is load-bearing, not merely a safety net: httptest.Server.Close()
+// calls wg.Wait() on active handlers before CloseClientConnections(). If the
+// proxy timeout fires after Close() begins but before CloseClientConnections()
+// runs, r.Context() may never be cancelled because the connection is still open.
+// Without a bounded exit the handler would block indefinitely, consuming the
+// full integration-test timeout.
+// defer tmr.Stop() is safe here because the timer is never reused: if the
+// context branch wins, Stop() halts the timer; if Stop() returns false (timer
+// already fired), the buffered channel sits unread and is collected with the
+// timer — no goroutine blocks.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(hungWorkerFallback)
+		defer tmr.Stop()
 		select {
 		case <-r.Context().Done():
-			if !tmr.Stop() {
-				<-tmr.C
-			}
 		case <-tmr.C:
 		}
 	})
@@ -319,6 +325,19 @@ func TestHappyPath(t *testing.T) {
 	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
 		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
+	var inv2 struct {
+		Payload       json.RawMessage `json:"payload"`
+		BillableUnits uint64          `json:"billable_units"`
+	}
+	if err := json.Unmarshal(body2, &inv2); err != nil {
+		t.Fatalf("second request: decode response: %v\nbody: %s", err, body2)
+	}
+	if inv2.BillableUnits != 3 {
+		t.Errorf("second request: billable_units: got %d, want 3", inv2.BillableUnits)
+	}
+	if got := string(inv2.Payload); got != "{}" {
+		t.Errorf("second request: payload: got %s, want {}", got)
+	}
 }
 
 // TestIdempotentReplay: same Idempotency-Key twice returns cached response; worker invoked once.
@@ -392,9 +411,13 @@ func TestRateLimit(t *testing.T) {
 	ts.CreatePlan(t, "rl-2-plan", rateLimit, defaultTestMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "rate-limit-"+uuid.New().String()+"@example.com", "rl-2-plan")
 
-	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
-	// Require at least 15 s remaining in the window so invoke+assert completes
-	// before the window resets, even under -race with heavy CPU contention.
+	// Guard against the 60-second sliding window resetting mid-test: if the first
+	// request lands near second 59 and the third lands after second 0, the window
+	// may have slid enough to reset the counter, making the overflow request succeed.
+	// Require at least 15 s remaining in the current second to ensure all three
+	// requests complete in the same 60-second window, even under -race slowdown.
+	// In the worst case this sleeps up to ~45 s waiting for the next minute; that
+	// delay is expected and is bounded by maxSyncAttempts × 60 s.
 	const (
 		maxSyncAttempts    = 3
 		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
