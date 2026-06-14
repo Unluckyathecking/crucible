@@ -94,7 +94,8 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 
 	authStore := auth.NewStore(pool, redisClient, cfg.APIKeyHashSalt)
-	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns)
+	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns).
+		WithSecret(cfg.WorkerSharedSecret)
 	bucket := ratelimit.New(redisClient)
 	plans := billing.NewPlanCache(pool)
 	quotaTracker := quota.New(redisClient)

@@ -6,12 +6,16 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -88,13 +92,20 @@ type clientMetrics struct {
 	workerCallDuration prometheus.Histogram
 }
 
+// workerSigHeader is the header carrying the HMAC-SHA256 channel-auth signature.
+// Format: t=<unix-seconds>,v1=<hex-sha256-hmac>
+// Mirrors the outbound-webhook signing scheme (webhookout.Sign) so the payload
+// construction is byte-identical: HMAC-SHA256(secret, timestamp + "." + body).
+const workerSigHeader = "X-Worker-Signature"
+
 // Client forwards InvokeRequests to a worker.
 type Client struct {
-	workerURL string
-	http      *http.Client
-	retry     resilience.Policy
-	breaker   *resilience.Breaker
-	metrics   atomic.Value // always stores *clientMetrics; swapped atomically by WithMetrics
+	workerURL    string
+	http         *http.Client
+	retry        resilience.Policy
+	breaker      *resilience.Breaker
+	metrics      atomic.Value // always stores *clientMetrics; swapped atomically by WithMetrics
+	sharedSecret []byte       // nil → signing disabled (today's behaviour)
 }
 
 // New creates a proxy client. If timeout is 0 or negative, it defaults
@@ -181,6 +192,17 @@ func (c *Client) WithBreakerClock(now func() time.Time) *Client {
 		return c
 	}
 	c.breaker.WithNow(now)
+	return c
+}
+
+// WithSecret configures an HMAC-SHA256 signing key for outbound /invoke requests.
+// When non-empty, doOnce appends X-Worker-Signature with a timestamp+body digest
+// before dispatching the request. Empty string (the default) disables signing and
+// preserves today's behaviour — opt-in, zero-config-safe.
+func (c *Client) WithSecret(secret string) *Client {
+	if secret != "" {
+		c.sharedSecret = []byte(secret)
+	}
 	return c
 }
 
@@ -371,8 +393,19 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 	if requestID != "" {
 		req.Header.Set("X-Request-ID", requestID)
 	}
+	// Sign the /invoke request when a shared secret is configured.
+	// Signing scheme mirrors webhookout.Sign: HMAC-SHA256(secret, ts + "." + body).
+	// Empty sharedSecret → no header → today's behaviour preserved (opt-in only).
+	if len(c.sharedSecret) > 0 {
+		ts := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+		mac := hmac.New(sha256.New, c.sharedSecret)
+		_, _ = mac.Write([]byte(ts))
+		_, _ = mac.Write([]byte("."))
+		_, _ = mac.Write(body)
+		req.Header.Set(workerSigHeader, "t="+ts+",v1="+hex.EncodeToString(mac.Sum(nil)))
+	}
 	// Propagate W3C traceparent when a span is active in ctx; no-op when absent.
-	// X-Request-ID set above is not removed or modified.
+	// X-Request-ID and X-Worker-Signature set above are not removed or modified.
 	tracePropagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	start := time.Now()

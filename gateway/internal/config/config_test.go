@@ -716,6 +716,37 @@ func TestOtelExporterEndpointMalformedHostPortReturnsError(t *testing.T) {
 	}
 }
 
+// --- Worker channel auth field tests ---
+
+// TestWorkerSharedSecretDefaultEmpty verifies that WORKER_SHARED_SECRET defaults
+// to empty string, leaving signing disabled and preserving today's behaviour.
+func TestWorkerSharedSecretDefaultEmpty(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.WorkerSharedSecret != "" {
+		t.Errorf("WorkerSharedSecret = %q, want empty (signing disabled by default)", c.WorkerSharedSecret)
+	}
+}
+
+// TestWorkerSharedSecretSet verifies that WORKER_SHARED_SECRET is read correctly
+// when set, enabling HMAC-SHA256 channel auth between gateway and worker.
+func TestWorkerSharedSecretSet(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WORKER_SHARED_SECRET", "super-secret-key-for-worker-auth-12345")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.WorkerSharedSecret != "super-secret-key-for-worker-auth-12345" {
+		t.Errorf("WorkerSharedSecret = %q, want exact value set", c.WorkerSharedSecret)
+	}
+}
+
 // TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
 // return the configured millisecond values as time.Duration (with the correct
 // * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
