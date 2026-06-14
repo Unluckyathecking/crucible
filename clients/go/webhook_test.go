@@ -828,8 +828,14 @@ func TestVerifyWebhook_nilBody(t *testing.T) {
 	sig := testSign(secret, ts, nil) // nil body → HMAC over timestamp + "."
 	header := "t=" + ts + ",v1=" + sig
 
+	// nil body: VerifyWebhook normalises nil → []byte{} internally.
 	if err := crucible.VerifyWebhook(secretHex, header, nil, 5*time.Minute); err != nil {
 		t.Fatalf("VerifyWebhook with nil body: %v", err)
+	}
+	// Cross-path: signature produced over nil and verified with []byte{} must also pass.
+	// Both nil and []byte{} produce zero HMAC body bytes, so the digests are identical.
+	if err := crucible.VerifyWebhook(secretHex, header, []byte{}, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with empty body (nil-signed): %v", err)
 	}
 }
 

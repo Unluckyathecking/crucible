@@ -375,7 +375,8 @@ describe("verifyWebhook", () => {
   it("rejects duplicate t= keys in header", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);
-    // Attacker prepends a valid ts then appends a different one; last-wins would bypass age check.
+    // Valid ts comes first; attacker appends a stale one. Duplicate t= must be rejected
+    // outright (not last-wins), so the stale appended value cannot bypass the age check.
     const header = `t=${ts},t=999,v1=${sig}`;
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
   });
