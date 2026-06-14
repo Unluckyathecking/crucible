@@ -651,9 +651,11 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "" {
 		t.Errorf("customer B first request: X-Idempotent-Replayed = %q, want absent (different customer)", v)
 	}
-	// varyingWorker embeds an incrementing counter; equal bodies would mean B was served A's cached payload.
+	// varyingWorker embeds an incrementing counter; body1 (A) and body2 (B) must differ
+	// because each customer triggers an independent worker invocation.
+	// Equal bodies would mean B was incorrectly served from A's idempotency cache.
 	if string(body1) == string(body2) {
-		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\nbody: %s", body1)
+		t.Errorf("idempotency isolation failure: customers A and B received identical worker responses\n  A: %s\n  B: %s", body1, body2)
 	}
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations: got %d, want 2 (one per customer)", got)
@@ -676,16 +678,16 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	}
 
 	// B replays with the same key: must be served from B's cache, not forwarded.
-	r3 := invoke(t, client, ts, keyB, withIdemp)
-	body3 := drainBody(t, r3)
-	if r3.StatusCode != http.StatusOK {
-		t.Fatalf("customer B replay: want 200, got %d: %s", r3.StatusCode, body3)
+	r2Replay := invoke(t, client, ts, keyB, withIdemp)
+	body2Replay := drainBody(t, r2Replay)
+	if r2Replay.StatusCode != http.StatusOK {
+		t.Fatalf("customer B replay: want 200, got %d: %s", r2Replay.StatusCode, body2Replay)
 	}
-	if v := r3.Header.Get("X-Idempotent-Replayed"); v != "true" {
+	if v := r2Replay.Header.Get("X-Idempotent-Replayed"); v != "true" {
 		t.Errorf("customer B replay: X-Idempotent-Replayed = %q, want \"true\"", v)
 	}
-	if string(body2) != string(body3) {
-		t.Errorf("customer B replay body mismatch:\n  first:  %s\n  replay: %s", body2, body3)
+	if string(body2) != string(body2Replay) {
+		t.Errorf("customer B replay body mismatch:\n  first:  %s\n  replay: %s", body2, body2Replay)
 	}
 	if got := invocations.Load(); got != 2 {
 		t.Errorf("worker invocations after B replay: got %d, want 2 (replay must not call worker)", got)
