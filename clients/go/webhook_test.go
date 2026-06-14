@@ -530,6 +530,26 @@ func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_maxValidTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	// 15-digit all-nines timestamp: maximum string length accepted by the length guard.
+	// The corresponding Unix time is far in the future, so the age check rejects it.
+	ts := "999999999999999"
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for far-future max-length timestamp, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "future") {
+		t.Fatalf("expected 'future' in error for max-length timestamp, got: %v", wErr)
+	}
+}
+
 func TestVerifyWebhook_timestampZero(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

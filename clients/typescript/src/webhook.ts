@@ -98,7 +98,7 @@ export function verifyWebhook(
   const nowMs = Date.now();
   const tsMs = ts * 1000;
   // ts * 1000 can exceed MAX_SAFE_INTEGER for far-future timestamps even when ts
-  // itself is safe (e.g., ts = 9e12 → tsMs = 9e15, just at the boundary).
+  // itself is safe (e.g., ts = 9007199254741 → tsMs = 9007199254741000 > MAX_SAFE_INTEGER).
   // Reject rather than risk silent precision loss in the age comparison.
   if (!Number.isSafeInteger(tsMs)) {
     throw new WebhookVerificationError("bad timestamp in signature header");
