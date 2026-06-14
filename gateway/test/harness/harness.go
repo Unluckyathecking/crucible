@@ -218,8 +218,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	// Registered before authStore so LIFO cleanup closes authStore first,
-	// draining its background goroutine while Redis is still open.
+	// rdb is registered before authStore: in LIFO order authStore.Close() runs
+	// first (draining its background goroutine), then rdb.Close() runs while
+	// Redis is still open, then pool.Close() runs last.
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
 			t.Errorf("harness: redis close: %v", err)
@@ -235,10 +236,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// authStore is registered after rdb so LIFO runs it first: drains the
-	// background last_used_at goroutine while Redis is still open.
-	// Wrapped in a closure so a future signature change (e.g. adding an error
-	// return) surfaces as a compile error rather than a silent drop.
+	// authStore is registered last so LIFO runs it first: drains the background
+	// last_used_at goroutine while both Redis and Postgres are still open.
+	// Cleanup order: authStore.Close → rdb.Close → pool.Close.
+	// Wrapped in a closure so a future error-return on Close() surfaces as a
+	// compile error rather than a silent discard.
 	t.Cleanup(func() { authStore.Close() })
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
