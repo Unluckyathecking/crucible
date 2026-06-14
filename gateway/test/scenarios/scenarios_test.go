@@ -133,15 +133,20 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
-			// Drain the channel if Stop races with the timer firing so the
-			// internal goroutine is not leaked for the duration of the delay.
+			// Non-blocking drain: if Stop lost the race with the timer firing,
+			// drain the channel so the internal goroutine is not held for the
+			// remainder of the delay.
 			if !tmr.Stop() {
-				<-tmr.C
+				select {
+				case <-tmr.C:
+				default:
+				}
 			}
 			return
 		}
