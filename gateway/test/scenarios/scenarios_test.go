@@ -131,7 +131,14 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		timer := time.NewTimer(delay)
-		defer timer.Stop()
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-r.Context().Done():
 			return
@@ -363,7 +370,6 @@ func TestIdempotentReplay(t *testing.T) {
 // TestRateLimit: (limit+1)-th request returns 429 RATE_LIMITED with rate-limit headers.
 // All requests land in the same 60-second window so the overflow is reliably rejected.
 func TestRateLimit(t *testing.T) {
-	t.Parallel()
 	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
 	// If we're within 2 s of the next minute, sleep until we're safely into the new
 	// minute (plus 100 ms buffer). Uses sub-second precision to avoid under-sleeping.
