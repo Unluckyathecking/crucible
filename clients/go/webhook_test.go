@@ -28,10 +28,10 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// nowTS returns a Unix timestamp 1 second in the past. Using a slightly-past
-// timestamp avoids a flaky race where time.Now() inside VerifyWebhook samples
-// the next second and treats a "current" timestamp as being in the future.
-func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-1*time.Second).Unix()) }
+// nowTS returns a Unix timestamp 3 seconds in the past. The 3-second margin
+// prevents flaky failures where a descheduled goroutine causes VerifyWebhook's
+// time.Now() to sample a later instant than the timestamp was recorded.
+func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-3*time.Second).Unix()) }
 
 // assertWebhookError asserts err is a *crucible.WebhookError. Use when the
 // error message does not need further inspection.

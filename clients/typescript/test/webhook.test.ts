@@ -23,10 +23,10 @@ function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
     .digest("hex");
 }
 
-// 1 second in the past avoids a flaky race where verifyWebhook samples the
-// next second and treats a "current" timestamp as being in the future.
+// 3 seconds in the past prevents flaky failures where a descheduled event loop
+// tick causes verifyWebhook's Date.now() to sample a later instant than recorded.
 function nowTs(): string {
-  return Math.floor((Date.now() - 1000) / 1000).toString();
+  return Math.floor((Date.now() - 3000) / 1000).toString();
 }
 
 function expectWebhookError(fn: () => void, messageSubstring?: string): void {
