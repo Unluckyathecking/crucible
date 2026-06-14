@@ -103,6 +103,22 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
+  it("rejects v1 candidate with non-hex characters (all 64 chars are non-hex)", () => {
+    const ts = nowTs();
+    const nonHexSig = "g".repeat(64);
+    const header = `t=${ts},v1=${nonHexSig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+  });
+
+  it("rejects v1 candidate that is 65 chars (valid hex + trailing non-hex)", () => {
+    const ts = nowTs();
+    const validSig = testSign(secret, ts, body);
+    // Appending a non-hex char makes sig 65 chars; Buffer.from would still decode
+    // 32 bytes from the first 64 chars without the explicit sig.length !== 64 guard.
+    const header = `t=${ts},v1=${validSig}X`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+  });
+
   it("rejects valid sig placed past maxSigCandidates bound (9th of 8)", () => {
     const ts = nowTs();
     const validSig = testSign(secret, ts, body);
