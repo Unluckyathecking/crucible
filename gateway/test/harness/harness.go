@@ -113,8 +113,8 @@ func runMigrations(pool *pgxpool.Pool) error {
 	defer migrateMu.Unlock()
 	if !migrateDone {
 		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+		defer cancel()
 		migrateErr = db.Apply(ctx, pool)
-		cancel()
 		if migrateErr == nil {
 			migrateDone = true
 		}
