@@ -53,6 +53,20 @@ const secretHex = secret.toString("hex");
 const body = Buffer.from('{"event":"delivery.succeeded","data":{"id":1}}');
 
 describe("verifyWebhook", () => {
+  it("verifies known-good hardcoded reference vector (independent of testSign)", () => {
+    // Pre-computed reference vector — independent of testSign. Catches algorithmic
+    // drift between this SDK and the gateway signer.
+    // secret=0x00×32, timestamp="1700000000" (2023-11-14), body={"event":"test"}
+    // HMAC-SHA256 = 247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5
+    const vectorSecretHex = "00".repeat(32);
+    const vectorBody = Buffer.from('{"event":"test"}');
+    const header = `t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5`;
+    // 4-year tolerance covers the fixed 2023 timestamp
+    const vectorTolerance = 4 * 365 * 24 * 60 * 60 * 1000;
+    const result = verifyWebhook(vectorSecretHex, header, vectorBody, vectorTolerance);
+    assert.equal(result, undefined);
+  });
+
   it("verifies a valid signature (positive vector, matches gateway Sign)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);

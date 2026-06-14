@@ -51,6 +51,27 @@ func mustBeWebhookError(t *testing.T, err error) *crucible.WebhookError {
 	return wErr
 }
 
+func TestVerifyWebhook_knownGoodVector(t *testing.T) {
+	// Pre-computed reference vector — independent of testSign. Guards against
+	// algorithmic drift between this SDK and the gateway signer.
+	//
+	// Inputs:
+	//   secret:    0x00 × 32 bytes
+	//   timestamp: "1700000000"   (2023-11-14T22:13:20 UTC)
+	//   body:      {"event":"test"}
+	// Expected HMAC-SHA256("1700000000.{\"event\":\"test\"}", key=secret):
+	//   247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5
+	secretHex := strings.Repeat("00", 32)
+	body := []byte(`{"event":"test"}`)
+	header := "t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5"
+
+	// tolerance covers the fixed 2023 timestamp
+	const vectorTolerance = 4 * 365 * 24 * time.Hour
+	if err := crucible.VerifyWebhook(secretHex, header, body, vectorTolerance); err != nil {
+		t.Fatalf("known-good reference vector rejected: %v", err)
+	}
+}
+
 func TestVerifyWebhook_valid(t *testing.T) {
 	secret := make([]byte, 32)
 	for i := range secret {
