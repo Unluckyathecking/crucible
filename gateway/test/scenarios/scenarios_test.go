@@ -133,12 +133,16 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 		case <-r.Context().Done():
+			// Drain the channel if Stop races with the timer firing so the
+			// internal goroutine is not leaked for the duration of the delay.
+			if !tmr.Stop() {
+				<-tmr.C
+			}
 			return
 		}
 	})
@@ -302,7 +306,13 @@ func TestHappyPath(t *testing.T) {
 	}
 
 	resp2 := invoke(t, client, ts, apiKey)
-	drainBody(t, resp2)
+	body2 := drainBody(t, resp2)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second request: want 200, got %d: %s", resp2.StatusCode, body2)
+	}
+	if v := resp2.Header.Get("X-Idempotent-Replayed"); v != "" {
+		t.Errorf("second request: X-Idempotent-Replayed: got %q, want absent", v)
+	}
 	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
 		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
