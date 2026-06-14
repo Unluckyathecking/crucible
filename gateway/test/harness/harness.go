@@ -203,8 +203,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	// Registered before authStore cleanup so LIFO runs rdb.Close after authStore.Close,
-	// keeping Redis open while authStore drains its background goroutine.
+	// rdb is registered FIRST so LIFO cleanup closes it LAST.
+	// authStore (registered after) is therefore closed FIRST, draining its
+	// background goroutine while Redis is still open.
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
 			t.Errorf("harness: redis close: %v", err)
@@ -396,6 +397,9 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	}
 	if planID == "" {
 		t.Fatal("harness: CreateCustomer planID must be non-empty")
+	}
+	if len(email) > 254 {
+		t.Fatalf("harness: CreateCustomer email exceeds RFC 5321 maximum length of 254 characters: %d", len(email))
 	}
 	_, err := mail.ParseAddress(email)
 	if err != nil {
