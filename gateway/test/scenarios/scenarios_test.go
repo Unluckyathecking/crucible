@@ -126,22 +126,18 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 }
 
 // slowWorker delays the response by delay; returns on context cancellation.
-// Write errors are discarded: if the proxy already returned 502, the client is
-// gone and the write is a no-op.
+// Uses context.WithTimeout derived from the request context so no separate
+// timer goroutine is required and cancellation propagates cleanly.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
-		select {
-		case <-tmr.C:
-			w.Header().Set("Content-Type", "application/json")
-			if _, err := fmt.Fprint(w, `{"payload":{},"billable_units":1}`); err != nil {
-				// t is not available in handler scope; log to stderr which the test harness captures.
-				fmt.Fprintf(os.Stderr, "slowWorker write error: %v\n", err)
-			}
-		case <-r.Context().Done():
-			return
+		ctx, cancel := context.WithTimeout(r.Context(), delay)
+		defer cancel()
+		<-ctx.Done()
+		if ctx.Err() != context.DeadlineExceeded {
+			return // request context cancelled before delay elapsed
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 }
 
