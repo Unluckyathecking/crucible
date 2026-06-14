@@ -81,6 +81,18 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
+// redisQuotaKey mirrors the key format used by internal/quota/tracker.go (monthKey).
+// Format: "quota:<customerID>:<YYYY-MM>"
+func redisQuotaKey(customerID, month string) string { return "quota:" + customerID + ":" + month }
+
+// redisRateLimitKey mirrors the key format used by internal/ratelimit/bucket.go.
+// Format: "rl:<customerID>"
+func redisRateLimitKey(customerID string) string { return "rl:" + customerID }
+
+// redisAuthKey mirrors the key format used by internal/auth/store.go.
+// Format: "auth:<prefix>"
+func redisAuthKey(prefix string) string { return "auth:" + prefix }
+
 // routesMu serializes replacement of server.V1Routes during server.NewRouter calls.
 // Tests that set opts.Routes may use t.Parallel; routesMu ensures exclusive access
 // during the swap-and-restore so no goroutine observes intermediate route state.
@@ -445,19 +457,20 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			// quota.Tracker wrote at request time, even if cleanup runs across
 			// a UTC month boundary. Both current and next month are deleted to
 			// cover requests that landed just before a boundary.
-			// Key formats mirror the production packages (verified against source):
-			//   quota.Tracker: "quota:<customerID>:<YYYY-MM>"  (internal/quota/tracker.go)
-			//   ratelimit.Bucket: "rl:<customerID>"            (internal/ratelimit/bucket.go)
-			//   auth.Store: "auth:<prefix>"                    (internal/auth/store.go)
+			// Months computed at cleanup time so quota keys match what quota.Tracker
+			// wrote at request time, even across a UTC month boundary. Both current
+			// and next month are deleted to cover requests that straddled a boundary.
+			// Key format functions (redisQuotaKey, redisRateLimitKey, redisAuthKey)
+			// are defined above and must be kept in sync with the internal packages.
 			now := time.Now().UTC()
 			cid := customerID.String()
 			month := now.Format("2006-01")
 			nextMonth := now.AddDate(0, 1, 0).Format("2006-01")
 			if delErr := ts.Redis.Del(rctx,
-				"quota:"+cid+":"+month,
-				"quota:"+cid+":"+nextMonth,
-				"rl:"+cid,
-				"auth:"+prefix,
+				redisQuotaKey(cid, month),
+				redisQuotaKey(cid, nextMonth),
+				redisRateLimitKey(cid),
+				redisAuthKey(prefix),
 			).Err(); delErr != nil {
 				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
