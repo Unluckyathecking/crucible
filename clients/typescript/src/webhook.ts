@@ -5,7 +5,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const MAX_SIG_CANDIDATES = 8;
 
 // SHA-256 produces 32 bytes; hex-encoded that is 64 characters.
-const SHA256_HEX_LEN = 32 * 2;
+const SHA256_BYTE_LEN = 32;
+const SHA256_HEX_LEN = SHA256_BYTE_LEN * 2;
 
 // maxHeaderParts caps total comma-separated segments to bound parsing over
 // attacker-controlled input before the v1 candidate cap takes effect.
@@ -115,7 +116,7 @@ export function verifyWebhook(
     const candidate = Buffer.from(sig, "hex");
     // Non-hex chars cause Buffer.from to produce a shorter buffer; timingSafeEqual
     // throws on length mismatch, so we must filter before calling it.
-    if (candidate.length !== 32) continue;
+    if (candidate.length !== SHA256_BYTE_LEN) continue;
     if (timingSafeEqual(candidate, expected)) return;
   }
   throw new WebhookVerificationError("no matching v1 signature");
