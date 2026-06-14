@@ -452,10 +452,9 @@ func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
 	}{
 		// 16 digits: exceeds the 15-char length guard → "bad timestamp"
 		{"1000000000000000", "bad timestamp"},
-		// Negative sign: ParseInt succeeds but age < 0 check fires first;
-		// the length guard (>15) does not fire because "-1" is 2 chars.
-		// Either "future" or "bad timestamp" is acceptable — just must be a WebhookError.
-		{"-1", ""},
+		// Negative sign: ParseInt succeeds. time.Unix(-1, 0) is 1969-12-31,
+		// so age is ~55 years — the "too old" replay check fires, not "future".
+		{"-1", "too old"},
 	}
 	for _, tc := range cases {
 		sig := strings.Repeat("a", sha256HexLen)

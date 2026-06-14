@@ -117,7 +117,7 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	return &WebhookError{"no matching v1 signature"}
 }
 
-func parseSignatureHeader(header string) (string, []string, error) {
+func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 	var (
 		timestamp string
 		sigs      []string

@@ -242,6 +242,13 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
+  it("rejects 16-digit timestamp (exceeds 15-char regex bound)", () => {
+    const ts = "1000000000000000"; // 16 digits → /^\d{1,15}$/ fails
+    const sig = "a".repeat(SHA256_HEX_LEN);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
+  });
+
   it("rejects empty v1= value (too short to be valid HMAC hex)", () => {
     const ts = nowTs();
     // v1= with no value should be filtered by the SHA256_HEX_LEN length guard
