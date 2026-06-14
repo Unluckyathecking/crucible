@@ -106,7 +106,20 @@ func ctxSleep(ctx context.Context, d time.Duration) bool {
 		return false
 	}
 	tmr := time.NewTimer(d)
-	defer tmr.Stop()
+	defer func() {
+		// Stop the timer and drain the channel if it already fired.
+		// time.Timer.Stop() returns false when the timer has already fired;
+		// the channel must be drained to prevent a spurious receive by a
+		// future caller. The non-blocking select handles the race where
+		// Stop returns false but the channel was already consumed by the
+		// select below (tmr.C branch).
+		if !tmr.Stop() {
+			select {
+			case <-tmr.C:
+			default:
+			}
+		}
+	}()
 	select {
 	case <-tmr.C:
 		return true
