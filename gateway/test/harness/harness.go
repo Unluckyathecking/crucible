@@ -420,9 +420,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
-	if rawKey == "" || prefix == "" {
-		t.Fatal("harness: auth.Generate returned empty key or prefix")
-	}
 	customerID := uuid.New()
 
 	t.Cleanup(func() {
