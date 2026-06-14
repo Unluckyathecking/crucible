@@ -369,8 +369,13 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         http.Error(w, "bad request", http.StatusBadRequest)
         return
     }
+    secret := os.Getenv("WEBHOOK_SECRET")
+    if secret == "" {
+        http.Error(w, "webhook secret not configured", http.StatusInternalServerError)
+        return
+    }
     if err := crucible.VerifyWebhook(
-        os.Getenv("WEBHOOK_SECRET"),
+        secret,
         r.Header.Get(crucible.SignatureHeader),
         body,
         5*time.Minute,

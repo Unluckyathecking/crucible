@@ -530,6 +530,27 @@ func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_maxSigCandidates_atBoundary(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	validSig := testSign(secret, ts, body)
+
+	// 7 non-matching candidates + 1 valid candidate = exactly maxSigCandidates (8).
+	// The 8th candidate is at index 7 (len(sigs) < 8 is true), so it is accepted.
+	parts := []string{"t=" + ts}
+	for i := 0; i < 7; i++ {
+		parts = append(parts, "v1="+strings.Repeat("b", sha256HexLen))
+	}
+	parts = append(parts, "v1="+validSig)
+	header := strings.Join(parts, ",")
+
+	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with 8 candidates at boundary: %v", err)
+	}
+}
+
 func TestVerifyWebhook_maxValidTimestamp(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

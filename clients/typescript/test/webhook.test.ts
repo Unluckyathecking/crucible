@@ -143,7 +143,7 @@ describe("verifyWebhook", () => {
     // Appending a non-hex char makes sig 65 chars; Buffer.from would still decode
     // 32 bytes from the first 64 chars without the explicit sig.length !== 64 guard.
     const header = `t=${ts},v1=${validSig}X`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "no matching v1 signature");
   });
 
   it("rejects valid sig placed past maxSigCandidates bound (9th of 8)", () => {
