@@ -18,8 +18,9 @@ import (
 // Using sha256.Size*2 instead of the magic number 64 keeps tests resilient to algorithm changes.
 const sha256HexLen = sha256.Size * 2
 
-// testSign replicates the signing algorithm from gateway/internal/webhookout.Sign
-// so tests can build positive vectors without importing the gateway package tree.
+// testSign replicates gateway/internal/webhookout.Sign — MUST be kept in sync.
+// Any change to the gateway signing algorithm requires updating this helper and
+// the known-good reference vector in TestVerifyWebhook_knownGoodVector.
 // It mirrors the three streaming Write calls used in VerifyWebhook so that the
 // vectors are produced by the same signing path the gateway uses.
 // Algorithm-independent correctness is verified by TestVerifyWebhook_knownGoodVector,

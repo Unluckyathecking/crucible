@@ -363,12 +363,12 @@ import (
 )
 
 func handleWebhook(w http.ResponseWriter, r *http.Request) {
+    defer r.Body.Close()
     body, err := io.ReadAll(r.Body)
     if err != nil {
         http.Error(w, "bad request", http.StatusBadRequest)
         return
     }
-    defer r.Body.Close()
     secret := os.Getenv("WEBHOOK_SECRET")
     if secret == "" {
         http.Error(w, "webhook secret not configured", http.StatusInternalServerError)

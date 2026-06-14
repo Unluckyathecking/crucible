@@ -11,8 +11,9 @@ import {
   WEBHOOK_EVENT_TYPE_HEADER,
 } from "../src/webhook";
 
-// testSign replicates gateway/internal/webhookout.Sign so tests build the
-// positive vector without importing the gateway package tree.
+// testSign replicates gateway/internal/webhookout.Sign — MUST be kept in sync.
+// Any change to the gateway signing algorithm requires updating this helper and
+// the known-good reference vector in the hardcoded-vector test above.
 // Three chained .update() calls mirror the production signing algorithm exactly,
 // consistent with the Go testSign helper.
 function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
