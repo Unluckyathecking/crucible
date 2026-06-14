@@ -4,4 +4,4 @@ export { Client } from "./client";
 export type { ClientOptions, HealthzResponse, ReadyzResponse } from "./client";
 export { ApiError } from "./errors";
 export type { ErrorBody } from "./errors";
-export { verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS } from "./webhook";
+export { verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER } from "./webhook";

@@ -371,7 +371,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
     }
     if err := crucible.VerifyWebhook(
         os.Getenv("WEBHOOK_SECRET"),
-        r.Header.Get("X-Crucible-Signature"),
+        r.Header.Get(crucible.SignatureHeader),
         body,
         5*time.Minute,
     ); err != nil {
@@ -385,7 +385,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 ### TypeScript / Node.js
 
 ```typescript
-import { verifyWebhook, WebhookVerificationError } from "@crucible/client";
+import { verifyWebhook, WebhookVerificationError, SIGNATURE_HEADER } from "@crucible/client";
 
 // Express example — ensure you use express.raw() or similar to capture the raw body.
 app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
@@ -397,7 +397,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
   try {
     verifyWebhook(
       secret,
-      req.headers["x-crucible-signature"] as string,
+      req.headers[SIGNATURE_HEADER.toLowerCase()] as string,
       req.body as Buffer,
     );
   } catch (err) {

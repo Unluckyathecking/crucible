@@ -102,6 +102,22 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	mustBeWebhookError(t, err)
 }
 
+func TestVerifyWebhook_futureTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	future := time.Now().Add(10 * time.Minute)
+	ts := fmt.Sprintf("%d", future.Unix())
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for future timestamp, got nil")
+	}
+	mustBeWebhookError(t, err)
+}
+
 func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

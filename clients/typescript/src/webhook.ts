@@ -7,6 +7,12 @@ const MAX_SIG_CANDIDATES = 8;
 /** Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window. */
 export const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
 
+/** HTTP header carrying the t= timestamp and v1= HMAC digest. */
+export const SIGNATURE_HEADER = "X-Crucible-Signature";
+
+/** HTTP header carrying the delivery Unix timestamp. */
+export const TIMESTAMP_HEADER = "X-Crucible-Timestamp";
+
 /** Thrown when X-Crucible-Signature verification fails. */
 export class WebhookVerificationError extends Error {
   constructor(message: string) {
@@ -40,9 +46,13 @@ export function verifyWebhook(
 
   const { timestamp, sigs } = parseSignatureHeader(sigHeader);
 
+  // Validate before parsing: reject whitespace, hex prefixes, and non-digit chars.
+  // /^\d+$/ is consistent with Go's strconv.ParseInt strict decimal parsing.
+  if (!/^\d+$/.test(timestamp)) {
+    throw new WebhookVerificationError("bad timestamp in signature header");
+  }
   const ts = parseInt(timestamp, 10);
-  // Strict check: rejects whitespace padding, hex prefixes, and truncated strings.
-  if (!Number.isFinite(ts) || ts.toString() !== timestamp) {
+  if (!Number.isFinite(ts)) {
     throw new WebhookVerificationError("bad timestamp in signature header");
   }
   const ageMs = Math.abs(Date.now() - ts * 1000);

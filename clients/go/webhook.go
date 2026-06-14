@@ -18,6 +18,12 @@ const maxSigCandidates = 8
 // Equals the gateway's 5-minute inbound replay window.
 const DefaultTolerance = 5 * time.Minute
 
+// SignatureHeader is the HTTP header that carries the t= timestamp and v1= HMAC digest.
+const SignatureHeader = "X-Crucible-Signature"
+
+// TimestampHeader is the HTTP header that carries the delivery Unix timestamp.
+const TimestampHeader = "X-Crucible-Timestamp"
+
 // WebhookError is returned when X-Crucible-Signature verification fails.
 type WebhookError struct {
 	msg string
