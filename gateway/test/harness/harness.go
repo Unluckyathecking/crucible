@@ -113,7 +113,6 @@ var routesMu sync.Mutex
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool
-	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
@@ -123,15 +122,17 @@ var (
 func runMigrations(pool *pgxpool.Pool) error {
 	migrateMu.Lock()
 	defer migrateMu.Unlock()
-	if !migrateDone {
-		ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
-		defer cancel()
-		migrateErr = db.Apply(ctx, pool)
-		if migrateErr == nil {
-			migrateDone = true
-		}
+	if migrateDone {
+		return nil // already succeeded in this process; migrations are idempotent
 	}
-	return migrateErr
+	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	defer cancel()
+	if err := db.Apply(ctx, pool); err != nil {
+		// migrateDone stays false so the next caller can retry with a fresh pool.
+		return err
+	}
+	migrateDone = true
+	return nil
 }
 
 // Options configures a gateway test server.
@@ -453,10 +454,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		defer func() {
 			rctx, rcancel := context.WithTimeout(context.Background(), redisCleanupTimeout)
 			defer rcancel()
-			// Months computed at cleanup time so the quota keys match what
-			// quota.Tracker wrote at request time, even if cleanup runs across
-			// a UTC month boundary. Both current and next month are deleted to
-			// cover requests that landed just before a boundary.
 			// Months computed at cleanup time so quota keys match what quota.Tracker
 			// wrote at request time, even across a UTC month boundary. Both current
 			// and next month are deleted to cover requests that straddled a boundary.
