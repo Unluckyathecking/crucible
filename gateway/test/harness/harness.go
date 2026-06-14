@@ -209,7 +209,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// keeping Redis open while authStore drains its background goroutine.
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
-			t.Fatalf("harness: redis close: %v", err)
+			t.Errorf("harness: redis close: %v", err)
 		}
 	})
 
