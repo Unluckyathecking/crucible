@@ -32,7 +32,7 @@ const (
 	// HTTP client constants for newTestHTTPClient.
 	testClientTimeout       = 25 * time.Second // generous ceiling for dial + request + body drain
 	testDialTimeout         = 5 * time.Second
-	testIdleConnTimeout     = 30 * time.Second
+	testIdleConnTimeout     = 10 * time.Second
 	testMaxIdleConns        = 10
 	testMaxIdleConnsPerHost = 5
 	testMaxConnsPerHost     = 10
@@ -128,17 +128,8 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // gone and the write is a no-op.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tmr := time.NewTimer(delay)
-		defer func() {
-			if !tmr.Stop() {
-				select {
-				case <-tmr.C:
-				default:
-				}
-			}
-		}()
 		select {
-		case <-tmr.C:
+		case <-time.After(delay):
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
