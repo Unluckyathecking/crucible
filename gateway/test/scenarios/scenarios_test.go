@@ -134,20 +134,15 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// hungWorker blocks until the request context is cancelled or the fallback
-// timer fires, simulating a worker that never finishes. It writes a 200 header
-// and flushes before blocking so httptest.Server does not log "handler returned
-// without writing a response" — the gateway proxy timeout fires and cancels
-// r.Context() long before any body would be sent.
-// The fallback is load-bearing: httptest.Server.Close() calls wg.Wait() on
-// active handlers before CloseClientConnections(), so without a bounded exit
-// the handler would block indefinitely if r.Context() is never cancelled.
+// hungWorker blocks without writing any response, simulating a worker that
+// never finishes. The gateway proxy timeout fires and cancels r.Context(),
+// at which point the handler returns and the gateway returns 502 to the caller.
+// No status code is written here: writing 200 before blocking would risk the
+// proxy forwarding 200 to the API client before the body timeout fires.
+// The fallback timer prevents httptest.Server.Close() deadlocks when
+// r.Context() is not cancelled before the server shuts down.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
 		tmr := time.NewTimer(hungWorkerFallback)
 		defer tmr.Stop()
 		select {
