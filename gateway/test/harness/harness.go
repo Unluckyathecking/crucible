@@ -79,6 +79,22 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
+// ctxSleep sleeps for d or until ctx is cancelled, returning false if cancelled.
+// Defined at package level (not as a closure) to avoid a new allocation per call.
+func ctxSleep(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	tmr := time.NewTimer(d)
+	defer tmr.Stop()
+	select {
+	case <-tmr.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // routesMu serializes replacement of server.V1Routes during server.NewRouter calls.
 // Tests that set opts.Routes may use t.Parallel; routesMu ensures exclusive access
 // during the swap-and-restore so no goroutine observes intermediate route state.
@@ -504,25 +520,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		// Retry deleting api_keys: the async errorlog goroutine (2s timeout) may insert an
 		// error_events row after the DELETE above, causing a transient FK violation.
 		// A short backoff between retries lets the async writer finish before retrying.
-		//
-		// ctxSleep wraps the timed sleep in a closure so that break/continue in the
-		// outer for loop (below) operate on the for loop, not on a select statement.
-		// If the select were inlined in the for body, break inside select would exit
-		// the select, not the for loop, requiring a labelled break to leave the loop.
-		// The closure avoids that label while keeping context-cancellation support.
-		ctxSleep := func(ctx context.Context, d time.Duration) bool {
-			if ctx.Err() != nil {
-				return false
-			}
-			tmr := time.NewTimer(d)
-			defer tmr.Stop()
-			select {
-			case <-tmr.C:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
 		var finalKeyErr error
 		for attempt := 1; attempt <= maxCleanupRetries; attempt++ {
 			if cctx.Err() != nil {
