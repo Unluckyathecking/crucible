@@ -194,10 +194,9 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// LIFO ordering is intentional: workerSrv.Close (registered last) runs first so
-	// the worker can drain any in-flight proxy requests while Postgres is still open.
-	// The pool-failure error path on line above closes workerSrv manually before
-	// t.Fatalf, so both resources are cleaned up even on boot failures.
+	// LIFO: workerSrv.Close runs before pool.Close because it was registered
+	// after pool.Close. This lets the worker drain in-flight requests while
+	// Postgres connections remain open.
 	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
@@ -313,9 +312,6 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 	}
 	if ts.DB == nil {
 		t.Fatal("harness: CreatePlan called on nil TestServer.DB")
-	}
-	if ts.Redis == nil {
-		t.Fatal("harness: CreatePlan called on nil TestServer.Redis")
 	}
 	if id == "" {
 		t.Fatal("harness: CreatePlan id must be non-empty")
