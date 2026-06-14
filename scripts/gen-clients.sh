@@ -2,6 +2,12 @@
 # gen-clients.sh — regenerate Go and TypeScript consumer client SDKs from
 # clients/openapi.json. Idempotent: a second run produces zero git diff.
 # Requirements: python3 (stdlib only), go 1.22+.
+#
+# Drift check (run locally or in CI to assert no hand-edits have diverged):
+#   bash scripts/gen-clients.sh && git diff --exit-code \
+#     clients/go/client.go clients/go/errors.go \
+#     clients/typescript/src/client.ts clients/typescript/src/errors.ts \
+#     clients/typescript/src/index.ts
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -847,11 +853,19 @@ type_export_line = (
     f'export type {{ ClientOptions{", " + type_exports if type_exports else ""} }} from "./client";\n'
 )
 
-write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
+# index.ts appends an extra comment (beyond ts_header) to make clear that the
+# webhook re-export on the final line is also generator-produced, not a hand-edit.
+# ts_header is shared with errors.ts and client.ts; the webhook note is index-specific.
+index_webhook_note = (
+    "// Webhook re-exports (last line) are emitted by this generator; "
+    "edit gen-clients.sh and re-run — do not hand-edit.\n"
+)
+write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + index_webhook_note + (
     f'export {{ Client }} from "./client";\n'
     f'{type_export_line}'
     f'export {{ ApiError }} from "./errors";\n'
     f'export type {{ ErrorBody }} from "./errors";\n'
+    f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER, WEBHOOK_EVENT_ID_HEADER, WEBHOOK_EVENT_TYPE_HEADER }} from "./webhook";\n'
 ))
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────

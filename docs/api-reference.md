@@ -327,6 +327,111 @@ Stripe webhooks handle:
 
 All webhook events are HMAC-verified and deduplicated against the `webhook_events` table.
 
+## Verifying Webhooks
+
+When you register a webhook endpoint in the dashboard, every delivery is signed with HMAC-SHA256 so you can verify the request originated from the gateway and has not been tampered with.
+
+### Headers
+
+| Header | Description |
+|---|---|
+| `X-Crucible-Signature` | `t=<unix_ts>,v1=<hex_hmac_sha256>` — signature and timestamp in one header |
+| `X-Crucible-Timestamp` | Unix timestamp (seconds). **NOT cryptographically verified** — use `t=` in `X-Crucible-Signature` for replay protection. This header may differ from the signed timestamp and must not be trusted for security decisions. Provided for logging/tracing convenience only. |
+| `X-Webhook-Event-ID` | UUID for idempotent delivery. Use this to deduplicate at-least-once deliveries. |
+| `X-Webhook-Event-Type` | Event type string (e.g. `invoice.paid`). |
+
+### Verification Algorithm
+
+1. Extract `t=<ts>` and one or more `v1=<sig>` values from `X-Crucible-Signature`.
+2. Reject if the timestamp `t` is older than your tolerance window (default: 5 minutes).
+3. Compute `HMAC-SHA256(key=secret_bytes, message=ts + "." + raw_body)`.
+4. Constant-time compare the digest against each `v1=` candidate.
+
+The signing secret is shown once at endpoint creation time in the dashboard as a hex-encoded string. Store it in an environment variable (the examples above use `WEBHOOK_SECRET`).
+
+**Important:** Always pass the raw request body bytes to the verifier before any JSON parsing. Re-serialising the parsed body changes whitespace and field order, which invalidates the signature.
+
+### Go
+
+```go
+import (
+    "io"
+    "net/http"
+    "os"
+
+    crucible "github.com/Unluckyathecking/crucible/clients/go"
+)
+
+func handleWebhook(w http.ResponseWriter, r *http.Request) {
+    defer r.Body.Close()
+    body, err := io.ReadAll(r.Body)
+    if err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    secret := os.Getenv("WEBHOOK_SECRET")
+    if secret == "" {
+        http.Error(w, "webhook secret not configured", http.StatusInternalServerError)
+        return
+    }
+    if err := crucible.VerifyWebhook(
+        secret,
+        r.Header.Get(crucible.SignatureHeader),
+        body,
+        crucible.DefaultTolerance,
+    ); err != nil {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+    // process event ...
+}
+```
+
+### TypeScript / Node.js
+
+```typescript
+import express from "express";
+import { verifyWebhook, WebhookVerificationError, SIGNATURE_HEADER } from "@crucible/client";
+
+const app = express();
+
+// express.raw() is required to capture the raw body bytes before any parsing.
+// JSON.parse or body-parser re-serialise the body, changing whitespace and field
+// order and invalidating the HMAC signature.
+app.post("/webhook", express.raw({ type: "application/json" }), (req: express.Request, res: express.Response) => {
+  const secret = process.env.WEBHOOK_SECRET;
+  if (!secret) {
+    res.status(500).json({ error: "webhook secret not configured" });
+    return;
+  }
+  const sigHeader = req.get(SIGNATURE_HEADER);
+  if (!sigHeader) {
+    res.status(401).json({ error: "missing signature header" });
+    return;
+  }
+  if (!Buffer.isBuffer(req.body)) {
+    res.status(400).json({ error: "expected raw body buffer; use express.raw()" });
+    return;
+  }
+  try {
+    verifyWebhook(secret, sigHeader, req.body); // toleranceMs omitted → DEFAULT_TOLERANCE_MS
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) {
+      res.status(401).json({ error: "invalid signature" });
+      return;
+    }
+    throw err;
+  }
+  // process event ...
+});
+```
+
+### Security Notes
+
+- The gateway caps the number of `v1=` candidates it parses to prevent header-stuffing DoS attacks. Your verifier does the same.
+- The 5-minute tolerance window matches the gateway's inbound Stripe webhook replay protection. Do not widen it.
+- Use constant-time comparison (`hmac.Equal` in Go, `crypto.timingSafeEqual` in Node.js) — the SDK helpers handle this for you.
+
 ## Request ID
 
 Every request receives an `X-Request-ID` header. If you send one (max 64 characters), it is echoed back. Otherwise the gateway generates a UUID.
