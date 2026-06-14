@@ -145,9 +145,6 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
 		tmr := time.NewTimer(hungWorkerFallback)
 		defer tmr.Stop()
 		select {
