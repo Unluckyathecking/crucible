@@ -66,9 +66,8 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 
 	// Capture clock before any attacker-controlled parsing so the sampled instant
-	// is not shifted by header-parsing time. Truncate(0) strips the monotonic reading,
-	// giving a pure wall-clock value for consistent age arithmetic across platforms.
-	now := time.Now().Truncate(0)
+	// is not shifted by header-parsing time.
+	now := time.Now()
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
 	if parseErr != nil {
@@ -88,9 +87,7 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 	// Reject non-digit leading character: ParseInt("+123") returns 123 without error,
 	// but TypeScript's /^\d{1,15}$/ rejects '+'. Enforce digit-only for cross-language parity.
-	// len==0 is guaranteed non-reachable (parseSignatureHeader rejects empty timestamps),
-	// but the guard is kept here for defence-in-depth.
-	if len(timestamp) == 0 || timestamp[0] < '0' || timestamp[0] > '9' {
+	if timestamp[0] < '0' || timestamp[0] > '9' {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)

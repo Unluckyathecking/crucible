@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 // nowTS returns a Unix timestamp 30 seconds in the past. The 30-second margin
 // absorbs goroutine descheduling and CI load spikes without approaching the
 // 5-minute tolerance window used by the tests.
-func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-30*time.Second).Unix()) }
+func nowTS() string { return strconv.FormatInt(time.Now().Add(-30*time.Second).Unix(), 10) }
 
 // assertWebhookError asserts err is a *crucible.WebhookError. Use when the
 // error message does not need further inspection.
@@ -69,6 +70,18 @@ func TestVerifyWebhook_knownGoodVector(t *testing.T) {
 	const vectorTolerance = 50 * 365 * 24 * time.Hour
 	if err := crucible.VerifyWebhook(secretHex, header, body, vectorTolerance); err != nil {
 		t.Fatalf("known-good reference vector rejected: %v", err)
+	}
+
+	// The same vector must be rejected with DefaultTolerance: the 2023 timestamp is
+	// far in the past, so replay protection must fire. Catches regressions that
+	// accidentally disable timestamp validation.
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
+	if err == nil {
+		t.Fatal("expected 2023 timestamp to be rejected with DefaultTolerance, but got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Message(), "too old") {
+		t.Fatalf("expected 'too old' error for stale 2023 vector, got: %v", wErr)
 	}
 }
 
