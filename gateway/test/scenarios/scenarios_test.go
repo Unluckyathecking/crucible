@@ -1,6 +1,5 @@
 // Package scenarios exercises the full gateway middleware pipeline end-to-end
 // using real Postgres and Redis via the harness package.
-// Requires POSTGRES_DSN and REDIS_URL; tests fail when either is unset.
 package scenarios
 
 import (
@@ -147,9 +146,6 @@ func slowWorker(delay time.Duration) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.Context().Err() != nil {
-			return
-		}
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
 }
