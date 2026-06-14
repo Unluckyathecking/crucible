@@ -146,11 +146,13 @@ func slowWorker(delay time.Duration) http.Handler {
 }
 
 // waitForErrorEvents polls until want error_events rows exist or the deadline elapses.
+// The first poll fires immediately (time.NewTimer(0)); subsequent polls repeat at
+// errorPollInterval so fast paths complete without unnecessary 100 ms latency.
 func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UUID, want int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
-	tick := time.NewTicker(errorPollInterval)
+	tick := time.NewTimer(0) // fire immediately, then reset to interval
 	defer tick.Stop()
 	for {
 		select {
@@ -164,6 +166,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 			if n > want {
 				t.Fatalf("too many error_events for customer %s: got %d, want %d", customerID, n, want)
 			}
+			tick.Reset(errorPollInterval)
 		}
 	}
 }
