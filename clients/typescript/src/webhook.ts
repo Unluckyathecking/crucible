@@ -155,17 +155,20 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
     const key = part.slice(0, idx);
     const val = part.slice(idx + 1);
     // Reject empty values universally — mirrors Go's len(kv[1])==0 guard for cross-language
-    // parity. Known keys (t=, v1=) also check individually below for defence-in-depth.
+    // parity. Known keys rely on this universal guard; no per-key empty-value check is needed.
     if (val === "") {
       throw new WebhookVerificationError("malformed X-Crucible-Signature header");
     }
     if (key === "t") {
-      if (timestamp !== "" || val === "") {
+      // Exactly one timestamp per delivery: duplicate t= is invalid.
+      if (timestamp !== "") {
         throw new WebhookVerificationError("malformed X-Crucible-Signature header");
       }
       timestamp = val;
     } else if (key === "v1") {
-      if (val === "") throw new WebhookVerificationError("malformed X-Crucible-Signature header");
+      // Multiple v1= values are accepted intentionally: during secret rotation the
+      // gateway may include two signatures (old key + new key). MAX_SIG_CANDIDATES
+      // bounds the number of HMAC comparisons to prevent header-stuffing DoS.
       if (sigs.length < MAX_SIG_CANDIDATES) sigs.push(val);
     }
     // Unknown keys (e.g. future v2=) are silently ignored for forward compatibility.
