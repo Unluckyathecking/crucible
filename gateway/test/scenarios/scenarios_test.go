@@ -100,9 +100,7 @@ func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Optio
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits); err != nil {
-			panic("worker: write failed: " + err.Error())
-		}
+		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
 	})
 }
 
@@ -112,9 +110,7 @@ func countingWorker(billableUnits uint64) (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits); err != nil {
-			panic("worker: write failed: " + err.Error())
-		}
+		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
 	})
 	return h, &count
 }
@@ -125,19 +121,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := count.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n); err != nil {
-			panic("varyingWorker: write failed: " + err.Error())
-		}
+		_, _ = fmt.Fprintf(w, `{"payload":{"n":%d},"billable_units":1}`, n)
 	})
 	return h, &count
 }
 
-// slowWorker blocks for delay then returns without writing any response.
-// TestWorkerTimeout uses WorkerTimeoutMS=500 and delay=5s, so the gateway
-// proxy fires its timeout and returns 502 long before the timer elapses.
-// The test asserts on the gateway's 502, not on anything this handler writes.
-// Selecting on r.Context().Done() lets the goroutine exit as soon as the
-// gateway closes the upstream connection.
 // hungWorker is a handler that never writes a response; it blocks until the
 // request context is cancelled by the gateway proxy timeout or server shutdown.
 // TestWorkerTimeout uses WorkerTimeoutMS=500, so the proxy cancels r.Context()
@@ -484,11 +472,11 @@ func TestQuotaExceeded(t *testing.T) {
 	}
 }
 
-// TestWorkerTimeout: worker that sleeps past proxy deadline returns 502 WORKER_UNREACHABLE.
+// TestWorkerTimeout: hungWorker blocks indefinitely; gateway proxy timeout fires and returns 502 WORKER_UNREACHABLE.
 func TestWorkerTimeout(t *testing.T) {
 	t.Parallel()
-	// 5 s delay vs 500 ms proxy timeout: 10× ratio, reliable under -race with CPU contention.
-	// The proxy timeout (WorkerTimeoutMS=500) is the bottleneck; client sees 502, not client-side expiry.
+	// WorkerTimeoutMS=500 is the bottleneck; hungWorker never responds so the proxy
+	// cancels r.Context() and the client sees 502 well within any reasonable deadline.
 	client := newTestHTTPClient(t)
 	ts := harness.NewGatewayTestServer(t, baseOpts(t, hungWorker(), func(o *harness.Options) {
 		o.WorkerTimeoutMS = 500
