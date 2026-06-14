@@ -144,9 +144,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // full integration-test timeout.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tmr := time.NewTimer(hungWorkerFallback)
+		defer tmr.Stop()
 		select {
 		case <-r.Context().Done():
-		case <-time.After(hungWorkerFallback):
+		case <-tmr.C:
 		}
 	})
 }
@@ -421,23 +423,21 @@ func TestRateLimit(t *testing.T) {
 		maxSyncAttempts    = 3
 		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
 	)
-	// windowStart is set at the moment alignment is confirmed so the timestamp
-	// matches the exact Now() that passed the safety-margin check. The rate limiter
-	// uses a 60-second sliding window (resetAt = time.Now().Add(time.Minute)), so
-	// RateLimit-Reset ≈ windowStart+60; capturing now.Unix() (not the truncated
-	// minute) gives the correct reference point for the assertion range.
-	var windowStart int64
 	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
-		if now := time.Now(); now.Second() < windowSafetyMargin {
-			windowStart = now.Unix()
+		if time.Now().Second() < windowSafetyMargin {
 			break
 		} else if attempt == maxSyncAttempts {
 			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
 		} else {
-			nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-			time.Sleep(time.Until(nextMinute) + 200*time.Millisecond)
+			next := time.Now().Truncate(time.Minute).Add(time.Minute)
+			time.Sleep(time.Until(next) + 200*time.Millisecond)
 		}
 	}
+	// Capture windowStart immediately before the first request so the elapsed time
+	// between the reference timestamp and the rejected request is minimised.
+	// The rate limiter uses a 60-second sliding window (resetAt = time.Now().Add(time.Minute)),
+	// so RateLimit-Reset ≈ windowStart+60; the +62 s upper bound absorbs test overhead.
+	windowStart := time.Now().Unix()
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
