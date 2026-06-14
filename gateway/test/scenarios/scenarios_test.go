@@ -134,19 +134,20 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// hungWorker is a handler that never writes a response; it blocks until the
-// request context is cancelled or the hungWorkerFallback timer fires.
-// TestWorkerTimeout sets WorkerTimeoutMS=500, so the proxy cancels the worker
-// request context well before the fallback elapses; r.Context() fires first in
-// the normal case.
-// The fallback is load-bearing, not merely a safety net: httptest.Server.Close()
-// calls wg.Wait() on active handlers before CloseClientConnections(). If the
-// proxy timeout fires after Close() begins but before CloseClientConnections()
-// runs, r.Context() may never be cancelled because the connection is still open.
-// Without a bounded exit the handler would block indefinitely, consuming the
-// full integration-test timeout.
+// hungWorker blocks until the request context is cancelled or the fallback
+// timer fires, simulating a worker that never finishes. It writes a 200 header
+// and flushes before blocking so httptest.Server does not log "handler returned
+// without writing a response" — the gateway proxy timeout fires and cancels
+// r.Context() long before any body would be sent.
+// The fallback is load-bearing: httptest.Server.Close() calls wg.Wait() on
+// active handlers before CloseClientConnections(), so without a bounded exit
+// the handler would block indefinitely if r.Context() is never cancelled.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		tmr := time.NewTimer(hungWorkerFallback)
 		defer tmr.Stop()
 		select {
@@ -486,8 +487,8 @@ func TestRateLimit(t *testing.T) {
 		// moment of rejection. Between the alignment checkpoint and the rejected
 		// request, up to two allowed requests execute plus scheduling overhead,
 		// so allow 2 s of slack on the upper bound.
-		if resetTS < windowStart || resetTS > windowStart+62 {
-			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (±2s for test overhead)", resetTS, windowStart, windowStart+62)
+		if resetTS < windowStart+58 || resetTS > windowStart+62 {
+			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (±2s for test overhead)", resetTS, windowStart+58, windowStart+62)
 		}
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
