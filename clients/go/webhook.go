@@ -51,9 +51,15 @@ func (e *WebhookError) Message() string { return e.msg }
 // secretHex is the hex-encoded signing secret shown on the dashboard endpoint page.
 // sigHeader is the raw value of the X-Crucible-Signature header (format: t=<ts>,v1=<hex>).
 // body is the unmodified request body bytes.
-// tolerance is the maximum accepted age; pass 0 to use DefaultTolerance.
+// tolerance is the maximum accepted age; pass 0 to use DefaultTolerance (Go-specific
+// sentinel — the zero Duration value; in the TypeScript SDK, omit/undefined serves this
+// role, and explicit 0 means zero-width tolerance instead).
 // All errors are *WebhookError. A non-nil error means the payload must not be trusted.
 func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Duration) error {
+	// Capture clock as the very first action — before all validation and attacker-controlled
+	// header parsing — so the sampled instant is not shifted by processing time.
+	now := time.Now()
+
 	if tolerance == 0 {
 		tolerance = DefaultTolerance
 	} else if tolerance < 0 {
@@ -66,10 +72,6 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if hexErr != nil {
 		return &WebhookError{"invalid secretHex: contains non-hex characters"}
 	}
-
-	// Capture clock before any attacker-controlled parsing so the sampled instant
-	// is not shifted by header-parsing time.
-	now := time.Now()
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
 	if parseErr != nil {
