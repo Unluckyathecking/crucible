@@ -147,11 +147,11 @@ func runMigrations(pool *pgxpool.Pool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
-	err := db.Apply(ctx, pool)
-	if err == nil {
-		migrateDone = true
+	if err := db.Apply(ctx, pool); err != nil {
+		return err
 	}
-	return err
+	migrateDone = true
+	return nil
 }
 
 // Options configures a gateway test server.
