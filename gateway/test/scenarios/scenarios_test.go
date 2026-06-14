@@ -142,17 +142,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // runs, r.Context() may never be cancelled because the connection is still open.
 // Without a bounded exit the handler would block indefinitely, consuming the
 // full integration-test timeout.
-// defer tmr.Stop() is safe here because the timer is never reused: if the
-// context branch wins, Stop() halts the timer; if Stop() returns false (timer
-// already fired), the buffered channel sits unread and is collected with the
-// timer — no goroutine blocks.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tmr := time.NewTimer(hungWorkerFallback)
-		defer tmr.Stop()
 		select {
 		case <-r.Context().Done():
-		case <-tmr.C:
+		case <-time.After(hungWorkerFallback):
 		}
 	})
 }
@@ -164,8 +158,10 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
+	var last int64
 	check := func() bool {
 		n := ts.CountErrorEvents(t, customerID)
+		last = n
 		if n == want {
 			return true
 		}
@@ -182,7 +178,7 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	for {
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timeout waiting for %d error_events for customer %s", want, customerID)
+			t.Fatalf("timeout waiting for %d error_events for customer %s; last count: %d", want, customerID, last)
 		case <-ticker.C:
 			if check() {
 				return
@@ -295,11 +291,14 @@ func TestHappyPath(t *testing.T) {
 	}
 
 	// X-Request-ID must be a valid UUID on every response and unique across requests.
+	// Use Fatalf so a missing or malformed rid1 stops the test before the rid2==rid1
+	// uniqueness check, which would silently pass if both headers were empty.
 	rid1 := resp.Header.Get("X-Request-ID")
 	if rid1 == "" {
-		t.Errorf("X-Request-ID absent")
-	} else if _, err := uuid.Parse(rid1); err != nil {
-		t.Errorf("X-Request-ID %q is not a valid UUID: %v", rid1, err)
+		t.Fatalf("X-Request-ID absent on first response")
+	}
+	if _, err := uuid.Parse(rid1); err != nil {
+		t.Fatalf("X-Request-ID %q is not a valid UUID: %v", rid1, err)
 	}
 
 	// Security headers set by the SecurityHeaders middleware; verify presence only so
