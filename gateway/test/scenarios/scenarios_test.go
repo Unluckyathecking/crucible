@@ -203,6 +203,9 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		t.Fatalf("send request: %v", err)
 	}
 	return resp
