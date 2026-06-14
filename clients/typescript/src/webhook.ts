@@ -12,8 +12,9 @@ const SHA256_HEX_LEN = SHA256_BYTE_LEN * 2;
 // attacker-controlled input before the v1 candidate cap takes effect.
 const MAX_HEADER_PARTS = 16;
 
-// Pre-compiled; the {2}+ quantifier ensures non-empty, even-length, and valid hex
-// in a single check — eliminates any ordering dependency between the three guards.
+// Pre-compiled; the group ([0-9a-fA-F]{2}) with a trailing + quantifier ensures
+// non-empty, even-length, and valid hex in a single check — eliminates any ordering
+// dependency between the three guards.
 const SECRET_HEX_RE = /^([0-9a-fA-F]{2})+$/;
 
 /** Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window. */

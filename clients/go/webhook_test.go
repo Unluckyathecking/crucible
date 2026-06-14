@@ -67,11 +67,12 @@ func TestVerifyWebhook_knownGoodVector(t *testing.T) {
 	header := "t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5"
 
 	// Compute the actual age of the 2023 reference vector plus a 1-hour buffer.
-	// Clamp to zero so the test stays valid even if the system clock predates
-	// the reference (e.g. a fresh VM with wrong time), mirroring the TS Math.max guard.
+	// If the system clock predates the reference (e.g. a VM with wrong time), the
+	// verifier rejects the timestamp as "in the future" regardless of tolerance —
+	// skip rather than clamping, which would produce a misleading "future" failure.
 	vectorAge := time.Since(time.Unix(1700000000, 0))
 	if vectorAge < 0 {
-		vectorAge = 0
+		t.Skip("system clock predates reference vector; skipping time-dependent test")
 	}
 	vectorTolerance := vectorAge + time.Hour
 	if err := crucible.VerifyWebhook(secretHex, header, body, vectorTolerance); err != nil {
