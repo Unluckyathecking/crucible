@@ -76,10 +76,12 @@ export function verifyWebhook(
       "invalid secretHex: must be non-empty even-length hex string",
     );
   }
+  // SECRET_HEX_RE matches only pairs of hex chars, so secretHex.length is always
+  // even here — odd-length inputs are rejected before Buffer.from is reached.
   const secret = Buffer.from(secretHex, "hex");
-  // Defense in depth: verify the decoded length matches the hex length.
-  // Catches any future Node.js behavior change in the hex codec.
-  if (secret.length !== secretHex.length / 2) {
+  // Defense in depth: verify the decoded length with integer arithmetic (>> 1).
+  // Catches any future Node.js hex-codec behavior change that might truncate silently.
+  if (secret.length !== (secretHex.length >> 1)) {
     throw new WebhookVerificationError("invalid secretHex: decode produced unexpected length");
   }
 

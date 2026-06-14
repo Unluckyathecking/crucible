@@ -625,6 +625,26 @@ func TestWebhookError_Message(t *testing.T) {
 			wantMsg: "secretHex",
 		},
 		{
+			name:    "negative tolerance",
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, -time.Second) },
+			wantMsg: "negative tolerance",
+		},
+		{
+			name:    "malformed header",
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "notvalid", []byte{}, 5*time.Minute) },
+			wantMsg: "malformed",
+		},
+		{
+			name:    "timestamp too old",
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			wantMsg: "too old",
+		},
+		{
+			name:    "future timestamp",
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=99999999999,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			wantMsg: "future",
+		},
+		{
 			name: "no matching v1 signature",
 			fn: func() error {
 				secret := make([]byte, 32)
