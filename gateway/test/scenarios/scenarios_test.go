@@ -51,11 +51,12 @@ func newTestHTTPClient(t *testing.T) *http.Client {
 	c := &http.Client{
 		Timeout: testClientTimeout,
 		Transport: &http.Transport{
-			DialContext:         (&net.Dialer{Timeout: testDialTimeout}).DialContext,
-			MaxIdleConns:        testMaxIdleConns,
-			MaxIdleConnsPerHost: testMaxIdleConnsPerHost,
-			MaxConnsPerHost:     testMaxConnsPerHost,
-			IdleConnTimeout:     testIdleConnTimeout,
+			DialContext:           (&net.Dialer{Timeout: testDialTimeout}).DialContext,
+			ResponseHeaderTimeout: testRequestTimeout,
+			MaxIdleConns:          testMaxIdleConns,
+			MaxIdleConnsPerHost:   testMaxIdleConnsPerHost,
+			MaxConnsPerHost:       testMaxConnsPerHost,
+			IdleConnTimeout:       testIdleConnTimeout,
 		},
 	}
 	t.Cleanup(c.CloseIdleConnections)
@@ -480,6 +481,9 @@ func TestWorkerTimeout(t *testing.T) {
 }
 
 // TestAuthFailure: a key not registered in the database returns 401 UNAUTHORIZED.
+// No plan or customer is created intentionally: the gateway auth middleware rejects
+// unknown keys before any plan/customer lookup, so the rejection is independent of
+// database state beyond the api_keys table being empty for this key.
 func TestAuthFailure(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
