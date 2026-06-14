@@ -416,7 +416,10 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: CreateCustomer planID %q lookup failed: %v", planID, err)
 	}
 
-	rawKey, prefix, err := auth.Generate(TestAPIKeyPrefix)
+	// auth.Generate returns (full, prefix, error):
+	//   apiKey = TestAPIKeyPrefix + "live_" + base32_suffix  (the complete API key callers present as Bearer)
+	//   prefix = apiKey[:PrefixLen]                          (stored in DB for fast prefix lookup)
+	apiKey, prefix, err := auth.Generate(TestAPIKeyPrefix)
 	if err != nil {
 		t.Fatalf("harness: generate api key: %v", err)
 	}
@@ -559,10 +562,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert customer %s: %v", customerID, err)
 	}
 
-	// rawKey is the complete API key (product prefix + random suffix) as returned
-	// by auth.Generate. auth.Hash is SHA-256(salt||rawKey) with no further prefix
-	// manipulation — the prefix is already part of rawKey.
-	hash := auth.Hash(TestSalt(), rawKey)
+	hash := auth.Hash(TestSalt(), apiKey)
 	keyCtx, keyCancel := context.WithTimeout(context.Background(), customerInsertTimeout)
 	defer keyCancel()
 	_, err = ts.DB.Exec(keyCtx,
@@ -573,7 +573,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: insert api key for customer %s: %v", customerID, err)
 	}
 
-	return customerID, rawKey
+	return customerID, apiKey
 }
 
 // CountUsageEvents returns the number of usage_events rows for customerID.
