@@ -127,7 +127,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 
 // slowWorker sleeps for delay before responding. The proxy times out before
 // delay elapses, so the 200 response is never received by the caller; the
-// gateway proxy is responsible for returning 504.
+// gateway proxy is responsible for returning 502 BadGateway.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(delay)
