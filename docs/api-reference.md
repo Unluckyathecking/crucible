@@ -344,7 +344,7 @@ When you register a webhook endpoint in the dashboard, every delivery is signed 
 
 1. Extract `t=<ts>` and one or more `v1=<sig>` values from `X-Crucible-Signature`.
 2. Reject if the timestamp `t` is older than your tolerance window (default: 5 minutes).
-3. Compute `HMAC-SHA256(secret_bytes, ts + "." + raw_body)`.
+3. Compute `HMAC-SHA256(key=secret_bytes, message=ts + "." + raw_body)`.
 4. Constant-time compare the digest against each `v1=` candidate.
 
 The signing secret is shown once at endpoint creation time in the dashboard as a hex-encoded string. Store it in an environment variable (the examples above use `WEBHOOK_SECRET`).

@@ -479,16 +479,30 @@ func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	ts := nowTS()
 	sig := testSign(secret, ts, body)
-	// Attacker prepends a valid ts but appends a different one; last-wins would bypass age check.
-	header := "t=" + ts + ",t=999,v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
-	if err == nil {
-		t.Fatal("expected error for duplicate t= key, got nil")
+	cases := []struct {
+		name   string
+		header string
+	}{
+		// Real timestamp first, attacker timestamp second — first-wins rejects the dup.
+		{"real_first", "t=" + ts + ",t=999,v1=" + sig},
+		// Attacker timestamp first, real timestamp second — first-wins uses the attacker
+		// timestamp (999), then the real t= is rejected as a duplicate. HMAC verification
+		// then fails because the signed message used the real timestamp, not "999".
+		// Both orderings must be rejected to prevent any form of timestamp substitution.
+		{"attacker_first", "t=999,t=" + ts + ",v1=" + sig},
 	}
-	wErr := mustBeWebhookError(t, err)
-	if !strings.Contains(wErr.Message(), "malformed") {
-		t.Fatalf("expected 'malformed' in error, got: %v", wErr)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := crucible.VerifyWebhook(secretHex, tc.header, body, 5*time.Minute)
+			if err == nil {
+				t.Fatalf("expected error for duplicate t= key (%s), got nil", tc.name)
+			}
+			wErr := mustBeWebhookError(t, err)
+			if !strings.Contains(wErr.Message(), "malformed") {
+				t.Fatalf("expected 'malformed' in error for duplicate t= (%s), got: %v", tc.name, wErr)
+			}
+		})
 	}
 }
 
