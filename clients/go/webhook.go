@@ -67,8 +67,9 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 
 	// Capture clock before any attacker-controlled parsing so the sampled instant
 	// is not shifted by header-parsing time.
-	// Truncate(0) strips the monotonic reading so both operands in Sub use wall-clock time.
-	now := time.Now().Truncate(0)
+	// Round(0) strips the monotonic reading (per Go docs: "If d <= 0, Round returns
+	// t stripped of any monotonic clock reading") so Sub against time.Unix uses wall-clock.
+	now := time.Now().Round(0)
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
 	if parseErr != nil {

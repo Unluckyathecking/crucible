@@ -37,10 +37,7 @@ func nowTS() string { return fmt.Sprintf("%d", time.Now().Add(-1*time.Second).Un
 // error message does not need further inspection.
 func assertWebhookError(t *testing.T, err error) {
 	t.Helper()
-	var wErr *crucible.WebhookError
-	if !errors.As(err, &wErr) {
-		t.Fatalf("expected *crucible.WebhookError, got %T: %v", err, err)
-	}
+	_ = mustBeWebhookError(t, err)
 }
 
 // mustBeWebhookError is like assertWebhookError but returns the typed error for
@@ -421,7 +418,10 @@ func TestVerifyWebhook_v1TooLong(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for too-long v1 sig, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
