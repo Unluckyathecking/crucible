@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -450,8 +449,8 @@ func TestHarnessPlainErrorWrapped(t *testing.T) {
 
 // TestInvokeMethodConformanceDirect pins the method-rejection transport contract against
 // a live in-process SDK worker: all non-POST methods on /invoke must return 405, and
-// GET /healthz must return 200 (health probing must be unaffected). Catches a refactor
-// that silently drops the POST-only guard in crucible.go.
+// GET /healthz must return 200 (health probing unaffected). Catches a refactor that
+// silently drops the POST-only guard in crucible.go.
 func TestInvokeMethodConformanceDirect(t *testing.T) {
 	mux, err := crucible.Handler(func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
 		return crucible.Response{Payload: map[string]string{"ok": "true"}, BillableUnits: 1}, nil
@@ -462,28 +461,7 @@ func TestInvokeMethodConformanceDirect(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	client := harnessClient()
-	t.Cleanup(client.CloseIdleConnections)
 
-	// GET /healthz must remain 200 — method enforcement on /invoke must not break health probing.
 	assertHealthz(t, srv, client)
-
-	// Every non-POST method on /invoke must be rejected with 405.
-	for _, method := range []string{
-		http.MethodGet, http.MethodHead, http.MethodPut,
-		http.MethodDelete, http.MethodPatch, http.MethodOptions,
-	} {
-		req, err := http.NewRequest(method, srv.URL+"/invoke", nil)
-		if err != nil {
-			t.Fatalf("%s /invoke: build request: %v", method, err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("%s /invoke: %v", method, err)
-		}
-		defer resp.Body.Close() //nolint:gocritic // defers-in-loop acceptable: test with fixed, small iteration count
-		_, _ = io.Copy(io.Discard, resp.Body)
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("%s /invoke: expected 405 Method Not Allowed, got %d", method, resp.StatusCode)
-		}
-	}
+	assertInvokeMethodNotAllowed(t, srv, client)
 }
