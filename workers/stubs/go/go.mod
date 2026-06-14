@@ -1,6 +1,7 @@
 module github.com/Unluckyathecking/crucible/workers/stubs/go
 
-go 1.25.11
+go 1.25
+toolchain go1.25.11
 
 require github.com/Unluckyathecking/crucible/workers/sdk-go v0.0.0
 
