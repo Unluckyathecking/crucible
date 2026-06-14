@@ -331,7 +331,14 @@ func TestHappyPath(t *testing.T) {
 	if v := resp2.Header.Get("X-Idempotent-Replayed"); v != "" {
 		t.Errorf("second request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
-	if rid2 := resp2.Header.Get("X-Request-ID"); rid2 == rid1 {
+	rid2 := resp2.Header.Get("X-Request-ID")
+	if rid2 == "" {
+		t.Fatalf("X-Request-ID absent on second response")
+	}
+	if _, err := uuid.Parse(rid2); err != nil {
+		t.Errorf("second response X-Request-ID %q is not a valid UUID: %v", rid2, err)
+	}
+	if rid2 == rid1 {
 		t.Errorf("X-Request-ID not unique across requests: both got %q", rid1)
 	}
 	var inv2 invocationResponse
@@ -362,10 +369,10 @@ func TestIdempotentReplay(t *testing.T) {
 	if v := r1.Header.Get("X-Idempotent-Replayed"); v != "" {
 		t.Errorf("first request: X-Idempotent-Replayed: got %q, want absent", v)
 	}
-	body1 := drainBody(t, r1)
 	if r1.StatusCode != http.StatusOK {
-		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, body1)
+		t.Fatalf("first request: want 200, got %d: %s", r1.StatusCode, drainBody(t, r1))
 	}
+	body1 := drainBody(t, r1)
 
 	if !ts.HasIdempotencyKey(t, customerID, idempKey) {
 		t.Fatalf("idempotency_keys: row not found for key %q after first request", idempKey)
@@ -375,10 +382,10 @@ func TestIdempotentReplay(t *testing.T) {
 	if v := r2.Header.Get("X-Idempotent-Replayed"); v != "true" {
 		t.Errorf("replay request: X-Idempotent-Replayed: got %q, want \"true\"", v)
 	}
-	body2 := drainBody(t, r2)
 	if r2.StatusCode != http.StatusOK {
-		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, body2)
+		t.Fatalf("replay request: want 200, got %d: %s", r2.StatusCode, drainBody(t, r2))
 	}
+	body2 := drainBody(t, r2)
 
 	if string(body1) != string(body2) {
 		t.Errorf("replayed body differs:\n  first:  %s\n  second: %s", body1, body2)
