@@ -132,16 +132,18 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // The test asserts on the gateway's 502, not on anything this handler writes.
 // Selecting on r.Context().Done() lets the goroutine exit as soon as the
 // gateway closes the upstream connection.
+// slowWorker blocks for delay then returns without writing any response.
+// TestWorkerTimeout uses WorkerTimeoutMS=500 and delay=5s, so the gateway
+// proxy fires its timeout and returns 502 long before the timer elapses.
+// The test asserts on the gateway's 502, not on anything this handler writes.
+// Selecting on r.Context().Done() lets the goroutine exit as soon as the
+// gateway closes the upstream connection rather than blocking for the full delay.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
 		defer tmr.Stop()
 		select {
 		case <-tmr.C:
-			// The proxy timeout (500ms) is far shorter than delay (5s); this branch
-			// should never fire in practice. Writing 200 here makes the path visible
-			// in test output if the proxy somehow fails to time out.
-			w.WriteHeader(http.StatusOK)
 		case <-r.Context().Done():
 		}
 	})
