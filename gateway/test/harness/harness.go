@@ -120,6 +120,42 @@ func ctxSleep(ctx context.Context, d time.Duration) bool {
 // during the swap-and-restore so no goroutine observes intermediate route state.
 var routesMu sync.Mutex
 
+// migrateMu + migrateDone serialise db.Apply across concurrent NewGatewayTestServer
+// calls within a single test binary. This is necessary because Postgres's
+// CREATE INDEX IF NOT EXISTS is not atomic under concurrent transactions: two
+// goroutines can both observe the index as absent before either commits, then
+// both attempt the INSERT into pg_class and one gets a duplicate-key error.
+//
+// These variables are package-level, not process-global. Go compiles each test
+// package into an independent binary, so "go test -p N ./..." runs N separate
+// processes each with their own copy of these vars. Parallel package execution
+// is therefore unaffected: no two packages share this state.
+//
+// sync.Mutex + bool is used rather than sync.Once so the locked-but-not-yet-done
+// state is explicit and the error is stored separately without relying on the
+// closure-capture mechanism that sync.Once requires.
+var (
+	migrateMu   sync.Mutex
+	migrateDone bool
+	migrateErr  error
+)
+
+// runMigrations applies db.Apply exactly once per test binary, caching the
+// result for all subsequent callers. The migrateMu lock is held only while
+// migrations are running; once migrateDone is true, readers return immediately.
+func runMigrations(pool *pgxpool.Pool) error {
+	migrateMu.Lock()
+	defer migrateMu.Unlock()
+	if migrateDone {
+		return migrateErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
+	defer cancel()
+	migrateErr = db.Apply(ctx, pool)
+	migrateDone = true
+	return migrateErr
+}
+
 // Options configures a gateway test server.
 type Options struct {
 	// Routes overrides server.V1Routes. Nil means use production routes.
@@ -223,9 +259,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		t.Fatalf("harness: open postgres: %v", err)
 	}
 
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), serverBootTimeout)
-	defer migrateCancel()
-	if err := db.Apply(migrateCtx, pool); err != nil {
+	if err := runMigrations(pool); err != nil {
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
