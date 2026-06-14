@@ -172,7 +172,12 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when valid sig is beyond maxSigCandidates, got nil")
 	}
-	mustBeWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	// The 9th candidate (validSig) must have been dropped; the error should be
+	// "no matching v1 signature", not "malformed header" or anything else.
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_missingHeader(t *testing.T) {
@@ -267,4 +272,19 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 		}
 		mustBeWebhookError(t, err)
 	}
+}
+
+func TestVerifyWebhook_emptyV1Value(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	// v1= with no value appends an empty string; it should not verify (too short
+	// to be a valid HMAC hex), resulting in "no matching v1 signature".
+	header := "t=" + ts + ",v1="
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for empty v1= value, got nil")
+	}
+	mustBeWebhookError(t, err)
 }

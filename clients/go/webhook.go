@@ -91,11 +91,19 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	return &WebhookError{"no matching v1 signature"}
 }
 
+// maxHeaderParts caps the total comma-separated segments to prevent unbounded
+// iteration over attacker-controlled input before the v1 candidate cap applies.
+const maxHeaderParts = 16
+
 func parseSignatureHeader(header string) (timestamp string, sigs []string, err error) {
 	if header == "" {
 		return "", nil, &WebhookError{"missing X-Crucible-Signature header"}
 	}
-	for _, part := range strings.Split(header, ",") {
+	parts := strings.Split(header, ",")
+	if len(parts) > maxHeaderParts {
+		return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
+	}
+	for _, part := range parts {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
@@ -104,9 +112,10 @@ func parseSignatureHeader(header string) (timestamp string, sigs []string, err e
 		case "t":
 			timestamp = kv[1]
 		case "v1":
-			if len(sigs) < maxSigCandidates {
-				sigs = append(sigs, kv[1])
+			if len(sigs) >= maxSigCandidates {
+				continue
 			}
+			sigs = append(sigs, kv[1])
 		// Unknown keys (e.g. future v2=) are silently ignored for forward compatibility.
 		}
 	}

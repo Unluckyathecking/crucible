@@ -88,13 +88,21 @@ export function verifyWebhook(
   throw new WebhookVerificationError("no matching v1 signature");
 }
 
+// maxHeaderParts caps total comma-separated segments to bound parsing over
+// attacker-controlled input before the v1 candidate cap takes effect.
+const MAX_HEADER_PARTS = 16;
+
 function parseSignatureHeader(header: string): { timestamp: string; sigs: string[] } {
   if (!header) {
     throw new WebhookVerificationError("missing X-Crucible-Signature header");
   }
+  const parts = header.split(",");
+  if (parts.length > MAX_HEADER_PARTS) {
+    throw new WebhookVerificationError("malformed X-Crucible-Signature header");
+  }
   let timestamp = "";
   const sigs: string[] = [];
-  for (const part of header.split(",")) {
+  for (const part of parts) {
     const idx = part.indexOf("=");
     if (idx < 0) {
       throw new WebhookVerificationError("malformed X-Crucible-Signature header");
