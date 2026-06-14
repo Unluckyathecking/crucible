@@ -369,6 +369,25 @@ func TestVerifyWebhook_maxHeaderParts_atBoundary(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	// Attacker prepends a valid ts but appends a different one; last-wins would bypass age check.
+	header := "t=" + ts + ",t=999,v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for duplicate t= key, got nil")
+	}
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "malformed") {
+		t.Fatalf("expected 'malformed' in error, got: %v", wErr)
+	}
+}
+
 func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)

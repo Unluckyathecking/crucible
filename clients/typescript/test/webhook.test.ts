@@ -228,6 +228,14 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
+  it("rejects duplicate t= keys in header", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // Attacker prepends a valid ts then appends a different one; last-wins would bypass age check.
+    const header = `t=${ts},t=999,v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
+  });
+
   it("exposes SIGNATURE_HEADER constant with correct value", () => {
     assert.equal(SIGNATURE_HEADER, "X-Crucible-Signature");
   });

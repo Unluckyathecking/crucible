@@ -123,6 +123,9 @@ function parseSignatureHeader(header: string): { timestamp: string; sigs: string
     const key = part.slice(0, idx);
     const val = part.slice(idx + 1);
     if (key === "t") {
+      if (timestamp !== "") {
+        throw new WebhookVerificationError("malformed X-Crucible-Signature header");
+      }
       timestamp = val;
     } else if (key === "v1") {
       if (sigs.length < MAX_SIG_CANDIDATES) sigs.push(val);
