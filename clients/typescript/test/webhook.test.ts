@@ -214,6 +214,34 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body, -1));
   });
 
+  it("rejects NaN toleranceMs (would disable replay protection via IEEE 754 comparisons)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, NaN), "finite");
+  });
+
+  it("rejects Infinity toleranceMs (would disable replay protection via IEEE 754 comparisons)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, Infinity), "finite");
+  });
+
+  it("rejects -Infinity toleranceMs", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, -Infinity), "finite");
+  });
+
+  it("rejects leading-zero timestamp (round-trip check: parseInt('0123') → 123 → '123' !== '0123')", () => {
+    const ts = "0" + nowTs(); // prepend 0 to produce a leading-zero form
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(() => verifyWebhook(secretHex, header, body), "bad timestamp");
+  });
+
   it("rejects header exceeding MAX_HEADER_PARTS (17 segments)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);

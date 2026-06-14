@@ -81,6 +81,12 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if len(timestamp) > 15 {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
+	// Reject leading zeros for consistency with TypeScript's ts.toString() round-trip
+	// check: the gateway never emits padded timestamps, and accepting them would create
+	// cross-language divergence that could confuse signature-debugging.
+	if strings.HasPrefix(timestamp, "0") && len(timestamp) > 1 {
+		return &WebhookError{"bad timestamp in signature header"}
+	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}

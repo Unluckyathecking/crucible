@@ -320,7 +320,8 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 
 	// empty timestamp causes "malformed header" (empty t= value, caught by final check);
-	// non-empty non-decimal values fail ParseInt with "bad timestamp".
+	// non-empty non-decimal values fail ParseInt with "bad timestamp";
+	// leading zeros are rejected for cross-language consistency with TypeScript.
 	tsCases := []struct {
 		badTS   string
 		wantMsg string
@@ -329,6 +330,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 		{"1.5", "bad timestamp"},
 		{"0x10", "bad timestamp"},
 		{"", "malformed"},
+		{"0123456789", "bad timestamp"}, // leading zero — rejected for cross-language consistency
 	}
 	for _, tc := range tsCases {
 		sig := strings.Repeat("a", sha256HexLen)

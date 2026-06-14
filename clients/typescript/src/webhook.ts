@@ -55,6 +55,12 @@ export function verifyWebhook(
   body: Buffer | string,
   toleranceMs: number = DEFAULT_TOLERANCE_MS,
 ): void {
+  // NaN and Infinity both bypass the < 0 and > toleranceMs comparisons (IEEE 754
+  // comparisons with NaN/Infinity always return false), disabling replay protection.
+  // Reject non-finite values before the sentinel and negative checks.
+  if (!Number.isFinite(toleranceMs)) {
+    throw new WebhookVerificationError("toleranceMs must be a finite number");
+  }
   // Mirror Go's tolerance==0 sentinel: explicit 0 means "use default", matching
   // the documented pass 0 to use DefaultTolerance contract across both SDKs.
   if (toleranceMs === 0) {
