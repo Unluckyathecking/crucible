@@ -458,6 +458,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 		}()
 		cleanupErr := func(table string, opErr error) {
+			t.Helper()
 			if opErr == nil {
 				return
 			}
