@@ -129,9 +129,17 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // slowWorker sleeps for delay before responding. The proxy times out before
 // delay elapses, so the 200 response is never received by the caller; the
 // gateway proxy is responsible for returning 502 BadGateway.
+// The select on r.Context().Done() lets the goroutine exit immediately when
+// the gateway closes the connection rather than sleeping the full delay.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(delay)
+		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
+		select {
+		case <-tmr.C:
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
@@ -401,8 +409,10 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("Retry-After header missing on 429 RATE_LIMITED response")
 	} else if n, err := strconv.Atoi(ra); err != nil {
 		t.Fatalf("Retry-After: got %q, want integer seconds: %v", ra, err)
-	} else if n < 0 || n > 60 {
-		t.Errorf("Retry-After: got %d, want in [0,60]", n)
+	} else if n < 1 || n > 60 {
+		// Retry-After must be ≥1: a value of 0 would imply the window already reset,
+		// inconsistent with the 429 we just received.
+		t.Errorf("Retry-After: got %d, want in [1,60]", n)
 	}
 	if v := r.Header.Get("RateLimit-Limit"); v != "2" {
 		t.Errorf("RateLimit-Limit: got %q, want 2", v)
@@ -414,6 +424,13 @@ func TestRateLimit(t *testing.T) {
 	}
 	if v := r.Header.Get("RateLimit-Reset"); v == "" {
 		t.Errorf("RateLimit-Reset: missing, want Unix timestamp")
+	} else if resetTS, err := strconv.ParseInt(v, 10, 64); err != nil {
+		t.Errorf("RateLimit-Reset: got %q, want Unix timestamp: %v", v, err)
+	} else {
+		now := time.Now().Unix()
+		if resetTS < now || resetTS > now+60 {
+			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (current window boundary)", resetTS, now, now+60)
+		}
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
 	if n := ts.CountUsageEvents(t, customerID); n != int64(rateLimit) {
@@ -484,10 +501,13 @@ func TestWorkerTimeout(t *testing.T) {
 // No plan or customer is created intentionally: the gateway auth middleware rejects
 // unknown keys before any plan/customer lookup, so the rejection is independent of
 // database state beyond the api_keys table being empty for this key.
+// countingWorker is used instead of echoWorker so we can assert the proxy layer was
+// never reached — auth must reject before the request is forwarded to the worker.
 func TestAuthFailure(t *testing.T) {
 	t.Parallel()
 	client := newTestHTTPClient(t)
-	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	worker, invocations := countingWorker(1)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, worker))
 
 	// Synthesise a key that matches the production prefix format but is guaranteed
 	// absent from the database: prefix + 32 uppercase zeros (not base32-random) +
@@ -499,6 +519,9 @@ func TestAuthFailure(t *testing.T) {
 	}
 	if code := errorCode(t, body); code != "UNAUTHORIZED" {
 		t.Errorf("error.code: got %q, want UNAUTHORIZED", code)
+	}
+	if got := invocations.Load(); got != 0 {
+		t.Errorf("worker invocations: got %d, want 0 (auth must reject before proxy)", got)
 	}
 }
 
