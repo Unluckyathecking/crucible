@@ -446,3 +446,22 @@ func TestHarnessPlainErrorWrapped(t *testing.T) {
 	}
 	checkErrorEnvelopeAt(t, srv, client, reqBody, "INTERNAL")
 }
+
+// TestInvokeMethodConformanceDirect pins the method-rejection transport contract against
+// a live in-process SDK worker: all non-POST methods on /invoke must return 405, and
+// GET /healthz must return 200 (health probing unaffected). Catches a refactor that
+// silently drops the POST-only guard in crucible.go.
+func TestInvokeMethodConformanceDirect(t *testing.T) {
+	mux, err := crucible.Handler(func(_ context.Context, _ crucible.Request) (crucible.Response, error) {
+		return crucible.Response{Payload: map[string]string{"ok": "true"}, BillableUnits: 1}, nil
+	})
+	if err != nil {
+		t.Fatalf("crucible.Handler: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := harnessClient()
+
+	assertHealthz(t, srv, client)
+	assertInvokeMethodNotAllowed(t, srv, client)
+}
