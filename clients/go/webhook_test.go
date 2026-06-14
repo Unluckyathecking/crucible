@@ -30,6 +30,18 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 // nowTS returns the current Unix timestamp as a decimal string.
 func nowTS() string { return fmt.Sprintf("%d", time.Now().Unix()) }
 
+// assertWebhookError asserts err is a *crucible.WebhookError. Use when the
+// error message does not need further inspection.
+func assertWebhookError(t *testing.T, err error) {
+	t.Helper()
+	var wErr *crucible.WebhookError
+	if !errors.As(err, &wErr) {
+		t.Fatalf("expected *crucible.WebhookError, got %T: %v", err, err)
+	}
+}
+
+// mustBeWebhookError is like assertWebhookError but returns the typed error for
+// message inspection. Use only when the test verifies specific error text.
 func mustBeWebhookError(t *testing.T, err error) *crucible.WebhookError {
 	t.Helper()
 	var wErr *crucible.WebhookError
@@ -81,7 +93,7 @@ func TestVerifyWebhook_tamperedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for tampered body, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_wrongSecret(t *testing.T) {
@@ -103,7 +115,7 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong secret, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_futureTimestamp(t *testing.T) {
@@ -138,7 +150,7 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for expired timestamp, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
@@ -189,7 +201,7 @@ func TestVerifyWebhook_missingHeader(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing header, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
@@ -201,7 +213,7 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
 		}
-		mustBeWebhookError(t, err)
+		assertWebhookError(t, err)
 	}
 }
 
@@ -234,7 +246,7 @@ func TestVerifyWebhook_negativeTolerance(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative tolerance, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_emptyBody(t *testing.T) {
@@ -263,7 +275,7 @@ func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for header missing t=, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
@@ -276,7 +288,7 @@ func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for header missing v1=, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }
 
 func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
@@ -291,7 +303,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error for malformed timestamp %q, got nil", badTS)
 		}
-		mustBeWebhookError(t, err)
+		assertWebhookError(t, err)
 	}
 }
 
@@ -307,5 +319,5 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty v1= value, got nil")
 	}
-	mustBeWebhookError(t, err)
+	assertWebhookError(t, err)
 }

@@ -22,12 +22,18 @@ function nowTs(): string {
   return Math.floor(Date.now() / 1000).toString();
 }
 
-function expectWebhookError(fn: () => void): void {
+function expectWebhookError(fn: () => void, messageSubstring?: string): void {
   assert.throws(fn, (err: unknown) => {
     assert.ok(
       err instanceof WebhookVerificationError,
       `expected WebhookVerificationError, got ${err}`,
     );
+    if (messageSubstring) {
+      assert.ok(
+        (err as WebhookVerificationError).message.includes(messageSubstring),
+        `expected error message to include "${messageSubstring}", got "${(err as WebhookVerificationError).message}"`,
+      );
+    }
     return true;
   });
 }
@@ -85,14 +91,14 @@ describe("verifyWebhook", () => {
     const oldTs = Math.floor((Date.now() - 10 * 60 * 1000) / 1000).toString();
     const sig = testSign(secret, oldTs, body);
     const header = `t=${oldTs},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000), "too old");
   });
 
   it("rejects future timestamp", () => {
     const futureTs = Math.floor((Date.now() + 10 * 60 * 1000) / 1000).toString();
     const sig = testSign(secret, futureTs, body);
     const header = `t=${futureTs},v1=${sig}`;
-    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000));
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, 5 * 60 * 1000), "future");
   });
 
   it("accepts second v1= candidate when first is invalid", () => {

@@ -347,7 +347,7 @@ When you register a webhook endpoint in the dashboard, every delivery is signed 
 3. Compute `HMAC-SHA256(secret_bytes, ts + "." + raw_body)`.
 4. Constant-time compare the digest against each `v1=` candidate.
 
-The signing secret (`secret_hex`) is shown once at endpoint creation time in the dashboard. Store it as an environment variable.
+The signing secret is shown once at endpoint creation time in the dashboard as a hex-encoded string. Store it in an environment variable (the examples above use `WEBHOOK_SECRET`).
 
 **Important:** Always pass the raw request body bytes to the verifier before any JSON parsing. Re-serialising the parsed body changes whitespace and field order, which invalidates the signature.
 

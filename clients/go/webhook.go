@@ -26,6 +26,8 @@ const DefaultTolerance = 5 * time.Minute
 const SignatureHeader = "X-Crucible-Signature"
 
 // TimestampHeader is the HTTP header that carries the delivery Unix timestamp.
+// It is provided for logging and tracing; do NOT pass it to VerifyWebhook —
+// the timestamp used for replay protection is extracted from SignatureHeader.
 const TimestampHeader = "X-Crucible-Timestamp"
 
 // WebhookError is returned when X-Crucible-Signature verification fails.
@@ -53,7 +55,7 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 	secret, hexErr := hex.DecodeString(secretHex)
 	if hexErr != nil {
-		return &WebhookError{"invalid secretHex: " + hexErr.Error()}
+		return &WebhookError{"invalid secretHex: must be non-empty even-length hex string"}
 	}
 
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
@@ -83,8 +85,8 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	_, _ = mac.Write(body)
 	expected := mac.Sum(nil)
 
-	for _, sig := range sigs {
-		candidate, hexErr := hex.DecodeString(sig)
+	for _, sigHex := range sigs {
+		candidate, hexErr := hex.DecodeString(sigHex)
 		if hexErr != nil || len(candidate) != sha256.Size {
 			continue
 		}
