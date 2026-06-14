@@ -99,9 +99,6 @@ func baseOpts(t *testing.T, worker http.Handler, mutators ...func(*harness.Optio
 // echoWorker responds to POST /invoke with a fixed billable_units payload.
 func echoWorker(billableUnits uint64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Context().Err() != nil {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"payload":{},"billable_units":%d}`, billableUnits)
 	})
@@ -139,9 +136,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(5 * time.Second)
-		defer tmr.Stop()
 		select {
 		case <-r.Context().Done():
+			if !tmr.Stop() {
+				<-tmr.C
+			}
 		case <-tmr.C:
 		}
 	})
