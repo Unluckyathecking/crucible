@@ -43,6 +43,11 @@ const (
 	testRequestTimeout = 10 * time.Second
 	errorPollTimeout   = 5 * time.Second
 	errorPollInterval  = 100 * time.Millisecond
+
+	// hungWorkerFallback is the maximum time hungWorker blocks before exiting.
+	// It prevents httptest.Server.Close() deadlocks when the request context is
+	// not cancelled first (e.g. if the proxy timeout fires after Close starts).
+	hungWorkerFallback = 5 * time.Second
 )
 
 // newTestHTTPClient returns an http.Client for a single test (one per test, not per request).
@@ -135,7 +140,7 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // handler would block indefinitely and the test suite would time out.
 func hungWorker() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tmr := time.NewTimer(5 * time.Second)
+		tmr := time.NewTimer(hungWorkerFallback)
 		select {
 		case <-r.Context().Done():
 			if !tmr.Stop() {
@@ -394,8 +399,14 @@ func TestRateLimit(t *testing.T) {
 		maxSyncAttempts    = 3
 		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
 	)
+	// windowStart is set at the moment alignment is confirmed so the timestamp
+	// matches the exact Now() that passed the safety-margin check. Capturing it
+	// after the loop (time.Now().Unix()) risks racing past the truncated minute
+	// boundary if the scheduler yields between the break and the assignment.
+	var windowStart int64
 	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
 		if now := time.Now(); now.Second() < windowSafetyMargin {
+			windowStart = now.Truncate(time.Minute).Unix()
 			break
 		} else if attempt == maxSyncAttempts {
 			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
@@ -404,10 +415,6 @@ func TestRateLimit(t *testing.T) {
 			time.Sleep(time.Until(nextMinute) + 200*time.Millisecond)
 		}
 	}
-	// Snapshot the window start once; RateLimit-Reset must fall in [windowStart, windowStart+60].
-	// Capturing before requests avoids a spurious failure if time advances past windowStart+60
-	// between the request and the assertion.
-	windowStart := time.Now().Unix()
 
 	for i := 0; i < rateLimit; i++ {
 		r := invoke(t, client, ts, apiKey)
