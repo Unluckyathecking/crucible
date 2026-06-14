@@ -7,6 +7,8 @@ import {
   DEFAULT_TOLERANCE_MS,
   SIGNATURE_HEADER,
   TIMESTAMP_HEADER,
+  WEBHOOK_EVENT_ID_HEADER,
+  WEBHOOK_EVENT_TYPE_HEADER,
 } from "../src/webhook";
 
 // testSign replicates gateway/internal/webhookout.Sign so tests build the
@@ -247,11 +249,39 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
   });
 
+  it("verifies body with multi-byte UTF-8 characters passed as Buffer", () => {
+    const ts = nowTs();
+    const utf8Body = Buffer.from('{"message":"hello 🎉 你好"}');
+    const sig = testSign(secret, ts, utf8Body);
+    const header = `t=${ts},v1=${sig}`;
+    const result = verifyWebhook(secretHex, header, utf8Body);
+    assert.equal(result, undefined);
+  });
+
+  it("verifies body with multi-byte UTF-8 characters passed as string", () => {
+    const ts = nowTs();
+    const utf8Str = '{"message":"hello 🎉 你好"}';
+    const utf8Body = Buffer.from(utf8Str, "utf8");
+    const sig = testSign(secret, ts, utf8Body);
+    const header = `t=${ts},v1=${sig}`;
+    // Buffer.from(str, 'utf8') must produce byte-identical output to the Buffer path.
+    const result = verifyWebhook(secretHex, header, utf8Str);
+    assert.equal(result, undefined);
+  });
+
   it("exposes SIGNATURE_HEADER constant with correct value", () => {
     assert.equal(SIGNATURE_HEADER, "X-Crucible-Signature");
   });
 
   it("exposes TIMESTAMP_HEADER constant with correct value", () => {
     assert.equal(TIMESTAMP_HEADER, "X-Crucible-Timestamp");
+  });
+
+  it("exposes WEBHOOK_EVENT_ID_HEADER constant with correct value", () => {
+    assert.equal(WEBHOOK_EVENT_ID_HEADER, "X-Webhook-Event-ID");
+  });
+
+  it("exposes WEBHOOK_EVENT_TYPE_HEADER constant with correct value", () => {
+    assert.equal(WEBHOOK_EVENT_TYPE_HEADER, "X-Webhook-Event-Type");
   });
 });

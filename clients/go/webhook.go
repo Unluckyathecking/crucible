@@ -30,6 +30,13 @@ const SignatureHeader = "X-Crucible-Signature"
 // the timestamp used for replay protection is extracted from SignatureHeader.
 const TimestampHeader = "X-Crucible-Timestamp"
 
+// WebhookEventIDHeader is the HTTP header carrying the delivery UUID.
+// Use it to deduplicate at-least-once deliveries before processing an event.
+const WebhookEventIDHeader = "X-Webhook-Event-ID"
+
+// WebhookEventTypeHeader is the HTTP header carrying the event type string (e.g. "invoice.paid").
+const WebhookEventTypeHeader = "X-Webhook-Event-Type"
+
 // WebhookError is returned when X-Crucible-Signature verification fails.
 type WebhookError struct {
 	msg string

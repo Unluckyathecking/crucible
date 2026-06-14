@@ -24,6 +24,12 @@ export const SIGNATURE_HEADER = "X-Crucible-Signature";
 /** HTTP header carrying the delivery Unix timestamp. */
 export const TIMESTAMP_HEADER = "X-Crucible-Timestamp";
 
+/** HTTP header carrying the delivery UUID. Use it to deduplicate at-least-once deliveries. */
+export const WEBHOOK_EVENT_ID_HEADER = "X-Webhook-Event-ID";
+
+/** HTTP header carrying the event type string (e.g. "invoice.paid"). */
+export const WEBHOOK_EVENT_TYPE_HEADER = "X-Webhook-Event-Type";
+
 /** Thrown when X-Crucible-Signature verification fails. */
 export class WebhookVerificationError extends Error {
   constructor(message: string) {
@@ -86,8 +92,10 @@ export function verifyWebhook(
   }
 
   // Buffer is used verbatim (zero-copy, raw bytes preserved).
-  // String is a testing convenience; production webhook handlers should always
-  // pass the raw Buffer from the HTTP framework to avoid any encoding ambiguity.
+  // WARNING: String inputs are for testing only. Non-ASCII characters may fail
+  // verification if the string encoding does not match the gateway's raw bytes
+  // exactly. Production webhook handlers must pass the raw Buffer from the HTTP
+  // framework (e.g. express.raw()) to avoid any encoding ambiguity.
   const bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
   const mac = createHmac("sha256", secret);
   mac.update(timestamp);

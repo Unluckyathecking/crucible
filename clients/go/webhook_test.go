@@ -405,6 +405,23 @@ func TestVerifyWebhook_maxHeaderParts_atBoundary(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_v1TooLong(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	validSig := testSign(secret, ts, body)
+	// 66 chars: valid 64-char sig + "00" — must be rejected by the len guard on line 88.
+	tooLongSig := validSig + "00"
+	header := "t=" + ts + ",v1=" + tooLongSig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for too-long v1 sig, got nil")
+	}
+	assertWebhookError(t, err)
+}
+
 func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
