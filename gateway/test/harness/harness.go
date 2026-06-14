@@ -227,7 +227,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// background last_used_at goroutine while Redis is still open.
 	// Wrapped in a closure so a future signature change (e.g. adding an error
 	// return) surfaces as a compile error rather than a silent drop.
-	t.Cleanup(func() { authStore.Close() })
+	t.Cleanup(func() {
+		if err := authStore.Close(); err != nil {
+			t.Errorf("harness: authStore close: %v", err)
+		}
+	})
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
@@ -436,6 +440,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 		t.Fatalf("harness: generate api key: %v", err)
 	}
 	customerID := uuid.New()
+	// Explicit copy so the cleanup closure does not capture the outer `prefix`
+	// variable by reference; `prefix` is also used after this closure registration
+	// (for the DB insert below), and the copy makes the closure's captured value
+	// unambiguous — it is the value at Generate time and is never overwritten.
+	cleanupPrefix := prefix
 
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
@@ -462,7 +471,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				"quota:"+cid+":"+month,
 				"quota:"+cid+":"+nextMonth,
 				"rl:"+cid,
-				"auth:"+prefix,
+				"auth:"+cleanupPrefix,
 			).Err(); delErr != nil && !errors.Is(delErr, context.DeadlineExceeded) && !errors.Is(delErr, context.Canceled) {
 				t.Logf("harness: redis cleanup for customer %s: %v", cid, delErr)
 			}
