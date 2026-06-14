@@ -88,11 +88,9 @@ func init() {
 var routesMu sync.Mutex
 
 // migrateOnce runs migrations exactly once per test process for speed.
-// Unlike sync.Once, we use a mutex + bool + error so that the error from the
-// first (and only) attempt is propagated to all subsequent callers. sync.Once
-// has no mechanism to expose the result of the wrapped function. If the first
-// attempt fails, migrateErr remains set and all later tests in the same process
-// fail fast. Callers must ensure Postgres is ready before running tests.
+// Unlike sync.Once, we use a mutex + bool so that a successful migration is
+// skipped by all subsequent callers. On failure, migrateDone stays false and
+// the next caller retries. Callers must ensure Postgres is ready before tests.
 // Migration files in this project are individually idempotent
 // (CREATE IF NOT EXISTS / ON CONFLICT DO NOTHING / PL/pgSQL guards), so repeated
 // runs against the same schema are safe.
@@ -102,7 +100,6 @@ var routesMu sync.Mutex
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool
-	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
@@ -113,15 +110,13 @@ func runMigrations(pool *pgxpool.Pool) error {
 	migrateMu.Lock()
 	defer migrateMu.Unlock()
 	if migrateDone {
-		return migrateErr // nil after first success; subsequent callers return immediately
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
 	if err := db.Apply(ctx, pool); err != nil {
-		migrateErr = err
 		return err
 	}
-	migrateErr = nil
 	migrateDone = true
 	return nil
 }
@@ -196,14 +191,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// LIFO: workerSrv.Close runs before pool.Close because it was registered
-	// after pool.Close. This lets the worker drain in-flight requests while
-	// Postgres connections remain open.
-	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	t.Cleanup(workerSrv.Close)
+	t.Cleanup(func() { pool.Close() }) // pgxpool.Pool.Close returns void; no error to check
 	if err := runMigrations(pool); err != nil {
-		workerSrv.Close()
 		pool.Close()
+		workerSrv.Close()
 		t.Fatalf("harness: apply migrations: %v", err)
 	}
 
@@ -217,7 +209,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// keeping Redis open while authStore drains its background goroutine.
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
-			t.Logf("harness: redis close: %v", err)
+			t.Fatalf("harness: redis close: %v", err)
 		}
 	})
 
@@ -463,7 +455,6 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 		}()
 		cleanupErr := func(table string, opErr error) {
-			t.Helper()
 			if opErr == nil {
 				return
 			}
