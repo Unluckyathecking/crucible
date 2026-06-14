@@ -129,7 +129,14 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
+		defer func() {
+			if !tmr.Stop() {
+				select {
+				case <-tmr.C:
+				default:
+				}
+			}
+		}()
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
