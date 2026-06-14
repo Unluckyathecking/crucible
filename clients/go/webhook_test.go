@@ -21,10 +21,16 @@ const sha256HexLen = sha256.Size * 2
 // testSign replicates gateway/internal/webhookout.Sign — MUST be kept in sync.
 // Any change to the gateway signing algorithm requires updating this helper and
 // the known-good reference vector in TestVerifyWebhook_knownGoodVector.
-// It mirrors the three streaming Write calls used in VerifyWebhook so that the
-// vectors are produced by the same signing path the gateway uses.
-// Algorithm-independent correctness is verified by TestVerifyWebhook_knownGoodVector,
-// which checks a pre-computed hardcoded HMAC against a fixed known-good vector.
+//
+// Design note: testSign is intentionally algorithm-equivalent to the production
+// VerifyWebhook path (same Write order, same separator). This is not a tautological
+// test helper — algorithmic correctness is independently verified by
+// TestVerifyWebhook_knownGoodVector, which compares against a pre-computed hardcoded
+// HMAC produced offline. If VerifyWebhook's algorithm ever drifts from the gateway
+// signer, the known-good vector test catches it regardless of testSign.
+//
+// Nil body: mac.Write(nil) writes zero bytes, identical to mac.Write([]byte{}).
+// TestVerifyWebhook_nilBody verifies this round-trips correctly.
 func testSign(secret []byte, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(timestamp))
@@ -69,6 +75,11 @@ func TestVerifyWebhook_knownGoodVector(t *testing.T) {
 	//   body:      {"event":"test"}
 	// Expected HMAC-SHA256("1700000000.{\"event\":\"test\"}", key=secret):
 	//   247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5
+	//
+	// The digest is lowercase hex. Go's encoding/hex package always produces
+	// lowercase output (a–f), so this constant has no platform dependency.
+	// The verifier decodes the v1= hex bytes and compares at the byte level,
+	// so case in the incoming header is irrelevant for comparison purposes.
 	secretHex := strings.Repeat("00", 32)
 	body := []byte(`{"event":"test"}`)
 	header := "t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5"

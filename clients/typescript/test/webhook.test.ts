@@ -57,6 +57,10 @@ const SHA256_HEX_LEN = 32 * 2;
 
 const secret = Buffer.alloc(32, 0x42);
 const secretHex = secret.toString("hex");
+// body is a shared test fixture. No test in this suite mutates its byte values —
+// all tests treat it as read-only input. Tests that need a different payload
+// declare a local const (e.g. vectorBody, emptyBody, utf8Body) rather than
+// modifying this shared buffer, eliminating any cross-test contamination risk.
 const body = Buffer.from('{"event":"delivery.succeeded","data":{"id":1}}');
 
 describe("verifyWebhook", () => {

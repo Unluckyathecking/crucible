@@ -847,7 +847,14 @@ type_export_line = (
     f'export type {{ ClientOptions{", " + type_exports if type_exports else ""} }} from "./client";\n'
 )
 
-write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + (
+# index.ts appends an extra comment (beyond ts_header) to make clear that the
+# webhook re-export on the final line is also generator-produced, not a hand-edit.
+# ts_header is shared with errors.ts and client.ts; the webhook note is index-specific.
+index_webhook_note = (
+    "// Webhook re-exports (last line) are emitted by this generator; "
+    "edit gen-clients.sh and re-run — do not hand-edit.\n"
+)
+write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + index_webhook_note + (
     f'export {{ Client }} from "./client";\n'
     f'{type_export_line}'
     f'export {{ ApiError }} from "./errors";\n'
