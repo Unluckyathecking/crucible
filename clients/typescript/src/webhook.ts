@@ -4,6 +4,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // on header-stuffed requests. Mirrors gateway verifySignature.
 const MAX_SIG_CANDIDATES = 8;
 
+// SHA-256 produces 32 bytes; hex-encoded that is 64 characters.
+const SHA256_HEX_LEN = 32 * 2;
+
 // maxHeaderParts caps total comma-separated segments to bound parsing over
 // attacker-controlled input before the v1 candidate cap takes effect.
 const MAX_HEADER_PARTS = 16;
@@ -90,9 +93,9 @@ export function verifyWebhook(
   const expected = mac.digest();
 
   for (const sig of sigs) {
-    // Reject wrong-length strings first: a 64-char hex string with a trailing
-    // non-hex char still decodes to 32 bytes, bypassing the candidate.length check.
-    if (sig.length !== 64) continue;
+    // Reject wrong-length strings first: a SHA256_HEX_LEN-char hex string with a
+    // trailing non-hex char still decodes to 32 bytes, bypassing the candidate.length check.
+    if (sig.length !== SHA256_HEX_LEN) continue;
     const candidate = Buffer.from(sig, "hex");
     // Non-hex chars cause Buffer.from to produce a shorter buffer; timingSafeEqual
     // throws on length mismatch, so we must filter before calling it.

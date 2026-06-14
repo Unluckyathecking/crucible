@@ -93,6 +93,11 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	expected := mac.Sum(nil)
 
 	for _, sigHex := range sigs {
+		// Length guard mirrors the TypeScript sig.length !== 64 check: reject
+		// wrong-length inputs on the fast path before calling the decoder.
+		if len(sigHex) != sha256.Size*2 {
+			continue
+		}
 		candidate, hexErr := hex.DecodeString(sigHex)
 		if hexErr != nil || len(candidate) != sha256.Size {
 			continue

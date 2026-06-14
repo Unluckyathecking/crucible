@@ -116,7 +116,10 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong secret, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	}
 }
 
 func TestVerifyWebhook_futureTimestamp(t *testing.T) {
