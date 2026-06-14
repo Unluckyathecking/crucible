@@ -400,13 +400,14 @@ func TestRateLimit(t *testing.T) {
 		windowSafetyMargin = 45 // sleep if second >= 45 (< 15 s left in window)
 	)
 	// windowStart is set at the moment alignment is confirmed so the timestamp
-	// matches the exact Now() that passed the safety-margin check. Capturing it
-	// after the loop (time.Now().Unix()) risks racing past the truncated minute
-	// boundary if the scheduler yields between the break and the assignment.
+	// matches the exact Now() that passed the safety-margin check. The rate limiter
+	// uses a 60-second sliding window (resetAt = time.Now().Add(time.Minute)), so
+	// RateLimit-Reset ≈ windowStart+60; capturing now.Unix() (not the truncated
+	// minute) gives the correct reference point for the assertion range.
 	var windowStart int64
 	for attempt := 1; attempt <= maxSyncAttempts; attempt++ {
 		if now := time.Now(); now.Second() < windowSafetyMargin {
-			windowStart = now.Truncate(time.Minute).Unix()
+			windowStart = now.Unix()
 			break
 		} else if attempt == maxSyncAttempts {
 			t.Fatalf("could not align to rate-limit window after %d attempts", maxSyncAttempts)
