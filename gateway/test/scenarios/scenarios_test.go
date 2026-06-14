@@ -125,17 +125,12 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 	return h, &count
 }
 
-// slowWorker delays the response by delay; returns on context cancellation.
-// Uses context.WithTimeout derived from the request context so no separate
-// timer goroutine is required and cancellation propagates cleanly.
+// slowWorker sleeps for delay before responding. The proxy times out before
+// delay elapses, so the 200 response is never received by the caller; the
+// gateway proxy is responsible for returning 504.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), delay)
-		defer cancel()
-		<-ctx.Done()
-		if ctx.Err() != context.DeadlineExceeded {
-			return // request context cancelled before delay elapsed
-		}
+		time.Sleep(delay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
