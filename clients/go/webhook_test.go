@@ -15,15 +15,12 @@ import (
 
 // testSign replicates gateway/internal/webhookout.Sign locally so tests build
 // the positive vector without importing the gateway package tree.
-// Payload is built as a single contiguous slice to avoid any dependency on the
-// production code's Write ordering — the test is an independent oracle.
+// Three separate mac.Write calls mirror the production signing algorithm exactly.
 func testSign(secret []byte, timestamp string, body []byte) string {
-	payload := make([]byte, 0, len(timestamp)+1+len(body))
-	payload = append(payload, []byte(timestamp)...)
-	payload = append(payload, '.')
-	payload = append(payload, body...)
 	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write(payload)
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte("."))
+	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
