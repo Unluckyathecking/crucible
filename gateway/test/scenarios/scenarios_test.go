@@ -478,8 +478,12 @@ func TestRateLimit(t *testing.T) {
 	} else if resetTS, err := strconv.ParseInt(v, 10, 64); err != nil {
 		t.Errorf("RateLimit-Reset: got %q, want Unix timestamp: %v", v, err)
 	} else {
-		if resetTS < windowStart || resetTS > windowStart+60 {
-			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (current window boundary)", resetTS, windowStart, windowStart+60)
+		// The sliding window sets resetAt = time.Now().Add(time.Minute) at the
+		// moment of rejection. Between the alignment checkpoint and the rejected
+		// request, up to two allowed requests execute plus scheduling overhead,
+		// so allow 2 s of slack on the upper bound.
+		if resetTS < windowStart || resetTS > windowStart+62 {
+			t.Errorf("RateLimit-Reset: got %d, want in [%d, %d] (±2s for test overhead)", resetTS, windowStart, windowStart+62)
 		}
 	}
 	// Only the rateLimit accepted requests must have been billed; the rejected request must not.
