@@ -160,11 +160,15 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 		if len(kv) != 2 || strings.Contains(kv[1], "=") {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
-		// Universal empty-value guard — runs before the switch, so it applies to
-		// ALL keys: t=, v1=, AND any unknown future key (e.g. v2=). A part like
-		// "foo=" is rejected here; "foo=bar" falls through to the default case and
-		// is silently ignored. Mirrors TypeScript's universal val==="" guard.
-		if len(kv[0]) == 0 || len(kv[1]) == 0 {
+		// Reject parts with an empty key name (e.g. "=abc") — parallel to TypeScript's
+		// idx<=0 guard which rejects idx==0 (no characters before the first "=").
+		if len(kv[0]) == 0 {
+			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
+		}
+		// Reject parts with an empty value (e.g. "t=", "v1=") — universal guard for
+		// ALL key types including future ones (e.g. "v2="). Mirrors TypeScript's
+		// `if (val === "")` guard. Each check is separate so both guards are explicit.
+		if len(kv[1]) == 0 {
 			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
 		}
 		switch kv[0] {
