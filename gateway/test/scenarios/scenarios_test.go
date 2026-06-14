@@ -30,7 +30,9 @@ const (
 	defaultTestMonthlyCap = 10_000
 
 	// HTTP client constants for newTestHTTPClient.
-	testClientTimeout       = 25 * time.Second // generous ceiling for dial + request + body drain
+	// testClientTimeout is a generous ceiling that is never the bottleneck;
+	// individual requests use testRequestTimeout (10s) or proxy-level timeouts.
+	testClientTimeout       = 25 * time.Second
 	testDialTimeout         = 5 * time.Second
 	testIdleConnTimeout     = 10 * time.Second
 	testMaxIdleConns        = 10
@@ -129,12 +131,15 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
+			if _, err := fmt.Fprint(w, `{"payload":{},"billable_units":1}`); err != nil {
+				// t is not available in handler scope; log to stderr which the test harness captures.
+				fmt.Fprintf(os.Stderr, "slowWorker write error: %v\n", err)
+			}
 		case <-r.Context().Done():
-			tmr.Stop()
 			return
 		}
 	})
@@ -163,7 +168,9 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	}
 }
 
-// invoke sends POST /v1/echo; drainBody is the sole closer of the response body.
+// invoke sends POST /v1/echo and returns the response. The caller MUST call
+// drainBody (or otherwise read and close r.Body) before the next request to
+// avoid leaking the underlying connection.
 func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey string, mutators ...func(*http.Request)) *http.Response {
 	t.Helper()
 	if ts == nil || ts.Server == nil {
