@@ -66,8 +66,10 @@ func TestVerifyWebhook_knownGoodVector(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	header := "t=1700000000,v1=247d0f12bc3bef311cdb44ced37a1192ba82e78ffe8edd22fbf2205a414e94f5"
 
-	// tolerance covers the fixed 2023 timestamp; 50 years keeps this test stable for decades
-	const vectorTolerance = 50 * 365 * 24 * time.Hour
+	// Compute the actual age of the 2023 reference vector plus a 1-hour buffer.
+	// This stays valid indefinitely without needing manual updates, unlike a
+	// hardcoded "N years" constant.
+	vectorTolerance := time.Since(time.Unix(1700000000, 0)) + time.Hour
 	if err := crucible.VerifyWebhook(secretHex, header, body, vectorTolerance); err != nil {
 		t.Fatalf("known-good reference vector rejected: %v", err)
 	}
