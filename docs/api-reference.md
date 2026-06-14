@@ -359,7 +359,7 @@ import (
     "net/http"
     "os"
 
-    crucible "github.com/Unluckyathecking/crucible/clients/go"
+    crucible "github.com/YOUR_ORG/YOUR_REPO/clients/go"
 )
 
 func handleWebhook(w http.ResponseWriter, r *http.Request) {

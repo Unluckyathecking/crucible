@@ -47,7 +47,7 @@ export class WebhookVerificationError extends Error {
  * @param secretHex - hex-encoded signing secret from the dashboard endpoint page
  * @param sigHeader - raw value of the X-Crucible-Signature header (t=<ts>,v1=<hex>)
  * @param body - unmodified request body as Buffer (raw bytes from the HTTP framework)
- * @param toleranceMs - maximum age in ms; pass 0 to use DEFAULT_TOLERANCE_MS (5 min)
+ * @param toleranceMs - maximum age in ms; omit or pass undefined to use DEFAULT_TOLERANCE_MS (5 min)
  * @throws {WebhookVerificationError} when the signature does not match or is expired
  */
 export function verifyWebhook(
@@ -64,9 +64,13 @@ export function verifyWebhook(
       "body must be a Buffer; pass raw request bytes before any parsing",
     );
   }
-  // Mirror Go's tolerance==0 sentinel: undefined (omitted) and explicit 0 both
-  // mean "use default", matching the documented contract across both SDKs.
-  if (toleranceMs === undefined || toleranceMs === 0) {
+  // undefined (omitted parameter) → use DEFAULT_TOLERANCE_MS.
+  // Explicit 0 is NOT a sentinel here: it means zero-width tolerance, which rejects
+  // any timestamp not exactly at the current second. Callers who want the default
+  // should omit the argument, not pass 0. (Go uses the time.Duration zero value as
+  // a sentinel because it cannot be a meaningful tolerance; TypeScript's number type
+  // makes undefined the natural "unset" signal instead.)
+  if (toleranceMs === undefined) {
     toleranceMs = DEFAULT_TOLERANCE_MS;
   }
   // NaN and Infinity both bypass the < 0 and > toleranceMs comparisons (IEEE 754
@@ -89,7 +93,7 @@ export function verifyWebhook(
   const secret = Buffer.from(secretHex, "hex");
   // Defense in depth: verify the decoded length with integer arithmetic (>> 1).
   // Catches any future Node.js hex-codec behavior change that might truncate silently.
-  if (secret.length !== (secretHex.length >> 1)) {
+  if (secret.length * 2 !== secretHex.length) {
     throw new WebhookVerificationError("invalid secretHex: decode produced unexpected length");
   }
 

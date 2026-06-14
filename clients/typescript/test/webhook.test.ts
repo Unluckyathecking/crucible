@@ -116,13 +116,15 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
-  it("uses DEFAULT_TOLERANCE_MS when toleranceMs is explicitly 0 (mirrors Go tolerance==0 sentinel)", () => {
-    const ts = nowTs();
+  it("explicit toleranceMs=0 is zero-width tolerance, not a default sentinel", () => {
+    // Unlike Go (where tolerance==0 maps to DefaultTolerance via zero-value sentinel),
+    // TypeScript uses undefined as the "use default" signal. Explicit 0 means zero-width
+    // tolerance, which rejects any timestamp that is not exactly current.
+    const ts = nowTs(); // 10 seconds in the past
     const sig = testSign(secret, ts, body);
     const header = `t=${ts},v1=${sig}`;
-    // tolerance=0 is the cross-language sentinel for "use default", same as Go.
-    const result = verifyWebhook(secretHex, header, body, 0);
-    assert.equal(result, undefined);
+    // nowTs() is 10 s old; 0 ms tolerance → immediately "too old"
+    expectWebhookError(() => verifyWebhook(secretHex, header, body, 0), "too old");
   });
 
   it("rejects tampered body", () => {

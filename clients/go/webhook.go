@@ -1,4 +1,5 @@
-// Package crucible provides webhook signature verification for Crucible gateway deliveries.
+// webhook.go provides VerifyWebhook, a signature verifier for Crucible gateway webhook
+// deliveries. It complements the generated client in client.go (same package, crucible).
 package crucible
 
 import (
