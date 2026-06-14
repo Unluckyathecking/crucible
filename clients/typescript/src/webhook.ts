@@ -59,7 +59,9 @@ export function verifyWebhook(
   // Catch common Express misconfiguration (forgetting express.raw()) early.
   // TypeScript enforces Buffer at compile time, but JavaScript callers and
   // body-parser middleware can pass objects, strings, or null at runtime.
-  // Buffer.isBuffer catches all non-Buffer values including null and undefined.
+  // Buffer.isBuffer catches all non-Buffer values including null, undefined, and
+  // Uint8Array (Node.js Buffer extends Uint8Array, but the inverse is not true).
+  // Fastify/Undici callers receiving Uint8Array must wrap: Buffer.from(uint8Array).
   if (!Buffer.isBuffer(body)) {
     throw new WebhookVerificationError(
       "body must be a Buffer; pass raw request bytes before any parsing",

@@ -11,11 +11,12 @@ import {
   WEBHOOK_EVENT_TYPE_HEADER,
 } from "../src/webhook";
 
-// testSign replicates gateway/internal/webhookout.Sign — MUST be kept in sync.
-// Any change to the gateway signing algorithm requires updating this helper and
-// the known-good reference vector in the hardcoded-vector test above.
-// Three chained .update() calls mirror the production signing algorithm exactly,
-// consistent with the Go testSign helper.
+// testSign is algorithm-equivalent to gateway/internal/webhookout.Sign (same update
+// order, same "." separator). No manual "keep-in-sync" convention is needed: the
+// hardcoded-vector test below independently enforces correctness with a pre-computed
+// HMAC produced offline — if testSign drifts from the gateway signer, that test
+// fails regardless of this helper. Three chained .update() calls mirror the
+// production signing algorithm exactly, consistent with the Go testSign helper.
 function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
   return createHmac("sha256", secret)
     .update(timestamp)

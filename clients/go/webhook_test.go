@@ -18,16 +18,11 @@ import (
 // Using sha256.Size*2 instead of the magic number 64 keeps tests resilient to algorithm changes.
 const sha256HexLen = sha256.Size * 2
 
-// testSign replicates gateway/internal/webhookout.Sign — MUST be kept in sync.
-// Any change to the gateway signing algorithm requires updating this helper and
-// the known-good reference vector in TestVerifyWebhook_knownGoodVector.
-//
-// Design note: testSign is intentionally algorithm-equivalent to the production
-// VerifyWebhook path (same Write order, same separator). This is not a tautological
-// test helper — algorithmic correctness is independently verified by
-// TestVerifyWebhook_knownGoodVector, which compares against a pre-computed hardcoded
-// HMAC produced offline. If VerifyWebhook's algorithm ever drifts from the gateway
-// signer, the known-good vector test catches it regardless of testSign.
+// testSign is algorithm-equivalent to gateway/internal/webhookout.Sign (same Write
+// order, same "." separator). No manual "keep-in-sync" convention is needed:
+// TestVerifyWebhook_knownGoodVector independently enforces correctness by comparing
+// against a pre-computed HMAC produced offline — if testSign ever drifts from the
+// gateway signer, that test fails regardless of this helper.
 //
 // Nil body: testSign mirrors VerifyWebhook's explicit nil→[]byte{} normalisation
 // so both paths remain visibly aligned. TestVerifyWebhook_nilBody verifies the
@@ -203,7 +198,7 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	sig := testSign(wrongSecret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for wrong secret, got nil")
 	}
@@ -222,7 +217,7 @@ func TestVerifyWebhook_rejectsFutureDated(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for future timestamp, got nil")
 	}
@@ -241,7 +236,7 @@ func TestVerifyWebhook_expiredTimestamp(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for expired timestamp, got nil")
 	}
@@ -263,7 +258,7 @@ func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
 	invalidSig := strings.Repeat("a", sha256HexLen)
 	header := "t=" + ts + ",v1=" + invalidSig + ",v1=" + validSig
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with multiple candidates: %v", err)
 	}
 }
@@ -282,7 +277,7 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 	parts = append(parts, "v1="+validSig)
 	header := strings.Join(parts, ",")
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error when valid sig is beyond maxSigCandidates, got nil")
 	}
@@ -295,7 +290,7 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 }
 
 func TestVerifyWebhook_missingHeader(t *testing.T) {
-	err := crucible.VerifyWebhook("aabb", "", []byte("body"), 5*time.Minute)
+	err := crucible.VerifyWebhook("aabb", "", []byte("body"), crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for missing header, got nil")
 	}
@@ -318,7 +313,7 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 		{"abc", "even-length"},     // odd length
 	}
 	for _, tc := range cases {
-		err := crucible.VerifyWebhook(tc.secret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
+		err := crucible.VerifyWebhook(tc.secret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, crucible.DefaultTolerance)
 		if err == nil {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", tc.secret)
 		}
@@ -341,7 +336,7 @@ func TestVerifyWebhook_uppercaseSecretHex(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	if err := crucible.VerifyWebhook(secretHexUpper, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHexUpper, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with uppercase secretHex: %v", err)
 	}
 }
@@ -375,7 +370,7 @@ func TestVerifyWebhook_emptyBody(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with empty body: %v", err)
 	}
 }
@@ -386,7 +381,7 @@ func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	header := "v1=" + strings.Repeat("a", sha256HexLen)
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for header missing t=, got nil")
 	}
@@ -402,7 +397,7 @@ func TestVerifyWebhook_malformedHeader_noSignature(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 	header := "t=" + nowTS()
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for header missing v1=, got nil")
 	}
@@ -434,7 +429,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	for _, tc := range tsCases {
 		sig := strings.Repeat("a", sha256HexLen)
 		header := "t=" + tc.badTS + ",v1=" + sig
-		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+		err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 		if err == nil {
 			t.Fatalf("expected error for malformed timestamp %q, got nil", tc.badTS)
 		}
@@ -453,7 +448,7 @@ func TestVerifyWebhook_ancientTimestamp(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for ancient timestamp, got nil")
 	}
@@ -477,7 +472,7 @@ func TestVerifyWebhook_maxHeaderParts_exceeded(t *testing.T) {
 	}
 	header := strings.Join(parts, ",")
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for header exceeding maxHeaderParts, got nil")
 	}
@@ -501,7 +496,7 @@ func TestVerifyWebhook_maxHeaderParts_atBoundary(t *testing.T) {
 	}
 	header := strings.Join(parts, ",")
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with 16-part header (at boundary): %v", err)
 	}
 }
@@ -516,7 +511,7 @@ func TestVerifyWebhook_v1TooLong(t *testing.T) {
 	tooLongSig := validSig + "00"
 	header := "t=" + ts + ",v1=" + tooLongSig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for too-long v1 sig, got nil")
 	}
@@ -547,7 +542,7 @@ func TestVerifyWebhook_duplicateTimestamp(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := crucible.VerifyWebhook(secretHex, tc.header, body, 5*time.Minute)
+			err := crucible.VerifyWebhook(secretHex, tc.header, body, crucible.DefaultTolerance)
 			if err == nil {
 				t.Fatalf("expected error for duplicate t= key (%s), got nil", tc.name)
 			}
@@ -578,7 +573,7 @@ func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
 	for _, tc := range cases {
 		sig := strings.Repeat("a", sha256HexLen)
 		header := "t=" + tc.ts + ",v1=" + sig
-		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+		err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 		if err == nil {
 			t.Fatalf("expected error for timestamp %q, got nil", tc.ts)
 		}
@@ -597,7 +592,7 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	// v1= with no value is rejected at parse time as malformed — the parser
 	// never produces an empty-string candidate for the verifier to discard.
 	header := "t=" + ts + ",v1="
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for empty v1= value, got nil")
 	}
@@ -615,7 +610,7 @@ func TestVerifyWebhook_emptyKey(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	// "=value" has empty key — matches TypeScript's idx<=0 rejection.
 	header := "t=" + ts + ",v1=" + sig + ",=extra"
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for empty-key part, got nil")
 	}
@@ -634,7 +629,7 @@ func TestVerifyWebhook_unknownKeyEmptyValue(t *testing.T) {
 	// Unknown key with empty value (foo=) must be rejected as malformed,
 	// consistent with t= and v1= which already reject empty values explicitly.
 	header := "t=" + ts + ",v1=" + sig + ",foo="
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for unknown key with empty value, got nil")
 	}
@@ -653,7 +648,7 @@ func TestVerifyWebhook_unknownKeyForwardCompat(t *testing.T) {
 	// Unknown keys with non-empty values must be silently ignored (forward compatibility
 	// with future gateway fields like v2=). Verification should still succeed.
 	header := "t=" + ts + ",v1=" + sig + ",foo=bar"
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with unknown key foo=bar: %v", err)
 	}
 }
@@ -669,7 +664,7 @@ func TestWebhookError_Message(t *testing.T) {
 	}{
 		{
 			name:    "invalid secretHex",
-			fn:      func() error { return crucible.VerifyWebhook("", "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			fn:      func() error { return crucible.VerifyWebhook("", "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, crucible.DefaultTolerance) },
 			wantMsg: "secretHex",
 		},
 		{
@@ -679,24 +674,24 @@ func TestWebhookError_Message(t *testing.T) {
 		},
 		{
 			name:    "malformed header",
-			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "notvalid", []byte{}, 5*time.Minute) },
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "notvalid", []byte{}, crucible.DefaultTolerance) },
 			wantMsg: "malformed",
 		},
 		{
 			name:    "timestamp too old",
-			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=1,v1="+strings.Repeat("a", sha256HexLen), []byte{}, crucible.DefaultTolerance) },
 			wantMsg: "too old",
 		},
 		{
 			name:    "future timestamp",
-			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=99999999999,v1="+strings.Repeat("a", sha256HexLen), []byte{}, 5*time.Minute) },
+			fn:      func() error { return crucible.VerifyWebhook(strings.Repeat("aa", 32), "t=99999999999,v1="+strings.Repeat("a", sha256HexLen), []byte{}, crucible.DefaultTolerance) },
 			wantMsg: "future",
 		},
 		{
 			name: "no matching v1 signature",
 			fn: func() error {
 				secret := make([]byte, 32)
-				return crucible.VerifyWebhook(hex.EncodeToString(secret), "t="+nowTS()+",v1="+strings.Repeat("a", sha256HexLen), []byte("body"), 5*time.Minute)
+				return crucible.VerifyWebhook(hex.EncodeToString(secret), "t="+nowTS()+",v1="+strings.Repeat("a", sha256HexLen), []byte("body"), crucible.DefaultTolerance)
 			},
 			wantMsg: "no matching v1 signature",
 		},
@@ -729,7 +724,7 @@ func TestVerifyWebhook_v1NonHexChars(t *testing.T) {
 	nonHexSig := "g" + strings.Repeat("0", sha256HexLen-1)
 	header := "t=" + ts + ",v1=" + nonHexSig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for non-hex v1 candidate, got nil")
 	}
@@ -755,7 +750,7 @@ func TestVerifyWebhook_maxSigCandidates_atBoundary(t *testing.T) {
 	parts = append(parts, "v1="+validSig)
 	header := strings.Join(parts, ",")
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with 8 candidates at boundary: %v", err)
 	}
 }
@@ -770,7 +765,7 @@ func TestVerifyWebhook_maxValidTimestamp(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for far-future max-length timestamp, got nil")
 	}
@@ -790,7 +785,7 @@ func TestVerifyWebhook_timestampZero(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for epoch timestamp, got nil")
 	}
@@ -807,7 +802,7 @@ func TestVerifyWebhook_embeddedEqualInValue(t *testing.T) {
 	// "t=1=2" has an embedded '=' in the timestamp value. The parser uses SplitN(part, "=", 2)
 	// and then checks strings.Contains(kv[1], "=") — this guard fires and rejects the header.
 	// Mirrors the TypeScript test for cross-language parity.
-	err := crucible.VerifyWebhook(secretHex, "t=1=2,v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, "t=1=2,v1="+strings.Repeat("a", sha256HexLen), body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for embedded '=' in timestamp value, got nil")
 	}
@@ -831,12 +826,12 @@ func TestVerifyWebhook_nilBody(t *testing.T) {
 	header := "t=" + ts + ",v1=" + sig
 
 	// nil body: VerifyWebhook normalises nil → []byte{} internally.
-	if err := crucible.VerifyWebhook(secretHex, header, nil, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, nil, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with nil body: %v", err)
 	}
 	// Cross-path: signature produced over nil and verified with []byte{} must also pass.
 	// Both nil and []byte{} produce zero HMAC body bytes, so the digests are identical.
-	if err := crucible.VerifyWebhook(secretHex, header, []byte{}, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, []byte{}, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook with empty body (nil-signed): %v", err)
 	}
 }
@@ -851,7 +846,7 @@ func TestVerifyWebhook_v1TooShort(t *testing.T) {
 	shortSig := strings.Repeat("a", sha256HexLen/2)
 	header := "t=" + ts + ",v1=" + shortSig
 
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for short v1 candidate, got nil")
 	}
@@ -872,7 +867,7 @@ func TestVerifyWebhook_embeddedEqualInV1Value(t *testing.T) {
 	// the guard applies equally to v1= parts. Cross-language parity with the TypeScript
 	// test that exercises the same indexOf("=", idx+1) !== -1 guard.
 	header := "t=" + ts + ",v1=ab=cd"
-	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance)
 	if err == nil {
 		t.Fatal("expected error for embedded '=' in v1 value, got nil")
 	}

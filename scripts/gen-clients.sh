@@ -2,6 +2,12 @@
 # gen-clients.sh — regenerate Go and TypeScript consumer client SDKs from
 # clients/openapi.json. Idempotent: a second run produces zero git diff.
 # Requirements: python3 (stdlib only), go 1.22+.
+#
+# Drift check (run locally or in CI to assert no hand-edits have diverged):
+#   bash scripts/gen-clients.sh && git diff --exit-code \
+#     clients/go/client.go clients/go/errors.go \
+#     clients/typescript/src/client.ts clients/typescript/src/errors.ts \
+#     clients/typescript/src/index.ts
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
