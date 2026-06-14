@@ -331,6 +331,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 		{"0x10", "bad timestamp"},
 		{"", "malformed"},
 		{"0123456789", "bad timestamp"}, // leading zero — rejected for cross-language consistency
+		{"+1234567890", "bad timestamp"}, // + prefix — ParseInt accepts it, but first-char digit guard rejects for cross-language parity
 	}
 	for _, tc := range tsCases {
 		sig := strings.Repeat("a", sha256HexLen)
@@ -457,9 +458,10 @@ func TestVerifyWebhook_timestampBoundaries(t *testing.T) {
 	}{
 		// 16 digits: exceeds the 15-char length guard → "bad timestamp"
 		{"1000000000000000", "bad timestamp"},
-		// Negative sign: ParseInt succeeds. time.Unix(-1, 0) is 1969-12-31,
-		// so age is ~55 years — the "too old" replay check fires, not "future".
-		{"-1", "too old"},
+		// Negative/plus prefix: first-char digit guard fires before ParseInt,
+		// matching TypeScript's /^\d{1,15}$/ rejection. Both SDKs emit "bad timestamp".
+		{"-1", "bad timestamp"},
+		{"+1234567890", "bad timestamp"},
 	}
 	for _, tc := range cases {
 		sig := strings.Repeat("a", sha256HexLen)
@@ -487,5 +489,8 @@ func TestVerifyWebhook_emptyV1Value(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty v1= value, got nil")
 	}
-	assertWebhookError(t, err)
+	wErr := mustBeWebhookError(t, err)
+	if !strings.Contains(wErr.Error(), "no matching v1 signature") {
+		t.Fatalf("expected 'no matching v1 signature', got: %v", wErr)
+	}
 }
