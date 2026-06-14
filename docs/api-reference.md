@@ -399,8 +399,12 @@ app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
     res.status(401).json({ error: "missing signature header" });
     return;
   }
+  if (!Buffer.isBuffer(req.body)) {
+    res.status(400).json({ error: "expected raw body buffer; use express.raw()" });
+    return;
+  }
   try {
-    verifyWebhook(secret, sigHeader, req.body as Buffer);
+    verifyWebhook(secret, sigHeader, req.body);
   } catch (err) {
     if (err instanceof WebhookVerificationError) {
       res.status(401).json({ error: "invalid signature" });

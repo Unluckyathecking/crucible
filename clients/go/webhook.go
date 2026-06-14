@@ -61,11 +61,14 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
+	// Capture the clock once so both the future check and the expiry check
+	// see the same instant (avoids TOCTOU on the second boundary).
 	now := time.Now().Unix()
-	if ts > now {
+	age := now - ts // negative when ts is in the future
+	if age < 0 {
 		return &WebhookError{"webhook timestamp in the future"}
 	}
-	if time.Duration(now-ts)*time.Second > tolerance {
+	if time.Duration(age)*time.Second > tolerance {
 		return &WebhookError{"webhook timestamp too old (replay protection)"}
 	}
 
@@ -104,8 +107,7 @@ func parseSignatureHeader(header string) (timestamp string, sigs []string, err e
 			if len(sigs) < maxSigCandidates {
 				sigs = append(sigs, kv[1])
 			}
-		default:
-			return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
+		// Unknown keys (e.g. future v2=) are silently ignored for forward compatibility.
 		}
 	}
 	if timestamp == "" || len(sigs) == 0 {
