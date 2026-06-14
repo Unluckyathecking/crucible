@@ -34,11 +34,14 @@ func testSign(secret []byte, timestamp string, body []byte) string {
 // 5-minute tolerance window used by the tests.
 func nowTS() string { return strconv.FormatInt(time.Now().Add(-30*time.Second).Unix(), 10) }
 
-// assertWebhookError asserts err is a *crucible.WebhookError. Use when the
-// error message does not need further inspection.
+// assertWebhookError asserts err is a non-nil *crucible.WebhookError. Use when
+// the error message does not need further inspection.
 func assertWebhookError(t *testing.T, err error) {
 	t.Helper()
-	_ = mustBeWebhookError(t, err)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	mustBeWebhookError(t, err)
 }
 
 // mustBeWebhookError is like assertWebhookError but returns the typed error for

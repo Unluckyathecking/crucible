@@ -56,6 +56,14 @@ export function verifyWebhook(
   body: Buffer,
   toleranceMs?: number,
 ): void {
+  // Catch common Express misconfiguration (forgetting express.raw()) early.
+  // TypeScript enforces Buffer at compile time, but JavaScript callers and
+  // body-parser middleware can pass objects or strings at runtime.
+  if (!Buffer.isBuffer(body)) {
+    throw new WebhookVerificationError(
+      "body must be a Buffer; pass raw request bytes before any parsing",
+    );
+  }
   // Mirror Go's tolerance==0 sentinel: undefined (omitted) and explicit 0 both
   // mean "use default", matching the documented contract across both SDKs.
   if (toleranceMs === undefined || toleranceMs === 0) {

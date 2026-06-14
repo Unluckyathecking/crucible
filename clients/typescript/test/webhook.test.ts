@@ -81,6 +81,16 @@ describe("verifyWebhook", () => {
     assert.equal(result, undefined);
   });
 
+  it("rejects non-Buffer body (catches common express.raw() misconfiguration)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    const header = `t=${ts},v1=${sig}`;
+    expectWebhookError(
+      () => verifyWebhook(secretHex, header, '{"event":"test"}' as unknown as Buffer),
+      "body must be a Buffer",
+    );
+  });
+
   it("accepts body as Buffer created from a UTF-8 string", () => {
     const ts = nowTs();
     const bodyStr = '{"event":"string-body"}';
