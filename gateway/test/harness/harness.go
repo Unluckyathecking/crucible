@@ -95,12 +95,15 @@ var routesMu sync.Mutex
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool
+	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
 // process. The mutex is held for the full call: on the first invocation it
 // serialises the migration; on subsequent calls migrateDone is already true
 // so the locked section is near-zero and returns immediately.
+// Unlike sync.Once, the mutex+bool pattern allows retry: migrateDone is set
+// only on success, so a failed first attempt is retried by the next caller.
 func runMigrations(pool *pgxpool.Pool) error {
 	migrateMu.Lock()
 	defer migrateMu.Unlock()
@@ -109,11 +112,11 @@ func runMigrations(pool *pgxpool.Pool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
-	if err := db.Apply(ctx, pool); err != nil {
-		return err
+	migrateErr = db.Apply(ctx, pool)
+	if migrateErr == nil {
+		migrateDone = true
 	}
-	migrateDone = true
-	return nil
+	return migrateErr
 }
 
 // Options configures a gateway test server.
@@ -178,24 +181,20 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	workerSrv := httptest.NewServer(opts.WorkerHandler)
+	t.Cleanup(workerSrv.Close)
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
 	pool, err := db.NewPool(poolCtx, opts.DSN, defaultDBPoolSize)
 	if err != nil {
-		workerSrv.Close()
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	if err := runMigrations(pool); err != nil {
-		pool.Close()
-		workerSrv.Close()
-		t.Fatalf("harness: apply migrations: %v", err)
-	}
-	// Register cleanups only after both pool creation and migrations succeed so that
-	// manual closes in the error paths above are the sole owners; no double-close.
-	t.Cleanup(workerSrv.Close)
 	// pgxpool.Pool.Close has no return value (void in pgx/v5); no error to propagate.
 	t.Cleanup(func() { pool.Close() })
+
+	if err := runMigrations(pool); err != nil {
+		t.Fatalf("harness: apply migrations: %v", err)
+	}
 
 	redisCtx, redisCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer redisCancel()
@@ -203,9 +202,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	if err != nil {
 		t.Fatalf("harness: open redis: %v", err)
 	}
-	// rdb is registered FIRST so LIFO cleanup closes it LAST.
-	// authStore (registered after) is therefore closed FIRST, draining its
-	// background goroutine while Redis is still open.
+	// Registered before authStore so LIFO cleanup closes authStore first,
+	// draining its background goroutine while Redis is still open.
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
 			t.Errorf("harness: redis close: %v", err)
