@@ -128,8 +128,10 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // gone and the write is a no-op.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tmr := time.NewTimer(delay)
+		defer tmr.Stop()
 		select {
-		case <-time.After(delay):
+		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
