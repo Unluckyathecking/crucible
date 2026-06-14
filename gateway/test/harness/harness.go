@@ -111,7 +111,6 @@ var routesMu sync.Mutex
 var (
 	migrateMu   sync.Mutex
 	migrateDone bool
-	migrateErr  error
 )
 
 // runMigrations applies schema migrations against pool exactly once per test
@@ -128,11 +127,11 @@ func runMigrations(pool *pgxpool.Pool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer cancel()
-	migrateErr = db.Apply(ctx, pool)
-	if migrateErr == nil {
+	err := db.Apply(ctx, pool)
+	if err == nil {
 		migrateDone = true
 	}
-	return migrateErr
+	return err
 }
 
 // Options configures a gateway test server.
