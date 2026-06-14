@@ -267,6 +267,13 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// server.NewRouter so the router reads a consistent, fully-replaced route table.
 	// The original slice is restored in defer before unlock, so no subsequent caller
 	// observes test-specific routes after NewRouter returns.
+	//
+	// No data race on V1Routes: once server.NewRouter returns, the resulting
+	// handler (a chi router) serves requests without ever re-reading V1Routes.
+	// The routes are baked into the chi router tree at construction time.
+	// In-flight request goroutines in a running httptest.Server therefore never
+	// touch V1Routes, making the mutex protection on NewRouter sufficient.
+	//
 	// Narrow the lock scope to just the V1Routes mutation and NewRouter call so
 	// routesMu is released before httptest.NewServer (which doesn't access routes).
 	// The IIFE's defer restores V1Routes and unlocks even if NewRouter panics.
