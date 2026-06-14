@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -41,6 +42,8 @@ import (
 var testSalt string
 
 // TestSalt returns the per-process API key hash salt used by all harness instances.
+// The salt is immutable after init() and shared across all parallel tests because
+// auth.Store is process-scoped; callers must not modify it.
 func TestSalt() string { return testSalt }
 
 const (
@@ -190,8 +193,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// LIFO: workerSrv.Close (registered last) runs first — the worker drains
-	// in-flight proxy requests while Postgres is still available.
+	// LIFO ordering is intentional: workerSrv.Close (registered last) runs first so
+	// the worker can drain any in-flight proxy requests while Postgres is still open.
+	// The pool-failure error path on line above closes workerSrv manually before
+	// t.Fatalf, so both resources are cleaned up even on boot failures.
 	t.Cleanup(pool.Close)
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
@@ -322,7 +327,7 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 
 	var (
 		prevRate int64
-		prevCap  *int64 // nil when monthly_unit_cap is NULL (unlimited)
+		prevCap  pgtype.Int8 // Valid=false when monthly_unit_cap is NULL (unlimited)
 		prevName string
 		existed  bool
 	)
@@ -353,13 +358,13 @@ func (ts *TestServer) CreatePlan(t *testing.T, id string, ratePerMinute int64, m
 		cctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		if existed {
-			// Use two separate queries so monthly_unit_cap is never passed as a Go
-			// pointer: NULL is expressed in SQL directly when prevCap is nil.
+			// Use two separate queries so monthly_unit_cap is expressed as SQL NULL
+			// when the plan had no cap, rather than relying on driver NULL coercion.
 			var err error
-			if prevCap != nil {
+			if prevCap.Valid {
 				_, err = ts.DB.Exec(cctx,
 					`UPDATE plans SET rate_limit_per_minute = $2, monthly_unit_cap = $3, display_name = $4 WHERE id = $1`,
-					id, prevRate, *prevCap, prevName,
+					id, prevRate, prevCap.Int64, prevName,
 				)
 			} else {
 				_, err = ts.DB.Exec(cctx,
