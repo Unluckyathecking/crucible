@@ -79,6 +79,26 @@ func init() {
 	testSalt = hex.EncodeToString(b)
 }
 
+// logCleanupErr logs a non-nil cleanup error for table/customerID without
+// failing the test. Context errors are logged at "timeout" level; FK violations
+// are annotated with the constraint name. All other errors are logged verbatim.
+func logCleanupErr(t *testing.T, customerID uuid.UUID, table string, opErr error) {
+	t.Helper()
+	if opErr == nil {
+		return
+	}
+	if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
+		t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
+		t.Logf("harness: cleanup FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
+		return
+	}
+	t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
+}
+
 // ctxSleep sleeps for d or until ctx is cancelled, returning false if cancelled.
 // Defined at package level (not as a closure) to avoid a new allocation per call.
 func ctxSleep(ctx context.Context, d time.Duration) bool {
@@ -256,6 +276,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		APIKeyHashSalt:  testSalt,
 	}
 
+	// auth.NewStore returns *Store with no error return; it never returns nil.
 	authStore = auth.NewStore(pool, rdb, testSalt)
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
@@ -509,20 +530,7 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 			}
 		}()
 		cleanupErr := func(table string, opErr error) {
-			if opErr == nil {
-				return
-			}
-			// Context cancellation/deadline means the cleanup budget expired; log but don't fail.
-			if errors.Is(opErr, context.Canceled) || errors.Is(opErr, context.DeadlineExceeded) {
-				t.Logf("harness: cleanup timeout %s for customer %s: %v", table, customerID, opErr)
-				return
-			}
-			var pgErr *pgconn.PgError
-			if errors.As(opErr, &pgErr) && pgErr.Code == "23503" {
-				t.Logf("harness: cleanup FK violation %s for customer %s (constraint: %s): %v", table, customerID, pgErr.ConstraintName, opErr)
-				return
-			}
-			t.Logf("harness: cleanup %s for customer %s: %v", table, customerID, opErr)
+			logCleanupErr(t, customerID, table, opErr)
 		}
 		// Delete children before parents (error_events.api_key_id REFERENCES api_keys ON DELETE NO ACTION).
 		// delErr is reused across sequential cleanup calls so each Exec error is passed
