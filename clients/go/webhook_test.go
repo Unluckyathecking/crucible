@@ -63,7 +63,7 @@ func TestVerifyWebhook_valid(t *testing.T) {
 	sig := testSign(secret, ts, body)
 	header := "t=" + ts + ",v1=" + sig
 
-	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+	if err := crucible.VerifyWebhook(secretHex, header, body, crucible.DefaultTolerance); err != nil {
 		t.Fatalf("VerifyWebhook: %v", err)
 	}
 }

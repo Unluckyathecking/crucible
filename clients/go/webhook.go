@@ -59,6 +59,10 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 		return &WebhookError{"invalid secretHex: contains non-hex characters"}
 	}
 
+	// Capture clock before any attacker-controlled parsing so the sampled instant
+	// is not shifted by header-parsing time.
+	now := time.Now()
+
 	timestamp, sigs, parseErr := parseSignatureHeader(sigHeader)
 	if parseErr != nil {
 		return parseErr
@@ -73,9 +77,6 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
-	// Capture the clock once; time.Sub avoids int64 multiplication overflow and
-	// preserves sub-second precision at second boundaries.
-	now := time.Now()
 	age := now.Sub(time.Unix(ts, 0))
 	if age < 0 {
 		return &WebhookError{"webhook timestamp in the future"}

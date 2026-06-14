@@ -55,6 +55,11 @@ export function verifyWebhook(
     );
   }
   const secret = Buffer.from(secretHex, "hex");
+  // Defense in depth: verify the decoded length matches the hex length.
+  // Catches any future Node.js behavior change in the hex codec.
+  if (secret.length !== secretHex.length / 2) {
+    throw new WebhookVerificationError("invalid secretHex: decode produced unexpected length");
+  }
 
   const { timestamp, sigs } = parseSignatureHeader(sigHeader);
 
