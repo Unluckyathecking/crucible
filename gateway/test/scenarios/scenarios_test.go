@@ -148,7 +148,6 @@ func waitForErrorEvents(t *testing.T, ts *harness.TestServer, customerID uuid.UU
 	ctx, cancel := context.WithTimeout(context.Background(), errorPollTimeout)
 	defer cancel()
 	check := func() bool {
-		t.Helper()
 		n := ts.CountErrorEvents(t, customerID)
 		if n == want {
 			return true
@@ -202,9 +201,6 @@ func invoke(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey st
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
 		t.Fatalf("send request: %v", err)
 	}
 	return resp
