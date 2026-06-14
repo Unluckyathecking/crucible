@@ -129,13 +129,12 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tmr := time.NewTimer(delay)
-		defer tmr.Stop()
 		select {
 		case <-tmr.C:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`) //nolint:errcheck
 		case <-r.Context().Done():
-			// client is gone; don't write anything.
+			tmr.Stop()
 			return
 		}
 	})
@@ -353,10 +352,11 @@ func TestIdempotentReplay(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 	// Guard against straddling a rate-limit window boundary (1-minute fixed windows).
-	// If we're within 2 s of the next minute, sleep past it so all requests land
-	// in the same window. The sleep is at most 2 s and keeps the test deterministic.
-	if sec := time.Now().Second(); sec >= 58 {
-		time.Sleep(time.Duration(62-sec) * time.Second)
+	// If we're within 2 s of the next minute, sleep until we're safely into the new
+	// minute (plus 100 ms buffer). Uses sub-second precision to avoid under-sleeping.
+	if now := time.Now(); now.Second() >= 58 {
+		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+		time.Sleep(time.Until(nextMinute) + 100*time.Millisecond)
 	}
 	client := newTestHTTPClient(t)
 	const rateLimit = 2
