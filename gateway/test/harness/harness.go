@@ -223,10 +223,11 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	}
 
 	authStore := auth.NewStore(pool, rdb, testSalt)
-	// auth.Store.Close() signature: func (s *Store) Close() — no error return.
-	// Registered after rdb cleanup so LIFO runs this first, draining the background
-	// last_used_at goroutine while Redis is still open.
-	t.Cleanup(authStore.Close)
+	// authStore is registered after rdb so LIFO runs it first: drains the
+	// background last_used_at goroutine while Redis is still open.
+	// Wrapped in a closure so a future signature change (e.g. adding an error
+	// return) surfaces as a compile error rather than a silent drop.
+	t.Cleanup(func() { authStore.Close() })
 
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
