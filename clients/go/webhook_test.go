@@ -211,7 +211,7 @@ func TestVerifyWebhook_wrongSecret(t *testing.T) {
 	}
 }
 
-func TestVerifyWebhook_futureTimestamp(t *testing.T) {
+func TestVerifyWebhook_rejectsFutureDated(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
