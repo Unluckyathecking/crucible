@@ -11,11 +11,14 @@ import {
 
 // testSign replicates gateway/internal/webhookout.Sign so tests build the
 // positive vector without importing the gateway package tree.
-// Payload is pre-concatenated so the test is an independent oracle of the
-// signing algorithm, not a structural mirror of the production Write sequence.
+// Three chained .update() calls mirror the production signing algorithm exactly,
+// consistent with the Go testSign helper.
 function testSign(secret: Buffer, timestamp: string, body: Buffer): string {
-  const payload = Buffer.concat([Buffer.from(timestamp), Buffer.from("."), body]);
-  return createHmac("sha256", secret).update(payload).digest("hex");
+  return createHmac("sha256", secret)
+    .update(timestamp)
+    .update(".")
+    .update(body)
+    .digest("hex");
 }
 
 function nowTs(): string {
@@ -37,6 +40,9 @@ function expectWebhookError(fn: () => void, messageSubstring?: string): void {
     return true;
   });
 }
+
+/** SHA-256 hex digest length: 32 bytes × 2 hex chars each. */
+const SHA256_HEX_LEN = 32 * 2;
 
 const secret = Buffer.alloc(32, 0x42);
 const secretHex = secret.toString("hex");
@@ -104,7 +110,7 @@ describe("verifyWebhook", () => {
   it("accepts second v1= candidate when first is invalid", () => {
     const ts = nowTs();
     const validSig = testSign(secret, ts, body);
-    const invalidSig = "a".repeat(64);
+    const invalidSig = "a".repeat(SHA256_HEX_LEN);
     const header = `t=${ts},v1=${invalidSig},v1=${validSig}`;
     const result = verifyWebhook(secretHex, header, body);
     assert.equal(result, undefined);
@@ -112,7 +118,7 @@ describe("verifyWebhook", () => {
 
   it("rejects v1 candidate with non-hex characters (all 64 chars are non-hex)", () => {
     const ts = nowTs();
-    const nonHexSig = "g".repeat(64);
+    const nonHexSig = "g".repeat(SHA256_HEX_LEN);
     const header = `t=${ts},v1=${nonHexSig}`;
     expectWebhookError(() => verifyWebhook(secretHex, header, body));
   });
@@ -130,7 +136,7 @@ describe("verifyWebhook", () => {
     const ts = nowTs();
     const validSig = testSign(secret, ts, body);
     const fakeSigs = Array<string>(8)
-      .fill("b".repeat(64))
+      .fill("b".repeat(SHA256_HEX_LEN))
       .map((s) => `v1=${s}`)
       .join(",");
     const header = `t=${ts},${fakeSigs},v1=${validSig}`;

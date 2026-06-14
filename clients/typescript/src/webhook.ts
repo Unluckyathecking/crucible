@@ -8,8 +8,9 @@ const MAX_SIG_CANDIDATES = 8;
 // attacker-controlled input before the v1 candidate cap takes effect.
 const MAX_HEADER_PARTS = 16;
 
-// Pre-compiled so the regex is not re-allocated on every verifyWebhook call.
-const SECRET_HEX_RE = /^[0-9a-fA-F]+$/;
+// Pre-compiled; the {2}+ quantifier ensures non-empty, even-length, and valid hex
+// in a single check — eliminates any ordering dependency between the three guards.
+const SECRET_HEX_RE = /^([0-9a-fA-F]{2})+$/;
 
 /** Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window. */
 export const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
@@ -47,7 +48,8 @@ export function verifyWebhook(
   if (toleranceMs < 0) {
     throw new WebhookVerificationError("negative tolerance not allowed");
   }
-  if (!secretHex || secretHex.length % 2 !== 0 || !SECRET_HEX_RE.test(secretHex)) {
+  // ^([0-9a-fA-F]{2})+$ requires non-empty, even-length, and valid hex in one check.
+  if (!SECRET_HEX_RE.test(secretHex)) {
     throw new WebhookVerificationError(
       "invalid secretHex: must be non-empty even-length hex string",
     );
@@ -75,7 +77,7 @@ export function verifyWebhook(
     throw new WebhookVerificationError("webhook timestamp too old (replay protection)");
   }
 
-  const bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const bodyBuf = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
   const mac = createHmac("sha256", secret);
   mac.update(timestamp);
   mac.update(".");

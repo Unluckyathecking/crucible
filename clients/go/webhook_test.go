@@ -13,6 +13,10 @@ import (
 	crucible "github.com/Unluckyathecking/crucible/clients/go"
 )
 
+// sha256HexLen is the expected hex-encoded length of a SHA-256 digest (32 bytes × 2).
+// Using sha256.Size*2 instead of the magic number 64 keeps tests resilient to algorithm changes.
+const sha256HexLen = sha256.Size * 2
+
 // testSign replicates gateway/internal/webhookout.Sign locally so tests build
 // the positive vector without importing the gateway package tree.
 // Three separate mac.Write calls mirror the production signing algorithm exactly.
@@ -159,7 +163,7 @@ func TestVerifyWebhook_multipleV1Candidates_secondValid(t *testing.T) {
 	body := []byte(`{"event":"multi"}`)
 	ts := nowTS()
 	validSig := testSign(secret, ts, body)
-	invalidSig := strings.Repeat("a", 64)
+	invalidSig := strings.Repeat("a", sha256HexLen)
 	header := "t=" + ts + ",v1=" + invalidSig + ",v1=" + validSig
 
 	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
@@ -176,7 +180,7 @@ func TestVerifyWebhook_boundedCandidates(t *testing.T) {
 
 	parts := []string{"t=" + ts}
 	for i := 0; i < 8; i++ {
-		parts = append(parts, "v1="+strings.Repeat("b", 64))
+		parts = append(parts, "v1="+strings.Repeat("b", sha256HexLen))
 	}
 	parts = append(parts, "v1="+validSig)
 	header := strings.Join(parts, ",")
@@ -206,7 +210,7 @@ func TestVerifyWebhook_invalidSecretHex(t *testing.T) {
 	ts := nowTS()
 
 	for _, badSecret := range []string{"", "zz", "abc"} { // non-hex or odd-length
-		err := crucible.VerifyWebhook(badSecret, "t="+ts+",v1="+strings.Repeat("a", 64), body, 5*time.Minute)
+		err := crucible.VerifyWebhook(badSecret, "t="+ts+",v1="+strings.Repeat("a", sha256HexLen), body, 5*time.Minute)
 		if err == nil {
 			t.Fatalf("expected error for invalid secretHex %q, got nil", badSecret)
 		}
@@ -266,7 +270,7 @@ func TestVerifyWebhook_malformedHeader_noTimestamp(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
 	body := []byte(`{"event":"test"}`)
-	header := "v1=" + strings.Repeat("a", 64)
+	header := "v1=" + strings.Repeat("a", sha256HexLen)
 
 	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
 	if err == nil {
@@ -294,7 +298,7 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	body := []byte(`{"event":"test"}`)
 
 	for _, badTS := range []string{"abc", "1.5", "0x10", ""} {
-		sig := strings.Repeat("a", 64)
+		sig := strings.Repeat("a", sha256HexLen)
 		header := "t=" + badTS + ",v1=" + sig
 		err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
 		if err == nil {
