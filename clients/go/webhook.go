@@ -35,7 +35,8 @@ type WebhookError struct {
 	msg string
 }
 
-func (e *WebhookError) Error() string { return "crucible webhook: " + e.msg }
+func (e *WebhookError) Error() string   { return "crucible webhook: " + e.msg }
+func (e *WebhookError) Message() string { return e.msg }
 
 // VerifyWebhook verifies the X-Crucible-Signature on a webhook delivery from the gateway.
 // secretHex is the hex-encoded signing secret shown on the dashboard endpoint page.
@@ -72,14 +73,14 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	if err != nil {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
-	// Capture the clock once so both the future check and the expiry check
-	// see the same instant (avoids TOCTOU on the second boundary).
-	now := time.Now().Unix()
-	age := now - ts // negative when ts is in the future
+	// Capture the clock once; time.Sub avoids int64 multiplication overflow and
+	// preserves sub-second precision at second boundaries.
+	now := time.Now()
+	age := now.Sub(time.Unix(ts, 0))
 	if age < 0 {
 		return &WebhookError{"webhook timestamp in the future"}
 	}
-	if time.Duration(age)*time.Second > tolerance {
+	if age > tolerance {
 		return &WebhookError{"webhook timestamp too old (replay protection)"}
 	}
 

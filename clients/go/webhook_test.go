@@ -304,6 +304,21 @@ func TestVerifyWebhook_malformedTimestamp(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_ancientTimestamp(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := "946684800" // 2000-01-01 00:00:00 UTC — far beyond any tolerance window
+	sig := testSign(secret, ts, body)
+	header := "t=" + ts + ",v1=" + sig
+
+	err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for ancient timestamp, got nil")
+	}
+	assertWebhookError(t, err)
+}
+
 func TestVerifyWebhook_maxHeaderParts_exceeded(t *testing.T) {
 	secret := make([]byte, 32)
 	secretHex := hex.EncodeToString(secret)
