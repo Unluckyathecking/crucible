@@ -130,7 +130,11 @@ func varyingWorker() (http.Handler, *atomic.Int64) {
 // gateway proxy is responsible for returning 502 BadGateway.
 func slowWorker(delay time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(delay)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(delay):
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"payload":{},"billable_units":1}`)
 	})
