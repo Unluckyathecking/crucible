@@ -336,7 +336,7 @@ When you register a webhook endpoint in the dashboard, every delivery is signed 
 | Header | Description |
 |---|---|
 | `X-Crucible-Signature` | `t=<unix_ts>,v1=<hex_hmac_sha256>` — signature and timestamp in one header |
-| `X-Crucible-Timestamp` | Unix timestamp (seconds). **MUST NOT be used for verification** — use `t=` in `X-Crucible-Signature`. Provided for logging/tracing convenience only. |
+| `X-Crucible-Timestamp` | Unix timestamp (seconds). **NOT cryptographically verified** — use `t=` in `X-Crucible-Signature` for replay protection. This header may differ from the signed timestamp and must not be trusted for security decisions. Provided for logging/tracing convenience only. |
 | `X-Webhook-Event-ID` | UUID for idempotent delivery. Use this to deduplicate at-least-once deliveries. |
 | `X-Webhook-Event-Type` | Event type string (e.g. `invoice.paid`). |
 
@@ -368,6 +368,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         http.Error(w, "bad request", http.StatusBadRequest)
         return
     }
+    defer r.Body.Close()
     secret := os.Getenv("WEBHOOK_SECRET")
     if secret == "" {
         http.Error(w, "webhook secret not configured", http.StatusInternalServerError)
@@ -379,7 +380,7 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
         body,
         crucible.DefaultTolerance,
     ); err != nil {
-        http.Error(w, "invalid signature", http.StatusBadRequest)
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
         return
     }
     // process event ...

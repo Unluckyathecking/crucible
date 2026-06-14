@@ -85,14 +85,14 @@ func VerifyWebhook(secretHex, sigHeader string, body []byte, tolerance time.Dura
 	}
 	// Reject leading zeros: multi-digit timestamps starting with '0' (e.g. "01234")
 	// diverge from the gateway's output and TypeScript's ts.toString() round-trip.
-	// Single-digit "0" (Unix epoch) is intentionally allowed — len == 1 short-circuits.
+	// Single-digit "0" (Unix epoch) is allowed because len==1 fails the len>1 condition.
 	if len(timestamp) > 1 && timestamp[0] == '0' {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
 	// Reject non-digit leading character: ParseInt("+123") returns 123 without error,
 	// but TypeScript's /^\d{1,15}$/ rejects '+'. Enforce digit-only for cross-language parity.
-	// len==0 is guaranteed non-reachable (parseSignatureHeader rejects empty timestamps),
-	// but the guard prevents a panic if the parser contract ever relaxes.
+	// Defense-in-depth: parseSignatureHeader currently rejects empty timestamps, but this
+	// len==0 guard prevents a panic if the parser contract ever relaxes in the future.
 	if len(timestamp) == 0 || timestamp[0] < '0' || timestamp[0] > '9' {
 		return &WebhookError{"bad timestamp in signature header"}
 	}
@@ -140,8 +140,11 @@ func parseSignatureHeader(header string) (string, []string, *WebhookError) {
 	if header == "" {
 		return "", nil, &WebhookError{"missing X-Crucible-Signature header"}
 	}
-	// SplitN bounds allocation to maxHeaderParts+1 elements before the length check,
-	// preventing a large slice allocation on attacker-controlled input with many commas.
+	// SplitN limit is maxHeaderParts+1 so that a header with exactly maxHeaderParts+1
+	// (or more) comma-separated parts produces a slice of length maxHeaderParts+1, which
+	// the subsequent len check catches. Using maxHeaderParts alone would silently merge
+	// the tail into the last element without triggering the rejection. The +1 pattern
+	// bounds allocation while making overflow detectable.
 	parts := strings.SplitN(header, ",", maxHeaderParts+1)
 	if len(parts) > maxHeaderParts {
 		return "", nil, &WebhookError{"malformed X-Crucible-Signature header"}
