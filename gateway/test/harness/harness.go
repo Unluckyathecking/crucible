@@ -190,8 +190,8 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		workerSrv.Close() // no t.Cleanup registered yet; close manually before failing
 		t.Fatalf("harness: open postgres: %v", err)
 	}
-	// Register in LIFO order: pool.Close first = runs last; workerSrv.Close second = runs
-	// first. This keeps the DB pool open while workerSrv drains any in-flight proxy requests.
+	// LIFO: workerSrv.Close (registered last) runs first — the worker drains
+	// in-flight proxy requests while Postgres is still available.
 	t.Cleanup(pool.Close)
 	t.Cleanup(workerSrv.Close)
 	if err := runMigrations(pool); err != nil {
@@ -507,11 +507,11 @@ func (ts *TestServer) CreateCustomer(t *testing.T, email, planID string) (uuid.U
 				return false
 			}
 			tmr := time.NewTimer(d)
-			defer tmr.Stop()
 			select {
 			case <-tmr.C:
 				return true
 			case <-cctx.Done():
+				tmr.Stop()
 				return false
 			}
 		}
