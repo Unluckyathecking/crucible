@@ -595,6 +595,20 @@ func TestVerifyWebhook_unknownKeyEmptyValue(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhook_unknownKeyForwardCompat(t *testing.T) {
+	secret := make([]byte, 32)
+	secretHex := hex.EncodeToString(secret)
+	body := []byte(`{"event":"test"}`)
+	ts := nowTS()
+	sig := testSign(secret, ts, body)
+	// Unknown keys with non-empty values must be silently ignored (forward compatibility
+	// with future gateway fields like v2=). Verification should still succeed.
+	header := "t=" + ts + ",v1=" + sig + ",foo=bar"
+	if err := crucible.VerifyWebhook(secretHex, header, body, 5*time.Minute); err != nil {
+		t.Fatalf("VerifyWebhook with unknown key foo=bar: %v", err)
+	}
+}
+
 func TestWebhookError_Message(t *testing.T) {
 	// WebhookError.Error() must have the "crucible webhook:" prefix and embed the raw
 	// message. WebhookError.Message() must return the raw message without prefix.
@@ -628,11 +642,9 @@ func TestWebhookError_Message(t *testing.T) {
 			if !strings.Contains(wErr.Message(), tc.wantMsg) {
 				t.Errorf("Message() should contain %q, got %q", tc.wantMsg, wErr.Message())
 			}
-			if !strings.Contains(wErr.Error(), "crucible webhook:") {
-				t.Errorf("Error() should have 'crucible webhook:' prefix, got %q", wErr.Error())
-			}
-			if !strings.Contains(wErr.Error(), wErr.Message()) {
-				t.Errorf("Error() should contain Message(), got Error=%q Message=%q", wErr.Error(), wErr.Message())
+			want := "crucible webhook: " + wErr.Message()
+			if wErr.Error() != want {
+				t.Errorf("Error() = %q, want %q", wErr.Error(), want)
 			}
 		})
 	}

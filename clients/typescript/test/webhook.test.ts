@@ -199,6 +199,16 @@ describe("verifyWebhook", () => {
     expectWebhookError(() => verifyWebhook(secretHex, header, body), "malformed");
   });
 
+  it("ignores unknown key with non-empty value (forward compatibility)", () => {
+    const ts = nowTs();
+    const sig = testSign(secret, ts, body);
+    // Unknown keys with non-empty values (e.g. future v2=...) must be silently
+    // ignored so receivers remain compatible with new gateway fields.
+    const header = `t=${ts},v1=${sig},foo=bar`;
+    const result = verifyWebhook(secretHex, header, body);
+    assert.equal(result, undefined);
+  });
+
   it("rejects part with empty key (=value at position 0)", () => {
     const ts = nowTs();
     const sig = testSign(secret, ts, body);

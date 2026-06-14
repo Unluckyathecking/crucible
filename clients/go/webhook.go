@@ -1,3 +1,4 @@
+// Package crucible provides webhook signature verification for Crucible gateway deliveries.
 package crucible
 
 import (
