@@ -155,6 +155,9 @@ func Load() (*Config, error) {
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes <= 0 {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be > 0 when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
 	}
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > 1048576 {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= 1048576 (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.

@@ -17,9 +17,13 @@ const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
 // operation is a gateway route pattern like "/v1/echo"; code is an uppercase error code like "RATE_LIMITED".
 // Validated at the API boundary so the DB never receives unexpected byte sequences.
-// Hyphen is placed last in each character class to avoid any ambiguity with range syntax.
-const OPERATION_FILTER_RE = /^\/[a-zA-Z0-9_/-]{1,127}$/;
+// Hyphen is placed first in each character class to avoid any ambiguity with range syntax.
+const OPERATION_FILTER_RE = /^\/[-a-zA-Z0-9_/]{1,127}$/;
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
+// Defense-in-depth cap on request_payload display length.
+// The gateway already truncates at ErrorPayloadMaxBytes (default 4 KiB, max 1 MiB);
+// this ensures the API response is bounded even if the column is modified directly.
+const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
@@ -95,7 +99,10 @@ async function listErrorEvents(
     created_at: row.created_at.toISOString(),
     // Convert BYTEA Buffer → UTF-8 string for display; non-UTF-8 bytes become
     // replacement characters (acceptable for debugging payloads).
-    request_payload: row.request_payload ? row.request_payload.toString("utf8") : null,
+    // Slice to MAX_PAYLOAD_DISPLAY_BYTES as defense-in-depth beyond the gateway cap.
+    request_payload: row.request_payload
+      ? row.request_payload.toString("utf8").slice(0, MAX_PAYLOAD_DISPLAY_BYTES)
+      : null,
   }));
   return { data: rows, has_more: hasMore };
 }

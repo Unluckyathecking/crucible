@@ -154,6 +154,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 		// Partial read — restore whatever bytes were consumed before the error
 		// so the downstream handler sees the full original body.
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+		log.Warn().Err(err).Msg("payload capture: error reading request body")
 		return nil
 	}
 	// Restore r.Body so downstream handlers can still read it.
@@ -163,10 +164,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	if len(buf) > maxBytes {
 		// Reserve space for the marker so the total stored size ≤ maxBytes.
 		markerBytes := []byte(payloadTruncationMarker)
-		truncLen := maxBytes - len(markerBytes)
-		if truncLen < 0 {
-			truncLen = 0
-		}
+		truncLen := max(0, maxBytes-len(markerBytes))
 		out := make([]byte, 0, truncLen+len(markerBytes))
 		out = append(out, buf[:truncLen]...)
 		out = append(out, markerBytes...)
@@ -274,9 +272,7 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 		// valid UTF-8. Invalid bytes in the middle of the string (e.g. from a
 		// non-UTF-8 worker response) would otherwise produce an invalid slice.
 		i := maxMessageBytes
-		// i < len(message) is always true here (entry guard ensures len > maxMessageBytes
-		// and i only decreases), but the bound is stated explicitly for clarity.
-		for i > 0 && i < len(message) && !utf8.RuneStart(message[i]) {
+		for i > 0 && !utf8.RuneStart(message[i]) {
 			i--
 		}
 		if !utf8.ValidString(message[:i]) {

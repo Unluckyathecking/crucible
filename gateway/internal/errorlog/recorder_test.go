@@ -180,8 +180,8 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 	t.Run("on: body exceeds limit, stored size <= maxBytes", func(t *testing.T) {
 		long := strings.Repeat("x", 100)
 		r := makeReq(long)
-		// limit must be > len(payloadTruncationMarker)=12 so truncLen > 0.
-		const limit = 20
+		// Calculated so truncLen > 0 regardless of marker length changes.
+		const limit = len(payloadTruncationMarker) + 8
 		got := MaybeCaptureRequestBody(r, limit)
 		if got == nil {
 			t.Fatal("expected non-nil payload")
