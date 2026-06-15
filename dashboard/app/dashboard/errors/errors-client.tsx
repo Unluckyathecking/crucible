@@ -29,9 +29,13 @@ type LoadState =
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
+const DEFAULT_LIMIT = 50;
 
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = String(d.getUTCFullYear()).padStart(4, "0");
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 async function fetchErrors(
@@ -40,9 +44,10 @@ async function fetchErrors(
   operation: string,
   code: string,
   page: number,
+  limit: number,
   signal: AbortSignal,
 ): Promise<ApiResponse | { error: string } | null> {
-  const params = new URLSearchParams({ from, to, page: String(page) });
+  const params = new URLSearchParams({ from, to, page: String(page), limit: String(limit) });
   if (operation) params.set("operation", operation);
   if (code) params.set("code", code);
   try {
@@ -124,10 +129,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   // queryRef: inclusive 'to' date used by the current main query.
   // Updated synchronously in handleApply so handlePrev/handleNext always read
   // the correct range even if clicked before the next React render commits.
-  const queryRef = useRef({ from: initialFrom, to: initialTo, op: "", code: "" });
+  const queryRef = useRef({ from: initialFrom, to: initialTo, op: "", code: "", limit: DEFAULT_LIMIT });
 
   const load = useCallback(
-    async (from: string, to: string, op: string, code: string, page: number) => {
+    async (from: string, to: string, op: string, code: string, page: number, limit: number) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -136,12 +141,14 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       // fetch is in-flight. The gen check after the await guarantees a stale
       // response from a superseded request can never overwrite state.
       setState({ status: "loading" });
-      const result = await fetchErrors(from, to, op, code, page, ctrl.signal);
+      const result = await fetchErrors(from, to, op, code, page, limit, ctrl.signal);
       if (result === null || gen !== generationRef.current || !mountedRef.current) return;
       if ("error" in result) {
         setState({ status: "error", message: result.error });
         return;
       }
+      // Persist the server-confirmed limit so page navigation uses a stable value.
+      queryRef.current.limit = result.limit;
       setExpandedPayloads(new Set());
       setState({ status: "ok", data: result.data, has_more: result.has_more, page: result.page });
     },
@@ -149,8 +156,8 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   );
 
   useEffect(() => {
-    queryRef.current = { from: initialFrom, to: initialTo, op: "", code: "" };
-    void load(initialFrom, initialTo, "", "", 1);
+    queryRef.current = { from: initialFrom, to: initialTo, op: "", code: "", limit: DEFAULT_LIMIT };
+    void load(initialFrom, initialTo, "", "", 1, DEFAULT_LIMIT);
     return () => { abortRef.current?.abort(); };
   }, [initialFrom, initialTo, load]);
 
@@ -180,20 +187,20 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       return;
     }
     setRangeError(null);
-    queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter };
-    void load(displayFrom, displayTo, operationFilter, codeFilter, 1);
+    queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter, limit: DEFAULT_LIMIT };
+    void load(displayFrom, displayTo, operationFilter, codeFilter, 1, DEFAULT_LIMIT);
   }, [displayFrom, displayTo, operationFilter, codeFilter, load]);
 
   const handlePrev = useCallback(() => {
     if (state.status !== "ok" || state.page <= 1) return;
-    const { from, to, op, code } = queryRef.current;
-    void load(from, to, op, code, state.page - 1);
+    const { from, to, op, code, limit } = queryRef.current;
+    void load(from, to, op, code, state.page - 1, limit);
   }, [state, load]);
 
   const handleNext = useCallback(() => {
     if (state.status !== "ok" || !state.has_more) return;
-    const { from, to, op, code } = queryRef.current;
-    void load(from, to, op, code, state.page + 1);
+    const { from, to, op, code, limit } = queryRef.current;
+    void load(from, to, op, code, state.page + 1, limit);
   }, [state, load]);
 
   return (
