@@ -99,7 +99,7 @@ func (r *ErrorRecorder) Record(
 		defer cancel()
 		// api_key_id is nullable; zero UUID → nil to avoid a spurious FK reference.
 		var apiKeyPtr *uuid.UUID
-		if kid != (uuid.UUID{}) {
+		if kid != uuid.Nil {
 			apiKeyPtr = &kid
 		}
 		_, err := db.Exec(ctx, `
