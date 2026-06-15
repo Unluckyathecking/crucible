@@ -33,11 +33,14 @@ const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 // emoji encoded as two surrogates in JS); slicing the underlying Buffer before
 // decoding avoids that entirely.
 function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
   if (buf.length <= maxBytes) return buf.toString("utf8");
   // Walk end backwards past UTF-8 continuation bytes (high two bits = 0b10,
   // i.e. 0x80–0xBF) to land on a complete codepoint boundary.
-  // Termination is guaranteed: end strictly decrements on every iteration
-  // and the loop condition end > 0 prevents it from going below zero.
+  // Bounds safety: end starts at maxBytes where 0 < maxBytes < buf.length, so
+  // buf[end-1] accesses indices 0..maxBytes-1, all within [0, buf.length-1].
+  // The loop guard end > 0 ensures end never goes negative; it terminates
+  // because end strictly decrements on every iteration.
   let end = maxBytes;
   while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) {
     end--;
