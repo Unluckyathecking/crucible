@@ -217,6 +217,21 @@ func TestCapture_ParseErrorFields(t *testing.T) {
 		}
 	})
 
+	t.Run("message exactly maxMessageBytes is not truncated", func(t *testing.T) {
+		// Verify the boundary: a message of exactly maxMessageBytes characters
+		// must be stored in full (the condition is strictly > maxMessageBytes).
+		exact := strings.Repeat("a", maxMessageBytes)
+		payload := `{"error":{"code":"ERR","message":"` + exact + `"}}`
+		w := httptest.NewRecorder()
+		c := NewCapture(w)
+		c.WriteHeader(http.StatusBadGateway)
+		c.Write([]byte(payload))
+		_, msg := c.ParseErrorFields()
+		if msg != exact {
+			t.Errorf("message at exact boundary was truncated: got len=%d, want len=%d", len(msg), maxMessageBytes)
+		}
+	})
+
 	t.Run("empty body returns UNKNOWN with empty message", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c := NewCapture(w)
@@ -338,6 +353,19 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		// r.Body must still yield the full original body.
 		if body := mustReadBody(t, r); body != long {
 			t.Errorf("body not fully restored after truncation: got %q", body)
+		}
+	})
+
+	t.Run("negative maxBytes returns nil", func(t *testing.T) {
+		// Negative maxBytes must behave identically to zero: no capture,
+		// no body read, zero allocations on the hot path.
+		r := makeReq(`{"key":"value"}`)
+		got := MaybeCaptureRequestBody(r, -1)
+		if got != nil {
+			t.Errorf("expected nil when maxBytes<0, got %q", got)
+		}
+		if body := mustReadBody(t, r); body != `{"key":"value"}` {
+			t.Errorf("body was modified with negative maxBytes: got %q", body)
 		}
 	})
 
