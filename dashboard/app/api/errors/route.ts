@@ -74,12 +74,9 @@ function parseISODate(s: string): Date | null {
   const d = new Date(s + ISO_MIDNIGHT_SUFFIX);
   if (isNaN(d.getTime())) return null;
   // Round-trip check catches calendar overflow ("2023-02-30" → "2023-03-02").
-  // Reconstructed from UTC components rather than toISOString() so the check
-  // is explicit and independent of any year-padding differences across runtimes.
-  const yyyy = String(d.getUTCFullYear()).padStart(4, "0");
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  if (`${yyyy}-${mm}-${dd}` !== s) return null;
+  // toISOString() always returns UTC; slicing the first 10 chars gives the
+  // UTC date string for comparison — correct because d was constructed at UTC midnight.
+  if (d.toISOString().slice(0, 10) !== s) return null;
   return d;
 }
 
@@ -121,6 +118,9 @@ async function listErrorEvents(
   // dynamic placeholder construction is needed.
   // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
   const sqlLimit = limit + 1;
+  // pool.query() acquires a client from the pool, executes the query, and
+  // automatically releases the client back to the pool on completion — no
+  // explicit release or cursor close is needed.
   const r = await pool.query<ErrorEventRow>(
     `SELECT id, operation, error_code, http_status,
             message, request_id, created_at, request_payload

@@ -478,6 +478,30 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("sensitive payload leaked into log output: %q", logBuf.String())
 		}
 	})
+
+	t.Run("on: payload bytes never appear in log output on success path", func(t *testing.T) {
+		// Security invariant: the success path must produce zero log output so the
+		// payload is never reachable via structured logs regardless of log level.
+		sensitivePayload := []byte("SECRET_API_KEY=abc123_SENSITIVE")
+
+		var logBuf bytes.Buffer
+		origLogger := log.Logger
+		log.Logger = zerolog.New(&logBuf)
+		t.Cleanup(func() { log.Logger = origLogger })
+
+		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(sensitivePayload))
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got == nil {
+			t.Fatal("expected non-nil captured payload, got nil")
+		}
+		// Success path must emit no log entries at all.
+		if logBuf.Len() > 0 {
+			t.Errorf("unexpected log output on success path: %q", logBuf.String())
+		}
+		if bytes.Contains(logBuf.Bytes(), sensitivePayload) {
+			t.Errorf("sensitive payload leaked into log output: %q", logBuf.String())
+		}
+	})
 }
 
 // TestNew_NilDB returns nil so callers can pass nil safely.
