@@ -10,6 +10,7 @@ interface ErrorEvent {
   message: string;
   request_id: string;
   created_at: string;
+  request_payload: string | null;
 }
 
 interface ApiResponse {
@@ -28,9 +29,13 @@ type LoadState =
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
+const DEFAULT_LIMIT = 50;
 
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = String(d.getUTCFullYear()).padStart(4, "0");
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 async function fetchErrors(
@@ -39,9 +44,10 @@ async function fetchErrors(
   operation: string,
   code: string,
   page: number,
+  limit: number,
   signal: AbortSignal,
 ): Promise<ApiResponse | { error: string } | null> {
-  const params = new URLSearchParams({ from, to, page: String(page) });
+  const params = new URLSearchParams({ from, to, page: String(page), limit: String(limit) });
   if (operation) params.set("operation", operation);
   if (code) params.set("code", code);
   try {
@@ -74,14 +80,11 @@ async function fetchErrors(
   }
 }
 
+const ISO_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 function formatTs(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  try {
-    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
-  } catch {
-    return iso;
-  }
+  if (!ISO_TS_RE.test(iso)) return iso;
+  // "2026-06-15T19:09:27.000Z" → "2026-06-15 19:09:27 UTC"
+  return iso.slice(0, 10) + " " + iso.slice(11, 19) + " UTC";
 }
 
 interface ErrorsClientProps {
@@ -96,6 +99,14 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(new Set());
+  const togglePayload = useCallback((id: string) => {
+    setExpandedPayloads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   // Initialised to server-provided initialTo so the first paint matches the
   // server render (no hydration mismatch). The useEffect corrects to the
   // actual client-side today after hydration in case midnight crossed between
@@ -118,10 +129,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   // queryRef: inclusive 'to' date used by the current main query.
   // Updated synchronously in handleApply so handlePrev/handleNext always read
   // the correct range even if clicked before the next React render commits.
-  const queryRef = useRef({ from: initialFrom, to: initialTo, op: "", code: "" });
+  const queryRef = useRef({ from: initialFrom, to: initialTo, op: "", code: "", limit: DEFAULT_LIMIT });
 
   const load = useCallback(
-    async (from: string, to: string, op: string, code: string, page: number) => {
+    async (from: string, to: string, op: string, code: string, page: number, limit: number) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -130,20 +141,23 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       // fetch is in-flight. The gen check after the await guarantees a stale
       // response from a superseded request can never overwrite state.
       setState({ status: "loading" });
-      const result = await fetchErrors(from, to, op, code, page, ctrl.signal);
+      const result = await fetchErrors(from, to, op, code, page, limit, ctrl.signal);
       if (result === null || gen !== generationRef.current || !mountedRef.current) return;
       if ("error" in result) {
         setState({ status: "error", message: result.error });
         return;
       }
+      // Persist the server-confirmed limit so page navigation uses a stable value.
+      queryRef.current.limit = result.limit;
+      setExpandedPayloads(new Set());
       setState({ status: "ok", data: result.data, has_more: result.has_more, page: result.page });
     },
     [],
   );
 
   useEffect(() => {
-    queryRef.current = { from: initialFrom, to: initialTo, op: "", code: "" };
-    void load(initialFrom, initialTo, "", "", 1);
+    queryRef.current = { from: initialFrom, to: initialTo, op: "", code: "", limit: DEFAULT_LIMIT };
+    void load(initialFrom, initialTo, "", "", 1, DEFAULT_LIMIT);
     return () => { abortRef.current?.abort(); };
   }, [initialFrom, initialTo, load]);
 
@@ -154,6 +168,16 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     }
     const fromMs = new Date(displayFrom + "T00:00:00.000Z").getTime();
     const toMs = new Date(displayTo + "T00:00:00.000Z").getTime();
+    const applyNow = new Date();
+    const todayMs = Date.UTC(applyNow.getUTCFullYear(), applyNow.getUTCMonth(), applyNow.getUTCDate());
+    if (fromMs > todayMs) {
+      setRangeError("'From' date cannot be in the future");
+      return;
+    }
+    if (toMs > todayMs) {
+      setRangeError("'To' date cannot be in the future");
+      return;
+    }
     if (fromMs > toMs) {
       setRangeError("'From' must not be after 'To'");
       return;
@@ -163,22 +187,20 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       return;
     }
     setRangeError(null);
-    // Pass the inclusive display date directly to the API; the API converts it
-    // to an exclusive midnight bound server-side (+1 day).
-    queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter };
-    void load(displayFrom, displayTo, operationFilter, codeFilter, 1);
+    queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter, limit: DEFAULT_LIMIT };
+    void load(displayFrom, displayTo, operationFilter, codeFilter, 1, DEFAULT_LIMIT);
   }, [displayFrom, displayTo, operationFilter, codeFilter, load]);
 
   const handlePrev = useCallback(() => {
     if (state.status !== "ok" || state.page <= 1) return;
-    const { from, to, op, code } = queryRef.current;
-    void load(from, to, op, code, state.page - 1);
+    const { from, to, op, code, limit } = queryRef.current;
+    void load(from, to, op, code, state.page - 1, limit);
   }, [state, load]);
 
   const handleNext = useCallback(() => {
     if (state.status !== "ok" || !state.has_more) return;
-    const { from, to, op, code } = queryRef.current;
-    void load(from, to, op, code, state.page + 1);
+    const { from, to, op, code, limit } = queryRef.current;
+    void load(from, to, op, code, state.page + 1, limit);
   }, [state, load]);
 
   return (
@@ -263,7 +285,8 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                       <th scope="col" className="pb-2 pr-3 font-medium">Code</th>
                       <th scope="col" className="pb-2 pr-3 font-medium text-right">Status</th>
                       <th scope="col" className="pb-2 pr-3 font-medium">Message</th>
-                      <th scope="col" className="pb-2 font-medium">Request ID</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Request ID</th>
+                      <th scope="col" className="pb-2 font-medium">Payload</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -276,7 +299,21 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                         <td className="py-2 pr-3 font-mono text-xs whitespace-nowrap">{e.error_code}</td>
                         <td className="py-2 pr-3 text-right tabular-nums text-xs">{e.http_status}</td>
                         <td className="py-2 pr-3 text-xs text-zinc-600 max-w-xs truncate">{e.message}</td>
-                        <td className="py-2 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
+                        <td className="py-2 pr-3 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
+                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs">
+                          {e.request_payload == null ? (
+                            <span className="text-zinc-300">—</span>
+                          ) : expandedPayloads.has(e.id) ? (
+                            <span className="break-all">{e.request_payload}</span>
+                          ) : (
+                            <button
+                              onClick={() => togglePayload(e.id)}
+                              className="underline text-zinc-400 hover:text-zinc-700 text-xs"
+                            >
+                              Show payload
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

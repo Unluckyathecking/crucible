@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -37,6 +38,9 @@ const (
 	dbTimeout       = 2 * time.Second
 	maxMessageBytes = 1024
 )
+
+// overflowProbeBytes: reading maxBytes+1 detects overflow without buffering the full body.
+const overflowProbeBytes = 1
 
 // ErrorRecorder writes error_events rows asynchronously with a bounded
 // goroutine pool. Fields are immutable after New returns; goroutines capture
@@ -59,33 +63,31 @@ func New(db *pgxpool.Pool) *ErrorRecorder {
 }
 
 // Record queues an async error_events insert. A nil receiver is a safe no-op.
-// The call returns immediately regardless of DB load.
-// The ctx parameter is accepted for API symmetry but is not forwarded to the
-// goroutine — recording uses a fresh background context so a cancelled request
-// context does not abort the write.
+// requestPayload is stored as BYTEA and must never appear in logs or metric labels.
 func (r *ErrorRecorder) Record(
 	_ context.Context,
 	customerID, apiKeyID uuid.UUID,
 	operation, errorCode, requestID, message string,
 	httpStatus int,
+	requestPayload []byte,
 ) {
 	if r == nil {
 		return
 	}
-	// Acquire a goroutine slot. Non-blocking: drop the event when at capacity
-	// rather than queuing unboundedly under a 4xx/5xx traffic spike.
 	select {
 	case r.sem <- struct{}{}:
 	default:
 		log.Warn().Str("request_id", requestID).Msg("error event dropped: concurrency limit reached")
 		return
 	}
-	// Copy all fields by value — including receiver fields — before launching
-	// the goroutine. Explicit local copies of db and sem mean a future Close()
-	// method on ErrorRecorder can nil/close those fields without racing goroutines.
 	db, sem := r.db, r.sem
 	cid, kid := customerID, apiKeyID
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
+	var payloadCopy []byte
+	if requestPayload != nil {
+		payloadCopy = make([]byte, len(requestPayload))
+		copy(payloadCopy, requestPayload)
+	}
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
@@ -95,20 +97,72 @@ func (r *ErrorRecorder) Record(
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 		defer cancel()
-		// api_key_id is nullable; pass nil for the zero UUID to avoid a spurious FK reference.
+		// api_key_id is nullable; zero UUID → nil to avoid a spurious FK reference.
 		var apiKeyPtr *uuid.UUID
 		if kid != uuid.Nil {
 			apiKeyPtr = &kid
 		}
 		_, err := db.Exec(ctx, `
 			INSERT INTO error_events
-			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, cid, apiKeyPtr, op, code, status, msg, rid)
+			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id, request_payload)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, cid, apiKeyPtr, op, code, status, msg, rid, payloadCopy)
 		if err != nil {
 			log.Warn().Err(err).Str("request_id", rid).Msg("error event record failed")
 		}
 	}()
+}
+
+// payloadTruncationMarker is appended to payloads that exceed the max byte
+// limit so consumers can distinguish a complete body from a truncated one.
+const payloadTruncationMarker = " [TRUNCATED]"
+
+// MaybeCaptureRequestBody reads up to maxBytes from r.Body and restores r.Body
+// for downstream handlers. Returns nil when maxBytes <= 0 (capture off, zero allocs).
+// Truncates with payloadTruncationMarker at a valid UTF-8 boundary when body exceeds maxBytes.
+// Returns nil on read error, restoring whatever bytes were read before the failure.
+func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
+	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	originalBody := r.Body
+	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+overflowProbeBytes))
+	if err != nil {
+		// Restore the bytes already buffered. The underlying reader errored, so
+		// originalBody has no recoverable remaining bytes; including it would
+		// propagate the error to downstream handlers. Payload capture is
+		// intentionally dropped — storing partial data would be misleading.
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		log.Warn().Err(err).Msg("payload capture: error reading request body")
+		return nil
+	}
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), originalBody))
+	if len(buf) > maxBytes {
+		markerBytes := []byte(payloadTruncationMarker)
+		truncLen := maxBytes - len(markerBytes)
+		if truncLen < 0 {
+			// maxBytes is smaller than the marker; return nil rather than store an
+			// ambiguous prefix (config.Load prevents this in production).
+			return nil
+		}
+		// Walk back past UTF-8 continuation bytes (0x80–0xBF), then remove any
+		// lead byte (>= 0xC0) left at the boundary — valid 2/3/4-byte sequence
+		// starters are invalid without their continuations.
+		end := truncLen
+		for end > 0 && (buf[end-1]&0xc0) == 0x80 {
+			end--
+		}
+		if end > 0 && buf[end-1] >= 0xc0 {
+			end--
+		}
+		out := make([]byte, 0, end+len(markerBytes))
+		out = append(out, buf[:end]...)
+		out = append(out, markerBytes...)
+		return out
+	}
+	out := make([]byte, len(buf))
+	copy(out, buf)
+	return out
 }
 
 // Capture wraps http.ResponseWriter, buffering the response body for error

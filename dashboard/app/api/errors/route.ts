@@ -15,12 +15,22 @@ const MS_PER_DAY = 86_400_000;
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
+// Validate operation (/v1/echo) and code (RATE_LIMITED) at the boundary.
+const OPERATION_FILTER_RE = /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/;
+const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
+// Gateway already truncates stored payloads at ErrorPayloadMaxBytes (default 4 KiB).
+// This 8 KiB display cap is higher so it never silently truncates operator-enlarged limits.
+const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
+
 
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
   const d = new Date(s + ISO_MIDNIGHT_SUFFIX);
-  // Round-trip check catches calendar overflow: "2023-02-30" parses to "2023-03-02".
-  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
+  if (isNaN(d.getTime())) return null;
+  // Round-trip check catches calendar overflow ("2023-02-30" → "2023-03-02").
+  // toISOString() always returns UTC; slicing the first 10 chars gives the
+  // UTC date string for comparison — correct because d was constructed at UTC midnight.
+  if (d.toISOString().slice(0, 10) !== s) return null;
   return d;
 }
 
@@ -32,7 +42,14 @@ interface ErrorEventRow {
   message: string;
   request_id: string;
   created_at: Date;
+  // BYTEA from postgres; null when capture is off.
+  request_payload: Buffer | null;
 }
+
+type SerializedErrorEvent = Omit<ErrorEventRow, "created_at" | "request_payload"> & {
+  created_at: string;
+  request_payload: string | null;
+};
 
 async function listErrorEvents(
   customerId: string,
@@ -42,14 +59,11 @@ async function listErrorEvents(
   code: string | undefined,
   offset: number,
   limit: number,
-): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
-  // customerId is the UUID returned by ensureCustomer — never user input.
-  // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
-  // dynamic placeholder construction is needed.
-  // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
+): Promise<{ data: SerializedErrorEvent[]; has_more: boolean }> {
   const sqlLimit = limit + 1;
   const r = await pool.query<ErrorEventRow>(
-    `SELECT id, operation, error_code, http_status, message, request_id, created_at
+    `SELECT id, operation, error_code, http_status,
+            message, request_id, created_at, request_payload
      FROM error_events
      WHERE customer_id = $1
        AND created_at >= $2
@@ -77,6 +91,9 @@ async function listErrorEvents(
     message: row.message,
     request_id: row.request_id,
     created_at: row.created_at.toISOString(),
+    request_payload: row.request_payload
+      ? row.request_payload.toString("utf8", 0, MAX_PAYLOAD_DISPLAY_BYTES)
+      : null,
   }));
   return { data: rows, has_more: hasMore };
 }
@@ -84,6 +101,12 @@ async function listErrorEvents(
 const noStore = { "content-type": "application/json", "cache-control": "no-store" } as const;
 
 export async function GET(request: Request): Promise<Response> {
+  // Defense-in-depth CSRF check: a cross-origin browser fetch cannot set
+  // X-Requested-With without a CORS preflight, and this route does not send
+  // CORS headers, so the preflight would be denied before the request reaches
+  // here. The primary CSRF protection is the NextAuth session cookie (SameSite).
+  // This header check is an additional layer; it is not bypassable via a
+  // standard cross-origin request from a web page.
   const requestedWith = request.headers.get("X-Requested-With") ?? "";
   if (requestedWith.toLowerCase() !== "xmlhttprequest") {
     return new Response(JSON.stringify({ error: "Forbidden" }), {
@@ -142,6 +165,18 @@ export async function GET(request: Request): Promise<Response> {
       const d = parsed;
       toExclusive = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
     }
+    if (toExclusive.getTime() > tomorrowMidnight.getTime()) {
+      return new Response(JSON.stringify({ error: "'to' date must not be in the future" }), {
+        status: 400,
+        headers: noStore,
+      });
+    }
+    if (from.getTime() > tomorrowMidnight.getTime()) {
+      return new Response(JSON.stringify({ error: "'from' date must not be in the future" }), {
+        status: 400,
+        headers: noStore,
+      });
+    }
     // Range validation compares the user-visible bounds directly.
     // userVisibleToMs is the inclusive `to` date (toExclusive minus one day).
     const userVisibleToMs = toExclusive.getTime() - MS_PER_DAY;
@@ -159,31 +194,43 @@ export async function GET(request: Request): Promise<Response> {
       );
     }
 
-    // Optional filters — capped to prevent unbounded inputs.
     const operationRaw = url.searchParams.get("operation");
-    const operation =
-      operationRaw && operationRaw.trim().length > 0
-        ? operationRaw.trim().slice(0, MAX_FILTER_LENGTH)
-        : undefined;
+    let operation: string | undefined;
+    if (operationRaw && operationRaw.trim().length > 0) {
+      const trimmed = operationRaw.trim();
+      if (trimmed.length > MAX_FILTER_LENGTH || !OPERATION_FILTER_RE.test(trimmed)) {
+        return new Response(
+          JSON.stringify({ error: `invalid 'operation' filter: must be a /v1/... path (max ${MAX_FILTER_LENGTH} chars)` }),
+          { status: 400, headers: noStore },
+        );
+      }
+      operation = trimmed;
+    }
 
     const codeRaw = url.searchParams.get("code");
-    const code =
-      codeRaw && codeRaw.trim().length > 0
-        ? codeRaw.trim().slice(0, MAX_FILTER_LENGTH)
-        : undefined;
+    let code: string | undefined;
+    if (codeRaw && codeRaw.trim().length > 0) {
+      const trimmed = codeRaw.trim();
+      if (trimmed.length > MAX_FILTER_LENGTH || !CODE_FILTER_RE.test(trimmed)) {
+        return new Response(
+          JSON.stringify({ error: `invalid 'code' filter: must be uppercase letters, digits, and underscores (max ${MAX_FILTER_LENGTH} chars)` }),
+          { status: 400, headers: noStore },
+        );
+      }
+      code = trimmed;
+    }
 
-    // Pagination
-    const pageRaw = parseInt(url.searchParams.get("page") ?? "1", 10);
+    const pageStr = url.searchParams.get("page") ?? "1";
+    const pageRaw = /^\d+$/.test(pageStr) ? parseInt(pageStr, 10) : NaN;
     const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
 
-    const limitRaw = parseInt(url.searchParams.get("limit") ?? String(DEFAULT_PAGE_SIZE), 10);
+    const limitStr = url.searchParams.get("limit") ?? String(DEFAULT_PAGE_SIZE);
+    const limitRaw = /^\d+$/.test(limitStr) ? parseInt(limitStr, 10) : NaN;
     const limit =
       Number.isFinite(limitRaw) && limitRaw >= 1
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
         : DEFAULT_PAGE_SIZE;
 
-    // Guard against DoS via an extremely large OFFSET causing a full-table scan.
-    // page is unbounded by parseInt; cap via the computed offset.
     const offset = (page - 1) * limit;
     if (!Number.isSafeInteger(offset) || offset > 10_000_000) {
       return new Response(JSON.stringify({ error: "page too large" }), {

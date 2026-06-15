@@ -198,17 +198,21 @@ func NewRouter(d *Deps) http.Handler {
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
+	// Snapshot config values used inside the /v1 subrouter before entering the closure.
+	capturePayloadEnabled := d.Cfg.ErrorPayloadCapture
+	capturePayloadMaxBytes := d.Cfg.ErrorPayloadMaxBytes
+	errorExposure := d.Cfg.ErrorExposure
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		// Capture errors after auth (so customer context is populated) but before
 		// ratelimit/quota so their 429s are recorded with the correct status.
-		r.Use(v1ErrorCapture(d.ErrorRecorder))
+		r.Use(v1ErrorCapture(d.ErrorRecorder, capturePayloadEnabled, capturePayloadMaxBytes))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore))
 		r.Use(validate.Middleware(routes))
 		r.Use(quota.Middleware(d.Quota, d.Plans))
 		for _, rt := range routes {
-			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, d.Cfg.ErrorExposure, rt.Operation))
+			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
 		}
 	})
 
@@ -342,15 +346,10 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 }
 
 // v1ErrorCapture returns a middleware that wraps /v1 responses with an
-// errorlog.Capture recorder. After the inner handler chain returns, if the
-// status is >= 400 and an authenticated key is present, it fires an async
-// error_events insert via rec. A nil rec is a safe no-op.
-//
-// Operation is derived from chi.RouteContext(r).RoutePattern(), which chi
-// populates before any middleware runs. For all /v1 worker routes that is
-// the registered path pattern (e.g. "/v1/echo"), which matches the operation
-// label used in usage_events for per-product endpoints.
-func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler {
+// errorlog.Capture recorder and fires an async error_events insert on status >= 400.
+// When capturePayload is true, the request body is buffered before dispatch and
+// stored on the row. The payload never appears in logs or metric labels.
+func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayloadBytes int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if rec == nil {
@@ -363,6 +362,12 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			if op == "" {
 				op = r.URL.Path
 			}
+			// MaybeCaptureRequestBody is a no-op (nil, zero allocs) when capturePayload
+			// is false. Runs before ratelimit so 429s are also recorded with payloads.
+			var reqPayload []byte
+			if capturePayload {
+				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)
+			}
 			capture := errorlog.NewCapture(w)
 			next.ServeHTTP(capture, r)
 			if capture.Status() < 400 {
@@ -374,7 +379,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			}
 			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 			errCode, errMsg := capture.ParseErrorFields()
-			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
+			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status(), reqPayload)
 		})
 	}
 }

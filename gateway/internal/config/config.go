@@ -12,6 +12,11 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
+const (
+	minErrorPayloadMaxBytes = 12      // must cover len(payloadTruncationMarker)
+	maxErrorPayloadMaxBytes = 1048576 // 1 MiB
+)
+
 type Config struct {
 	// Gateway HTTP
 	Port           int   `envconfig:"GATEWAY_PORT"             default:"8080"`
@@ -54,6 +59,10 @@ type Config struct {
 
 	// Error handling
 	ErrorExposure string `envconfig:"WORKER_ERROR_EXPOSURE" default:"sanitized"`
+
+	// Opt-in capture of request bodies on 4xx/5xx; default OFF. Never logged/labeled.
+	ErrorPayloadCapture  bool `envconfig:"ERROR_PAYLOAD_CAPTURE"   default:"false"`
+	ErrorPayloadMaxBytes int  `envconfig:"ERROR_PAYLOAD_MAX_BYTES" default:"4096"`
 
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
@@ -145,6 +154,12 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < minErrorPayloadMaxBytes {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", minErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
+	}
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > maxErrorPayloadMaxBytes {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= %d (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", maxErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
