@@ -13,27 +13,42 @@ export function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (buf.length <= maxBytes) return buf.toString("utf8");
   let end = maxBytes;
-  // Walk back past continuation bytes (high two bits = 0b10 = 0x80–0xBF).
+  // Walk back past continuation bytes (high two bits = 0b10 = 0x80-0xBF).
   while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
   // If we stopped at a multi-byte lead byte, verify its full sequence fits.
   if (end > 0 && (buf[end - 1] & 0x80) !== 0) {
     const lead = buf[end - 1];
+    let seqLen: number;
     if (lead >= 0xc2 && lead <= 0xdf) {
-      // 2-byte sequence
-      end = (end - 1 + 2 <= maxBytes) ? end - 1 + 2 : end - 1;
+      seqLen = 2;
     } else if (lead >= 0xe0 && lead <= 0xef) {
-      // 3-byte sequence
-      end = (end - 1 + 3 <= maxBytes) ? end - 1 + 3 : end - 1;
+      seqLen = 3;
     } else if (lead >= 0xf0 && lead <= 0xf4) {
-      // 4-byte sequence
-      end = (end - 1 + 4 <= maxBytes) ? end - 1 + 4 : end - 1;
+      seqLen = 4;
     } else {
       // Invalid lead byte (overlong 0xC0-0xC1 or out-of-range 0xF5-0xFF): exclude it.
-      // The outer loop stopped AT this byte (it is not a continuation byte), so bytes
-      // BEFORE it have not been inspected. After dropping the invalid lead via end--,
-      // walk back past any preceding continuation bytes that are now orphaned.
+      //
+      // WHY the second walk-back below is reachable (not dead code):
+      //   The outer loop's exit condition is `(buf[end-1] & 0xc0) === 0x80`, which is
+      //   FALSE for 0xC0 (0xC0 & 0xC0 = 0xC0, not 0x80). So the outer loop stops AT
+      //   the invalid lead byte WITHOUT inspecting the bytes before it. After `end--`
+      //   drops the invalid lead, `buf[end-1]` may be a continuation byte (0x80-0xBF)
+      //   that the outer loop never reached.
+      //
+      //   Concrete proof: buf = [0x61, 0x80, 0xC0, 0x80] at maxBytes=3.
+      //     Outer loop: buf[2]=0xC0, 0xC0 & 0xC0 = 0xC0 ≠ 0x80 → stops. end=3.
+      //     Else branch: end-- → end=2. buf[1]=0x80, 0x80 & 0xC0 = 0x80 → loop fires.
+      //     end-- → end=1. buf[0]=0x61, not continuation → stops. Returns "a". ✓
+      //   Test: "walks back past orphaned continuation bytes after excluding an invalid
+      //   lead byte" in utf8.test.ts covers exactly this case.
       end--;
       while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
+      return buf.toString("utf8", 0, end);
+    }
+    if (end - 1 + seqLen <= maxBytes) {
+      end = end - 1 + seqLen; // complete sequence fits: restore end past all its bytes
+    } else {
+      end = end - 1; // sequence is split at maxBytes: exclude the lead byte
     }
   }
   return buf.toString("utf8", 0, end);
