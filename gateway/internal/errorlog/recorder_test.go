@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 // mustReadBody reads all bytes from r.Body and returns them as a string.
@@ -400,6 +403,32 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 		if restored := mustReadBody(t, r); restored != string(partial) {
 			t.Errorf("r.Body not restored to partial bytes: got %q, want %q", restored, string(partial))
+		}
+	})
+
+	t.Run("on: payload bytes never appear in log output on error path", func(t *testing.T) {
+		// Security invariant: request_payload MUST NOT appear in any log line.
+		// Verify the error path logs an error message but never logs the payload
+		// content — even when a read error occurs mid-capture.
+		sensitivePayload := []byte("SECRET_API_KEY=abc123_SENSITIVE")
+
+		var logBuf bytes.Buffer
+		origLogger := log.Logger
+		log.Logger = zerolog.New(&logBuf)
+		t.Cleanup(func() { log.Logger = origLogger })
+
+		r, _ := http.NewRequest(http.MethodPost, "/", &errAfterReader{data: sensitivePayload})
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got != nil {
+			t.Errorf("expected nil on read error, got %q", got)
+		}
+		// The error MUST be logged (so operators can detect the failure).
+		if !bytes.Contains(logBuf.Bytes(), []byte("payload capture")) {
+			t.Error("expected error log entry about payload capture, got none")
+		}
+		// The sensitive content MUST NOT appear in the log.
+		if bytes.Contains(logBuf.Bytes(), sensitivePayload) {
+			t.Errorf("sensitive payload leaked into log output: %q", logBuf.String())
 		}
 	})
 }
