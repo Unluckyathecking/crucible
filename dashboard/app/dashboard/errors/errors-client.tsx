@@ -30,17 +30,16 @@ const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
-// toISODate converts a UTC millisecond timestamp to "YYYY-MM-DD".
-// Accepts a number so callers must supply a UTC value explicitly, avoiding any
-// ambiguity between local-time Date objects and UTC Date objects.
-// Non-finite inputs are rejected as they indicate a programming error
-// (e.g. a stale/uninitialized value). Negative values (pre-1970 UTC) are
-// valid and converted correctly by new Date(utcMs).
+// toISODate converts a UTC millisecond timestamp (or a Date) to "YYYY-MM-DD".
+// Accepts number | Date so callers can pass Date.UTC(...) or a Date object
+// without an extra conversion step. Non-finite ms values are rejected as they
+// indicate a programming error. Negative values (pre-1970 UTC) are valid.
 // toISOString() always returns a UTC string ending in "Z"; slicing the first
 // 10 characters yields the UTC calendar date for any valid timestamp.
-function toISODate(utcMs: number): string {
-  if (!Number.isFinite(utcMs)) throw new RangeError(`toISODate: non-finite utcMs ${utcMs}`);
-  return new Date(utcMs).toISOString().slice(0, 10);
+function toISODate(utcMs: number | Date): string {
+  const ms = utcMs instanceof Date ? utcMs.getTime() : utcMs;
+  if (!Number.isFinite(ms)) throw new RangeError(`toISODate: non-finite utcMs ${ms}`);
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 async function fetchErrors(

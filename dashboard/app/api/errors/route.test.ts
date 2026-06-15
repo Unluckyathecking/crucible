@@ -56,9 +56,12 @@ describe("GET /api/errors — cross-customer isolation", () => {
     mockEnsureCustomer.mockResolvedValue(CUSTOMER_2 as never);
 
     await GET(makeRequest());
-    const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+    const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(params[0]).toBe(CUSTOMER_2.id);
-    expect(params[0]).not.toBe(CUSTOMER_1.id);
+    // Verify the SQL has no UNION that could broaden scope beyond the
+    // authenticated customer, and CUSTOMER_1.id never appears as any parameter.
+    expect(sql).not.toMatch(/\bUNION\b/i);
+    expect((params as unknown[]).filter(p => p === CUSTOMER_1.id)).toHaveLength(0);
   });
 
   it("never mixes rows: each request is scoped to exactly one customer_id", async () => {

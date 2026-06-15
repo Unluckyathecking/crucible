@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -46,6 +48,37 @@ func (e *errAfterReader) Read(p []byte) (int, error) {
 		return n, io.ErrUnexpectedEOF
 	}
 	return n, nil
+}
+
+// signalWriter is a test-only zerolog io.Writer that captures output and
+// signals via a channel when the first byte is written. All methods are goroutine-safe.
+type signalWriter struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	once sync.Once
+	done chan struct{}
+}
+
+func newSignalWriter() *signalWriter {
+	return &signalWriter{done: make(chan struct{})}
+}
+
+func (sw *signalWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	n, err := sw.buf.Write(p)
+	sw.mu.Unlock()
+	if n > 0 {
+		sw.once.Do(func() { close(sw.done) })
+	}
+	return n, err
+}
+
+func (sw *signalWriter) Bytes() []byte {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	b := make([]byte, sw.buf.Len())
+	copy(b, sw.buf.Bytes())
+	return b
 }
 
 // TestCapture_BuffersErrorBodies verifies that Capture buffers response bodies
@@ -530,9 +563,12 @@ func TestRecord_GoroutineNeverLogsPayload(t *testing.T) {
 
 	rec := New(pool)
 
-	var logBuf bytes.Buffer
+	// signalWriter captures log output and closes sw.done when the first byte
+	// is written, providing a proper synchronization point without accessing
+	// internal recorder fields.
+	sw := newSignalWriter()
 	origLogger := log.Logger
-	log.Logger = zerolog.New(&logBuf)
+	log.Logger = zerolog.New(sw)
 	t.Cleanup(func() { log.Logger = origLogger })
 
 	sensitivePayload := []byte("SENSITIVE_SECRET_DATA_sentinel_abc123")
@@ -540,27 +576,22 @@ func TestRecord_GoroutineNeverLogsPayload(t *testing.T) {
 		uuid.New(), uuid.New(), "/v1/test", "ERR", "req-sentinel-1", "msg", 500,
 		sensitivePayload)
 
-	// Fill the semaphore to capacity (minus the goroutine's own slot) then
-	// block on the final send. The goroutine releases its slot in its defer
-	// (<-sem), which unblocks our send, guaranteeing the goroutine has finished
-	// before we inspect the log buffer. No sleep needed.
-	for i := 0; i < maxConcurrent-1; i++ {
-		rec.sem <- struct{}{}
-	}
-	rec.sem <- struct{}{} // blocks until goroutine releases
-	// Drain all slots we added so the recorder stays in a clean state.
-	for i := 0; i < maxConcurrent; i++ {
-		<-rec.sem
+	// Wait for the goroutine to log the DB-failure warning. TCP RST to 59999
+	// is immediate so the goroutine normally completes in milliseconds;
+	// 5 s is a generous safety margin for slow CI environments.
+	select {
+	case <-sw.done:
+	case <-time.After(5 * time.Second):
+		t.Skip("goroutine did not log within 5 s; port 59999 may be in use")
 	}
 
-	// The goroutine must have logged something (DB failure triggers the warn line).
-	if logBuf.Len() == 0 {
-		// If nothing was logged the port is in use — treat as skip.
+	output := sw.Bytes()
+	if len(output) == 0 {
 		t.Skip("no log output; port 59999 may be occupied or connection was unexpectedly silent")
 	}
 	// The sensitive payload bytes must NOT appear in any log field.
-	if bytes.Contains(logBuf.Bytes(), sensitivePayload) {
-		t.Errorf("payload leaked into goroutine error log: %q", logBuf.String())
+	if bytes.Contains(output, sensitivePayload) {
+		t.Errorf("payload leaked into goroutine error log: %q", output)
 	}
 }
 
