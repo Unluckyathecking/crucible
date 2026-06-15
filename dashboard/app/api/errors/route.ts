@@ -42,9 +42,24 @@ function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   // Walk back past continuation bytes (high two bits = 0b10 = 0x80–0xBF).
   while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
   // If we stopped at a multi-byte lead byte, verify its full sequence fits.
+  // Only valid UTF-8 lead byte ranges are accepted: 0xC2-0xDF (2-byte),
+  // 0xE0-0xEF (3-byte), 0xF0-0xF4 (4-byte). Bytes 0xC0-0xC1 are overlong
+  // encodings and 0xF5-0xFF are out-of-range; both are excluded by dropping
+  // the lead byte rather than treating them as valid sequence starters.
   if (end > 0 && (buf[end - 1] & 0x80) !== 0) {
     const lead = buf[end - 1];
-    const seqLen = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
+    let seqLen: number;
+    if (lead >= 0xc2 && lead <= 0xdf) {
+      seqLen = 2;
+    } else if (lead >= 0xe0 && lead <= 0xef) {
+      seqLen = 3;
+    } else if (lead >= 0xf0 && lead <= 0xf4) {
+      seqLen = 4;
+    } else {
+      // Invalid lead byte (overlong 0xC0-0xC1 or out-of-range 0xF5-0xFF): exclude it.
+      end--;
+      return buf.toString("utf8", 0, end);
+    }
     if (end - 1 + seqLen <= maxBytes) {
       end = end - 1 + seqLen; // complete sequence fits: restore end past all its bytes
     } else {
