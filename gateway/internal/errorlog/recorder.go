@@ -143,6 +143,10 @@ const payloadTruncationMarker = " [TRUNCATED]"
 // buf[:maxBytes-len(marker)] + marker so the total stored size never exceeds
 // maxBytes bytes (the request body is not assumed to be valid UTF-8 or JSON;
 // BYTEA stores it verbatim).
+//
+// On a read error the function returns nil (payload not captured) and restores
+// r.Body to the bytes successfully read before the error, so downstream
+// handlers see a coherent (possibly truncated) body rather than a broken reader.
 func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
 		return nil

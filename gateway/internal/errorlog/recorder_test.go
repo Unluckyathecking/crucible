@@ -21,6 +21,22 @@ func readBody(t *testing.T, r *http.Request) string {
 	return string(b)
 }
 
+// errAfterReader emits all data bytes then returns io.ErrUnexpectedEOF on
+// the next Read call, simulating a partially-read body that errors mid-stream.
+type errAfterReader struct {
+	data []byte
+	done bool
+}
+
+func (e *errAfterReader) Read(p []byte) (int, error) {
+	if e.done {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, e.data)
+	e.done = true
+	return n, nil
+}
+
 // TestCapture_BuffersErrorBodies verifies that Capture buffers response bodies
 // only for status >= 400 and never for successful responses.
 func TestCapture_BuffersErrorBodies(t *testing.T) {
@@ -297,6 +313,21 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		restored := []byte(readBody(t, r))
 		if !bytes.Equal(restored, invalidUtf8) {
 			t.Errorf("body not restored: got %x, want %x", restored, invalidUtf8)
+		}
+	})
+
+	t.Run("on: read error returns nil and restores partial body", func(t *testing.T) {
+		// errAfterReader provides partial bytes then fails; MaybeCaptureRequestBody
+		// must return nil (payload dropped) but still restore r.Body to the bytes
+		// successfully read so downstream handlers see a coherent truncated body.
+		partial := []byte("partial-data-before-error")
+		r, _ := http.NewRequest(http.MethodPost, "/", &errAfterReader{data: partial})
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got != nil {
+			t.Errorf("expected nil on read error, got %q", got)
+		}
+		if restored := readBody(t, r); restored != string(partial) {
+			t.Errorf("r.Body not restored to partial bytes: got %q, want %q", restored, string(partial))
 		}
 	})
 }
