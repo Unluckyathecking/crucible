@@ -249,6 +249,24 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
+	t.Run("on: truncation removes orphaned multi-byte lead byte at boundary", func(t *testing.T) {
+		// Body: 8 ASCII bytes + 'é' (2-byte sequence 0xC3 0xA9) + 20 filler bytes.
+		// limit = marker(12) + 9, so truncLen = 9. buf[8] = 0xC3 (lead byte, not
+		// continuation), the loop stops, then the lead-byte check removes it.
+		// Without the fix, 0xC3 would remain as a dangling lead byte (invalid UTF-8).
+		body := strings.Repeat("a", 8) + "\xc3\xa9" + strings.Repeat("b", 20)
+		const limit = len(payloadTruncationMarker) + 9
+		r := makeReq(body)
+		got := MaybeCaptureRequestBody(r, limit)
+		if !strings.HasSuffix(string(got), payloadTruncationMarker) {
+			t.Errorf("expected truncation marker, got %q", got)
+		}
+		prefix := strings.TrimSuffix(string(got), payloadTruncationMarker)
+		if prefix != strings.Repeat("a", 8) {
+			t.Errorf("orphaned lead byte not removed: prefix=%q, want 8 ASCII chars", prefix)
+		}
+	})
+
 	t.Run("on: read error returns nil and restores partial body", func(t *testing.T) {
 		partial := []byte("partial-data-before-error")
 		r, _ := http.NewRequest(http.MethodPost, "/", &errAfterReader{data: partial})

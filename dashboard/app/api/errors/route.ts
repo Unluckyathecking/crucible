@@ -171,6 +171,12 @@ export async function GET(request: Request): Promise<Response> {
         headers: noStore,
       });
     }
+    if (from.getTime() > tomorrowMidnight.getTime()) {
+      return new Response(JSON.stringify({ error: "'from' date must not be in the future" }), {
+        status: 400,
+        headers: noStore,
+      });
+    }
     // Range validation compares the user-visible bounds directly.
     // userVisibleToMs is the inclusive `to` date (toExclusive minus one day).
     const userVisibleToMs = toExclusive.getTime() - MS_PER_DAY;

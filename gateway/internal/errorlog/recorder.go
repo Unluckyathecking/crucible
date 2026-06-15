@@ -128,6 +128,10 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	originalBody := r.Body
 	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+overflowProbeBytes))
 	if err != nil {
+		// Restore the bytes already buffered. The underlying reader errored, so
+		// originalBody has no recoverable remaining bytes; including it would
+		// propagate the error to downstream handlers. Payload capture is
+		// intentionally dropped — storing partial data would be misleading.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
 		log.Warn().Err(err).Msg("payload capture: error reading request body")
 		return nil
@@ -141,17 +145,15 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 			// ambiguous prefix (config.Load prevents this in production).
 			return nil
 		}
-		// Walk back past UTF-8 continuation bytes (0x80–0xBF) then invalid lead
-		// bytes (0xC0–0xC1, 0xF5–0xFF) so the stored prefix is valid UTF-8.
+		// Walk back past UTF-8 continuation bytes (0x80–0xBF), then remove any
+		// lead byte (>= 0xC0) left at the boundary — valid 2/3/4-byte sequence
+		// starters are invalid without their continuations.
 		end := truncLen
 		for end > 0 && (buf[end-1]&0xc0) == 0x80 {
 			end--
 		}
-		if end > 0 {
-			b := buf[end-1]
-			if (b >= 0xc0 && b <= 0xc1) || b >= 0xf5 {
-				end--
-			}
+		if end > 0 && buf[end-1] >= 0xc0 {
+			end--
 		}
 		out := make([]byte, 0, end+len(markerBytes))
 		out = append(out, buf[:end]...)
