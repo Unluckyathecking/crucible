@@ -379,6 +379,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			// 429 (Too Many Requests) and 402 (Payment Required) rejections also have
 			// payloads recorded. 401/403 from auth run before this middleware and are
 			// not captured.
+			//
 			// Memory trade-off: when capture is on, each authenticated request
 			// allocates up to maxPayloadBytes+1 bytes before the rate-limit check runs.
 			// This is a deliberate bounded-DoS trade-off: maxPayloadBytes is capped at
