@@ -212,15 +212,15 @@ export async function GET(request: Request): Promise<Response> {
 
     // Optional filters — validated against allowed character sets, then passed as
     // SQL parameters ($4/$5). Parameterization already prevents injection; the
-    // regex validation additionally rejects control characters and unexpected byte
-    // sequences before they reach the DB or get rendered in the client.
+    // length check runs before the regex so unbounded inputs are rejected before
+    // the pattern engine sees them, and the error message names the actual limit.
     const operationRaw = url.searchParams.get("operation");
     let operation: string | undefined;
     if (operationRaw && operationRaw.trim().length > 0) {
-      const trimmed = operationRaw.trim().slice(0, MAX_FILTER_LENGTH);
-      if (!OPERATION_FILTER_RE.test(trimmed)) {
+      const trimmed = operationRaw.trim();
+      if (trimmed.length > MAX_FILTER_LENGTH || !OPERATION_FILTER_RE.test(trimmed)) {
         return new Response(
-          JSON.stringify({ error: "invalid 'operation' filter: must be a /v1/... path" }),
+          JSON.stringify({ error: `invalid 'operation' filter: must be a /v1/... path (max ${MAX_FILTER_LENGTH} chars)` }),
           { status: 400, headers: noStore },
         );
       }
@@ -230,10 +230,10 @@ export async function GET(request: Request): Promise<Response> {
     const codeRaw = url.searchParams.get("code");
     let code: string | undefined;
     if (codeRaw && codeRaw.trim().length > 0) {
-      const trimmed = codeRaw.trim().slice(0, MAX_FILTER_LENGTH);
-      if (!CODE_FILTER_RE.test(trimmed)) {
+      const trimmed = codeRaw.trim();
+      if (trimmed.length > MAX_FILTER_LENGTH || !CODE_FILTER_RE.test(trimmed)) {
         return new Response(
-          JSON.stringify({ error: "invalid 'code' filter: must be uppercase letters, digits, and underscores" }),
+          JSON.stringify({ error: `invalid 'code' filter: must be uppercase letters, digits, and underscores (max ${MAX_FILTER_LENGTH} chars)` }),
           { status: 400, headers: noStore },
         );
       }
