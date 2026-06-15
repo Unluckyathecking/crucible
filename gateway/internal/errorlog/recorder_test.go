@@ -247,6 +247,13 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
+	t.Run("http.NoBody returns nil", func(t *testing.T) {
+		r, _ := http.NewRequest(http.MethodPost, "/", http.NoBody)
+		if got := MaybeCaptureRequestBody(r, 4096); got != nil {
+			t.Errorf("expected nil for http.NoBody, got %q", got)
+		}
+	})
+
 	t.Run("on: truncLen<0 path returns raw prefix without marker", func(t *testing.T) {
 		// When maxBytes < len(payloadTruncationMarker), truncLen is negative and the
 		// code returns the raw first maxBytes bytes without appending the marker
