@@ -41,6 +41,9 @@ const (
 
 // overflowProbeBytes is the extra byte read past maxBytes to detect whether
 // the body exceeds the capture limit without buffering the full body.
+// 1 is sufficient: if io.LimitReader returns exactly maxBytes+1 bytes we know
+// the body is longer than maxBytes; if it returns <= maxBytes bytes the body fits.
+// Using exactly 1 minimises unnecessary buffering while still detecting overflow.
 const overflowProbeBytes = 1
 
 // ErrorRecorder writes error_events rows asynchronously with a bounded
@@ -143,6 +146,11 @@ const payloadTruncationMarker = " [TRUNCATED]"
 // buf[:maxBytes-len(marker)] + marker so the total stored size never exceeds
 // maxBytes bytes (the request body is not assumed to be valid UTF-8 or JSON;
 // BYTEA stores it verbatim).
+//
+// maxBytes must be within the validated range [minErrorPayloadMaxBytes, maxErrorPayloadMaxBytes]
+// (enforced by config.Load). Very large values are safe: io.LimitReader bounds
+// the read to maxBytes+overflowProbeBytes regardless of maxBytes magnitude, so
+// memory usage is bounded by the caller's configuration, not the body stream length.
 //
 // On a read error the function returns nil (payload not captured) and restores
 // r.Body to the bytes successfully read before the error, so downstream

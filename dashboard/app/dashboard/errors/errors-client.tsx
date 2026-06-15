@@ -33,7 +33,10 @@ const MAX_RANGE_DAYS = 90;
 // toISODate converts a UTC midnight timestamp (ms since epoch) to "YYYY-MM-DD".
 // Accepts a number so callers must supply a UTC value explicitly, avoiding any
 // ambiguity between local-time Date objects and UTC Date objects.
+// Non-finite or negative inputs are rejected: they indicate a programming error
+// (e.g. a stale/uninitialized value) and would produce a nonsense date string.
 function toISODate(utcMs: number): string {
+  if (!Number.isFinite(utcMs) || utcMs < 0) throw new RangeError(`toISODate: invalid utcMs ${utcMs}`);
   const d = new Date(utcMs);
   const y = String(d.getUTCFullYear()).padStart(4, "0");
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
