@@ -152,19 +152,24 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	// io.LimitReader.Read truncates the caller's buffer to at most remaining bytes
 	// before calling the underlying Read, so r.Body cannot advance beyond the limit
 	// regardless of io.ReadAll's internal buffer sizing.
-	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+truncationProbeBytes))
+	// Capture the original body reference before reading so the reconstruction
+	// below always pairs buf with the same stream that was advanced, not with
+	// any later value of r.Body.
+	originalBody := r.Body
+	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+truncationProbeBytes))
 	if err != nil {
-		// io.LimitReader reads from r.Body directly; after a partial read, r.Body
-		// is positioned after the bytes that went into buf. Prepending buf restores
-		// the full original body so downstream handlers see every byte.
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+		// io.LimitReader reads from originalBody directly; after a partial read,
+		// originalBody is positioned after the bytes that went into buf.
+		// Prepending buf restores the full original body so downstream handlers
+		// see every byte.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), originalBody))
 		log.Warn().Err(err).Msg("payload capture: error reading request body")
 		return nil
 	}
 	// Success path: prepend the bytes we consumed so downstream handlers see
-	// the complete body (the remaining portion of r.Body is empty when the body
-	// fits entirely within maxBytes+truncationProbeBytes).
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+	// the complete body (the remaining portion of originalBody is empty when the
+	// body fits entirely within maxBytes+truncationProbeBytes).
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), originalBody))
 	if len(buf) > maxBytes {
 		markerBytes := []byte(payloadTruncationMarker)
 		truncLen := maxBytes - len(markerBytes)

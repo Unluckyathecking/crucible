@@ -17,9 +17,10 @@ const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
 // operation is a gateway route pattern like "/v1/echo"; code is an uppercase error code like "RATE_LIMITED".
 // Validated at the API boundary so the DB never receives unexpected byte sequences.
-// OPERATION_FILTER_RE: segments are non-empty alphanumeric/underscore/hyphen separated by single slashes;
-// no consecutive slashes (//) and no trailing slash. Hyphen is last in the character class to avoid
-// range-syntax ambiguity with the preceding letter/digit ranges.
+// OPERATION_FILTER_RE: matches /v1, /v1/echo, /v1/foo-bar — one or more non-empty
+// alphanumeric/underscore/hyphen segments separated by single slashes. Rejects
+// consecutive slashes (//v1) and trailing slashes (/v1/). Hyphen is last in the
+// character class to avoid range-syntax ambiguity with the preceding ranges.
 const OPERATION_FILTER_RE = /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/;
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 // Defense-in-depth cap on request_payload display length in bytes.
