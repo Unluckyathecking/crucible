@@ -167,7 +167,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 		// successfully read so downstream handlers still see a coherent (truncated)
 		// body rather than a broken reader.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
-		log.Warn().Err(err).Msg("payload capture: error reading request body")
+		log.Error().Err(err).Msg("payload capture: error reading request body")
 		return nil
 	}
 	// Success path: originalBody is positioned after len(buf) bytes. Prepend buf
