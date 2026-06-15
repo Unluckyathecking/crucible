@@ -25,18 +25,23 @@ func mustReadBody(t *testing.T, r *http.Request) string {
 }
 
 // errAfterReader emits all data bytes then returns io.ErrUnexpectedEOF on
-// the next Read call, simulating a partially-read body that errors mid-stream.
+// the subsequent Read call, simulating a partially-read body that errors mid-stream.
+// The offset field tracks how much has been consumed so partial reads (when the
+// caller's buffer is smaller than the data) are handled correctly.
 type errAfterReader struct {
-	data []byte
-	done bool
+	data   []byte
+	offset int
 }
 
 func (e *errAfterReader) Read(p []byte) (int, error) {
-	if e.done {
+	if e.offset >= len(e.data) {
 		return 0, io.ErrUnexpectedEOF
 	}
-	n := copy(p, e.data)
-	e.done = true
+	n := copy(p, e.data[e.offset:])
+	e.offset += n
+	if e.offset >= len(e.data) {
+		return n, io.ErrUnexpectedEOF
+	}
 	return n, nil
 }
 
@@ -357,10 +362,11 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 	})
 
 	t.Run("on: empty body (explicit NopCloser) returns empty non-nil slice", func(t *testing.T) {
-		// http.NewRequest with an empty strings.Reader sets r.Body = http.NoBody
-		// (Go converts zero-ContentLength bodies). Use an explicit NopCloser so
-		// MaybeCaptureRequestBody sees a non-nil, non-NoBody body and exercises
-		// the full capture path, returning []byte{} (non-nil but length 0).
+		// http.NewRequest with a nil body sets r.Body = http.NoBody; passing an
+		// empty strings.Reader does the same (Go elides zero-ContentLength bodies).
+		// Set r.Body explicitly with an io.NopCloser so MaybeCaptureRequestBody
+		// sees a non-nil, non-NoBody reader and exercises the full capture path,
+		// returning []byte{} (non-nil, length 0) rather than the early-exit nil.
 		r, _ := http.NewRequest(http.MethodPost, "/", nil)
 		r.Body = io.NopCloser(strings.NewReader(""))
 		got := MaybeCaptureRequestBody(r, 4096)
