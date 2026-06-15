@@ -1,6 +1,7 @@
 package errorlog
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -206,6 +207,21 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		r, _ := http.NewRequest(http.MethodPost, "/", nil)
 		if got := MaybeCaptureRequestBody(r, 4096); got != nil {
 			t.Errorf("expected nil for nil body, got %q", got)
+		}
+	})
+
+	t.Run("on: invalid UTF-8 bytes stored verbatim and body restored", func(t *testing.T) {
+		// Verify BYTEA semantics: arbitrary bytes are captured as-is without
+		// re-encoding. The dashboard layer converts to UTF-8 with replacement chars.
+		invalidUtf8 := []byte{0xC3, 0x28, 0xFF, 0xFE, 0x00, 0x41}
+		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(invalidUtf8))
+		got := MaybeCaptureRequestBody(r, 4096)
+		if !bytes.Equal(got, invalidUtf8) {
+			t.Errorf("payload mismatch: got %x, want %x", got, invalidUtf8)
+		}
+		restored, _ := io.ReadAll(r.Body)
+		if !bytes.Equal(restored, invalidUtf8) {
+			t.Errorf("body not restored: got %x, want %x", restored, invalidUtf8)
 		}
 	})
 }

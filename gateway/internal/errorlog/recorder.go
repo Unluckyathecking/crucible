@@ -147,8 +147,11 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
-	// Read at most maxBytes+truncationProbeBytes so we can detect whether the
-	// body exceeds maxBytes without buffering the full (potentially large) body.
+	// Read at most maxBytes+truncationProbeBytes to detect whether body exceeds
+	// maxBytes without buffering the full body.
+	// io.LimitReader.Read truncates the caller's buffer to at most remaining bytes
+	// before calling the underlying Read, so r.Body cannot advance beyond the limit
+	// regardless of io.ReadAll's internal buffer sizing.
 	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+truncationProbeBytes))
 	if err != nil {
 		// Partial read — restore whatever bytes were consumed before the error

@@ -20,10 +20,25 @@ const MAX_FILTER_LENGTH = 128;
 // Hyphen is placed first in each character class to avoid any ambiguity with range syntax.
 const OPERATION_FILTER_RE = /^\/[-a-zA-Z0-9_/]{1,127}$/;
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
-// Defense-in-depth cap on request_payload display length.
+// Defense-in-depth cap on request_payload display length in bytes.
 // The gateway already truncates at ErrorPayloadMaxBytes (default 4 KiB, max 1 MiB);
 // this ensures the API response is bounded even if the column is modified directly.
 const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
+
+// truncateUtf8Buffer converts a Buffer to a UTF-8 string, truncating at a valid
+// UTF-8 byte boundary so the result never contains unpaired surrogates.
+// Slicing a JS string by index can split a surrogate pair (4-byte emoji);
+// slicing the Buffer first then decoding avoids this entirely.
+function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
+  if (buf.length <= maxBytes) return buf.toString("utf8");
+  // Walk back from maxBytes to find the last byte that starts a new UTF-8 sequence.
+  // Continuation bytes are 0b10xxxxxx (0x80–0xBF); skip them.
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0b11000000) === 0b10000000) {
+    end--;
+  }
+  return buf.toString("utf8", 0, end);
+}
 
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
@@ -97,11 +112,10 @@ async function listErrorEvents(
     message: row.message,
     request_id: row.request_id,
     created_at: row.created_at.toISOString(),
-    // Convert BYTEA Buffer → UTF-8 string for display; non-UTF-8 bytes become
-    // replacement characters (acceptable for debugging payloads).
-    // Slice to MAX_PAYLOAD_DISPLAY_BYTES as defense-in-depth beyond the gateway cap.
+    // Convert BYTEA Buffer → UTF-8 string, truncating at a valid UTF-8 byte
+    // boundary so the result never contains unpaired surrogates in JSON output.
     request_payload: row.request_payload
-      ? row.request_payload.toString("utf8").slice(0, MAX_PAYLOAD_DISPLAY_BYTES)
+      ? truncateUtf8Buffer(row.request_payload, MAX_PAYLOAD_DISPLAY_BYTES)
       : null,
   }));
   return { data: rows, has_more: hasMore };

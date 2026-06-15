@@ -155,6 +155,11 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     }
     const fromMs = new Date(displayFrom + "T00:00:00.000Z").getTime();
     const toMs = new Date(displayTo + "T00:00:00.000Z").getTime();
+    const todayMs = new Date(todayUTC + "T00:00:00.000Z").getTime();
+    if (toMs > todayMs) {
+      setRangeError("'To' date cannot be in the future");
+      return;
+    }
     if (fromMs > toMs) {
       setRangeError("'From' must not be after 'To'");
       return;
