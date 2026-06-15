@@ -15,6 +15,10 @@ const MS_PER_DAY = 86_400_000;
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
+// operation is a gateway route pattern like "/v1/echo"; code is an uppercase error code like "RATE_LIMITED".
+// Validated at the API boundary so the DB never receives unexpected byte sequences.
+const OPERATION_FILTER_RE = /^\/[a-zA-Z0-9_\-/]{1,127}$/;
+const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
@@ -164,18 +168,35 @@ export async function GET(request: Request): Promise<Response> {
       );
     }
 
-    // Optional filters — capped to prevent unbounded inputs.
+    // Optional filters — validated against allowed character sets, then passed as
+    // SQL parameters ($4/$5). Parameterization already prevents injection; the
+    // regex validation additionally rejects control characters and unexpected byte
+    // sequences before they reach the DB or get rendered in the client.
     const operationRaw = url.searchParams.get("operation");
-    const operation =
-      operationRaw && operationRaw.trim().length > 0
-        ? operationRaw.trim().slice(0, MAX_FILTER_LENGTH)
-        : undefined;
+    let operation: string | undefined;
+    if (operationRaw && operationRaw.trim().length > 0) {
+      const trimmed = operationRaw.trim().slice(0, MAX_FILTER_LENGTH);
+      if (!OPERATION_FILTER_RE.test(trimmed)) {
+        return new Response(
+          JSON.stringify({ error: "invalid 'operation' filter: must be a /v1/... path" }),
+          { status: 400, headers: noStore },
+        );
+      }
+      operation = trimmed;
+    }
 
     const codeRaw = url.searchParams.get("code");
-    const code =
-      codeRaw && codeRaw.trim().length > 0
-        ? codeRaw.trim().slice(0, MAX_FILTER_LENGTH)
-        : undefined;
+    let code: string | undefined;
+    if (codeRaw && codeRaw.trim().length > 0) {
+      const trimmed = codeRaw.trim().slice(0, MAX_FILTER_LENGTH);
+      if (!CODE_FILTER_RE.test(trimmed)) {
+        return new Response(
+          JSON.stringify({ error: "invalid 'code' filter: must be uppercase letters, digits, and underscores" }),
+          { status: 400, headers: noStore },
+        );
+      }
+      code = trimmed;
+    }
 
     // Pagination
     const pageRaw = parseInt(url.searchParams.get("page") ?? "1", 10);
