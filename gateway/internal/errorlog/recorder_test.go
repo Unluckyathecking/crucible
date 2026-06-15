@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestCapture_BuffersErrorBodies verifies that Capture buffers response bodies
@@ -104,6 +105,37 @@ func TestCapture_ParseErrorFields(t *testing.T) {
 		_, msg := c.ParseErrorFields()
 		if len(msg) > maxMessageBytes {
 			t.Errorf("message not truncated: len=%d, max=%d", len(msg), maxMessageBytes)
+		}
+	})
+
+	t.Run("message truncated before multi-byte rune straddling boundary", func(t *testing.T) {
+		// Place a 2-byte rune (é = U+00E9 = 0xC3 0xA9) so that its start byte
+		// lands at position maxMessageBytes-1 and its continuation byte at
+		// maxMessageBytes. The truncation logic must walk back past the
+		// continuation byte and exclude the incomplete rune, yielding a
+		// valid UTF-8 prefix of length maxMessageBytes-1.
+		prefix := strings.Repeat("a", maxMessageBytes-1)
+		// é encodes as 2 bytes; trailing "z" pushes len past maxMessageBytes.
+		long := prefix + "éz"
+		payload := `{"error":{"code":"ERR","message":"` + long + `"}}`
+		w := httptest.NewRecorder()
+		c := NewCapture(w)
+		c.WriteHeader(http.StatusBadGateway)
+		c.Write([]byte(payload))
+		_, msg := c.ParseErrorFields()
+		if !utf8.ValidString(msg) {
+			t.Errorf("truncated message is not valid UTF-8: %q", msg)
+		}
+		if len(msg) > maxMessageBytes {
+			t.Errorf("message not truncated: len=%d, max=%d", len(msg), maxMessageBytes)
+		}
+		// The partial é (continuation byte 0xA9) must not appear in the output.
+		if len(msg) > 0 && msg[len(msg)-1] >= 0x80 && msg[len(msg)-1] <= 0xBF {
+			t.Errorf("message ends with a bare continuation byte: 0x%02x", msg[len(msg)-1])
+		}
+		// Verify the truncated string is the correct ASCII prefix.
+		if msg != prefix {
+			t.Errorf("expected %q, got %q", prefix, msg)
 		}
 	})
 
