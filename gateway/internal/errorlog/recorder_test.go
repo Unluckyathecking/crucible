@@ -185,11 +185,10 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if got == nil {
 			t.Fatal("expected non-nil payload")
 		}
-		if !strings.HasPrefix(*got, strings.Repeat("x", limit)) {
-			t.Errorf("expected first %d chars to be 'x', got %q", limit, *got)
-		}
-		if !strings.HasSuffix(*got, payloadTruncationMarker) {
-			t.Errorf("expected truncation marker, got %q", *got)
+		// Assert the exact output: first `limit` bytes of body + truncation marker.
+		want := strings.Repeat("x", limit) + payloadTruncationMarker
+		if *got != want {
+			t.Errorf("got %q, want %q", *got, want)
 		}
 		// r.Body must still yield the full original body.
 		if body := readBody(r); body != long {

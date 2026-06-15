@@ -259,7 +259,9 @@ func (c *Capture) ParseErrorFields() (code, message string) {
 		// valid UTF-8. Invalid bytes in the middle of the string (e.g. from a
 		// non-UTF-8 worker response) would otherwise produce an invalid slice.
 		i := maxMessageBytes
-		for i > 0 && !utf8.RuneStart(message[i]) {
+		// i < len(message) is always true here (entry guard ensures len > maxMessageBytes
+		// and i only decreases), but the bound is stated explicitly for clarity.
+		for i > 0 && i < len(message) && !utf8.RuneStart(message[i]) {
 			i--
 		}
 		if !utf8.ValidString(message[:i]) {

@@ -152,6 +152,9 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes <= 0 {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be > 0 when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.

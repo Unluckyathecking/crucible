@@ -17,7 +17,8 @@ const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
 // operation is a gateway route pattern like "/v1/echo"; code is an uppercase error code like "RATE_LIMITED".
 // Validated at the API boundary so the DB never receives unexpected byte sequences.
-const OPERATION_FILTER_RE = /^\/[a-zA-Z0-9_\-/]{1,127}$/;
+// Hyphen is placed last in each character class to avoid any ambiguity with range syntax.
+const OPERATION_FILTER_RE = /^\/[a-zA-Z0-9_/-]{1,127}$/;
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 
 function parseISODate(s: string): Date | null {
