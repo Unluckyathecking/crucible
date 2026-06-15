@@ -10,9 +10,9 @@ import (
 	"unicode/utf8"
 )
 
-// readBody reads all bytes from r.Body and returns them as a string.
+// mustReadBody reads all bytes from r.Body and returns them as a string.
 // Fails the test immediately if the read fails.
-func readBody(t *testing.T, r *http.Request) string {
+func mustReadBody(t *testing.T, r *http.Request) string {
 	t.Helper()
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("expected nil when maxBytes=0, got %q", got)
 		}
 		// Body must be fully intact — no buffering on the hot path.
-		if body := readBody(t, r); body != `{"key":"value"}` {
+		if body := mustReadBody(t, r); body != `{"key":"value"}` {
 			t.Errorf("body was modified: got %q", body)
 		}
 	})
@@ -228,7 +228,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("payload mismatch: got %q, want %q", got, input)
 		}
 		// r.Body must be restored so the downstream handler can still read it.
-		if body := readBody(t, r); body != input {
+		if body := mustReadBody(t, r); body != input {
 			t.Errorf("body not restored: got %q, want %q", body, input)
 		}
 	})
@@ -258,7 +258,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 		// r.Body must still yield the full original body.
-		if body := readBody(t, r); body != long {
+		if body := mustReadBody(t, r); body != long {
 			t.Errorf("body not fully restored after truncation: got %q", body)
 		}
 	})
@@ -292,7 +292,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("expected nil when maxBytes < marker length, got %x", got)
 		}
 		// r.Body must still be restored so downstream handlers can read it.
-		restored := []byte(readBody(t, r))
+		restored := []byte(mustReadBody(t, r))
 		if !bytes.Equal(restored, body) {
 			t.Errorf("body not restored: got %x", restored)
 		}
@@ -307,7 +307,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if !bytes.Equal(got, invalidUtf8) {
 			t.Errorf("payload mismatch: got %x, want %x", got, invalidUtf8)
 		}
-		restored := []byte(readBody(t, r))
+		restored := []byte(mustReadBody(t, r))
 		if !bytes.Equal(restored, invalidUtf8) {
 			t.Errorf("body not restored: got %x, want %x", restored, invalidUtf8)
 		}
@@ -323,7 +323,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if got != nil {
 			t.Errorf("expected nil on read error, got %q", got)
 		}
-		if restored := readBody(t, r); restored != string(partial) {
+		if restored := mustReadBody(t, r); restored != string(partial) {
 			t.Errorf("r.Body not restored to partial bytes: got %q, want %q", restored, string(partial))
 		}
 	})

@@ -98,7 +98,8 @@ async function listErrorEvents(
   // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
   const sqlLimit = limit + 1;
   const r = await pool.query<ErrorEventRow>(
-    `SELECT id, operation, error_code, http_status, message, request_id, created_at, request_payload
+    `SELECT id, operation, error_code, http_status,
+            message, request_id, created_at, request_payload
      FROM error_events
      WHERE customer_id = $1
        AND created_at >= $2
