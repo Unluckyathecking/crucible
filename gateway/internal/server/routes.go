@@ -346,19 +346,9 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 }
 
 // v1ErrorCapture returns a middleware that wraps /v1 responses with an
-// errorlog.Capture recorder. After the inner handler chain returns, if the
-// status is >= 400 and an authenticated key is present, it fires an async
-// error_events insert via rec. A nil rec is a safe no-op.
-//
-// When capturePayload is true, the inbound request body is buffered before
-// dispatch (up to maxPayloadBytes, with a truncation marker when exceeded) and
-// stored in the error_events row. When false, no body buffering occurs on the
-// hot path. The payload is never written to logs or metric labels.
-//
-// Operation is derived from chi.RouteContext(r).RoutePattern(), which chi
-// populates before any middleware runs. For all /v1 worker routes that is
-// the registered path pattern (e.g. "/v1/echo"), which matches the operation
-// label used in usage_events for per-product endpoints.
+// errorlog.Capture recorder and fires an async error_events insert on status >= 400.
+// When capturePayload is true, the request body is buffered before dispatch and
+// stored on the row. The payload never appears in logs or metric labels.
 func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayloadBytes int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -372,24 +362,8 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			if op == "" {
 				op = r.URL.Path
 			}
-			// Buffer the request body before dispatch so it can still be read by
-			// the invoke handler downstream. MaybeCaptureRequestBody is a no-op
-			// (returns nil, zero allocations) when capturePayload is false.
-			// Intentional ordering: body is captured before ratelimit/quota so that
-			// 429 (Too Many Requests) and 402 (Payment Required) rejections also have
-			// payloads recorded. 401/403 from auth run before this middleware and are
-			// not captured.
-			//
-			// Memory trade-off: when capture is on, each authenticated request
-			// allocates up to maxPayloadBytes+1 bytes before the rate-limit check runs.
-			// This is a deliberate bounded-DoS trade-off: maxPayloadBytes is capped at
-			// 1 MiB by config validation, and the BodyLimit middleware already rejects
-			// bodies larger than BodyLimitBytes before this middleware runs, so the
-			// worst-case allocation is min(maxPayloadBytes, BodyLimitBytes)+1 per request.
-			// The bounded allocation is acceptable given that capture is opt-in and
-			// per-customer rate limits (which still run on every request after capture)
-			// ensure that sustained throughput beyond the window cap is rejected,
-			// bounding the steady-state allocation to rate_limit × maxPayloadBytes per customer.
+			// MaybeCaptureRequestBody is a no-op (nil, zero allocs) when capturePayload
+			// is false. Runs before ratelimit so 429s are also recorded with payloads.
 			var reqPayload []byte
 			if capturePayload {
 				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)

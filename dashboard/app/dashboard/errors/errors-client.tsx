@@ -30,17 +30,8 @@ const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
-// toISODate converts a UTC millisecond timestamp (or a Date) to "YYYY-MM-DD".
-// Accepts number | Date so callers can pass Date.UTC(...) or a Date object.
-// Non-finite or negative ms values are rejected: non-finite indicates a
-// programming error; negative represents a pre-1970 UTC date which can never
-// correspond to an error event (the gateway predates no known deployment).
-// toISOString() always returns a UTC string ending in "Z"; slicing the first
-// 10 characters yields the UTC calendar date for any valid timestamp.
-function toISODate(utcMs: number | Date): string {
-  const ms = utcMs instanceof Date ? utcMs.getTime() : utcMs;
-  if (!Number.isFinite(ms) || ms < 0) throw new RangeError(`toISODate: invalid utcMs ${ms}`);
-  return new Date(ms).toISOString().slice(0, 10);
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 async function fetchErrors(
@@ -73,10 +64,7 @@ async function fetchErrors(
       !Array.isArray((body as Record<string, unknown>).data) ||
       typeof (body as Record<string, unknown>).has_more !== "boolean" ||
       typeof (body as Record<string, unknown>).page !== "number" ||
-      typeof (body as Record<string, unknown>).limit !== "number" ||
-      !(body as { data: unknown[] }).data.every(
-        (item) => typeof item === "object" && item !== null && "id" in item && "request_payload" in item,
-      )
+      typeof (body as Record<string, unknown>).limit !== "number"
     ) {
       return { error: "Invalid response format" };
     }
@@ -87,13 +75,6 @@ async function fetchErrors(
   }
 }
 
-// formatTs formats an ISO 8601 UTC timestamp for display.
-// ISO_TS_RE matches the exact wire format from the API ("YYYY-MM-DDTHH:mm:ss.mmmZ");
-// strings that don't match are returned verbatim. For matching strings the display
-// is derived directly from known character positions — no Date.parse involved, so
-// there is no locale-sensitivity or browser-parser ambiguity risk.
-// Leap-second timestamps (HH:mm:60) cannot appear here: PostgreSQL and Go's
-// time package both use POSIX time, which has no leap-second representation.
 const ISO_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 function formatTs(iso: string): string {
   if (!ISO_TS_RE.test(iso)) return iso;
@@ -113,8 +94,6 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  // Payloads are hidden by default; customers must explicitly expand each row
-  // to view the payload since it may contain sensitive request data.
   const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(new Set());
   const togglePayload = useCallback((id: string) => {
     setExpandedPayloads((prev) => {
@@ -127,13 +106,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   // server render (no hydration mismatch). The useEffect corrects to the
   // actual client-side today after hydration in case midnight crossed between
   // server render and client mount.
-  // Note: handleApply does NOT read todayUTC — it recomputes today's UTC date
-  // inline at apply-time (via Date.UTC) to avoid a stale-closure issue.
-  // todayUTC is only consumed by the date-picker max= attribute below.
   const [todayUTC, setTodayUTC] = useState(initialTo);
   useEffect(() => {
     const now = new Date();
-    const computed = toISODate(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const computed = toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
     if (computed !== initialTo) setTodayUTC(computed);
   }, [initialTo]);
 
@@ -166,8 +142,6 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
         setState({ status: "error", message: result.error });
         return;
       }
-      // Clear any per-row expanded payload state so stale expanded rows from the
-      // previous page/filter do not persist into the new result set.
       setExpandedPayloads(new Set());
       setState({ status: "ok", data: result.data, has_more: result.has_more, page: result.page });
     },
@@ -187,13 +161,8 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     }
     const fromMs = new Date(displayFrom + "T00:00:00.000Z").getTime();
     const toMs = new Date(displayTo + "T00:00:00.000Z").getTime();
-    // Recompute at apply-time rather than reading todayUTC state to avoid a
-    // stale closure: todayUTC is not in this callback's dep array, so a post-mount
-    // useEffect update (e.g. across a UTC midnight) would otherwise be ignored.
     const applyNow = new Date();
     const todayMs = Date.UTC(applyNow.getUTCFullYear(), applyNow.getUTCMonth(), applyNow.getUTCDate());
-    // Future-date checks run before the order check so future dates are always
-    // caught with a precise message regardless of how from and to relate.
     if (fromMs > todayMs) {
       setRangeError("'From' date cannot be in the future");
       return;
@@ -211,8 +180,6 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
       return;
     }
     setRangeError(null);
-    // Pass the inclusive display date directly to the API; the API converts it
-    // to an exclusive midnight bound server-side (+1 day).
     queryRef.current = { from: displayFrom, to: displayTo, op: operationFilter, code: codeFilter };
     void load(displayFrom, displayTo, operationFilter, codeFilter, 1);
   }, [displayFrom, displayTo, operationFilter, codeFilter, load]);

@@ -6,7 +6,6 @@
 import { randomUUID } from "crypto";
 import { auth } from "@/auth";
 import { ensureCustomer, pool } from "@/lib/db";
-import { truncateUtf8Buffer } from "@/lib/utf8";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -16,21 +15,11 @@ const MS_PER_DAY = 86_400_000;
 const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const ISO_MIDNIGHT_SUFFIX = "T00:00:00.000Z";
 const MAX_FILTER_LENGTH = 128;
-// operation is a gateway route pattern like "/v1/echo"; code is an uppercase error code like "RATE_LIMITED".
-// Validated at the API boundary so the DB never receives unexpected byte sequences.
-// OPERATION_FILTER_RE: matches /v1, /v1/echo, /v1/foo-bar — one or more non-empty
-// alphanumeric/underscore/hyphen segments separated by single slashes. Rejects
-// consecutive slashes (//v1) and trailing slashes (/v1/). Hyphen is last in the
-// character class to avoid range-syntax ambiguity with the preceding ranges.
+// Validate operation (/v1/echo) and code (RATE_LIMITED) at the boundary.
 const OPERATION_FILTER_RE = /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/;
-// {1,128} enforces a minimum of one character; empty strings are also
-// rejected upstream by the codeRaw.trim().length > 0 guard.
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
-// Defense-in-depth cap on request_payload display length in bytes.
-// The gateway already truncates at ErrorPayloadMaxBytes (default 4 KiB, max 1 MiB);
-// this cap is intentionally set higher (8 KiB) so the gateway's configured limit
-// is always the effective bound — capping at the same value as the gateway default
-// would silently truncate payloads if the operator raises ErrorPayloadMaxBytes above 4 KiB.
+// Gateway already truncates stored payloads at ErrorPayloadMaxBytes (default 4 KiB).
+// This 8 KiB display cap is higher so it never silently truncates operator-enlarged limits.
 const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
 
@@ -53,22 +42,15 @@ interface ErrorEventRow {
   message: string;
   request_id: string;
   created_at: Date;
-  // request_payload is stored as BYTEA; node-postgres returns it as Buffer.
-  // NULL unless ERROR_PAYLOAD_CAPTURE is enabled on the gateway.
-  // Isolation: customer_id = $1 ensures rows from other customers are never returned.
+  // BYTEA from postgres; null when capture is off.
   request_payload: Buffer | null;
 }
 
-// SerializedErrorEvent is the wire shape returned by the API: request_payload
-// is converted from Buffer (BYTEA) to string at the boundary.
 type SerializedErrorEvent = Omit<ErrorEventRow, "created_at" | "request_payload"> & {
   created_at: string;
   request_payload: string | null;
 };
 
-// listErrorEvents fetches paginated error_events rows for the given customer.
-// All eight columns — including request_payload (BYTEA, NULL when capture is
-// off) — are selected. customer_id = $1 ensures strict row-level isolation.
 async function listErrorEvents(
   customerId: string,
   from: Date,
@@ -78,14 +60,7 @@ async function listErrorEvents(
   offset: number,
   limit: number,
 ): Promise<{ data: SerializedErrorEvent[]; has_more: boolean }> {
-  // customerId is the UUID returned by ensureCustomer — never user input.
-  // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
-  // dynamic placeholder construction is needed.
-  // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
   const sqlLimit = limit + 1;
-  // pool.query() acquires a client from the pool, executes the query, and
-  // automatically releases the client back to the pool on completion — no
-  // explicit release or cursor close is needed.
   const r = await pool.query<ErrorEventRow>(
     `SELECT id, operation, error_code, http_status,
             message, request_id, created_at, request_payload
@@ -116,10 +91,8 @@ async function listErrorEvents(
     message: row.message,
     request_id: row.request_id,
     created_at: row.created_at.toISOString(),
-    // Convert BYTEA Buffer → UTF-8 string, truncating at a valid UTF-8 byte
-    // boundary so the result never contains unpaired surrogates in JSON output.
     request_payload: row.request_payload
-      ? truncateUtf8Buffer(row.request_payload, MAX_PAYLOAD_DISPLAY_BYTES)
+      ? row.request_payload.toString("utf8", 0, MAX_PAYLOAD_DISPLAY_BYTES)
       : null,
   }));
   return { data: rows, has_more: hasMore };
@@ -192,9 +165,6 @@ export async function GET(request: Request): Promise<Response> {
       const d = parsed;
       toExclusive = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
     }
-    // Reject future 'to' dates server-side — error events only exist for past
-    // requests, so future queries always return zero rows and indicate a client bug.
-    // toExclusive is capped at tomorrowMidnight (inclusive of today).
     if (toExclusive.getTime() > tomorrowMidnight.getTime()) {
       return new Response(JSON.stringify({ error: "'to' date must not be in the future" }), {
         status: 400,
@@ -218,10 +188,6 @@ export async function GET(request: Request): Promise<Response> {
       );
     }
 
-    // Optional filters — validated against allowed character sets, then passed as
-    // SQL parameters ($4/$5). Parameterization already prevents injection; the
-    // length check runs before the regex so unbounded inputs are rejected before
-    // the pattern engine sees them, and the error message names the actual limit.
     const operationRaw = url.searchParams.get("operation");
     let operation: string | undefined;
     if (operationRaw && operationRaw.trim().length > 0) {
@@ -248,7 +214,6 @@ export async function GET(request: Request): Promise<Response> {
       code = trimmed;
     }
 
-    // Pagination — reject non-numeric strings (e.g. "1abc") at the trust boundary.
     const pageStr = url.searchParams.get("page") ?? "1";
     const pageRaw = /^\d+$/.test(pageStr) ? parseInt(pageStr, 10) : NaN;
     const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
@@ -260,8 +225,6 @@ export async function GET(request: Request): Promise<Response> {
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
         : DEFAULT_PAGE_SIZE;
 
-    // Guard against DoS via an extremely large OFFSET causing a full-table scan.
-    // page is unbounded by parseInt; cap via the computed offset.
     const offset = (page - 1) * limit;
     if (!Number.isSafeInteger(offset) || offset > 10_000_000) {
       return new Response(JSON.stringify({ error: "page too large" }), {

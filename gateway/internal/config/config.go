@@ -12,12 +12,8 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-// minErrorPayloadMaxBytes mirrors len(" [TRUNCATED]") = 12, the byte length of
-// errorlog.payloadTruncationMarker. The stored payload must be at least this large
-// so consumers can always distinguish a truncated body from a complete one.
-// Keep in sync with payloadTruncationMarker in gateway/internal/errorlog/recorder.go.
 const (
-	minErrorPayloadMaxBytes = 12
+	minErrorPayloadMaxBytes = 12      // must cover len(payloadTruncationMarker)
 	maxErrorPayloadMaxBytes = 1048576 // 1 MiB
 )
 
@@ -64,10 +60,7 @@ type Config struct {
 	// Error handling
 	ErrorExposure string `envconfig:"WORKER_ERROR_EXPOSURE" default:"sanitized"`
 
-	// Error payload capture — opt-in, default OFF.
-	// When ON, the inbound request body is buffered (up to ErrorPayloadMaxBytes)
-	// and stored in error_events.request_payload for 4xx/5xx responses only.
-	// The payload is never written to metrics labels or log lines.
+	// Opt-in capture of request bodies on 4xx/5xx; default OFF. Never logged/labeled.
 	ErrorPayloadCapture  bool `envconfig:"ERROR_PAYLOAD_CAPTURE"   default:"false"`
 	ErrorPayloadMaxBytes int  `envconfig:"ERROR_PAYLOAD_MAX_BYTES" default:"4096"`
 
@@ -161,8 +154,6 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
-	// Minimum must cover the truncation marker so the stored payload is always
-	// distinguishable from untruncated content. This check subsumes the > 0 guard.
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < minErrorPayloadMaxBytes {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", minErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
 	}

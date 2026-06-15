@@ -196,9 +196,7 @@ func TestRetryMaxWithZeroBackoffReturnsError(t *testing.T) {
 	}
 }
 
-// TestRetryMaxOneZeroBackoffIsValid documents that WORKER_RETRY_MAX=1 (single-shot
-// with no retries) is accepted even when WORKER_RETRY_BACKOFF_MS=0, because backoff
-// is never used when only one attempt is made.
+// TestRetryMaxOneZeroBackoffIsValid verifies WORKER_RETRY_MAX=1 accepts zero backoff (no retries needed).
 func TestRetryMaxOneZeroBackoffIsValid(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_RETRY_MAX", "1")
@@ -226,9 +224,7 @@ func TestBreakerThresholdTooHighReturnsError(t *testing.T) {
 	}
 }
 
-// TestBreakerCooldownZeroWithThresholdReturnsError verifies that zero cooldown
-// is rejected when the breaker is enabled, preventing a startup panic in
-// resilience.NewBreaker (which panics when Threshold>0 && Cooldown<=0).
+// TestBreakerCooldownZeroWithThresholdReturnsError verifies zero cooldown is rejected when breaker is enabled.
 func TestBreakerCooldownZeroWithThresholdReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
@@ -257,9 +253,7 @@ func TestBreakerCooldownTooLowReturnsError(t *testing.T) {
 	}
 }
 
-// TestBreakerCooldownTooLowZeroThresholdReturnsError verifies that a cooldown
-// below 500ms is rejected even when the breaker is disabled (threshold=0),
-// preventing a config landmine that only surfaces when threshold is later raised.
+// TestBreakerCooldownTooLowZeroThresholdReturnsError verifies cooldown < 500ms is rejected even with threshold=0.
 func TestBreakerCooldownTooLowZeroThresholdReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	// threshold=0 (default, breaker disabled) but cooldown too low.
@@ -274,9 +268,7 @@ func TestBreakerCooldownTooLowZeroThresholdReturnsError(t *testing.T) {
 	}
 }
 
-// TestBreakerCooldownTooHighReturnsError verifies that a cooldown above 300000ms
-// (5 minutes) is rejected, preventing a misconfigured value from permanently
-// locking the breaker open.
+// TestBreakerCooldownTooHighReturnsError verifies cooldown > 300000ms is rejected.
 func TestBreakerCooldownTooHighReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_BREAKER_THRESHOLD", "5")
@@ -346,7 +338,6 @@ func TestWorkerMaxConnsNegativeReturnsError(t *testing.T) {
 
 // --- OTel tracing field tests ---
 
-// TestOtelTracingDisabledByDefault verifies the default values for all four OTel fields.
 func TestOtelTracingDisabledByDefault(t *testing.T) {
 	setRequiredEnv(t)
 
@@ -368,8 +359,6 @@ func TestOtelTracingDisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestOtelTracingEnabledWithEndpointIsValid verifies that OTEL_TRACING_ENABLED=true
-// with a non-empty OTEL_EXPORTER_ENDPOINT is accepted.
 func TestOtelTracingEnabledWithEndpointIsValid(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -387,8 +376,7 @@ func TestOtelTracingEnabledWithEndpointIsValid(t *testing.T) {
 	}
 }
 
-// TestOtelTracingEnabledWithoutEndpointReturnsError verifies that enabling tracing
-// without providing an exporter endpoint is rejected.
+// TestOtelTracingEnabledWithoutEndpointReturnsError verifies tracing enabled without endpoint is rejected.
 func TestOtelTracingEnabledWithoutEndpointReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -403,7 +391,6 @@ func TestOtelTracingEnabledWithoutEndpointReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelSampleRatioValidValues verifies that edge values 0.0, 0.5 and 1.0 are accepted.
 func TestOtelSampleRatioValidValues(t *testing.T) {
 	for _, ratio := range []string{"0.0", "0.5", "1.0"} {
 		t.Run("ratio="+ratio, func(t *testing.T) {
@@ -418,7 +405,6 @@ func TestOtelSampleRatioValidValues(t *testing.T) {
 	}
 }
 
-// TestOtelSampleRatioNegativeReturnsError verifies that a negative sample ratio is rejected.
 func TestOtelSampleRatioNegativeReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_SAMPLE_RATIO", "-0.1")
@@ -432,7 +418,6 @@ func TestOtelSampleRatioNegativeReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelSampleRatioAboveOneReturnsError verifies that a sample ratio > 1.0 is rejected.
 func TestOtelSampleRatioAboveOneReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_SAMPLE_RATIO", "1.1")
@@ -446,7 +431,6 @@ func TestOtelSampleRatioAboveOneReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelSampleRatioNaNReturnsError verifies that a NaN sample ratio is rejected.
 func TestOtelSampleRatioNaNReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_SAMPLE_RATIO", "NaN")
@@ -460,7 +444,6 @@ func TestOtelSampleRatioNaNReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelSampleRatioInfReturnsError verifies that +Inf is rejected (not a finite number).
 func TestOtelSampleRatioInfReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_SAMPLE_RATIO", "+Inf")
@@ -474,7 +457,6 @@ func TestOtelSampleRatioInfReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterInsecureTrue verifies that OTEL_EXPORTER_INSECURE=true is read correctly.
 func TestOtelExporterInsecureTrue(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_INSECURE", "true")
@@ -488,8 +470,7 @@ func TestOtelExporterInsecureTrue(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointWithSchemeReturnsError verifies that an endpoint containing
-// a URL scheme (e.g. http://) is rejected — the OTLP exporter expects host:port only.
+// TestOtelExporterEndpointWithSchemeReturnsError verifies http:// scheme is rejected (host:port only).
 func TestOtelExporterEndpointWithSchemeReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -504,9 +485,7 @@ func TestOtelExporterEndpointWithSchemeReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterInsecureInvalidValueReturnsError verifies that envconfig rejects
-// a non-boolean OTEL_EXPORTER_INSECURE value during struct parsing, causing Load
-// to return an error rather than silently defaulting to false.
+// TestOtelExporterInsecureInvalidValueReturnsError verifies non-boolean OTEL_EXPORTER_INSECURE is rejected.
 func TestOtelExporterInsecureInvalidValueReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_INSECURE", "not-a-bool")
@@ -520,9 +499,7 @@ func TestOtelExporterInsecureInvalidValueReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointWithHttpsSchemeReturnsError verifies that an endpoint
-// containing an https:// scheme is also rejected — the OTLP exporter expects
-// host:port only; TLS is controlled via OTEL_EXPORTER_INSECURE.
+// TestOtelExporterEndpointWithHttpsSchemeReturnsError verifies https:// scheme is also rejected.
 func TestOtelExporterEndpointWithHttpsSchemeReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -537,8 +514,7 @@ func TestOtelExporterEndpointWithHttpsSchemeReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelTracingEnabledWithInsecureEndpoint verifies that OTEL_EXPORTER_INSECURE=true is
-// accepted alongside a valid enabled tracing configuration (no validation error).
+// TestOtelTracingEnabledWithInsecureEndpoint verifies OTEL_EXPORTER_INSECURE=true is accepted with valid config.
 func TestOtelTracingEnabledWithInsecureEndpoint(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -560,9 +536,7 @@ func TestOtelTracingEnabledWithInsecureEndpoint(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointEmptyHostReturnsError verifies that an endpoint whose
-// host part is empty (e.g. ":4318" — port only, no host) is rejected. The
-// gateway must resolve a collector address; a bare port is not valid.
+// TestOtelExporterEndpointEmptyHostReturnsError verifies that ":4318" (port-only, no host) is rejected.
 func TestOtelExporterEndpointEmptyHostReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_ENDPOINT", ":4318")
@@ -576,8 +550,7 @@ func TestOtelExporterEndpointEmptyHostReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointTooLongReturnsError verifies that an endpoint string
-// exceeding 4096 bytes is rejected before any host:port parsing is attempted.
+// TestOtelExporterEndpointTooLongReturnsError verifies endpoints > 4096 bytes are rejected.
 func TestOtelExporterEndpointTooLongReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_ENDPOINT", strings.Repeat("x", 4097))
@@ -591,10 +564,7 @@ func TestOtelExporterEndpointTooLongReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError verifies that a
-// whitespace-only endpoint is treated as empty after trimming and rejected when
-// tracing is enabled, preventing a confusing "endpoint must be set" error at
-// provider-construction time instead of config-load time.
+// TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError verifies whitespace-only endpoint is rejected.
 func TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -609,9 +579,7 @@ func TestOtelExporterEndpointWhitespaceWithTracingEnabledReturnsError(t *testing
 	}
 }
 
-// TestOtelExporterEndpointUppercaseSchemeReturnsError verifies that scheme validation
-// is case-insensitive — HTTP:// and HTTPS:// are rejected alongside http:// and https://.
-// URL schemes are case-insensitive per RFC 3986.
+// TestOtelExporterEndpointUppercaseSchemeReturnsError verifies scheme validation is case-insensitive.
 func TestOtelExporterEndpointUppercaseSchemeReturnsError(t *testing.T) {
 	for _, endpoint := range []string{"HTTP://localhost:4318", "HTTPS://localhost:4318"} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -630,7 +598,6 @@ func TestOtelExporterEndpointUppercaseSchemeReturnsError(t *testing.T) {
 	}
 }
 
-// TestOtelExporterInsecureFalseByDefault verifies that OTEL_EXPORTER_INSECURE defaults to false (TLS on).
 func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	setRequiredEnv(t)
 
@@ -643,8 +610,7 @@ func TestOtelExporterInsecureFalseByDefault(t *testing.T) {
 	}
 }
 
-// TestOtelExporterInsecureExplicitFalse verifies that an explicit OTEL_EXPORTER_INSECURE=false
-// is accepted and parsed correctly (TLS remains on).
+// TestOtelExporterInsecureExplicitFalse verifies OTEL_EXPORTER_INSECURE=false is accepted.
 func TestOtelExporterInsecureExplicitFalse(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_EXPORTER_INSECURE", "false")
@@ -658,9 +624,7 @@ func TestOtelExporterInsecureExplicitFalse(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointTrimSpace verifies that leading/trailing whitespace in
-// OTEL_EXPORTER_ENDPOINT is stripped before validation, so common copy-paste mistakes
-// like " localhost:4318 " are accepted and stored as "localhost:4318".
+// TestOtelExporterEndpointTrimSpace verifies that leading/trailing whitespace is stripped before validation.
 func TestOtelExporterEndpointTrimSpace(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "OTEL_TRACING_ENABLED", "true")
@@ -675,9 +639,7 @@ func TestOtelExporterEndpointTrimSpace(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled verifies that endpoint
-// scheme validation applies even when OTEL_TRACING_ENABLED=false, so a latent
-// misconfiguration is caught at startup rather than silently stored in config.
+// TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled verifies scheme validation applies even when tracing is off.
 func TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled(t *testing.T) {
 	for _, endpoint := range []string{"http://collector:4318", "https://collector:4318"} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -696,9 +658,7 @@ func TestOtelExporterEndpointSchemeRejectedWhenTracingDisabled(t *testing.T) {
 	}
 }
 
-// TestOtelExporterEndpointMalformedHostPortReturnsError verifies that endpoints
-// without a valid host:port format are rejected at config load time, so operators
-// get a clear error rather than a runtime failure in the OTLP exporter.
+// TestOtelExporterEndpointMalformedHostPortReturnsError verifies malformed host:port endpoints are rejected.
 func TestOtelExporterEndpointMalformedHostPortReturnsError(t *testing.T) {
 	for _, endpoint := range []string{"localhost", "host:port:extra"} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -732,10 +692,7 @@ func TestErrorPayloadCaptureDefaultOff(t *testing.T) {
 	}
 }
 
-// TestErrorPayloadCaptureMaxBytesTooSmallReturnsError verifies that enabling capture
-// with a max-bytes value below the truncation marker length is rejected. The marker
-// (" [TRUNCATED]") is 12 bytes; any smaller limit cannot produce a distinguishable
-// truncated payload.
+// TestErrorPayloadCaptureMaxBytesTooSmallReturnsError verifies max-bytes < marker length (12) is rejected.
 func TestErrorPayloadCaptureMaxBytesTooSmallReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
@@ -750,8 +707,7 @@ func TestErrorPayloadCaptureMaxBytesTooSmallReturnsError(t *testing.T) {
 	}
 }
 
-// TestErrorPayloadCaptureMaxBytesMinimumValid verifies that the minimum allowed value
-// (exactly len(" [TRUNCATED]") = 12) is accepted when capture is enabled.
+// TestErrorPayloadCaptureMaxBytesMinimumValid verifies that max-bytes = 12 (marker length) is accepted.
 func TestErrorPayloadCaptureMaxBytesMinimumValid(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
@@ -766,8 +722,7 @@ func TestErrorPayloadCaptureMaxBytesMinimumValid(t *testing.T) {
 	}
 }
 
-// TestErrorPayloadCaptureMaxBytesTooLargeReturnsError verifies that a max-bytes value
-// above 1 MiB is rejected when capture is enabled, preventing accidental memory exhaustion.
+// TestErrorPayloadCaptureMaxBytesTooLargeReturnsError verifies max-bytes > 1 MiB is rejected.
 func TestErrorPayloadCaptureMaxBytesTooLargeReturnsError(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
@@ -782,8 +737,7 @@ func TestErrorPayloadCaptureMaxBytesTooLargeReturnsError(t *testing.T) {
 	}
 }
 
-// TestErrorPayloadCaptureOffIgnoresBytesValidation verifies that MaxBytes is not
-// validated when capture is off, so ERROR_PAYLOAD_MAX_BYTES=0 doesn't block startup.
+// TestErrorPayloadCaptureOffIgnoresBytesValidation verifies ERROR_PAYLOAD_MAX_BYTES=0 is accepted when capture is off.
 func TestErrorPayloadCaptureOffIgnoresBytesValidation(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "ERROR_PAYLOAD_MAX_BYTES", "0")
@@ -802,8 +756,7 @@ func TestErrorPayloadCaptureOffIgnoresBytesValidation(t *testing.T) {
 
 // --- Worker channel auth field tests ---
 
-// TestWorkerSharedSecretDefaultEmpty verifies that WORKER_SHARED_SECRET defaults
-// to empty string, leaving signing disabled and preserving today's behaviour.
+// TestWorkerSharedSecretDefaultEmpty verifies WORKER_SHARED_SECRET defaults to empty (signing disabled).
 func TestWorkerSharedSecretDefaultEmpty(t *testing.T) {
 	setRequiredEnv(t)
 
@@ -816,8 +769,7 @@ func TestWorkerSharedSecretDefaultEmpty(t *testing.T) {
 	}
 }
 
-// TestWorkerSharedSecretSet verifies that WORKER_SHARED_SECRET is read correctly
-// when set, enabling HMAC-SHA256 channel auth between gateway and worker.
+// TestWorkerSharedSecretSet verifies WORKER_SHARED_SECRET is read correctly when set.
 func TestWorkerSharedSecretSet(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_SHARED_SECRET", "super-secret-key-for-worker-auth-12345")
@@ -831,10 +783,7 @@ func TestWorkerSharedSecretSet(t *testing.T) {
 	}
 }
 
-// TestConfigDurationHelpers verifies that RetryBaseBackoff and BreakerCooldown
-// return the configured millisecond values as time.Duration (with the correct
-// * time.Millisecond conversion), preventing nanosecond/millisecond unit mismatch
-// when constructing resilience.Policy and resilience.BreakerConfig.
+// TestConfigDurationHelpers verifies RetryBaseBackoff and BreakerCooldown apply the ms→Duration conversion.
 func TestConfigDurationHelpers(t *testing.T) {
 	setRequiredEnv(t)
 	setenv(t, "WORKER_RETRY_MAX", "3")
