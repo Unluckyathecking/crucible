@@ -36,7 +36,7 @@ describe("truncateUtf8Buffer", () => {
   });
 
   it("does not split a 4-byte UTF-8 sequence across the boundary", () => {
-    // "😀" = 0xF0 0x9F 0x98 0x80 (4 bytes).
+    // "😀" = 0xF0 0x9F 0x98 0x80 (4 bytes, emoji grinning face).
     const b = Buffer.concat([buf("a"), buf("😀")]);
     expect(truncateUtf8Buffer(b, 1)).toBe("a");
     expect(truncateUtf8Buffer(b, 3)).toBe("a");
@@ -64,6 +64,19 @@ describe("truncateUtf8Buffer", () => {
     const b = bufHex("41F5808080"); // 'A' + invalid lead 0xF5 + continuations
     const result = truncateUtf8Buffer(b, 2);
     expect(result).toBe("A");
+  });
+
+  it("second walk-back stopping at another invalid lead byte returns U+FFFD", () => {
+    // Buffer: [0xC0 0x80 0xC0 0x80] - two overlong-encoded sequences, all invalid bytes.
+    // At maxBytes=3 the outer loop stops at buf[2]=0xC0 (not a continuation byte).
+    // Inner check: 0xC0 is an invalid lead -> end-- -> end=2. Second walk-back:
+    // buf[1]=0x80 is a continuation -> end-- -> end=1. buf[0]=0xC0 is not a
+    // continuation -> stops at end=1. Returns buf[0:1]=[0xC0], which Node.js decodes
+    // as U+FFFD per the WHATWG UTF-8 encoding standard. The second walk-back does not
+    // recurse: lone invalid lead bytes are passed through to the decoder, which
+    // substitutes U+FFFD, preserving data intent rather than silently discarding it.
+    const b = bufHex("C080C080");
+    expect(truncateUtf8Buffer(b, 3)).toBe("�");
   });
 
   it("handles a lone continuation byte at truncation point", () => {
