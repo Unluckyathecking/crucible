@@ -150,6 +150,9 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
         setState({ status: "error", message: result.error });
         return;
       }
+      // Clear any per-row expanded payload state so stale expanded rows from the
+      // previous page/filter do not persist into the new result set.
+      setExpandedPayloads(new Set());
       setState({ status: "ok", data: result.data, has_more: result.has_more, page: result.page });
     },
     [],
