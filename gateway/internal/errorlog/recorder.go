@@ -39,6 +39,10 @@ const (
 	maxMessageBytes = 1024
 )
 
+// truncationProbeBytes is the extra byte read past maxBytes to detect whether
+// the body exceeds the capture limit without buffering the full body.
+const truncationProbeBytes = 1
+
 // ErrorRecorder writes error_events rows asynchronously with a bounded
 // goroutine pool. Fields are immutable after New returns; goroutines capture
 // the receiver by pointer but never mutate it.
@@ -145,16 +149,17 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	}
 	// Read at most maxBytes+truncationProbeBytes so we can detect whether the
 	// body exceeds maxBytes without buffering the full (potentially large) body.
-	const truncationProbeBytes = 1
 	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+truncationProbeBytes))
-	// Restore r.Body unconditionally so downstream handlers can still read it.
+	if err != nil {
+		// Partial read — restore whatever bytes were consumed before the error
+		// so the downstream handler sees the full original body.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+		return nil
+	}
+	// Restore r.Body so downstream handlers can still read it.
 	// io.MultiReader concatenates the bytes we consumed with whatever remains
 	// in the original body (empty when body length <= maxBytes+1).
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
-	if err != nil {
-		// Partial read — skip capture but leave body in a readable state.
-		return nil
-	}
 	if len(buf) > maxBytes {
 		// Reserve space for the marker so the total stored size ≤ maxBytes.
 		markerBytes := []byte(payloadTruncationMarker)

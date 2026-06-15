@@ -216,9 +216,16 @@ func TestNew_NilDB(t *testing.T) {
 	if r != nil {
 		t.Error("expected nil ErrorRecorder for nil db")
 	}
-	// nil receiver Record must be a safe no-op with nil and non-nil payloads.
-	var nilRec *ErrorRecorder
-	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, nil)
-	payload := []byte("test-payload")
-	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, payload)
+	// nil receiver Record must be a safe no-op — verify no panic occurs.
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("nil receiver Record panicked: %v", p)
+			}
+		}()
+		var nilRec *ErrorRecorder
+		nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, nil)
+		payload := []byte("test-payload")
+		nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, payload)
+	}()
 }

@@ -208,11 +208,13 @@ export async function GET(request: Request): Promise<Response> {
       code = trimmed;
     }
 
-    // Pagination
-    const pageRaw = parseInt(url.searchParams.get("page") ?? "1", 10);
+    // Pagination — reject non-numeric strings (e.g. "1abc") at the trust boundary.
+    const pageStr = url.searchParams.get("page") ?? "1";
+    const pageRaw = /^\d+$/.test(pageStr) ? parseInt(pageStr, 10) : NaN;
     const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
 
-    const limitRaw = parseInt(url.searchParams.get("limit") ?? String(DEFAULT_PAGE_SIZE), 10);
+    const limitStr = url.searchParams.get("limit") ?? String(DEFAULT_PAGE_SIZE);
+    const limitRaw = /^\d+$/.test(limitStr) ? parseInt(limitStr, 10) : NaN;
     const limit =
       Number.isFinite(limitRaw) && limitRaw >= 1
         ? Math.min(limitRaw, MAX_PAGE_SIZE)
