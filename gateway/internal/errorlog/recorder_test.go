@@ -210,6 +210,24 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
+	t.Run("on: 4-byte UTF-8 sequence stored verbatim when it fits within limit", func(t *testing.T) {
+		// MaybeCaptureRequestBody stores BYTEA (raw bytes); UTF-8 boundary alignment
+		// is handled at display time by the TypeScript truncateUtf8Buffer layer.
+		// This test verifies a 4-byte emoji is captured and restored correctly.
+		emoji4 := []byte{0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62} // "a😀b" (6 bytes)
+		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(emoji4))
+		// maxBytes=5: the 6-byte body exceeds the limit; truncLen = 5-13 = -8 < 0
+		// so we return the raw first 5 bytes (includes the complete emoji by coincidence).
+		got := MaybeCaptureRequestBody(r, 5)
+		if !bytes.Equal(got, emoji4[:5]) {
+			t.Errorf("got %x, want %x", got, emoji4[:5])
+		}
+		restored, _ := io.ReadAll(r.Body)
+		if !bytes.Equal(restored, emoji4) {
+			t.Errorf("body not restored: got %x", restored)
+		}
+	})
+
 	t.Run("on: invalid UTF-8 bytes stored verbatim and body restored", func(t *testing.T) {
 		// Verify BYTEA semantics: arbitrary bytes are captured as-is without
 		// re-encoding. The dashboard layer converts to UTF-8 with replacement chars.
