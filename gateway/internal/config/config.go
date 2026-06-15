@@ -152,7 +152,7 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
-	// Minimum must cover the truncation marker (" [TRUNCATED]" = 13 bytes) so the
+	// Minimum must cover the truncation marker (" [TRUNCATED]" = 12 bytes) so the
 	// stored payload is always distinguishable from untruncated content.
 	// This check subsumes the > 0 guard: any non-positive value also fails here.
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < len(" [TRUNCATED]") {

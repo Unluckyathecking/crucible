@@ -155,10 +155,9 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     }
     const fromMs = new Date(displayFrom + "T00:00:00.000Z").getTime();
     const toMs = new Date(displayTo + "T00:00:00.000Z").getTime();
-    // Compute today's midnight from the live clock, not from the todayUTC state
-    // value, which could be stale if it was server-rendered before midnight.
-    const nowLocal = new Date();
-    const todayMs = Date.UTC(nowLocal.getUTCFullYear(), nowLocal.getUTCMonth(), nowLocal.getUTCDate());
+    // todayUTC is kept in sync with UTC midnight by the useEffect; using it here
+    // keeps the validation consistent with the date-picker's max= constraint.
+    const todayMs = new Date(todayUTC + "T00:00:00.000Z").getTime();
     if (toMs > todayMs) {
       setRangeError("'To' date cannot be in the future");
       return;

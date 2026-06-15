@@ -716,6 +716,87 @@ func TestOtelExporterEndpointMalformedHostPortReturnsError(t *testing.T) {
 	}
 }
 
+// --- ErrorPayloadCapture field tests ---
+
+// TestErrorPayloadCaptureDefaultOff verifies the feature is disabled by default
+// so no clone captures request bodies without an explicit opt-in.
+func TestErrorPayloadCaptureDefaultOff(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ErrorPayloadCapture {
+		t.Error("ErrorPayloadCapture = true, want false (must be off by default)")
+	}
+}
+
+// TestErrorPayloadCaptureMaxBytesTooSmallReturnsError verifies that enabling capture
+// with a max-bytes value below the truncation marker length is rejected. The marker
+// (" [TRUNCATED]") is 12 bytes; any smaller limit cannot produce a distinguishable
+// truncated payload.
+func TestErrorPayloadCaptureMaxBytesTooSmallReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
+	setenv(t, "ERROR_PAYLOAD_MAX_BYTES", "11")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for ERROR_PAYLOAD_MAX_BYTES=11 when capture is on, got nil")
+	}
+	if !strings.Contains(err.Error(), "ERROR_PAYLOAD_MAX_BYTES") {
+		t.Errorf("error %q does not mention ERROR_PAYLOAD_MAX_BYTES", err.Error())
+	}
+}
+
+// TestErrorPayloadCaptureMaxBytesMinimumValid verifies that the minimum allowed value
+// (exactly len(" [TRUNCATED]") = 12) is accepted when capture is enabled.
+func TestErrorPayloadCaptureMaxBytesMinimumValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
+	setenv(t, "ERROR_PAYLOAD_MAX_BYTES", "12")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error for ERROR_PAYLOAD_MAX_BYTES=12: %v", err)
+	}
+	if c.ErrorPayloadMaxBytes != 12 {
+		t.Errorf("ErrorPayloadMaxBytes = %d, want 12", c.ErrorPayloadMaxBytes)
+	}
+}
+
+// TestErrorPayloadCaptureMaxBytesTooLargeReturnsError verifies that a max-bytes value
+// above 1 MiB is rejected when capture is enabled, preventing accidental memory exhaustion.
+func TestErrorPayloadCaptureMaxBytesTooLargeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "ERROR_PAYLOAD_CAPTURE", "true")
+	setenv(t, "ERROR_PAYLOAD_MAX_BYTES", "1048577")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for ERROR_PAYLOAD_MAX_BYTES=1048577 when capture is on, got nil")
+	}
+	if !strings.Contains(err.Error(), "ERROR_PAYLOAD_MAX_BYTES") {
+		t.Errorf("error %q does not mention ERROR_PAYLOAD_MAX_BYTES", err.Error())
+	}
+}
+
+// TestErrorPayloadCaptureOffIgnoresBytesValidation verifies that MaxBytes is not
+// validated when capture is off, so an unconfigured ERROR_PAYLOAD_MAX_BYTES=0
+// doesn't block startup.
+func TestErrorPayloadCaptureOffIgnoresBytesValidation(t *testing.T) {
+	setRequiredEnv(t)
+	// capture=false (default); MaxBytes left at default too — both should be OK.
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if c.ErrorPayloadCapture {
+		t.Error("ErrorPayloadCapture should be false")
+	}
+}
+
 // --- Worker channel auth field tests ---
 
 // TestWorkerSharedSecretDefaultEmpty verifies that WORKER_SHARED_SECRET defaults

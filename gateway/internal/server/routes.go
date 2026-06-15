@@ -378,8 +378,9 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			// the invoke handler downstream. MaybeCaptureRequestBody is a no-op
 			// (returns nil, zero allocations) when capturePayload is false.
 			// Intentional ordering: body is captured before ratelimit/quota so that
-			// 429/403 rejections also have payloads recorded. The cost is bounded by
-			// maxPayloadBytes+1 per request when capture is enabled (default: off).
+			// 429 (Too Many Requests) and 402 (Payment Required) rejections also have
+			// payloads recorded. 401/403 from auth run before this middleware and are
+			// not captured. Cost is bounded by maxPayloadBytes+1 when capture is on.
 			var reqPayload []byte
 			if capturePayload {
 				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)

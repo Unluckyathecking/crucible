@@ -178,7 +178,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
-	t.Run("on: body exceeds limit, stored size <= maxBytes", func(t *testing.T) {
+	t.Run("on: body exceeds limit, stored size <= maxBytes and marker present", func(t *testing.T) {
 		long := strings.Repeat("x", 100)
 		r := makeReq(long)
 		// Calculated so truncLen > 0 regardless of marker length changes.
@@ -190,6 +190,11 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		// Total stored size must not exceed limit.
 		if len(got) > limit {
 			t.Errorf("stored payload len %d exceeds maxBytes %d", len(got), limit)
+		}
+		// Truncation marker must appear at the end so consumers can distinguish
+		// truncated from complete payloads without relying on exact size.
+		if !strings.HasSuffix(string(got), payloadTruncationMarker) {
+			t.Errorf("expected truncation marker suffix %q, got %q", payloadTruncationMarker, got)
 		}
 		// Exact expected value: buf[:limit-markerLen] + marker.
 		markerLen := len(payloadTruncationMarker)
@@ -210,20 +215,24 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
-	t.Run("on: 4-byte UTF-8 sequence stored verbatim when it fits within limit", func(t *testing.T) {
-		// MaybeCaptureRequestBody stores BYTEA (raw bytes); UTF-8 boundary alignment
-		// is handled at display time by the TypeScript truncateUtf8Buffer layer.
-		// This test verifies a 4-byte emoji is captured and restored correctly.
-		emoji4 := []byte{0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62} // "a😀b" (6 bytes)
-		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(emoji4))
-		// maxBytes=5: the 6-byte body exceeds the limit; truncLen = 5-13 = -8 < 0
-		// so we return the raw first 5 bytes (includes the complete emoji by coincidence).
+	t.Run("on: truncLen<0 path returns raw prefix without marker", func(t *testing.T) {
+		// When maxBytes < len(payloadTruncationMarker), truncLen is negative and the
+		// code returns the raw first maxBytes bytes without appending the marker
+		// (config.Load prevents this in production via the >= 13 byte minimum check).
+		// BYTEA semantics: raw bytes are stored as-is; UTF-8 alignment is the display
+		// layer's responsibility (see truncateUtf8Buffer in route.ts).
+		body := []byte{0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62} // "a😀b" (6 bytes)
+		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		// maxBytes=5 < len(marker)=12 → truncLen < 0 → raw first 5 bytes, no marker.
 		got := MaybeCaptureRequestBody(r, 5)
-		if !bytes.Equal(got, emoji4[:5]) {
-			t.Errorf("got %x, want %x", got, emoji4[:5])
+		if !bytes.Equal(got, body[:5]) {
+			t.Errorf("got %x, want raw prefix %x", got, body[:5])
+		}
+		if len(got) > 5 {
+			t.Errorf("stored len %d exceeds maxBytes 5", len(got))
 		}
 		restored, _ := io.ReadAll(r.Body)
-		if !bytes.Equal(restored, emoji4) {
+		if !bytes.Equal(restored, body) {
 			t.Errorf("body not restored: got %x", restored)
 		}
 	})
