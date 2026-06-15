@@ -153,7 +153,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		r := makeReq(`{"key":"value"}`)
 		got := MaybeCaptureRequestBody(r, 0)
 		if got != nil {
-			t.Errorf("expected nil when maxBytes=0, got %q", *got)
+			t.Errorf("expected nil when maxBytes=0, got %q", got)
 		}
 		// Body must be fully intact — no buffering on the hot path.
 		if body := readBody(r); body != `{"key":"value"}` {
@@ -168,8 +168,8 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if got == nil {
 			t.Fatal("expected non-nil payload")
 		}
-		if *got != input {
-			t.Errorf("payload mismatch: got %q, want %q", *got, input)
+		if string(got) != input {
+			t.Errorf("payload mismatch: got %q, want %q", got, input)
 		}
 		// r.Body must be restored so the downstream handler can still read it.
 		if body := readBody(r); body != input {
@@ -177,18 +177,24 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
-	t.Run("on: body exceeds limit gets truncation marker", func(t *testing.T) {
+	t.Run("on: body exceeds limit, stored size <= maxBytes", func(t *testing.T) {
 		long := strings.Repeat("x", 100)
 		r := makeReq(long)
-		const limit = 10
+		// limit must be > len(payloadTruncationMarker)=12 so truncLen > 0.
+		const limit = 20
 		got := MaybeCaptureRequestBody(r, limit)
 		if got == nil {
 			t.Fatal("expected non-nil payload")
 		}
-		// Assert the exact output: first `limit` bytes of body + truncation marker.
-		want := strings.Repeat("x", limit) + payloadTruncationMarker
-		if *got != want {
-			t.Errorf("got %q, want %q", *got, want)
+		// Total stored size must not exceed limit.
+		if len(got) > limit {
+			t.Errorf("stored payload len %d exceeds maxBytes %d", len(got), limit)
+		}
+		// Exact expected value: buf[:limit-markerLen] + marker.
+		markerLen := len(payloadTruncationMarker)
+		want := []byte(strings.Repeat("x", limit-markerLen) + payloadTruncationMarker)
+		if string(got) != string(want) {
+			t.Errorf("got %q, want %q", got, want)
 		}
 		// r.Body must still yield the full original body.
 		if body := readBody(r); body != long {
@@ -199,7 +205,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 	t.Run("nil body returns nil", func(t *testing.T) {
 		r, _ := http.NewRequest(http.MethodPost, "/", nil)
 		if got := MaybeCaptureRequestBody(r, 4096); got != nil {
-			t.Errorf("expected nil for nil body, got %q", *got)
+			t.Errorf("expected nil for nil body, got %q", got)
 		}
 	})
 }
@@ -210,7 +216,9 @@ func TestNew_NilDB(t *testing.T) {
 	if r != nil {
 		t.Error("expected nil ErrorRecorder for nil db")
 	}
-	// nil receiver Record must be a safe no-op.
+	// nil receiver Record must be a safe no-op with nil and non-nil payloads.
 	var nilRec *ErrorRecorder
 	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, nil)
+	payload := []byte("test-payload")
+	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, payload)
 }

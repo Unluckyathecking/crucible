@@ -37,11 +37,18 @@ interface ErrorEventRow {
   message: string;
   request_id: string;
   created_at: Date;
-  // request_payload is NULL unless ERROR_PAYLOAD_CAPTURE is enabled on the gateway.
-  // Isolation: customer_id = $1 in the query ensures rows from other customers
-  // are never returned, so request_payload cannot leak across customers.
-  request_payload: string | null;
+  // request_payload is stored as BYTEA; node-postgres returns it as Buffer.
+  // NULL unless ERROR_PAYLOAD_CAPTURE is enabled on the gateway.
+  // Isolation: customer_id = $1 ensures rows from other customers are never returned.
+  request_payload: Buffer | null;
 }
+
+// SerializedErrorEvent is the wire shape returned by the API: request_payload
+// is converted from Buffer (BYTEA) to string at the boundary.
+type SerializedErrorEvent = Omit<ErrorEventRow, "created_at" | "request_payload"> & {
+  created_at: string;
+  request_payload: string | null;
+};
 
 async function listErrorEvents(
   customerId: string,
@@ -51,7 +58,7 @@ async function listErrorEvents(
   code: string | undefined,
   offset: number,
   limit: number,
-): Promise<{ data: (Omit<ErrorEventRow, "created_at"> & { created_at: string })[]; has_more: boolean }> {
+): Promise<{ data: SerializedErrorEvent[]; has_more: boolean }> {
   // customerId is the UUID returned by ensureCustomer — never user input.
   // All 7 $N positions are hardcoded; optional filters use IS NULL OR so no
   // dynamic placeholder construction is needed.
@@ -86,7 +93,9 @@ async function listErrorEvents(
     message: row.message,
     request_id: row.request_id,
     created_at: row.created_at.toISOString(),
-    request_payload: row.request_payload ?? null,
+    // Convert BYTEA Buffer → UTF-8 string for display; non-UTF-8 bytes become
+    // replacement characters (acceptable for debugging payloads).
+    request_payload: row.request_payload ? row.request_payload.toString("utf8") : null,
   }));
   return { data: rows, has_more: hasMore };
 }

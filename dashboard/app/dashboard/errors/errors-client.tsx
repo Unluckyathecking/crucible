@@ -279,7 +279,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                         <td className="py-2 pr-3 text-right tabular-nums text-xs">{e.http_status}</td>
                         <td className="py-2 pr-3 text-xs text-zinc-600 max-w-xs truncate">{e.message}</td>
                         <td className="py-2 pr-3 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
-                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs truncate" title={e.request_payload ?? undefined}>
+                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs truncate">
                           {e.request_payload ?? <span className="text-zinc-300">—</span>}
                         </td>
                       </tr>

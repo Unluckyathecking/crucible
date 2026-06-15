@@ -64,15 +64,15 @@ func New(db *pgxpool.Pool) *ErrorRecorder {
 // The ctx parameter is accepted for API symmetry but is not forwarded to the
 // goroutine — recording uses a fresh background context so a cancelled request
 // context does not abort the write.
-// requestPayload is stored verbatim when non-nil; the caller is responsible for
-// bounding its size (see MaybeCaptureRequestBody). It must never appear in logs
-// or metric labels — only in the auth-gated dashboard surface.
+// requestPayload is stored verbatim (as BYTEA) when non-nil; the caller is
+// responsible for bounding its size (see MaybeCaptureRequestBody). It must
+// never appear in logs or metric labels — only in the auth-gated dashboard surface.
 func (r *ErrorRecorder) Record(
 	_ context.Context,
 	customerID, apiKeyID uuid.UUID,
 	operation, errorCode, requestID, message string,
 	httpStatus int,
-	requestPayload *string,
+	requestPayload []byte,
 ) {
 	if r == nil {
 		return
@@ -91,12 +91,12 @@ func (r *ErrorRecorder) Record(
 	db, sem := r.db, r.sem
 	cid, kid := customerID, apiKeyID
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
-	// requestPayload is a pointer; copy the value it points to (if any) so the
-	// goroutine is not aliased to caller memory after Record returns.
-	var payloadCopy *string
+	// Copy the payload slice so the goroutine is not aliased to caller memory.
+	// nil stays nil (→ DB NULL); non-nil gets an independent backing array.
+	var payloadCopy []byte
 	if requestPayload != nil {
-		s := *requestPayload
-		payloadCopy = &s
+		payloadCopy = make([]byte, len(requestPayload))
+		copy(payloadCopy, requestPayload)
 	}
 	go func() {
 		defer func() {
@@ -128,23 +128,25 @@ func (r *ErrorRecorder) Record(
 const payloadTruncationMarker = " [TRUNCATED]"
 
 // MaybeCaptureRequestBody reads up to maxBytes from r.Body, restores r.Body
-// so downstream handlers can still consume it, and returns a pointer to the
-// (possibly truncated) payload string.
+// so downstream handlers can still consume it, and returns the (possibly
+// truncated) payload as a byte slice suitable for insertion into a BYTEA column.
 //
 // When maxBytes <= 0 the function is a no-op: it returns nil without touching
 // r.Body, performing zero allocations. This is the behaviour when the
 // ERROR_PAYLOAD_CAPTURE config flag is off.
 //
-// When the body exceeds maxBytes the stored string is truncated to maxBytes
-// bytes and payloadTruncationMarker is appended. The string may contain
-// arbitrary bytes (the request body is not assumed to be valid UTF-8 or JSON).
-func MaybeCaptureRequestBody(r *http.Request, maxBytes int) *string {
+// When the body exceeds maxBytes the returned slice is
+// buf[:maxBytes-len(marker)] + marker so the total stored size never exceeds
+// maxBytes bytes (the request body is not assumed to be valid UTF-8 or JSON;
+// BYTEA stores it verbatim).
+func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
-	// Read at most maxBytes+1 bytes so we can detect truncation without
-	// consuming the full (potentially large) body.
-	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
+	// Read at most maxBytes+truncationProbeBytes so we can detect whether the
+	// body exceeds maxBytes without buffering the full (potentially large) body.
+	const truncationProbeBytes = 1
+	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+truncationProbeBytes))
 	// Restore r.Body unconditionally so downstream handlers can still read it.
 	// io.MultiReader concatenates the bytes we consumed with whatever remains
 	// in the original body (empty when body length <= maxBytes+1).
@@ -153,13 +155,21 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) *string {
 		// Partial read — skip capture but leave body in a readable state.
 		return nil
 	}
-	var payload string
 	if len(buf) > maxBytes {
-		payload = string(buf[:maxBytes]) + payloadTruncationMarker
-	} else {
-		payload = string(buf)
+		// Reserve space for the marker so the total stored size ≤ maxBytes.
+		markerBytes := []byte(payloadTruncationMarker)
+		truncLen := maxBytes - len(markerBytes)
+		if truncLen < 0 {
+			truncLen = 0
+		}
+		out := make([]byte, 0, truncLen+len(markerBytes))
+		out = append(out, buf[:truncLen]...)
+		out = append(out, markerBytes...)
+		return out
 	}
-	return &payload
+	out := make([]byte, len(buf))
+	copy(out, buf)
+	return out
 }
 
 // Capture wraps http.ResponseWriter, buffering the response body for error
