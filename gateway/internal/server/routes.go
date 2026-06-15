@@ -378,7 +378,15 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			// Intentional ordering: body is captured before ratelimit/quota so that
 			// 429 (Too Many Requests) and 402 (Payment Required) rejections also have
 			// payloads recorded. 401/403 from auth run before this middleware and are
-			// not captured. Cost is bounded by maxPayloadBytes+1 when capture is on.
+			// not captured.
+			// Memory trade-off: when capture is on, each authenticated request
+			// allocates up to maxPayloadBytes+1 bytes before the rate-limit check runs.
+			// This is a deliberate bounded-DoS trade-off: maxPayloadBytes is capped at
+			// 1 MiB by config validation, and the BodyLimit middleware already rejects
+			// bodies larger than BodyLimitBytes before this middleware runs, so the
+			// worst-case allocation is min(maxPayloadBytes, BodyLimitBytes)+1 per request.
+			// The bounded allocation is acceptable given that capture is opt-in and
+			// per-customer rate limits constrain the request rate.
 			var reqPayload []byte
 			if capturePayload {
 				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)

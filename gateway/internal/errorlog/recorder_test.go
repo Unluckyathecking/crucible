@@ -2,6 +2,7 @@ package errorlog
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -508,6 +511,57 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("sensitive payload leaked into log output: %q", logBuf.String())
 		}
 	})
+}
+
+// TestRecord_GoroutineNeverLogsPayload verifies the security invariant that
+// the goroutine spawned by Record never includes payload bytes in any log line.
+// The goroutine logs exactly one line on DB failure — "error event record failed"
+// with Err and request_id fields only. A pool pointed at an unreachable address
+// triggers that path without requiring a live Postgres instance.
+func TestRecord_GoroutineNeverLogsPayload(t *testing.T) {
+	// 127.0.0.1:59999 — very unlikely to be occupied; TCP RST is immediate so
+	// the connection fails well inside the dbTimeout window (2 s).
+	pool, err := pgxpool.New(context.Background(),
+		"postgres://x:x@127.0.0.1:59999/x?connect_timeout=1")
+	if err != nil {
+		t.Skipf("cannot create test pool: %v", err)
+	}
+	defer pool.Close()
+
+	rec := New(pool)
+
+	var logBuf bytes.Buffer
+	origLogger := log.Logger
+	log.Logger = zerolog.New(&logBuf)
+	t.Cleanup(func() { log.Logger = origLogger })
+
+	sensitivePayload := []byte("SENSITIVE_SECRET_DATA_sentinel_abc123")
+	rec.Record(context.Background(),
+		uuid.New(), uuid.New(), "/v1/test", "ERR", "req-sentinel-1", "msg", 500,
+		sensitivePayload)
+
+	// Fill the semaphore to capacity (minus the goroutine's own slot) then
+	// block on the final send. The goroutine releases its slot in its defer
+	// (<-sem), which unblocks our send, guaranteeing the goroutine has finished
+	// before we inspect the log buffer. No sleep needed.
+	for i := 0; i < maxConcurrent-1; i++ {
+		rec.sem <- struct{}{}
+	}
+	rec.sem <- struct{}{} // blocks until goroutine releases
+	// Drain all slots we added so the recorder stays in a clean state.
+	for i := 0; i < maxConcurrent; i++ {
+		<-rec.sem
+	}
+
+	// The goroutine must have logged something (DB failure triggers the warn line).
+	if logBuf.Len() == 0 {
+		// If nothing was logged the port is in use — treat as skip.
+		t.Skip("no log output; port 59999 may be occupied or connection was unexpectedly silent")
+	}
+	// The sensitive payload bytes must NOT appear in any log field.
+	if bytes.Contains(logBuf.Bytes(), sensitivePayload) {
+		t.Errorf("payload leaked into goroutine error log: %q", logBuf.String())
+	}
 }
 
 // TestNew_NilDB returns nil so callers can pass nil safely.
