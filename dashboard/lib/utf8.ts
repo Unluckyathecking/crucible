@@ -1,0 +1,42 @@
+/**
+ * truncateUtf8Buffer returns a UTF-8 string from buf truncated to at most
+ * maxBytes at a complete codepoint boundary. It walks backward past UTF-8
+ * continuation bytes to find the preceding start byte, then checks whether
+ * the full sequence fits in [0, maxBytes). If it fits, all bytes of the
+ * sequence are included; if not, the start byte is excluded so the output
+ * never contains a partial sequence.
+ *
+ * Only valid UTF-8 lead byte ranges are accepted: 0xC2-0xDF (2-byte),
+ * 0xE0-0xEF (3-byte), 0xF0-0xF4 (4-byte). Bytes 0xC0-0xC1 are overlong
+ * encodings and 0xF5-0xFF are out-of-range; both are excluded by dropping
+ * the lead byte rather than treating them as valid sequence starters.
+ */
+export function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (buf.length <= maxBytes) return buf.toString("utf8");
+  let end = maxBytes;
+  // Walk back past continuation bytes (high two bits = 0b10 = 0x80–0xBF).
+  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
+  // If we stopped at a multi-byte lead byte, verify its full sequence fits.
+  if (end > 0 && (buf[end - 1] & 0x80) !== 0) {
+    const lead = buf[end - 1];
+    let seqLen: number;
+    if (lead >= 0xc2 && lead <= 0xdf) {
+      seqLen = 2;
+    } else if (lead >= 0xe0 && lead <= 0xef) {
+      seqLen = 3;
+    } else if (lead >= 0xf0 && lead <= 0xf4) {
+      seqLen = 4;
+    } else {
+      // Invalid lead byte (overlong 0xC0-0xC1 or out-of-range 0xF5-0xFF): exclude it.
+      end--;
+      return buf.toString("utf8", 0, end);
+    }
+    if (end - 1 + seqLen <= maxBytes) {
+      end = end - 1 + seqLen; // complete sequence fits: restore end past all its bytes
+    } else {
+      end = end - 1; // sequence is split at maxBytes: exclude the lead byte
+    }
+  }
+  return buf.toString("utf8", 0, end);
+}
