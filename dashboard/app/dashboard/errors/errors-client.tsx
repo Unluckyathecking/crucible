@@ -97,6 +97,16 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [codeFilter, setCodeFilter] = useState("");
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  // Payloads are hidden by default; customers must explicitly expand each row
+  // to view the payload since it may contain sensitive request data.
+  const [expandedPayloads, setExpandedPayloads] = useState<Set<string>>(new Set());
+  const togglePayload = useCallback((id: string) => {
+    setExpandedPayloads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   // Initialised to server-provided initialTo so the first paint matches the
   // server render (no hydration mismatch). The useEffect corrects to the
   // actual client-side today after hydration in case midnight crossed between
@@ -291,8 +301,19 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                         <td className="py-2 pr-3 text-right tabular-nums text-xs">{e.http_status}</td>
                         <td className="py-2 pr-3 text-xs text-zinc-600 max-w-xs truncate">{e.message}</td>
                         <td className="py-2 pr-3 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
-                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs truncate">
-                          {e.request_payload ?? <span className="text-zinc-300">—</span>}
+                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs">
+                          {e.request_payload == null ? (
+                            <span className="text-zinc-300">—</span>
+                          ) : expandedPayloads.has(e.id) ? (
+                            <span className="break-all">{e.request_payload}</span>
+                          ) : (
+                            <button
+                              onClick={() => togglePayload(e.id)}
+                              className="underline text-zinc-400 hover:text-zinc-700 text-xs"
+                            >
+                              Show payload
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
