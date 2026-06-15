@@ -356,6 +356,25 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
+	t.Run("on: empty body (explicit NopCloser) returns empty non-nil slice", func(t *testing.T) {
+		// http.NewRequest with an empty strings.Reader sets r.Body = http.NoBody
+		// (Go converts zero-ContentLength bodies). Use an explicit NopCloser so
+		// MaybeCaptureRequestBody sees a non-nil, non-NoBody body and exercises
+		// the full capture path, returning []byte{} (non-nil but length 0).
+		r, _ := http.NewRequest(http.MethodPost, "/", nil)
+		r.Body = io.NopCloser(strings.NewReader(""))
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got == nil {
+			t.Error("expected non-nil empty slice for empty body, got nil")
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty slice, got len=%d (%q)", len(got), got)
+		}
+		if body := mustReadBody(t, r); body != "" {
+			t.Errorf("body not restored: got %q", body)
+		}
+	})
+
 	t.Run("negative maxBytes returns nil", func(t *testing.T) {
 		// Negative maxBytes must behave identically to zero: no capture,
 		// no body read, zero allocations on the hot path.

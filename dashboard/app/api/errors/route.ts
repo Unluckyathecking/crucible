@@ -57,8 +57,14 @@ function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
 function parseISODate(s: string): Date | null {
   if (!ISO_DATE_RE.test(s)) return null;
   const d = new Date(s + ISO_MIDNIGHT_SUFFIX);
-  // Round-trip check catches calendar overflow: "2023-02-30" parses to "2023-03-02".
-  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
+  if (isNaN(d.getTime())) return null;
+  // Round-trip check catches calendar overflow ("2023-02-30" → "2023-03-02").
+  // Reconstructed from UTC components rather than toISOString() so the check
+  // is explicit and independent of any year-padding differences across runtimes.
+  const yyyy = String(d.getUTCFullYear()).padStart(4, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  if (`${yyyy}-${mm}-${dd}` !== s) return null;
   return d;
 }
 

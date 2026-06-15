@@ -16,7 +16,10 @@ import (
 // The stored payload must be large enough to always include the truncation marker
 // so consumers can distinguish a truncated body from a complete one.
 // Keep in sync with payloadTruncationMarker in gateway/internal/errorlog/recorder.go.
-const minErrorPayloadMaxBytes = 12
+const (
+	minErrorPayloadMaxBytes = 12
+	maxErrorPayloadMaxBytes = 1048576 // 1 MiB
+)
 
 type Config struct {
 	// Gateway HTTP
@@ -163,8 +166,8 @@ func Load() (*Config, error) {
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < minErrorPayloadMaxBytes {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", minErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
 	}
-	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > 1048576 {
-		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= 1048576 (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > maxErrorPayloadMaxBytes {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= %d (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", maxErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
 	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat

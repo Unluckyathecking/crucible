@@ -31,7 +31,10 @@ const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = String(d.getUTCFullYear()).padStart(4, "0");
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 async function fetchErrors(
