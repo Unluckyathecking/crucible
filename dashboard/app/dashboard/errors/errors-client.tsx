@@ -82,16 +82,16 @@ async function fetchErrors(
   }
 }
 
-// formatTs formats an ISO 8601 timestamp string for display.
-// An explicit format guard runs before Date.parse so that non-ISO strings
-// (e.g. RFC 2822, locale-specific) are returned verbatim rather than being
-// silently reinterpreted by the browser's permissive date parser.
+// formatTs formats an ISO 8601 UTC timestamp for display.
+// ISO_TS_RE matches the exact wire format from the API ("YYYY-MM-DDTHH:mm:ss.mmmZ");
+// strings that don't match are returned verbatim. For matching strings the display
+// is derived directly from known character positions — no Date.parse involved, so
+// there is no locale-sensitivity or browser-parser ambiguity risk.
 const ISO_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 function formatTs(iso: string): string {
   if (!ISO_TS_RE.test(iso)) return iso;
-  const ms = Date.parse(iso);
-  if (isNaN(ms)) return iso;
-  return new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  // "2026-06-15T19:09:27.000Z" → "2026-06-15 19:09:27 UTC"
+  return iso.slice(0, 10) + " " + iso.slice(11, 19) + " UTC";
 }
 
 interface ErrorsClientProps {
