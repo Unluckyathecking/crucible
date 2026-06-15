@@ -38,12 +38,13 @@ function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (buf.length <= maxBytes) return buf.toString("utf8");
   // Walk end backwards past UTF-8 continuation bytes (high two bits = 0b10,
   // i.e. 0x80–0xBF) to land on a complete codepoint boundary.
-  // Bounds safety: end starts at maxBytes where 0 < maxBytes < buf.length, so
-  // buf[end-1] accesses indices 0..maxBytes-1, all within [0, buf.length-1].
-  // The loop guard end > 0 ensures end never goes negative; it terminates
-  // because end strictly decrements on every iteration.
+  // The loop guard `end > 0` is checked before any buffer access, guaranteeing
+  // buf[end-1] is only read when end >= 1. Since end starts at maxBytes < buf.length,
+  // buf[end-1] is always within [0, buf.length-1]. The loop terminates because end
+  // strictly decrements on each iteration toward zero.
   let end = maxBytes;
-  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) {
+  while (end > 0) {
+    if ((buf[end - 1] & 0xc0) !== 0x80) break;
     end--;
   }
   return buf.toString("utf8", 0, end);
@@ -190,6 +191,15 @@ export async function GET(request: Request): Promise<Response> {
       // next midnight for the exclusive DB bound using date-overflow-safe math.
       const d = parsed;
       toExclusive = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
+    }
+    // Reject future 'to' dates server-side — error events only exist for past
+    // requests, so future queries always return zero rows and indicate a client bug.
+    // toExclusive is capped at tomorrowMidnight (inclusive of today).
+    if (toExclusive.getTime() > tomorrowMidnight.getTime()) {
+      return new Response(JSON.stringify({ error: "'to' date must not be in the future" }), {
+        status: 400,
+        headers: noStore,
+      });
     }
     // Range validation compares the user-visible bounds directly.
     // userVisibleToMs is the inclusive `to` date (toExclusive minus one day).
