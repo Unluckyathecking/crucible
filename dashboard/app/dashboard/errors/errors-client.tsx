@@ -72,7 +72,10 @@ async function fetchErrors(
       !Array.isArray((body as Record<string, unknown>).data) ||
       typeof (body as Record<string, unknown>).has_more !== "boolean" ||
       typeof (body as Record<string, unknown>).page !== "number" ||
-      typeof (body as Record<string, unknown>).limit !== "number"
+      typeof (body as Record<string, unknown>).limit !== "number" ||
+      !(body as { data: unknown[] }).data.every(
+        (item) => typeof item === "object" && item !== null && "id" in item && "request_payload" in item,
+      )
     ) {
       return { error: "Invalid response format" };
     }

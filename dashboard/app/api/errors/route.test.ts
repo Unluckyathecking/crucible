@@ -78,9 +78,10 @@ describe("GET /api/errors — cross-customer isolation", () => {
     mockEnsureCustomer.mockResolvedValue(CUSTOMER_2 as never);
 
     await GET(makeRequest());
-    const [, params2] = mockQuery.mock.calls[0] as [string, unknown[]];
+    const [sql2, params2] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(params2[0]).toBe(CUSTOMER_2.id);
-    expect(params2[0]).not.toBe(params1[0]);
+    expect(sql2).toMatch(/WHERE\s+customer_id\s*=\s*\$1/i);
+    expect((params2 as unknown[]).filter(p => p === CUSTOMER_1.id)).toHaveLength(0);
   });
 
   it("request_payload rows are scoped to the authenticated customer: customer 2 cannot see customer 1 payloads", async () => {

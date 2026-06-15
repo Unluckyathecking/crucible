@@ -115,8 +115,10 @@ func (r *ErrorRecorder) Record(
 		ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 		defer cancel()
 		// api_key_id is nullable; pass nil for the zero UUID to avoid a spurious FK reference.
+		// uuid.UUID is [16]byte; comparing with the zero-value literal is the
+		// canonical Go way to detect the nil/zero UUID.
 		var apiKeyPtr *uuid.UUID
-		if kid != uuid.Nil {
+		if kid != (uuid.UUID{}) {
 			apiKeyPtr = &kid
 		}
 		_, err := db.Exec(ctx, `
@@ -175,7 +177,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 		// successfully read so downstream handlers still see a coherent (truncated)
 		// body rather than a broken reader.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
-		log.Error().Err(err).Msg("payload capture: error reading request body")
+		log.Warn().Err(err).Msg("payload capture: error reading request body")
 		return nil
 	}
 	// Success path: originalBody is positioned after len(buf) bytes. Prepend buf
