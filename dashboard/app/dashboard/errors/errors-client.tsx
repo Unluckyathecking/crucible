@@ -30,13 +30,14 @@ const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
-// toISODate converts a UTC midnight timestamp (ms since epoch) to "YYYY-MM-DD".
+// toISODate converts a UTC millisecond timestamp to "YYYY-MM-DD".
 // Accepts a number so callers must supply a UTC value explicitly, avoiding any
 // ambiguity between local-time Date objects and UTC Date objects.
-// Non-finite or negative inputs are rejected: they indicate a programming error
-// (e.g. a stale/uninitialized value) and would produce a nonsense date string.
+// Non-finite inputs are rejected as they indicate a programming error
+// (e.g. a stale/uninitialized value). Negative values (pre-1970 UTC) are
+// valid and converted correctly by new Date(utcMs).
 function toISODate(utcMs: number): string {
-  if (!Number.isFinite(utcMs) || utcMs < 0) throw new RangeError(`toISODate: invalid utcMs ${utcMs}`);
+  if (!Number.isFinite(utcMs)) throw new RangeError(`toISODate: non-finite utcMs ${utcMs}`);
   const d = new Date(utcMs);
   const y = String(d.getUTCFullYear()).padStart(4, "0");
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -90,6 +91,8 @@ async function fetchErrors(
 // strings that don't match are returned verbatim. For matching strings the display
 // is derived directly from known character positions — no Date.parse involved, so
 // there is no locale-sensitivity or browser-parser ambiguity risk.
+// Leap-second timestamps (HH:mm:60) cannot appear here: PostgreSQL and Go's
+// time package both use POSIX time, which has no leap-second representation.
 const ISO_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 function formatTs(iso: string): string {
   if (!ISO_TS_RE.test(iso)) return iso;

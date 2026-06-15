@@ -28,7 +28,9 @@ const OPERATION_FILTER_RE = /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/;
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 // Defense-in-depth cap on request_payload display length in bytes.
 // The gateway already truncates at ErrorPayloadMaxBytes (default 4 KiB, max 1 MiB);
-// this ensures the API response is bounded even if the column is modified directly.
+// this cap is intentionally set higher (8 KiB) so the gateway's configured limit
+// is always the effective bound — capping at the same value as the gateway default
+// would silently truncate payloads if the operator raises ErrorPayloadMaxBytes above 4 KiB.
 const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
 
@@ -126,6 +128,12 @@ async function listErrorEvents(
 const noStore = { "content-type": "application/json", "cache-control": "no-store" } as const;
 
 export async function GET(request: Request): Promise<Response> {
+  // Defense-in-depth CSRF check: a cross-origin browser fetch cannot set
+  // X-Requested-With without a CORS preflight, and this route does not send
+  // CORS headers, so the preflight would be denied before the request reaches
+  // here. The primary CSRF protection is the NextAuth session cookie (SameSite).
+  // This header check is an additional layer; it is not bypassable via a
+  // standard cross-origin request from a web page.
   const requestedWith = request.headers.get("X-Requested-With") ?? "";
   if (requestedWith.toLowerCase() !== "xmlhttprequest") {
     return new Response(JSON.stringify({ error: "Forbidden" }), {

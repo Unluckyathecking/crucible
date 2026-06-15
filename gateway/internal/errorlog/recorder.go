@@ -193,8 +193,16 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 			// len(payloadTruncationMarker) is enforced when capture is enabled).
 			return nil
 		}
-		out := make([]byte, 0, truncLen+len(markerBytes))
-		out = append(out, buf[:truncLen]...)
+		// Walk back from the byte boundary to a valid UTF-8 start byte so the
+		// stored payload never contains an incomplete multi-byte sequence before
+		// the marker. Continuation bytes (0x80–0xBF, high two bits = 0b10) are
+		// skipped; the loop stops at an ASCII or lead byte, or at index 0.
+		end := truncLen
+		for end > 0 && (buf[end-1]&0xc0) == 0x80 {
+			end--
+		}
+		out := make([]byte, 0, end+len(markerBytes))
+		out = append(out, buf[:end]...)
 		out = append(out, markerBytes...)
 		return out
 	}
