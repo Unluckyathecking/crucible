@@ -185,8 +185,12 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     // useEffect update (e.g. across a UTC midnight) would otherwise be ignored.
     const applyNow = new Date();
     const todayMs = Date.UTC(applyNow.getUTCFullYear(), applyNow.getUTCMonth(), applyNow.getUTCDate());
-    // Future-date check runs before order check so that a future 'to' date is
-    // always caught regardless of how 'from' and 'to' relate to each other.
+    // Future-date checks run before the order check so future dates are always
+    // caught with a precise message regardless of how from and to relate.
+    if (fromMs > todayMs) {
+      setRangeError("'From' date cannot be in the future");
+      return;
+    }
     if (toMs > todayMs) {
       setRangeError("'To' date cannot be in the future");
       return;

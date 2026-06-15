@@ -39,9 +39,9 @@ const (
 	maxMessageBytes = 1024
 )
 
-// truncationProbeBytes is the extra byte read past maxBytes to detect whether
+// overflowProbeBytes is the extra byte read past maxBytes to detect whether
 // the body exceeds the capture limit without buffering the full body.
-const truncationProbeBytes = 1
+const overflowProbeBytes = 1
 
 // ErrorRecorder writes error_events rows asynchronously with a bounded
 // goroutine pool. Fields are immutable after New returns; goroutines capture
@@ -151,7 +151,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
-	// Read at most maxBytes+truncationProbeBytes to detect whether body exceeds
+	// Read at most maxBytes+overflowProbeBytes to detect whether body exceeds
 	// maxBytes without buffering the full body.
 	// io.LimitReader.Read truncates the caller's buffer to at most remaining bytes
 	// before calling the underlying Read, so r.Body cannot advance beyond the limit
@@ -160,7 +160,7 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	// below always pairs buf with the same stream that was advanced, not with
 	// any later value of r.Body.
 	originalBody := r.Body
-	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+truncationProbeBytes))
+	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+overflowProbeBytes))
 	if err != nil {
 		// On a read error, originalBody is likely in an error state and chaining
 		// it via MultiReader would fail downstream too. Restore only the bytes we

@@ -12,9 +12,9 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-// minErrorPayloadMaxBytes mirrors len(errorlog.payloadTruncationMarker) = 12.
-// The stored payload must be large enough to always include the truncation marker
-// so consumers can distinguish a truncated body from a complete one.
+// minErrorPayloadMaxBytes mirrors len(" [TRUNCATED]") = 12, the byte length of
+// errorlog.payloadTruncationMarker. The stored payload must be at least this large
+// so consumers can always distinguish a truncated body from a complete one.
 // Keep in sync with payloadTruncationMarker in gateway/internal/errorlog/recorder.go.
 const (
 	minErrorPayloadMaxBytes = 12
