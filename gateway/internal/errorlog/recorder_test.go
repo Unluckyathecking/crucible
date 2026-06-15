@@ -186,6 +186,9 @@ func TestCapture_Flush(t *testing.T) {
 	c := NewCapture(w)
 	// httptest.ResponseRecorder implements http.Flusher; Flush must not panic.
 	c.Flush()
+	if !w.Flushed {
+		t.Error("expected underlying ResponseRecorder to be marked as flushed")
+	}
 }
 
 // TestCapture_Hijack verifies Hijack returns an error for non-hijacking writers.
