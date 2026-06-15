@@ -22,6 +22,8 @@ const MAX_FILTER_LENGTH = 128;
 // consecutive slashes (//v1) and trailing slashes (/v1/). Hyphen is last in the
 // character class to avoid range-syntax ambiguity with the preceding ranges.
 const OPERATION_FILTER_RE = /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/;
+// {1,128} enforces a minimum of one character; empty strings are also
+// rejected upstream by the codeRaw.trim().length > 0 guard.
 const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 // Defense-in-depth cap on request_payload display length in bytes.
 // The gateway already truncates at ErrorPayloadMaxBytes (default 4 KiB, max 1 MiB);

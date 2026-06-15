@@ -101,6 +101,9 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   // server render (no hydration mismatch). The useEffect corrects to the
   // actual client-side today after hydration in case midnight crossed between
   // server render and client mount.
+  // Note: handleApply does NOT read todayUTC — it recomputes today's UTC date
+  // inline at apply-time (via Date.UTC) to avoid a stale-closure issue.
+  // todayUTC is only consumed by the date-picker max= attribute below.
   const [todayUTC, setTodayUTC] = useState(initialTo);
   useEffect(() => {
     const now = new Date();
