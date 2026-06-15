@@ -31,14 +31,15 @@ const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
 // toISODate converts a UTC millisecond timestamp (or a Date) to "YYYY-MM-DD".
-// Accepts number | Date so callers can pass Date.UTC(...) or a Date object
-// without an extra conversion step. Non-finite ms values are rejected as they
-// indicate a programming error. Negative values (pre-1970 UTC) are valid.
+// Accepts number | Date so callers can pass Date.UTC(...) or a Date object.
+// Non-finite or negative ms values are rejected: non-finite indicates a
+// programming error; negative represents a pre-1970 UTC date which can never
+// correspond to an error event (the gateway predates no known deployment).
 // toISOString() always returns a UTC string ending in "Z"; slicing the first
 // 10 characters yields the UTC calendar date for any valid timestamp.
 function toISODate(utcMs: number | Date): string {
   const ms = utcMs instanceof Date ? utcMs.getTime() : utcMs;
-  if (!Number.isFinite(ms)) throw new RangeError(`toISODate: non-finite utcMs ${ms}`);
+  if (!Number.isFinite(ms) || ms < 0) throw new RangeError(`toISODate: invalid utcMs ${ms}`);
   return new Date(ms).toISOString().slice(0, 10);
 }
 
