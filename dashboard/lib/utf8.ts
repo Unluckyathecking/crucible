@@ -29,7 +29,10 @@ export function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
       seqLen = 4;
     } else {
       // Invalid lead byte (overlong 0xC0-0xC1 or out-of-range 0xF5-0xFF): exclude it.
+      // Then walk back past any continuation bytes that were preceding it and are
+      // now orphaned — they had no valid lead and must not be included in the output.
       end--;
+      while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
       return buf.toString("utf8", 0, end);
     }
     if (end - 1 + seqLen <= maxBytes) {

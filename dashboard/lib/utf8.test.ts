@@ -51,6 +51,15 @@ describe("truncateUtf8Buffer", () => {
     expect(result).toBe("A");
   });
 
+  it("walks back past orphaned continuation bytes after excluding an invalid lead byte", () => {
+    // Buffer: 'a' (0x61), lone continuation 0x80, invalid overlong lead 0xC0, continuation 0x80.
+    // At maxBytes=3 the walk-back stops at 0xC0 (not a continuation byte), detects it as
+    // an invalid lead, and does end--. The 0x80 at position 1 is now orphaned at the end
+    // of the slice; the second walk-back must exclude it so only 'a' is returned.
+    const b = bufHex("6180C080");
+    expect(truncateUtf8Buffer(b, 3)).toBe("a");
+  });
+
   it("excludes out-of-range lead bytes (0xF5-0xFF)", () => {
     const b = bufHex("41F5808080"); // 'A' + invalid lead 0xF5 + continuations
     const result = truncateUtf8Buffer(b, 2);
