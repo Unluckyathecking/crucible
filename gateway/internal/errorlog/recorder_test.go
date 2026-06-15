@@ -166,6 +166,54 @@ func TestCapture_ParseErrorFields(t *testing.T) {
 		}
 	})
 
+	t.Run("message truncated before 3-byte rune straddling boundary", func(t *testing.T) {
+		// Place a 3-byte rune (日 = U+65E5 = 0xE6 0x97 0xA5) so that its lead
+		// byte lands at maxMessageBytes-2, and the two continuation bytes land
+		// at maxMessageBytes-1 and maxMessageBytes. All three bytes must be
+		// excluded, leaving a valid ASCII prefix of length maxMessageBytes-2.
+		prefix := strings.Repeat("a", maxMessageBytes-2)
+		long := prefix + "日z"
+		payload := `{"error":{"code":"ERR","message":"` + long + `"}}`
+		w := httptest.NewRecorder()
+		c := NewCapture(w)
+		c.WriteHeader(http.StatusBadGateway)
+		c.Write([]byte(payload))
+		_, msg := c.ParseErrorFields()
+		if !utf8.ValidString(msg) {
+			t.Errorf("truncated message is not valid UTF-8: %q", msg)
+		}
+		if len(msg) > maxMessageBytes {
+			t.Errorf("message not truncated: len=%d, max=%d", len(msg), maxMessageBytes)
+		}
+		if msg != prefix {
+			t.Errorf("expected %q, got %q", prefix, msg)
+		}
+	})
+
+	t.Run("message truncated before 4-byte rune straddling boundary", func(t *testing.T) {
+		// Place a 4-byte rune (😀 = U+1F600 = 0xF0 0x9F 0x98 0x80) so that
+		// its lead byte lands at maxMessageBytes-1 and its three continuation
+		// bytes spill past the boundary. The lead byte must be excluded,
+		// leaving a valid ASCII prefix of length maxMessageBytes-1.
+		prefix := strings.Repeat("a", maxMessageBytes-1)
+		long := prefix + "😀z"
+		payload := `{"error":{"code":"ERR","message":"` + long + `"}}`
+		w := httptest.NewRecorder()
+		c := NewCapture(w)
+		c.WriteHeader(http.StatusBadGateway)
+		c.Write([]byte(payload))
+		_, msg := c.ParseErrorFields()
+		if !utf8.ValidString(msg) {
+			t.Errorf("truncated message is not valid UTF-8: %q", msg)
+		}
+		if len(msg) > maxMessageBytes {
+			t.Errorf("message not truncated: len=%d, max=%d", len(msg), maxMessageBytes)
+		}
+		if msg != prefix {
+			t.Errorf("expected %q, got %q", prefix, msg)
+		}
+	})
+
 	t.Run("empty body returns UNKNOWN with empty message", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c := NewCapture(w)
@@ -230,7 +278,31 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if string(got) != input {
 			t.Errorf("payload mismatch: got %q, want %q", got, input)
 		}
+		if !utf8.ValidString(string(got)) {
+			t.Error("captured payload is not valid UTF-8")
+		}
 		// r.Body must be restored so the downstream handler can still read it.
+		if body := mustReadBody(t, r); body != input {
+			t.Errorf("body not restored: got %q, want %q", body, input)
+		}
+	})
+
+	t.Run("on: multi-byte UTF-8 body preserved verbatim", func(t *testing.T) {
+		// BYTEA semantics: multi-byte characters must be captured byte-for-byte
+		// without re-encoding. Verify Japanese characters (3-byte runes each) are
+		// stored and restored exactly.
+		input := "こんにちは世界" // 7 × 3-byte runes = 21 bytes
+		r := makeReq(input)
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got == nil {
+			t.Fatal("expected non-nil payload")
+		}
+		if string(got) != input {
+			t.Errorf("payload mismatch: got %q, want %q", got, input)
+		}
+		if !utf8.ValidString(string(got)) {
+			t.Error("captured payload is not valid UTF-8")
+		}
 		if body := mustReadBody(t, r); body != input {
 			t.Errorf("body not restored: got %q, want %q", body, input)
 		}
