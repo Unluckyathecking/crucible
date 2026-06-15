@@ -29,33 +29,18 @@ const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
 // truncateUtf8Buffer converts a Buffer to a UTF-8 string, truncating at a
 // complete UTF-8 code-point boundary so the result is always valid UTF-8.
-// Two-step algorithm handles all sequence widths including 4-byte emoji:
-//   1. Walk backwards past continuation bytes (0x80–0xBF) to find the start
-//      byte of the incomplete sequence at the boundary.
-//   2. If that start byte's complete sequence fits within maxBytes, include it;
-//      otherwise exclude the start byte too so the output always ends on a
-//      complete code point.
-// Slicing a JS string by index can split a surrogate pair (4-byte emoji);
-// slicing the Buffer before decoding avoids that entirely.
+// Slicing a JS string by code-unit index can split a surrogate pair (4-byte
+// emoji encoded as two surrogates in JS); slicing the underlying Buffer before
+// decoding avoids that entirely.
 function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (buf.length <= maxBytes) return buf.toString("utf8");
-  // end is the exclusive upper bound of the output slice: buf[0 .. end).
-  // Step 1: walk end back through continuation bytes (0b10xxxxxx = 0x80–0xBF).
+  // Walk end backwards past UTF-8 continuation bytes (high two bits = 0b10,
+  // i.e. 0x80–0xBF) to land on a complete codepoint boundary.
+  // Termination is guaranteed: end strictly decrements on every iteration
+  // and the loop condition end > 0 prevents it from going below zero.
   let end = maxBytes;
-  while (end > 0 && (buf[end - 1] & 0b11000000) === 0b10000000) {
+  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) {
     end--;
-  }
-  // Step 2: if we stopped at a multi-byte start byte (0b11xxxxxx = 0xC0+),
-  // its continuation bytes were just excluded by step 1. Determine the full
-  // sequence length; if it fits within maxBytes restore end to include it,
-  // otherwise exclude the start byte so the slice ends on a complete code point.
-  if (end > 0 && (buf[end - 1] & 0b11000000) === 0b11000000) {
-    const startByte = buf[end - 1];
-    const seqLen = (startByte & 0b11110000) === 0b11110000 ? 4
-                 : (startByte & 0b11100000) === 0b11100000 ? 3
-                 : 2;
-    const startIdx = end - 1;
-    end = startIdx + seqLen <= maxBytes ? startIdx + seqLen : startIdx;
   }
   return buf.toString("utf8", 0, end);
 }
