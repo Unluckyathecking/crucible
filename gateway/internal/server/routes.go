@@ -387,7 +387,9 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			// bodies larger than BodyLimitBytes before this middleware runs, so the
 			// worst-case allocation is min(maxPayloadBytes, BodyLimitBytes)+1 per request.
 			// The bounded allocation is acceptable given that capture is opt-in and
-			// per-customer rate limits constrain the request rate.
+			// per-customer rate limits (which still run on every request after capture)
+			// ensure that sustained throughput beyond the window cap is rejected,
+			// bounding the steady-state allocation to rate_limit × maxPayloadBytes per customer.
 			var reqPayload []byte
 			if capturePayload {
 				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)

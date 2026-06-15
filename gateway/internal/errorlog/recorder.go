@@ -201,6 +201,17 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 		for end > 0 && (buf[end-1]&0xc0) == 0x80 {
 			end--
 		}
+		// After removing continuation bytes, also exclude invalid lead bytes
+		// (overlong 0xC0–0xC1 and out-of-Unicode-range 0xF5–0xFF). These bytes
+		// can never start a valid UTF-8 sequence, so including them before the
+		// marker would leave the prefix ending with an undecodable byte.
+		// Mirrors the TypeScript truncateUtf8Buffer second walk-back.
+		if end > 0 {
+			b := buf[end-1]
+			if (b >= 0xc0 && b <= 0xc1) || b >= 0xf5 {
+				end--
+			}
+		}
 		out := make([]byte, 0, end+len(markerBytes))
 		out = append(out, buf[:end]...)
 		out = append(out, markerBytes...)

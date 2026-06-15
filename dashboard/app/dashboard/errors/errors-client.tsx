@@ -36,13 +36,11 @@ const MAX_RANGE_DAYS = 90;
 // Non-finite inputs are rejected as they indicate a programming error
 // (e.g. a stale/uninitialized value). Negative values (pre-1970 UTC) are
 // valid and converted correctly by new Date(utcMs).
+// toISOString() always returns a UTC string ending in "Z"; slicing the first
+// 10 characters yields the UTC calendar date for any valid timestamp.
 function toISODate(utcMs: number): string {
   if (!Number.isFinite(utcMs)) throw new RangeError(`toISODate: non-finite utcMs ${utcMs}`);
-  const d = new Date(utcMs);
-  const y = String(d.getUTCFullYear()).padStart(4, "0");
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return new Date(utcMs).toISOString().slice(0, 10);
 }
 
 async function fetchErrors(
