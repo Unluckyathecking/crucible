@@ -155,6 +155,11 @@ func Load() (*Config, error) {
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes <= 0 {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be > 0 when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
 	}
+	// Minimum must cover the truncation marker (" [TRUNCATED]" = 13 bytes) so the
+	// stored payload is always distinguishable from untruncated content.
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < len(" [TRUNCATED]") {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", len(" [TRUNCATED]"), c.ErrorPayloadMaxBytes)
+	}
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > 1048576 {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= 1048576 (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
 	}

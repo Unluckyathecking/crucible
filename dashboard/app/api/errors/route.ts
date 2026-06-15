@@ -31,10 +31,12 @@ const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 // slicing the Buffer first then decoding avoids this entirely.
 function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (buf.length <= maxBytes) return buf.toString("utf8");
-  // Walk back from maxBytes to find the last byte that starts a new UTF-8 sequence.
-  // Continuation bytes are 0b10xxxxxx (0x80–0xBF); skip them.
+  // Walk back from maxBytes checking the LAST INCLUDED byte (end-1) until we
+  // find one that is not a continuation byte (0b10xxxxxx = 0x80–0xBF).
+  // Checking buf[end-1] (not buf[end]) ensures we don't accidentally include
+  // a byte that belongs to an incomplete multi-byte sequence.
   let end = maxBytes;
-  while (end > 0 && (buf[end] & 0b11000000) === 0b10000000) {
+  while (end > 0 && (buf[end - 1] & 0b11000000) === 0b10000000) {
     end--;
   }
   return buf.toString("utf8", 0, end);

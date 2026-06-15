@@ -371,6 +371,9 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			// Buffer the request body before dispatch so it can still be read by
 			// the invoke handler downstream. MaybeCaptureRequestBody is a no-op
 			// (returns nil, zero allocations) when capturePayload is false.
+			// Intentional ordering: body is captured before ratelimit/quota so that
+			// 429/403 rejections also have payloads recorded. The cost is bounded by
+			// maxPayloadBytes+1 per request when capture is enabled (default: off).
 			var reqPayload []byte
 			if capturePayload {
 				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)

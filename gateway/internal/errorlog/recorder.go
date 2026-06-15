@@ -165,9 +165,15 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	// in the original body (empty when body length <= maxBytes+1).
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
 	if len(buf) > maxBytes {
-		// Reserve space for the marker so the total stored size ≤ maxBytes.
 		markerBytes := []byte(payloadTruncationMarker)
-		truncLen := max(0, maxBytes-len(markerBytes))
+		truncLen := maxBytes - len(markerBytes)
+		if truncLen < 0 {
+			// maxBytes is too small to fit the marker; store raw prefix without it
+			// so total size is exactly maxBytes and the contract is upheld.
+			out := make([]byte, maxBytes)
+			copy(out, buf)
+			return out
+		}
 		out := make([]byte, 0, truncLen+len(markerBytes))
 		out = append(out, buf[:truncLen]...)
 		out = append(out, markerBytes...)
