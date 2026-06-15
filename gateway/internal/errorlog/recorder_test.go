@@ -277,24 +277,21 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		}
 	})
 
-	t.Run("on: truncLen<0 path returns raw prefix without marker", func(t *testing.T) {
-		// When maxBytes < len(payloadTruncationMarker), truncLen is negative and the
-		// code returns the raw first maxBytes bytes without appending the marker
-		// (config.Load prevents this in production via the >= 13 byte minimum check).
-		// BYTEA semantics: raw bytes are stored as-is; UTF-8 alignment is the display
-		// layer's responsibility (see truncateUtf8Buffer in route.ts).
-		// Body: 10 ASCII bytes + 4-byte emoji (😀) + 'b' = 15 bytes total.
-		// maxBytes = len(marker)-1 = 11, so truncLen < 0 → raw first 11 bytes, no marker.
-		body := append(bytes.Repeat([]byte{'a'}, 10), 0xF0, 0x9F, 0x98, 0x80, 0x62) // 15 bytes
+	t.Run("on: truncLen<0 path returns nil to preserve distinguishability", func(t *testing.T) {
+		// When maxBytes < len(payloadTruncationMarker), the function cannot include
+		// the truncation marker, so it returns nil rather than store an ambiguous
+		// raw prefix that callers cannot distinguish from an untruncated body.
+		// r.Body is still restored so downstream handlers receive the full body.
+		// config.Load() prevents this in production (ErrorPayloadMaxBytes >=
+		// len(payloadTruncationMarker) is enforced when capture is enabled).
+		body := append(bytes.Repeat([]byte{'a'}, 20), 0xF0, 0x9F, 0x98, 0x80, 0x62) // 25 bytes
 		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 		maxBytes := len(payloadTruncationMarker) - 1
 		got := MaybeCaptureRequestBody(r, maxBytes)
-		if !bytes.Equal(got, body[:maxBytes]) {
-			t.Errorf("got %x, want raw prefix %x", got, body[:maxBytes])
+		if got != nil {
+			t.Errorf("expected nil when maxBytes < marker length, got %x", got)
 		}
-		if len(got) > maxBytes {
-			t.Errorf("stored len %d exceeds maxBytes %d", len(got), maxBytes)
-		}
+		// r.Body must still be restored so downstream handlers can read it.
 		restored := []byte(readBody(t, r))
 		if !bytes.Equal(restored, body) {
 			t.Errorf("body not restored: got %x", restored)

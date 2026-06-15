@@ -178,13 +178,12 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 		markerBytes := []byte(payloadTruncationMarker)
 		truncLen := maxBytes - len(markerBytes)
 		if truncLen < 0 {
-			// maxBytes < len(marker): config.Load() prevents this in production
-			// (ErrorPayloadMaxBytes >= len(payloadTruncationMarker) is validated).
-			// Store raw prefix without marker; stored size is exactly maxBytes,
-			// satisfying the "never exceeds maxBytes" contract.
-			out := make([]byte, maxBytes)
-			copy(out, buf)
-			return out
+			// maxBytes is too small to hold even the truncation marker, so we
+			// cannot produce a payload that is distinguishable from an untruncated
+			// one. Return nil (no capture) rather than store an ambiguous prefix.
+			// config.Load() prevents this in production (ErrorPayloadMaxBytes >=
+			// len(payloadTruncationMarker) is enforced when capture is enabled).
+			return nil
 		}
 		out := make([]byte, 0, truncLen+len(markerBytes))
 		out = append(out, buf[:truncLen]...)

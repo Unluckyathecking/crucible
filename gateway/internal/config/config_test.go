@@ -783,17 +783,20 @@ func TestErrorPayloadCaptureMaxBytesTooLargeReturnsError(t *testing.T) {
 }
 
 // TestErrorPayloadCaptureOffIgnoresBytesValidation verifies that MaxBytes is not
-// validated when capture is off, so an unconfigured ERROR_PAYLOAD_MAX_BYTES=0
-// doesn't block startup.
+// validated when capture is off, so ERROR_PAYLOAD_MAX_BYTES=0 doesn't block startup.
 func TestErrorPayloadCaptureOffIgnoresBytesValidation(t *testing.T) {
 	setRequiredEnv(t)
-	// capture=false (default); MaxBytes left at default too — both should be OK.
+	setenv(t, "ERROR_PAYLOAD_MAX_BYTES", "0")
+	// capture=false (default); MaxBytes=0 must not trigger validation.
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
 	if c.ErrorPayloadCapture {
 		t.Error("ErrorPayloadCapture should be false")
+	}
+	if c.ErrorPayloadMaxBytes != 0 {
+		t.Errorf("ErrorPayloadMaxBytes = %d, want 0", c.ErrorPayloadMaxBytes)
 	}
 }
 

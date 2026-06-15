@@ -12,6 +12,12 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
+// minErrorPayloadMaxBytes mirrors len(errorlog.payloadTruncationMarker) = 12.
+// The stored payload must be large enough to always include the truncation marker
+// so consumers can distinguish a truncated body from a complete one.
+// Keep in sync with payloadTruncationMarker in gateway/internal/errorlog/recorder.go.
+const minErrorPayloadMaxBytes = 12
+
 type Config struct {
 	// Gateway HTTP
 	Port           int   `envconfig:"GATEWAY_PORT"             default:"8080"`
@@ -152,11 +158,10 @@ func Load() (*Config, error) {
 	// Note: WORKER_BREAKER_THRESHOLD > 0 with WORKER_RETRY_MAX <= 1 is valid but
 	// aggressive — every threshold-th single-shot failure opens the breaker with no
 	// retry mitigation. Operators should understand this interaction before deploying.
-	// Minimum must cover the truncation marker (" [TRUNCATED]" = 12 bytes) so the
-	// stored payload is always distinguishable from untruncated content.
-	// This check subsumes the > 0 guard: any non-positive value also fails here.
-	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < len(" [TRUNCATED]") {
-		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", len(" [TRUNCATED]"), c.ErrorPayloadMaxBytes)
+	// Minimum must cover the truncation marker so the stored payload is always
+	// distinguishable from untruncated content. This check subsumes the > 0 guard.
+	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes < minErrorPayloadMaxBytes {
+		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be >= %d (truncation marker length) when ERROR_PAYLOAD_CAPTURE=true (got %d)", minErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
 	}
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > 1048576 {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= 1048576 (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", c.ErrorPayloadMaxBytes)
