@@ -168,6 +168,13 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     }
     const fromMs = new Date(displayFrom + "T00:00:00.000Z").getTime();
     const toMs = new Date(displayTo + "T00:00:00.000Z").getTime();
+    // Check order constraint first so that "from > to" is reported regardless of
+    // whether to is also in the future (both conditions are errors, but this one is
+    // more informative and avoids bypassing the check when toMs > todayMs returns).
+    if (fromMs > toMs) {
+      setRangeError("'From' must not be after 'To'");
+      return;
+    }
     // Recompute at apply-time rather than reading todayUTC state to avoid a
     // stale closure: todayUTC is not in this callback's dep array, so a post-mount
     // useEffect update (e.g. across a UTC midnight) would otherwise be ignored.
@@ -175,10 +182,6 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     const todayMs = Date.UTC(applyNow.getUTCFullYear(), applyNow.getUTCMonth(), applyNow.getUTCDate());
     if (toMs > todayMs) {
       setRangeError("'To' date cannot be in the future");
-      return;
-    }
-    if (fromMs > toMs) {
-      setRangeError("'From' must not be after 'To'");
       return;
     }
     if (toMs - fromMs > MAX_RANGE_DAYS * MS_PER_DAY) {

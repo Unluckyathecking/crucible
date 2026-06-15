@@ -30,16 +30,27 @@ const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 // this ensures the API response is bounded even if the column is modified directly.
 const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
-// truncateUtf8Buffer returns a UTF-8 string from buf truncated to at most maxBytes.
-// It walks the cut point backward while the byte immediately after the cut is a
-// UTF-8 continuation byte (0x80–0xBF), so the cut always falls on a codepoint
-// boundary and never splits a multi-byte sequence.
+// truncateUtf8Buffer returns a UTF-8 string from buf truncated to at most maxBytes
+// at a complete codepoint boundary. It walks backward past UTF-8 continuation bytes
+// to find the preceding start byte, then checks whether the full sequence fits in
+// [0, maxBytes). If it fits, all bytes of the sequence are included; if not, the
+// start byte is excluded so the output never contains a partial sequence.
 function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (buf.length <= maxBytes) return buf.toString("utf8");
-  // buf[end] is valid because buf.length > maxBytes guarantees buf[maxBytes] exists.
   let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  // Walk back past continuation bytes (high two bits = 0b10 = 0x80–0xBF).
+  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
+  // If we stopped at a multi-byte lead byte, verify its full sequence fits.
+  if (end > 0 && (buf[end - 1] & 0x80) !== 0) {
+    const lead = buf[end - 1];
+    const seqLen = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
+    if (end - 1 + seqLen <= maxBytes) {
+      end = end - 1 + seqLen; // complete sequence fits: restore end past all its bytes
+    } else {
+      end = end - 1; // sequence is split at maxBytes: exclude the lead byte
+    }
+  }
   return buf.toString("utf8", 0, end);
 }
 
