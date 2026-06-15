@@ -32,6 +32,10 @@ interface ErrorEventRow {
   message: string;
   request_id: string;
   created_at: Date;
+  // request_payload is NULL unless ERROR_PAYLOAD_CAPTURE is enabled on the gateway.
+  // Isolation: customer_id = $1 in the query ensures rows from other customers
+  // are never returned, so request_payload cannot leak across customers.
+  request_payload: string | null;
 }
 
 async function listErrorEvents(
@@ -49,7 +53,7 @@ async function listErrorEvents(
   // sqlLimit fetches one extra row so has_more can be determined without a COUNT.
   const sqlLimit = limit + 1;
   const r = await pool.query<ErrorEventRow>(
-    `SELECT id, operation, error_code, http_status, message, request_id, created_at
+    `SELECT id, operation, error_code, http_status, message, request_id, created_at, request_payload
      FROM error_events
      WHERE customer_id = $1
        AND created_at >= $2
@@ -77,6 +81,7 @@ async function listErrorEvents(
     message: row.message,
     request_id: row.request_id,
     created_at: row.created_at.toISOString(),
+    request_payload: row.request_payload ?? null,
   }));
   return { data: rows, has_more: hasMore };
 }

@@ -55,6 +55,13 @@ type Config struct {
 	// Error handling
 	ErrorExposure string `envconfig:"WORKER_ERROR_EXPOSURE" default:"sanitized"`
 
+	// Error payload capture — opt-in, default OFF.
+	// When ON, the inbound request body is buffered (up to ErrorPayloadMaxBytes)
+	// and stored in error_events.request_payload for 4xx/5xx responses only.
+	// The payload is never written to metrics labels or log lines.
+	ErrorPayloadCapture  bool `envconfig:"ERROR_PAYLOAD_CAPTURE"   default:"false"`
+	ErrorPayloadMaxBytes int  `envconfig:"ERROR_PAYLOAD_MAX_BYTES" default:"4096"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`

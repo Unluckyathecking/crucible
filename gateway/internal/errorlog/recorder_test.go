@@ -1,6 +1,7 @@
 package errorlog
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,6 +138,73 @@ func TestCapture_Hijack(t *testing.T) {
 	}
 }
 
+// TestMaybeCaptureRequestBody verifies body buffering, truncation, and hot-path no-op.
+func TestMaybeCaptureRequestBody(t *testing.T) {
+	makeReq := func(body string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		return r
+	}
+	readBody := func(r *http.Request) string {
+		b, _ := io.ReadAll(r.Body)
+		return string(b)
+	}
+
+	t.Run("off: returns nil without touching body", func(t *testing.T) {
+		r := makeReq(`{"key":"value"}`)
+		got := MaybeCaptureRequestBody(r, 0)
+		if got != nil {
+			t.Errorf("expected nil when maxBytes=0, got %q", *got)
+		}
+		// Body must be fully intact — no buffering on the hot path.
+		if body := readBody(r); body != `{"key":"value"}` {
+			t.Errorf("body was modified: got %q", body)
+		}
+	})
+
+	t.Run("on: body fits within limit", func(t *testing.T) {
+		const input = `{"hello":"world"}`
+		r := makeReq(input)
+		got := MaybeCaptureRequestBody(r, 4096)
+		if got == nil {
+			t.Fatal("expected non-nil payload")
+		}
+		if *got != input {
+			t.Errorf("payload mismatch: got %q, want %q", *got, input)
+		}
+		// r.Body must be restored so the downstream handler can still read it.
+		if body := readBody(r); body != input {
+			t.Errorf("body not restored: got %q, want %q", body, input)
+		}
+	})
+
+	t.Run("on: body exceeds limit gets truncation marker", func(t *testing.T) {
+		long := strings.Repeat("x", 100)
+		r := makeReq(long)
+		const limit = 10
+		got := MaybeCaptureRequestBody(r, limit)
+		if got == nil {
+			t.Fatal("expected non-nil payload")
+		}
+		if !strings.HasPrefix(*got, strings.Repeat("x", limit)) {
+			t.Errorf("expected first %d chars to be 'x', got %q", limit, *got)
+		}
+		if !strings.HasSuffix(*got, payloadTruncationMarker) {
+			t.Errorf("expected truncation marker, got %q", *got)
+		}
+		// r.Body must still yield the full original body.
+		if body := readBody(r); body != long {
+			t.Errorf("body not fully restored after truncation: got %q", body)
+		}
+	})
+
+	t.Run("nil body returns nil", func(t *testing.T) {
+		r, _ := http.NewRequest(http.MethodPost, "/", nil)
+		if got := MaybeCaptureRequestBody(r, 4096); got != nil {
+			t.Errorf("expected nil for nil body, got %q", *got)
+		}
+	})
+}
+
 // TestNew_NilDB returns nil so callers can pass nil safely.
 func TestNew_NilDB(t *testing.T) {
 	r := New(nil)
@@ -145,5 +213,5 @@ func TestNew_NilDB(t *testing.T) {
 	}
 	// nil receiver Record must be a safe no-op.
 	var nilRec *ErrorRecorder
-	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500)
+	nilRec.Record(nil, [16]byte{}, [16]byte{}, "/v1/test", "ERR", "req-1", "msg", 500, nil)
 }

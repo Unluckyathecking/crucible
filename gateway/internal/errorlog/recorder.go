@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -63,11 +64,15 @@ func New(db *pgxpool.Pool) *ErrorRecorder {
 // The ctx parameter is accepted for API symmetry but is not forwarded to the
 // goroutine — recording uses a fresh background context so a cancelled request
 // context does not abort the write.
+// requestPayload is stored verbatim when non-nil; the caller is responsible for
+// bounding its size (see MaybeCaptureRequestBody). It must never appear in logs
+// or metric labels — only in the auth-gated dashboard surface.
 func (r *ErrorRecorder) Record(
 	_ context.Context,
 	customerID, apiKeyID uuid.UUID,
 	operation, errorCode, requestID, message string,
 	httpStatus int,
+	requestPayload *string,
 ) {
 	if r == nil {
 		return
@@ -86,6 +91,13 @@ func (r *ErrorRecorder) Record(
 	db, sem := r.db, r.sem
 	cid, kid := customerID, apiKeyID
 	op, code, rid, msg, status := operation, errorCode, requestID, message, httpStatus
+	// requestPayload is a pointer; copy the value it points to (if any) so the
+	// goroutine is not aliased to caller memory after Record returns.
+	var payloadCopy *string
+	if requestPayload != nil {
+		s := *requestPayload
+		payloadCopy = &s
+	}
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
@@ -102,13 +114,52 @@ func (r *ErrorRecorder) Record(
 		}
 		_, err := db.Exec(ctx, `
 			INSERT INTO error_events
-			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, cid, apiKeyPtr, op, code, status, msg, rid)
+			  (customer_id, api_key_id, operation, error_code, http_status, message, request_id, request_payload)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, cid, apiKeyPtr, op, code, status, msg, rid, payloadCopy)
 		if err != nil {
 			log.Warn().Err(err).Str("request_id", rid).Msg("error event record failed")
 		}
 	}()
+}
+
+// payloadTruncationMarker is appended to payloads that exceed the max byte
+// limit so consumers can distinguish a complete body from a truncated one.
+const payloadTruncationMarker = " [TRUNCATED]"
+
+// MaybeCaptureRequestBody reads up to maxBytes from r.Body, restores r.Body
+// so downstream handlers can still consume it, and returns a pointer to the
+// (possibly truncated) payload string.
+//
+// When maxBytes <= 0 the function is a no-op: it returns nil without touching
+// r.Body, performing zero allocations. This is the behaviour when the
+// ERROR_PAYLOAD_CAPTURE config flag is off.
+//
+// When the body exceeds maxBytes the stored string is truncated to maxBytes
+// bytes and payloadTruncationMarker is appended. The string may contain
+// arbitrary bytes (the request body is not assumed to be valid UTF-8 or JSON).
+func MaybeCaptureRequestBody(r *http.Request, maxBytes int) *string {
+	if maxBytes <= 0 || r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	// Read at most maxBytes+1 bytes so we can detect truncation without
+	// consuming the full (potentially large) body.
+	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
+	// Restore r.Body unconditionally so downstream handlers can still read it.
+	// io.MultiReader concatenates the bytes we consumed with whatever remains
+	// in the original body (empty when body length <= maxBytes+1).
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+	if err != nil {
+		// Partial read — skip capture but leave body in a readable state.
+		return nil
+	}
+	var payload string
+	if len(buf) > maxBytes {
+		payload = string(buf[:maxBytes]) + payloadTruncationMarker
+	} else {
+		payload = string(buf)
+	}
+	return &payload
 }
 
 // Capture wraps http.ResponseWriter, buffering the response body for error

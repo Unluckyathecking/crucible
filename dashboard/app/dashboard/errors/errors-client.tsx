@@ -10,6 +10,7 @@ interface ErrorEvent {
   message: string;
   request_id: string;
   created_at: string;
+  request_payload: string | null;
 }
 
 interface ApiResponse {
@@ -263,7 +264,8 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                       <th scope="col" className="pb-2 pr-3 font-medium">Code</th>
                       <th scope="col" className="pb-2 pr-3 font-medium text-right">Status</th>
                       <th scope="col" className="pb-2 pr-3 font-medium">Message</th>
-                      <th scope="col" className="pb-2 font-medium">Request ID</th>
+                      <th scope="col" className="pb-2 pr-3 font-medium">Request ID</th>
+                      <th scope="col" className="pb-2 font-medium">Payload</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -276,7 +278,10 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
                         <td className="py-2 pr-3 font-mono text-xs whitespace-nowrap">{e.error_code}</td>
                         <td className="py-2 pr-3 text-right tabular-nums text-xs">{e.http_status}</td>
                         <td className="py-2 pr-3 text-xs text-zinc-600 max-w-xs truncate">{e.message}</td>
-                        <td className="py-2 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
+                        <td className="py-2 pr-3 font-mono text-xs text-zinc-400 break-all">{e.request_id}</td>
+                        <td className="py-2 font-mono text-xs text-zinc-400 max-w-xs truncate" title={e.request_payload ?? undefined}>
+                          {e.request_payload ?? <span className="text-zinc-300">—</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

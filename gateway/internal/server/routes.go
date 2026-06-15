@@ -202,7 +202,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(auth.Middleware(d.Auth))
 		// Capture errors after auth (so customer context is populated) but before
 		// ratelimit/quota so their 429s are recorded with the correct status.
-		r.Use(v1ErrorCapture(d.ErrorRecorder))
+		r.Use(v1ErrorCapture(d.ErrorRecorder, d.Cfg.ErrorPayloadCapture, d.Cfg.ErrorPayloadMaxBytes))
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore))
 		r.Use(validate.Middleware(routes))
@@ -346,11 +346,16 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 // status is >= 400 and an authenticated key is present, it fires an async
 // error_events insert via rec. A nil rec is a safe no-op.
 //
+// When capturePayload is true, the inbound request body is buffered before
+// dispatch (up to maxPayloadBytes, with a truncation marker when exceeded) and
+// stored in the error_events row. When false, no body buffering occurs on the
+// hot path. The payload is never written to logs or metric labels.
+//
 // Operation is derived from chi.RouteContext(r).RoutePattern(), which chi
 // populates before any middleware runs. For all /v1 worker routes that is
 // the registered path pattern (e.g. "/v1/echo"), which matches the operation
 // label used in usage_events for per-product endpoints.
-func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler {
+func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayloadBytes int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if rec == nil {
@@ -363,6 +368,13 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			if op == "" {
 				op = r.URL.Path
 			}
+			// Buffer the request body before dispatch so it can still be read by
+			// the invoke handler downstream. MaybeCaptureRequestBody is a no-op
+			// (returns nil, zero allocations) when capturePayload is false.
+			var reqPayload *string
+			if capturePayload {
+				reqPayload = errorlog.MaybeCaptureRequestBody(r, maxPayloadBytes)
+			}
 			capture := errorlog.NewCapture(w)
 			next.ServeHTTP(capture, r)
 			if capture.Status() < 400 {
@@ -374,7 +386,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder) func(http.Handler) http.Handler
 			}
 			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 			errCode, errMsg := capture.ParseErrorFields()
-			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status())
+			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status(), reqPayload)
 		})
 	}
 }
