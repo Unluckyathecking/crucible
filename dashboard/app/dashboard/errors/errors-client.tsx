@@ -158,8 +158,8 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
     // Recompute at apply-time rather than reading todayUTC state to avoid a
     // stale closure: todayUTC is not in this callback's dep array, so a post-mount
     // useEffect update (e.g. across a UTC midnight) would otherwise be ignored.
-    const _now = new Date();
-    const todayMs = Date.UTC(_now.getUTCFullYear(), _now.getUTCMonth(), _now.getUTCDate());
+    const applyNow = new Date();
+    const todayMs = Date.UTC(applyNow.getUTCFullYear(), applyNow.getUTCMonth(), applyNow.getUTCDate());
     if (toMs > todayMs) {
       setRangeError("'To' date cannot be in the future");
       return;
