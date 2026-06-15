@@ -158,17 +158,17 @@ func MaybeCaptureRequestBody(r *http.Request, maxBytes int) []byte {
 	originalBody := r.Body
 	buf, err := io.ReadAll(io.LimitReader(originalBody, int64(maxBytes)+truncationProbeBytes))
 	if err != nil {
-		// io.LimitReader reads from originalBody directly; after a partial read,
-		// originalBody is positioned after the bytes that went into buf.
-		// Prepending buf restores the full original body so downstream handlers
-		// see every byte.
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), originalBody))
+		// On a read error, originalBody is likely in an error state and chaining
+		// it via MultiReader would fail downstream too. Restore only the bytes we
+		// successfully read so downstream handlers still see a coherent (truncated)
+		// body rather than a broken reader.
+		r.Body = io.NopCloser(bytes.NewReader(buf))
 		log.Warn().Err(err).Msg("payload capture: error reading request body")
 		return nil
 	}
-	// Success path: prepend the bytes we consumed so downstream handlers see
-	// the complete body (the remaining portion of originalBody is empty when the
-	// body fits entirely within maxBytes+truncationProbeBytes).
+	// Success path: originalBody is positioned after len(buf) bytes. Prepend buf
+	// so downstream handlers see the complete original body. The remaining portion
+	// of originalBody is empty when the body fits within maxBytes+probeBytes.
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), originalBody))
 	if len(buf) > maxBytes {
 		markerBytes := []byte(payloadTruncationMarker)

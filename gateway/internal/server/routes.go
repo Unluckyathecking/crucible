@@ -198,12 +198,15 @@ func NewRouter(d *Deps) http.Handler {
 	}
 
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
-	// Snapshot config values used inside the /v1 subrouter before entering the
-	// closure. d.Cfg is non-nil (config.Load() fails fast on any error), so
-	// accessing fields here is safe and makes the dependency explicit.
-	capturePayloadEnabled := d.Cfg.ErrorPayloadCapture
-	capturePayloadMaxBytes := d.Cfg.ErrorPayloadMaxBytes
-	errorExposure := d.Cfg.ErrorExposure
+	// Snapshot config values used inside the /v1 subrouter before entering the closure.
+	var capturePayloadEnabled bool
+	var capturePayloadMaxBytes int
+	var errorExposure string
+	if d.Cfg != nil {
+		capturePayloadEnabled = d.Cfg.ErrorPayloadCapture
+		capturePayloadMaxBytes = d.Cfg.ErrorPayloadMaxBytes
+		errorExposure = d.Cfg.ErrorExposure
+	}
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Middleware(d.Auth))
 		// Capture errors after auth (so customer context is populated) but before

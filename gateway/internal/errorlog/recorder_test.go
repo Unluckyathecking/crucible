@@ -10,6 +10,17 @@ import (
 	"unicode/utf8"
 )
 
+// readBody reads all bytes from r.Body and returns them as a string.
+// Fails the test immediately if the read fails.
+func readBody(t *testing.T, r *http.Request) string {
+	t.Helper()
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("reading restored body: %v", err)
+	}
+	return string(b)
+}
+
 // TestCapture_BuffersErrorBodies verifies that Capture buffers response bodies
 // only for status >= 400 and never for successful responses.
 func TestCapture_BuffersErrorBodies(t *testing.T) {
@@ -177,10 +188,6 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		r, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 		return r
 	}
-	readBody := func(r *http.Request) string {
-		b, _ := io.ReadAll(r.Body)
-		return string(b)
-	}
 
 	t.Run("off: returns nil without touching body", func(t *testing.T) {
 		r := makeReq(`{"key":"value"}`)
@@ -189,7 +196,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("expected nil when maxBytes=0, got %q", got)
 		}
 		// Body must be fully intact — no buffering on the hot path.
-		if body := readBody(r); body != `{"key":"value"}` {
+		if body := readBody(t, r); body != `{"key":"value"}` {
 			t.Errorf("body was modified: got %q", body)
 		}
 	})
@@ -205,7 +212,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("payload mismatch: got %q, want %q", got, input)
 		}
 		// r.Body must be restored so the downstream handler can still read it.
-		if body := readBody(r); body != input {
+		if body := readBody(t, r); body != input {
 			t.Errorf("body not restored: got %q, want %q", body, input)
 		}
 	})
@@ -235,7 +242,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 		// r.Body must still yield the full original body.
-		if body := readBody(r); body != long {
+		if body := readBody(t, r); body != long {
 			t.Errorf("body not fully restored after truncation: got %q", body)
 		}
 	})
@@ -260,17 +267,19 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		// (config.Load prevents this in production via the >= 13 byte minimum check).
 		// BYTEA semantics: raw bytes are stored as-is; UTF-8 alignment is the display
 		// layer's responsibility (see truncateUtf8Buffer in route.ts).
-		body := []byte{0x61, 0xF0, 0x9F, 0x98, 0x80, 0x62} // "a😀b" (6 bytes)
+		// Body: 10 ASCII bytes + 4-byte emoji (😀) + 'b' = 15 bytes total.
+		// maxBytes = len(marker)-1 = 11, so truncLen < 0 → raw first 11 bytes, no marker.
+		body := append(bytes.Repeat([]byte{'a'}, 10), 0xF0, 0x9F, 0x98, 0x80, 0x62) // 15 bytes
 		r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		// maxBytes=5 < len(marker)=12 → truncLen < 0 → raw first 5 bytes, no marker.
-		got := MaybeCaptureRequestBody(r, 5)
-		if !bytes.Equal(got, body[:5]) {
-			t.Errorf("got %x, want raw prefix %x", got, body[:5])
+		maxBytes := len(payloadTruncationMarker) - 1
+		got := MaybeCaptureRequestBody(r, maxBytes)
+		if !bytes.Equal(got, body[:maxBytes]) {
+			t.Errorf("got %x, want raw prefix %x", got, body[:maxBytes])
 		}
-		if len(got) > 5 {
-			t.Errorf("stored len %d exceeds maxBytes 5", len(got))
+		if len(got) > maxBytes {
+			t.Errorf("stored len %d exceeds maxBytes %d", len(got), maxBytes)
 		}
-		restored, _ := io.ReadAll(r.Body)
+		restored := []byte(readBody(t, r))
 		if !bytes.Equal(restored, body) {
 			t.Errorf("body not restored: got %x", restored)
 		}
@@ -285,7 +294,7 @@ func TestMaybeCaptureRequestBody(t *testing.T) {
 		if !bytes.Equal(got, invalidUtf8) {
 			t.Errorf("payload mismatch: got %x, want %x", got, invalidUtf8)
 		}
-		restored, _ := io.ReadAll(r.Body)
+		restored := []byte(readBody(t, r))
 		if !bytes.Equal(restored, invalidUtf8) {
 			t.Errorf("body not restored: got %x, want %x", restored, invalidUtf8)
 		}

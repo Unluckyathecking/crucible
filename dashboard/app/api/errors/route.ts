@@ -30,25 +30,12 @@ const CODE_FILTER_RE = /^[A-Z0-9_]{1,128}$/;
 // this ensures the API response is bounded even if the column is modified directly.
 const MAX_PAYLOAD_DISPLAY_BYTES = 8192;
 
-// truncateUtf8Buffer converts a Buffer to a UTF-8 string, truncating at a
-// complete UTF-8 code-point boundary so the result is always valid UTF-8.
-// Slicing a JS string by code-unit index can split a surrogate pair (4-byte
-// emoji encoded as two surrogates in JS); slicing the underlying Buffer before
-// decoding avoids that entirely.
+// truncateUtf8Buffer truncates a Buffer to maxBytes at a valid UTF-8 codepoint boundary.
 function truncateUtf8Buffer(buf: Buffer, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (buf.length <= maxBytes) return buf.toString("utf8");
-  // Walk end backwards past UTF-8 continuation bytes (high two bits = 0b10,
-  // i.e. 0x80–0xBF) to land on a complete codepoint boundary.
-  // The loop guard `end > 0` is checked before any buffer access, guaranteeing
-  // buf[end-1] is only read when end >= 1. Since end starts at maxBytes < buf.length,
-  // buf[end-1] is always within [0, buf.length-1]. The loop terminates because end
-  // strictly decrements on each iteration toward zero.
   let end = maxBytes;
-  while (end > 0) {
-    if ((buf[end - 1] & 0xc0) !== 0x80) break;
-    end--;
-  }
+  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end--;
   return buf.toString("utf8", 0, end);
 }
 
