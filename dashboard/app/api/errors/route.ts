@@ -83,6 +83,9 @@ type SerializedErrorEvent = Omit<ErrorEventRow, "created_at" | "request_payload"
   request_payload: string | null;
 };
 
+// listErrorEvents fetches paginated error_events rows for the given customer.
+// All eight columns — including request_payload (BYTEA, NULL when capture is
+// off) — are selected. customer_id = $1 ensures strict row-level isolation.
 async function listErrorEvents(
   customerId: string,
   from: Date,
