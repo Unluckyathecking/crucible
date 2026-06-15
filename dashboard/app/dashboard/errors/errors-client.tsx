@@ -30,7 +30,11 @@ const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MS_PER_DAY = 86_400_000;
 const MAX_RANGE_DAYS = 90;
 
-function toISODate(d: Date): string {
+// toISODate converts a UTC midnight timestamp (ms since epoch) to "YYYY-MM-DD".
+// Accepts a number so callers must supply a UTC value explicitly, avoiding any
+// ambiguity between local-time Date objects and UTC Date objects.
+function toISODate(utcMs: number): string {
+  const d = new Date(utcMs);
   const y = String(d.getUTCFullYear()).padStart(4, "0");
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
@@ -79,13 +83,10 @@ async function fetchErrors(
 }
 
 function formatTs(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  try {
-    return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
-  } catch {
-    return iso;
-  }
+  const ms = Date.parse(iso);
+  if (isNaN(ms)) return iso;
+  // Date.parse returns UTC ms; new Date(ms).toISOString() is always "YYYY-MM-DDTHH:mm:ss.mmmZ".
+  return new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
 }
 
 interface ErrorsClientProps {
@@ -120,7 +121,7 @@ export function ErrorsClient({ initialFrom, initialTo }: ErrorsClientProps) {
   const [todayUTC, setTodayUTC] = useState(initialTo);
   useEffect(() => {
     const now = new Date();
-    const computed = toISODate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+    const computed = toISODate(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     if (computed !== initialTo) setTodayUTC(computed);
   }, [initialTo]);
 
