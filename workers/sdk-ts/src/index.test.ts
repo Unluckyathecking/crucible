@@ -257,12 +257,14 @@ test('metrics: name constants match cross-SDK parity contract', () => {
 
 // Disabled path: when WORKER_METRICS_PORT is unset, createServer binds only one listener
 // and /invoke behaves identically to today's behaviour (no metrics side effects).
+// Handler deliberately omits billable_units to verify the SDK's 0→1 default still applies
+// when metrics are disabled — not just that an explicitly-returned 1 passes through.
 test('metrics: disabled path — no extra listener, /invoke unchanged', async () => {
   const saved = process.env['WORKER_METRICS_PORT'];
   delete process.env['WORKER_METRICS_PORT'];
 
   try {
-    await withServer(() => ({ payload: 'ok', billable_units: 1 }), async (port) => {
+    await withServer(() => ({ payload: 'ok' }), async (port) => {
       const { status, data } = await request(port, '/invoke', 'POST', { operation: 'test' });
       assert.equal(status, 200);
       assert.ok(
