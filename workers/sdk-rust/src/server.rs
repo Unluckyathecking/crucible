@@ -15,6 +15,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     body::to_bytes,
@@ -25,12 +26,18 @@ use axum::{
     Json, Router,
 };
 use hmac::{Hmac, Mac};
+use prometheus::{CounterVec, Encoder, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
 use sha2::Sha256;
 use serde::{Deserialize, Serialize};
 
 pub type ServeError = Box<dyn StdError + Send + Sync>;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Metric name constants — byte-identical across Go/Rust/TS SDKs (parity contract).
+pub const METRIC_REQUESTS_TOTAL: &str = "crucible_worker_requests_total";
+pub const METRIC_ERRORS_TOTAL: &str = "crucible_worker_errors_total";
+pub const METRIC_DURATION_SECS: &str = "crucible_worker_request_duration_seconds";
 
 /// Header carrying the inbound channel-auth signature.
 /// Format: t=<unix-seconds>,v1=<hex-hmac-sha256>
@@ -178,11 +185,73 @@ pub struct HandlerConfig {
     pub shared_secret: Option<Vec<u8>>,
 }
 
+/// Per-worker Prometheus instruments. Label set is exactly {operation, outcome};
+/// outcome ∈ {ok, error}. Cardinality is bounded as long as the set of operation
+/// strings is bounded — same invariant as the gateway's RoutePattern() label.
+pub(crate) struct WorkerMetrics {
+    pub(crate) registry: Registry,
+    requests: CounterVec,
+    errors: CounterVec,
+    duration: HistogramVec,
+}
+
+impl WorkerMetrics {
+    pub(crate) fn new() -> Result<Self, prometheus::Error> {
+        let registry = Registry::new();
+
+        let requests = CounterVec::new(
+            Opts::new(METRIC_REQUESTS_TOTAL, "Total /invoke requests handled by the worker."),
+            &["operation", "outcome"],
+        )?;
+        let errors = CounterVec::new(
+            Opts::new(
+                METRIC_ERRORS_TOTAL,
+                "Total /invoke requests that returned an error envelope.",
+            ),
+            &["operation", "outcome"],
+        )?;
+        let duration = HistogramVec::new(
+            HistogramOpts::new(
+                METRIC_DURATION_SECS,
+                "Latency of /invoke handler calls in seconds.",
+            ),
+            &["operation", "outcome"],
+        )?;
+
+        registry.register(Box::new(requests.clone()))?;
+        registry.register(Box::new(errors.clone()))?;
+        registry.register(Box::new(duration.clone()))?;
+
+        Ok(Self { registry, requests, errors, duration })
+    }
+
+    /// Record one /invoke call. Only call after a successful Request decode so
+    /// operation is always the product-defined operation string — never a raw URL
+    /// path, request-id, or other unbounded per-request value.
+    pub(crate) fn observe(&self, operation: &str, outcome: &str, elapsed_secs: f64) {
+        let labels = &[operation, outcome];
+        self.requests.with_label_values(labels).inc();
+        if outcome == "error" {
+            self.errors.with_label_values(labels).inc();
+        }
+        self.duration.with_label_values(labels).observe(elapsed_secs);
+    }
+
+    pub(crate) fn render_text(&self) -> String {
+        let encoder = TextEncoder::new();
+        let mfs = self.registry.gather();
+        let mut buf = Vec::new();
+        let _ = encoder.encode(&mfs, &mut buf);
+        String::from_utf8(buf).unwrap_or_default()
+    }
+}
+
 /// Internal router state shared across requests via Arc.
 #[derive(Clone)]
 struct AppState {
     handler: Arc<dyn Handler>,
     secret: Option<Vec<u8>>,
+    metrics: Option<Arc<WorkerMetrics>>,
 }
 
 /// Build the worker router with default configuration.
@@ -200,9 +269,20 @@ pub fn router(handler: impl Handler) -> Router {
 /// Use this in tests or when configuring the secret programmatically rather than
 /// via the WORKER_SHARED_SECRET environment variable.
 pub fn router_with_config(handler: impl Handler, config: HandlerConfig) -> Router {
+    build_router(handler, config, None)
+}
+
+/// Internal constructor that wires optional metrics into the app state.
+/// Keeps the public API signatures stable while allowing serve() to pass metrics in.
+pub(crate) fn build_router(
+    handler: impl Handler,
+    config: HandlerConfig,
+    metrics: Option<Arc<WorkerMetrics>>,
+) -> Router {
     let state = Arc::new(AppState {
         handler: Arc::new(handler),
         secret: config.shared_secret,
+        metrics,
     });
     Router::new()
         .route("/healthz", get(health_handler))
@@ -211,12 +291,67 @@ pub fn router_with_config(handler: impl Handler, config: HandlerConfig) -> Route
 }
 
 /// Run the worker HTTP server on the given port and block until the listener fails.
+/// When WORKER_METRICS_PORT is set, a /metrics listener is also started on that port
+/// before the main server begins accepting connections.
 pub async fn serve(port: u16, handler: impl Handler) -> Result<(), ServeError> {
-    let app = router(handler);
+    let secret = std::env::var("WORKER_SHARED_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_bytes());
+
+    let metrics = init_metrics().await;
+
+    let app = build_router(handler, HandlerConfig { shared_secret: secret }, metrics);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!(port, "worker listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// init_metrics reads WORKER_METRICS_PORT and, if valid, creates the metrics struct and
+/// spawns a /metrics listener on that port. Returns None when the env var is unset or
+/// invalid — keeping metrics off by default so existing clones and smoke tests are unchanged.
+///
+/// This function is async so that `tokio::spawn` is always called from within an active
+/// Tokio runtime — callers outside of async contexts cannot accidentally invoke it.
+pub(crate) async fn init_metrics() -> Option<Arc<WorkerMetrics>> {
+    let port_str = std::env::var("WORKER_METRICS_PORT").ok()?;
+    let port: u16 = port_str.trim().parse().ok()?;
+    let m = Arc::new(WorkerMetrics::new().ok()?);
+    let m_clone = Arc::clone(&m);
+    tokio::spawn(async move {
+        start_metrics_listener(port, m_clone).await;
+    });
+    Some(m)
+}
+
+async fn start_metrics_listener(port: u16, m: Arc<WorkerMetrics>) {
+    let app = Router::new().route(
+        "/metrics",
+        get(move || {
+            let m = Arc::clone(&m);
+            async move {
+                let text = m.render_text();
+                axum::response::Response::builder()
+                    .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                    .body(axum::body::Body::from(text))
+                    .unwrap_or_default()
+            }
+        }),
+    );
+    match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(listener) => {
+            tracing::info!(metrics_port = port, "worker metrics listening");
+            let _ = axum::serve(listener, app).await;
+        }
+        Err(err) => {
+            tracing::error!(
+                metrics_port = port,
+                error = %err,
+                "worker metrics listener failed to bind"
+            );
+        }
+    }
 }
 
 /// Verify the X-Worker-Signature header against body using secret.
@@ -308,14 +443,26 @@ async fn invoke_handler(
     let request_id = req.request_id.clone();
     let operation = req.operation.clone();
 
+    // Metric tracking starts after successful decode — operation is now a bounded
+    // product-defined string, never a raw URL path or per-request identifier.
+    let start = Instant::now();
+
     match state.handler.handle(req).await {
         Ok(mut resp) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            if let Some(m) = &state.metrics {
+                m.observe(&operation, "ok", elapsed);
+            }
             if resp.billable_units == 0 {
                 resp.billable_units = 1;
             }
             (StatusCode::OK, Json(resp)).into_response()
         }
         Err(HandlerError::Worker(werr)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            if let Some(m) = &state.metrics {
+                m.observe(&operation, "error", elapsed);
+            }
             tracing::info!(
                 request_id = %request_id,
                 operation = %operation,
@@ -325,6 +472,10 @@ async fn invoke_handler(
             error_envelope(werr)
         }
         Err(HandlerError::Internal(cause)) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            if let Some(m) = &state.metrics {
+                m.observe(&operation, "error", elapsed);
+            }
             tracing::error!(
                 request_id = %request_id,
                 operation = %operation,
@@ -523,8 +674,6 @@ mod tests {
     }
 
     // --- verify_worker_sig unit tests ----------------------------------------
-    // Test matrix mirrors billing/webhook_test.go: valid, missing, wrong-secret,
-    // tampered-body, stale-timestamp, and disabled-path.
 
     fn make_sig(secret: &[u8], ts: i64, body: &[u8]) -> String {
         let ts_str = ts.to_string();
@@ -577,13 +726,12 @@ mod tests {
     fn verify_stale_timestamp_rejected() {
         let secret = b"test-shared-secret";
         let body = b"test body";
-        // 10 minutes ago = outside the 5-minute window
         let stale_ts = now_ts() - 600;
         let header = make_sig(secret, stale_ts, body);
         assert!(verify_worker_sig(&header, body, secret).is_err());
     }
 
-    // --- HMAC-signed /invoke integration tests (using router_with_config) ----
+    // --- HMAC-signed /invoke integration tests --------------------------------
 
     #[tokio::test]
     async fn signed_invoke_accepted_with_correct_secret() {
@@ -636,7 +784,7 @@ mod tests {
     async fn unsigned_invoke_succeeds_when_no_secret_configured() {
         let app = router_with_config(
             |_req: Request| async move { Ok(Response::new(serde_json::json!({}))) },
-            HandlerConfig::default(), // no secret = signing disabled
+            HandlerConfig::default(),
         );
         let resp = app
             .oneshot(
@@ -651,5 +799,137 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
         assert!(json.get("error").is_none(), "expected success, got {json}");
+    }
+
+    // --- Prometheus metrics tests --------------------------------------------
+
+    /// Parity: metric names must be byte-identical across Go/Rust/TS.
+    #[test]
+    fn metric_names_parity() {
+        assert_eq!(METRIC_REQUESTS_TOTAL, "crucible_worker_requests_total");
+        assert_eq!(METRIC_ERRORS_TOTAL, "crucible_worker_errors_total");
+        assert_eq!(METRIC_DURATION_SECS, "crucible_worker_request_duration_seconds");
+    }
+
+    /// Cardinality: only {operation, outcome} labels must appear — never request_id, payload, etc.
+    #[test]
+    fn metric_label_cardinality_bounded() {
+        let m = WorkerMetrics::new().unwrap();
+        m.observe("test_op", "ok", 0.001);
+        let text = m.render_text();
+
+        for forbidden in &["request_id", "customer_id", "payload", "plan", "metadata"] {
+            assert!(
+                !text.contains(&format!("{forbidden}=\"")),
+                "forbidden label {forbidden:?} found in metrics output:\n{text}"
+            );
+        }
+        assert!(text.contains(r#"operation="test_op""#), "operation label missing:\n{text}");
+        assert!(text.contains(r#"outcome="ok""#), "outcome label missing:\n{text}");
+    }
+
+    /// Success path: requests counter increments with outcome=ok.
+    #[tokio::test]
+    async fn metrics_recorded_on_success() {
+        let m = Arc::new(WorkerMetrics::new().unwrap());
+        let app = build_router(
+            |_req: Request| async move { Ok(Response::new(serde_json::json!({"ok": true}))) },
+            HandlerConfig::default(),
+            Some(Arc::clone(&m)),
+        );
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/invoke")
+                    .body(Body::from(r#"{"operation":"do_thing","payload":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let text = m.render_text();
+        assert!(
+            text.contains(
+                r#"crucible_worker_requests_total{operation="do_thing",outcome="ok"} 1"#
+            ),
+            "requests counter not found:\n{text}"
+        );
+    }
+
+    /// Error path: errors counter increments with outcome=error.
+    #[tokio::test]
+    async fn metrics_recorded_on_error() {
+        let m = Arc::new(WorkerMetrics::new().unwrap());
+        let app = build_router(
+            |_req: Request| async move { Err::<Response, _>(HandlerError::internal("boom")) },
+            HandlerConfig::default(),
+            Some(Arc::clone(&m)),
+        );
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/invoke")
+                    .body(Body::from(r#"{"operation":"fail_op","payload":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let text = m.render_text();
+        assert!(
+            text.contains(
+                r#"crucible_worker_errors_total{operation="fail_op",outcome="error"} 1"#
+            ),
+            "errors counter not found:\n{text}"
+        );
+    }
+
+    /// Disabled path: router_with_config (no metrics) / invoke still works identically.
+    #[tokio::test]
+    async fn metrics_disabled_path_invoke_unchanged() {
+        let app = router_with_config(
+            |_req: Request| async move { Ok(Response::new(serde_json::json!({"ok": true}))) },
+            HandlerConfig::default(),
+        );
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/invoke")
+                    .body(Body::from(r#"{"operation":"no_metrics","payload":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert!(json.get("error").is_none(), "expected success, got {json}");
+    }
+
+    /// billable_units contract is unchanged when metrics are active.
+    #[tokio::test]
+    async fn billable_units_contract_unchanged_with_metrics() {
+        let m = Arc::new(WorkerMetrics::new().unwrap());
+        let app = build_router(
+            |_req: Request| async move { Ok(Response::new(serde_json::json!({})).with_units(0)) },
+            HandlerConfig::default(),
+            Some(Arc::clone(&m)),
+        );
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/invoke")
+                    .body(Body::from(r#"{"operation":"units_op","payload":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["billable_units"], 1, "billable_units must default to 1");
     }
 }

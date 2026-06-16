@@ -25,6 +25,12 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
    that serves this gateway must share the same secret — a mismatch causes all
    calls to be rejected with UNAUTHORIZED.
 
+   Optionally set `WORKER_METRICS_PORT` in the worker process's environment to
+   enable a Prometheus `/metrics` listener on a **separate** port (e.g. `9091`).
+   **Keep this off the public surface** — firewall the metrics port from external
+   traffic just as you would the gateway's `METRICS_PORT`. Leave unset (the default)
+   and the SDK starts no second listener; existing clones and smoke tests are unchanged.
+
 7. **Stripe dashboard** — create the product + prices matching the migration above.
 
 ## What you do NOT touch

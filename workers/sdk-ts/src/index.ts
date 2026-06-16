@@ -68,6 +68,130 @@ export interface ServerConfig {
   sharedSecret?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Prometheus metrics — zero runtime dependencies, manual text exposition format.
+// Metric names are byte-identical across Go/Rust/TS (parity contract).
+// ---------------------------------------------------------------------------
+
+export const METRIC_REQUESTS_TOTAL = 'crucible_worker_requests_total';
+export const METRIC_ERRORS_TOTAL = 'crucible_worker_errors_total';
+export const METRIC_DURATION_SECS = 'crucible_worker_request_duration_seconds';
+
+// Default Prometheus histogram bucket boundaries in seconds — mirrors Go SDK's prometheus.DefBuckets.
+const HISTOGRAM_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
+
+interface LabelSet {
+  operation: string;
+  outcome: string;
+}
+
+function labelKey(labels: LabelSet): string {
+  // NUL separator keeps keys collision-free without JSON overhead.
+  return `${labels.operation}\x00${labels.outcome}`;
+}
+
+interface HistogramState {
+  sum: number;
+  count: number;
+  buckets: number[]; // per-bucket count, parallel to HISTOGRAM_BUCKETS
+}
+
+// WorkerMetrics is intentionally not exported — callers interact with it only through
+// createServerWithMetrics (internal) and serve() (public). The Prometheus text-format
+// emitter is self-contained so no runtime dependency is needed.
+class WorkerMetrics {
+  private readonly requests = new Map<string, { labels: LabelSet; count: number }>();
+  private readonly errors = new Map<string, { labels: LabelSet; count: number }>();
+  private readonly durations = new Map<string, { labels: LabelSet; state: HistogramState }>();
+
+  observe(operation: string, outcome: string, elapsedSecs: number): void {
+    const labels: LabelSet = { operation, outcome };
+    const key = labelKey(labels);
+
+    // requests counter
+    const req = this.requests.get(key);
+    if (req) {
+      req.count++;
+    } else {
+      this.requests.set(key, { labels, count: 1 });
+    }
+
+    // errors counter
+    if (outcome === 'error') {
+      const err = this.errors.get(key);
+      if (err) {
+        err.count++;
+      } else {
+        this.errors.set(key, { labels, count: 1 });
+      }
+    }
+
+    // histogram
+    let hist = this.durations.get(key);
+    if (!hist) {
+      hist = {
+        labels,
+        state: { sum: 0, count: 0, buckets: new Array(HISTOGRAM_BUCKETS.length).fill(0) as number[] },
+      };
+      this.durations.set(key, hist);
+    }
+    hist.state.sum += elapsedSecs;
+    hist.state.count++;
+    // Increment only the first bucket boundary that fits the observation.
+    // renderText accumulates these non-cumulatively to produce the Prometheus
+    // cumulative _bucket output, so each bucket must store a non-cumulative count.
+    for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
+      if (elapsedSecs <= (HISTOGRAM_BUCKETS[i] as number)) {
+        hist.state.buckets[i] = (hist.state.buckets[i] as number) + 1;
+        break;
+      }
+    }
+  }
+
+  renderText(): string {
+    const lines: string[] = [];
+
+    // requests counter
+    lines.push(`# HELP ${METRIC_REQUESTS_TOTAL} Total /invoke requests handled by the worker.`);
+    lines.push(`# TYPE ${METRIC_REQUESTS_TOTAL} counter`);
+    for (const { labels, count } of this.requests.values()) {
+      lines.push(
+        `${METRIC_REQUESTS_TOTAL}{operation="${labels.operation}",outcome="${labels.outcome}"} ${count}`,
+      );
+    }
+
+    // errors counter
+    lines.push(`# HELP ${METRIC_ERRORS_TOTAL} Total /invoke requests that returned an error envelope.`);
+    lines.push(`# TYPE ${METRIC_ERRORS_TOTAL} counter`);
+    for (const { labels, count } of this.errors.values()) {
+      lines.push(
+        `${METRIC_ERRORS_TOTAL}{operation="${labels.operation}",outcome="${labels.outcome}"} ${count}`,
+      );
+    }
+
+    // duration histogram
+    lines.push(`# HELP ${METRIC_DURATION_SECS} Latency of /invoke handler calls in seconds.`);
+    lines.push(`# TYPE ${METRIC_DURATION_SECS} histogram`);
+    for (const { labels, state } of this.durations.values()) {
+      const lstr = `operation="${labels.operation}",outcome="${labels.outcome}"`;
+      let cumulative = 0;
+      for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
+        cumulative += state.buckets[i] as number;
+        lines.push(`${METRIC_DURATION_SECS}_bucket{${lstr},le="${HISTOGRAM_BUCKETS[i]!}"} ${cumulative}`);
+      }
+      lines.push(`${METRIC_DURATION_SECS}_bucket{${lstr},le="+Inf"} ${state.count}`);
+      lines.push(`${METRIC_DURATION_SECS}_sum{${lstr}} ${state.sum}`);
+      lines.push(`${METRIC_DURATION_SECS}_count{${lstr}} ${state.count}`);
+    }
+
+    return lines.join('\n') + '\n';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
  * Creates a Node.js HTTP server pre-wired to the worker contract:
  *   POST /invoke  — decodes, verifies signature (if configured), calls handler.
@@ -79,16 +203,24 @@ export interface ServerConfig {
 export function createServer(handler: WorkerHandler, config: ServerConfig = {}): http.Server {
   const secret = config.sharedSecret ?? process.env['WORKER_SHARED_SECRET'] ?? '';
   return http.createServer((req, res) => {
-    void dispatch(req, res, handler, secret);
+    void dispatch(req, res, handler, secret, undefined);
   });
 }
 
 /**
  * Runs the worker on the given port and blocks until SIGINT/SIGTERM,
  * then drains in-flight requests for up to 10 s.
+ * When WORKER_METRICS_PORT is set, a second server serving /metrics is started on
+ * that port before the main server begins accepting connections.
  */
 export function serve(port: number, handler: WorkerHandler, config: ServerConfig = {}): Promise<void> {
-  const server = createServer(handler, config);
+  const secret = config.sharedSecret ?? process.env['WORKER_SHARED_SECRET'] ?? '';
+
+  const metrics = initMetrics();
+
+  const server = http.createServer((req, res) => {
+    void dispatch(req, res, handler, secret, metrics ?? undefined);
+  });
 
   return new Promise<void>((resolve, reject) => {
     server.listen(port, () => {
@@ -113,6 +245,35 @@ export function serve(port: number, handler: WorkerHandler, config: ServerConfig
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
   });
+}
+
+// initMetrics reads WORKER_METRICS_PORT and, if valid, creates a WorkerMetrics instance
+// and starts a /metrics HTTP server on that port. Returns null when the env var is unset
+// or invalid — keeping metrics off by default so existing clones and smoke tests are unchanged.
+function initMetrics(): WorkerMetrics | null {
+  const portStr = process.env['WORKER_METRICS_PORT'];
+  if (!portStr) return null;
+  const port = parseInt(portStr, 10);
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) return null;
+
+  const metrics = new WorkerMetrics();
+
+  const mServer = http.createServer((req, res) => {
+    if (req.url === '/metrics' && req.method === 'GET') {
+      const body = metrics.renderText();
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+      res.end(body);
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  mServer.listen(port, () => {
+    log('info', { metrics_port: port, msg: 'worker metrics listening' });
+  });
+
+  return metrics;
 }
 
 /** Maximum age (or future skew) of a signed request in seconds. Mirrors the Stripe replay window. */
@@ -166,6 +327,7 @@ async function dispatch(
   res: http.ServerResponse,
   handler: WorkerHandler,
   secret: string,
+  metrics: WorkerMetrics | undefined,
 ): Promise<void> {
   if (req.url === '/healthz' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -212,10 +374,15 @@ async function dispatch(
     return;
   }
 
+  // Metric tracking starts after successful decode — operation is now a bounded
+  // product-defined string, never a raw URL path or per-request identifier.
+  const start = Date.now();
+
   let result: Response;
   try {
     result = await Promise.resolve(handler(workerReq));
   } catch (err) {
+    const elapsedSecs = (Date.now() - start) / 1000;
     if (err instanceof WorkerError) {
       log('info', {
         request_id: workerReq.request_id,
@@ -223,6 +390,7 @@ async function dispatch(
         code: err.code,
         msg: 'handler returned structured error',
       });
+      metrics?.observe(workerReq.operation, 'error', elapsedSecs);
       writeError(res, { code: err.code, message: err.message, retryable: err.retryable });
       return;
     }
@@ -231,13 +399,18 @@ async function dispatch(
       operation: workerReq.operation,
       msg: 'handler failed',
     });
+    metrics?.observe(workerReq.operation, 'error', elapsedSecs);
     writeError(res, { code: 'INTERNAL', message: 'internal error', retryable: true });
     return;
   }
 
+  const elapsedSecs = (Date.now() - start) / 1000;
+
   if (!result.billable_units || result.billable_units < 1) {
     result = { ...result, billable_units: 1 };
   }
+
+  metrics?.observe(workerReq.operation, 'ok', elapsedSecs);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(result));

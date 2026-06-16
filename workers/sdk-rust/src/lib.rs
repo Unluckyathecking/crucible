@@ -8,5 +8,5 @@ pub mod server;
 
 pub use server::{
     router, router_with_config, serve, Handler, HandlerConfig, HandlerError, Request, Response,
-    ServeError, WorkerError,
+    ServeError, WorkerError, METRIC_DURATION_SECS, METRIC_ERRORS_TOTAL, METRIC_REQUESTS_TOTAL,
 };

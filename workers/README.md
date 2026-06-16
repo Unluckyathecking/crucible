@@ -114,6 +114,37 @@ Adding a new language: add a `case` entry in `scripts/conformance-run.sh` and a
 matrix entry in `.github/workflows/worker-conformance.yml`. The test file never
 changes.
 
+## Worker metrics (opt-in)
+
+Every SDK can expose a Prometheus `/metrics` endpoint on a **separate** listener. Set
+`WORKER_METRICS_PORT` in the worker's environment and the SDK starts the metrics server
+automatically on boot:
+
+```sh
+WORKER_METRICS_PORT=9091 ./my-worker   # main server on 8081, /metrics on 9091
+```
+
+**Keep metrics off the public surface.** The gateway and the worker share the same
+internal network; the metrics port should be firewalled from public traffic (just as
+the gateway's `METRICS_PORT` is). Never expose `WORKER_METRICS_PORT` through a public
+load-balancer rule.
+
+Metrics exposed (identical names across Go/Rust/TS):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `crucible_worker_requests_total` | counter | `operation`, `outcome` |
+| `crucible_worker_errors_total` | counter | `operation`, `outcome` |
+| `crucible_worker_request_duration_seconds` | histogram | `operation`, `outcome` |
+
+`outcome` is `ok` for successful handler calls and `error` for any handler-returned
+error. `operation` is the `Operation` field from the request — the same bounded set of
+strings as the gateway's route pattern labels.
+
+When `WORKER_METRICS_PORT` is **unset** (the default), no second listener is started
+and behaviour is byte-identical to previous SDK versions. Existing clones, stubs, and
+`scripts/smoke-new-tool.sh` continue to work unchanged.
+
 ## Billable units
 
 Return `billable_units >= 1` on every successful response.

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
-import { createServer, WorkerError } from './index';
+import { createServer, serve, WorkerError, METRIC_REQUESTS_TOTAL, METRIC_ERRORS_TOTAL, METRIC_DURATION_SECS } from './index';
 import type { ServerConfig, WorkerHandler } from './index';
 
 /** Send an HTTP request and return status + parsed JSON body. */
@@ -243,5 +243,104 @@ test('signature: disabled path — unsigned call succeeds when no secret configu
       !(data as Record<string, unknown>)['error'],
       `expected no error (signing disabled), got ${JSON.stringify(data)}`,
     );
+  });
+});
+
+// --- Prometheus metrics tests ------------------------------------------------
+
+// Parity: metric name constants must be byte-identical across Go/Rust/TS.
+test('metrics: name constants match cross-SDK parity contract', () => {
+  assert.equal(METRIC_REQUESTS_TOTAL, 'crucible_worker_requests_total');
+  assert.equal(METRIC_ERRORS_TOTAL, 'crucible_worker_errors_total');
+  assert.equal(METRIC_DURATION_SECS, 'crucible_worker_request_duration_seconds');
+});
+
+// Disabled path: when WORKER_METRICS_PORT is unset, createServer binds only one listener
+// and /invoke behaves identically to today's behaviour (no metrics side effects).
+test('metrics: disabled path — no extra listener, /invoke unchanged', async () => {
+  const saved = process.env['WORKER_METRICS_PORT'];
+  delete process.env['WORKER_METRICS_PORT'];
+
+  try {
+    await withServer(() => ({ payload: 'ok', billable_units: 1 }), async (port) => {
+      const { status, data } = await request(port, '/invoke', 'POST', { operation: 'test' });
+      assert.equal(status, 200);
+      assert.ok(
+        !(data as Record<string, unknown>)['error'],
+        `expected success with metrics disabled, got ${JSON.stringify(data)}`,
+      );
+      assert.equal((data as Record<string, number>)['billable_units'], 1);
+    });
+  } finally {
+    if (saved !== undefined) process.env['WORKER_METRICS_PORT'] = saved;
+  }
+});
+
+// End-to-end metrics test: start the real serve() so initMetrics() wires the /metrics
+// listener, fire one /invoke request, then scrape /metrics and assert bounded labels.
+test('metrics: /metrics endpoint serves text-format with bounded {operation,outcome} labels', async () => {
+  function allocPort(): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      const s = http.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const p = (s.address() as { port: number }).port;
+        s.close((err) => (err ? reject(err) : resolve(p)));
+      });
+    });
+  }
+
+  const [invokePort, metricsPort] = await Promise.all([allocPort(), allocPort()]);
+  process.env['WORKER_METRICS_PORT'] = String(metricsPort);
+
+  try {
+    // serve() calls initMetrics() which starts the /metrics listener on metricsPort.
+    // Don't await: serve() blocks until a signal fires.
+    const servePromise = serve(invokePort, () => ({ payload: 'ok', billable_units: 1 }));
+
+    // Give both listeners time to bind and start accepting connections.
+    await new Promise<void>((r) => setTimeout(r, 80));
+
+    // One /invoke request with Connection: close so the server drains immediately on shutdown.
+    await request(invokePort, '/invoke', 'POST', { operation: 'e2e_op' }, { 'Connection': 'close' });
+
+    // Scrape /metrics from the dedicated metrics port.
+    const metricsText = await new Promise<string>((resolve, reject) => {
+      http.get({ hostname: '127.0.0.1', port: metricsPort, path: '/metrics' }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      }).on('error', reject);
+    });
+
+    // Assert bounded cardinality: only operation and outcome labels appear.
+    assert.ok(metricsText.includes('operation="e2e_op"'), `operation label missing:\n${metricsText}`);
+    assert.ok(metricsText.includes('outcome="ok"'), `outcome label missing:\n${metricsText}`);
+    for (const forbidden of ['request_id', 'customer_id', 'payload', 'plan', 'metadata']) {
+      assert.ok(
+        !metricsText.includes(`${forbidden}="`),
+        `forbidden label ${forbidden} found in /metrics:\n${metricsText}`,
+      );
+    }
+    // Confirm Prometheus text format TYPE comment is present.
+    assert.ok(
+      metricsText.includes(`# TYPE ${METRIC_REQUESTS_TOTAL} counter`),
+      `TYPE comment missing:\n${metricsText}`,
+    );
+
+    // Gracefully stop serve() by emitting the signal. process.emit does NOT send a
+    // real OS signal — it only calls listeners registered with process.once('SIGTERM').
+    process.emit('SIGTERM');
+    await servePromise;
+  } finally {
+    delete process.env['WORKER_METRICS_PORT'];
+  }
+});
+
+// billable_units contract: metrics recording does not alter the default (0→1).
+test('metrics: billable_units contract unchanged', async () => {
+  await withServer(() => ({ payload: 'ok' }), async (port) => {
+    // Handler returns no billable_units (undefined) — must default to 1.
+    const { data } = await request(port, '/invoke', 'POST', { operation: 'units_test' });
+    assert.equal((data as Record<string, number>)['billable_units'], 1);
   });
 });

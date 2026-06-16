@@ -68,7 +68,7 @@ func TestHealthzReturns200(t *testing.T) {
 func TestInvokeMethodNotAllowed(t *testing.T) {
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{}, nil
-	}, "")
+	}, "", nil)
 
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		w := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestInvokeMethodNotAllowed(t *testing.T) {
 func TestInvokeMalformedBody(t *testing.T) {
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{}, nil
-	}, "")
+	}, "", nil)
 
 	w := httptest.NewRecorder()
 	r := newInvokeRequest(t, []byte(`not valid json`))
@@ -117,7 +117,7 @@ func TestInvokeSuccessDefaultsBillableUnitsToOne(t *testing.T) {
 	handler := func(_ context.Context, in Request) (Response, error) {
 		return Response{Payload: map[string]string{"echo": in.Operation}}, nil
 	}
-	h := invokeHandler(handler, "")
+	h := invokeHandler(handler, "", nil)
 
 	payload, _ := json.Marshal(Request{RequestID: "r1", Operation: "echo"})
 	w := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestInvokeSuccessExplicitBillableUnitsPreserved(t *testing.T) {
 	handler := func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok", BillableUnits: wantUnits}, nil
 	}
-	h := invokeHandler(handler, "")
+	h := invokeHandler(handler, "", nil)
 
 	payload, _ := json.Marshal(Request{RequestID: "r2"})
 	w := httptest.NewRecorder()
@@ -173,7 +173,7 @@ func TestInvokeHandlerStructuredError(t *testing.T) {
 	handler := func(_ context.Context, _ Request) (Response, error) {
 		return Response{}, serr
 	}
-	h := invokeHandler(handler, "")
+	h := invokeHandler(handler, "", nil)
 
 	payload, _ := json.Marshal(Request{RequestID: "r3"})
 	w := httptest.NewRecorder()
@@ -203,7 +203,7 @@ func TestInvokeHandlerUnstructuredErrorBecomesInternal(t *testing.T) {
 	handler := func(_ context.Context, _ Request) (Response, error) {
 		return Response{}, errors.New("database exploded")
 	}
-	h := invokeHandler(handler, "")
+	h := invokeHandler(handler, "", nil)
 
 	payload, _ := json.Marshal(Request{RequestID: "r4"})
 	w := httptest.NewRecorder()
@@ -237,7 +237,7 @@ func TestInvokeHandlerWrappedStructuredError(t *testing.T) {
 	handler := func(_ context.Context, _ Request) (Response, error) {
 		return Response{}, fmt.Errorf("quota check: %w", inner)
 	}
-	h := invokeHandler(handler, "")
+	h := invokeHandler(handler, "", nil)
 
 	payload, _ := json.Marshal(Request{RequestID: "r5"})
 	w := httptest.NewRecorder()
@@ -274,7 +274,7 @@ func TestInvokeSignature_ValidSignatureAccepted(t *testing.T) {
 	const secret = "test-shared-secret-valid"
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, secret)
+	}, secret, nil)
 
 	body, _ := json.Marshal(Request{RequestID: "sig1"})
 	w := httptest.NewRecorder()
@@ -295,7 +295,7 @@ func TestInvokeSignature_ValidSignatureAccepted(t *testing.T) {
 func TestInvokeSignature_MissingSignatureRejected(t *testing.T) {
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, "test-shared-secret-missing")
+	}, "test-shared-secret-missing", nil)
 
 	body, _ := json.Marshal(Request{RequestID: "sig2"})
 	w := httptest.NewRecorder()
@@ -317,7 +317,7 @@ func TestInvokeSignature_MissingSignatureRejected(t *testing.T) {
 func TestInvokeSignature_WrongSecretRejected(t *testing.T) {
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, "correct-secret")
+	}, "correct-secret", nil)
 
 	body, _ := json.Marshal(Request{RequestID: "sig3"})
 	w := httptest.NewRecorder()
@@ -340,7 +340,7 @@ func TestInvokeSignature_TamperedBodyRejected(t *testing.T) {
 	const secret = "test-shared-secret-tampered"
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, secret)
+	}, secret, nil)
 
 	originalBody, _ := json.Marshal(Request{RequestID: "sig4"})
 	tamperedBody, _ := json.Marshal(Request{RequestID: "TAMPERED"})
@@ -367,7 +367,7 @@ func TestInvokeSignature_StaleTimestampRejected(t *testing.T) {
 	const secret = "test-shared-secret-stale"
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, secret)
+	}, secret, nil)
 
 	body, _ := json.Marshal(Request{RequestID: "sig5"})
 
@@ -400,7 +400,7 @@ func TestInvokeSignature_StaleTimestampRejected(t *testing.T) {
 func TestInvokeSignature_DisabledPathSucceeds(t *testing.T) {
 	h := invokeHandler(func(_ context.Context, _ Request) (Response, error) {
 		return Response{Payload: "ok"}, nil
-	}, "") // empty secret = signing disabled
+	}, "", nil) // empty secret = signing disabled
 
 	body, _ := json.Marshal(Request{RequestID: "sig6"})
 	w := httptest.NewRecorder()

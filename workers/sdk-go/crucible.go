@@ -79,6 +79,9 @@ type HandlerConfig struct {
 	// Empty disables verification (today's behaviour). When Handler() is called
 	// directly, WORKER_SHARED_SECRET from the environment is used automatically.
 	SharedSecret string
+	// metrics is wired in by Serve when WORKER_METRICS_PORT is set.
+	// nil disables metrics recording — preserving today's behaviour exactly.
+	metrics *workerMetrics
 }
 
 // Handler returns an http.Handler that serves /healthz and /invoke for h.
@@ -99,8 +102,29 @@ func HandlerWithConfig(h HandlerFunc, cfg HandlerConfig) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/invoke", invokeHandler(h, cfg.SharedSecret))
+	mux.HandleFunc("/invoke", invokeHandler(h, cfg.SharedSecret, cfg.metrics))
 	return mux, nil
+}
+
+// initMetrics reads WORKER_METRICS_PORT, starts a listener on that port if set, and
+// returns the metrics handle. Returns nil when the port is unset or invalid — keeping
+// metrics off by default so existing clones and smoke tests continue unchanged.
+func initMetrics() *workerMetrics {
+	portStr := os.Getenv("WORKER_METRICS_PORT")
+	if portStr == "" {
+		return nil
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p <= 0 || p > 65535 {
+		log.Warn().Str("WORKER_METRICS_PORT", portStr).Msg("invalid WORKER_METRICS_PORT: must be 1-65535; metrics disabled")
+		return nil
+	}
+	m := newWorkerMetrics()
+	if err := startMetricsListener(p, m); err != nil {
+		log.Warn().Err(err).Int("metrics_port", p).Msg("WORKER_METRICS_PORT bind failed; metrics disabled")
+		return nil
+	}
+	return m
 }
 
 // Serve runs the worker HTTP server on the given port and blocks until SIGINT/SIGTERM,
@@ -108,7 +132,11 @@ func HandlerWithConfig(h HandlerFunc, cfg HandlerConfig) (http.Handler, error) {
 func Serve(port int, h HandlerFunc) error {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
-	handler, err := Handler(h)
+	m := initMetrics()
+	handler, err := HandlerWithConfig(h, HandlerConfig{
+		SharedSecret: os.Getenv("WORKER_SHARED_SECRET"),
+		metrics:      m,
+	})
 	if err != nil {
 		return err
 	}
@@ -206,7 +234,7 @@ func verifyWorkerSig(header string, body []byte, secret []byte) error {
 	return nil
 }
 
-func invokeHandler(h HandlerFunc, secret string) http.HandlerFunc {
+func invokeHandler(h HandlerFunc, secret string, m *workerMetrics) http.HandlerFunc {
 	var secretBytes []byte
 	if secret != "" {
 		secretBytes = []byte(secret)
@@ -242,8 +270,19 @@ func invokeHandler(h HandlerFunc, secret string) http.HandlerFunc {
 			return
 		}
 
+		// Metric tracking starts after successful decode — operation is now a bounded
+		// product-defined string, never a raw URL path or per-request identifier.
+		start := time.Now()
+		outcome := "ok"
+		defer func() {
+			if m != nil {
+				m.observe(req.Operation, outcome, time.Since(start))
+			}
+		}()
+
 		resp, err := h(r.Context(), req)
 		if err != nil {
+			outcome = "error"
 			var serr *Error
 			if errors.As(err, &serr) {
 				log.Info().
