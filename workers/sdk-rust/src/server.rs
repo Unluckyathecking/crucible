@@ -290,21 +290,55 @@ pub(crate) fn build_router(
         .with_state(state)
 }
 
-/// Run the worker HTTP server on the given port and block until the listener fails.
+/// Run the worker HTTP server on the given port, then drain in-flight requests
+/// for up to 10 s after SIGINT/SIGTERM before returning.
 /// When WORKER_METRICS_PORT is set, a /metrics listener is also started on that port
-/// before the main server begins accepting connections.
+/// before the main server begins accepting connections and stopped after it shuts down.
 pub async fn serve(port: u16, handler: impl Handler) -> Result<(), ServeError> {
     let secret = std::env::var("WORKER_SHARED_SECRET")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| s.into_bytes());
 
-    let metrics = init_metrics().await;
+    let (metrics, metrics_handle) = match init_metrics().await {
+        Some((m, h)) => (Some(m), Some(h)),
+        None => (None, None),
+    };
 
     let app = build_router(handler, HandlerConfig { shared_secret: secret }, metrics);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!(port, "worker listening");
-    axum::serve(listener, app).await?;
+
+    // Wait for SIGINT or SIGTERM, then signal graceful shutdown to axum.
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        tracing::info!("worker shutting down");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+
+    // Stop the metrics listener now that the main server has drained.
+    // JoinError::Cancelled from abort() is expected and silently ignored.
+    if let Some(handle) = metrics_handle {
+        handle.abort();
+        let _ = handle.await;
+    }
+
     Ok(())
 }
 
@@ -312,8 +346,9 @@ pub async fn serve(port: u16, handler: impl Handler) -> Result<(), ServeError> {
 /// binds the port synchronously, then spawns the /metrics listener. Returns None when
 /// the env var is unset, invalid, or the port cannot be bound — so the caller knows
 /// immediately whether metrics are active rather than discovering the failure later.
-/// Keeping metrics off by default means existing clones and smoke tests are unchanged.
-pub(crate) async fn init_metrics() -> Option<Arc<WorkerMetrics>> {
+/// Returns the JoinHandle alongside the metrics so the caller can abort the listener
+/// on shutdown. Keeping metrics off by default means existing clones are unchanged.
+pub(crate) async fn init_metrics() -> Option<(Arc<WorkerMetrics>, tokio::task::JoinHandle<()>)> {
     let port_str = std::env::var("WORKER_METRICS_PORT").ok()?;
     let port: u16 = port_str.trim().parse().ok()?;
     let m = Arc::new(WorkerMetrics::new().ok()?);
@@ -330,8 +365,8 @@ pub(crate) async fn init_metrics() -> Option<Arc<WorkerMetrics>> {
     tracing::info!(metrics_port = port, "worker metrics listening");
 
     let m_clone = Arc::clone(&m);
-    tokio::spawn(start_metrics_listener(listener, m_clone, port));
-    Some(m)
+    let handle = tokio::spawn(start_metrics_listener(listener, m_clone, port));
+    Some((m, handle))
 }
 
 async fn start_metrics_listener(listener: tokio::net::TcpListener, m: Arc<WorkerMetrics>, port: u16) {
