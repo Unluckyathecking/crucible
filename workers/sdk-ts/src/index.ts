@@ -143,6 +143,9 @@ class WorkerMetrics {
     // Increment only the first bucket boundary that fits the observation.
     // renderText accumulates these non-cumulatively to produce the Prometheus
     // cumulative _bucket output, so each bucket must store a non-cumulative count.
+    // Observations that exceed all finite boundaries increment no bucket here —
+    // they are captured solely by state.count, which renderText emits as the
+    // cumulative +Inf bucket (the Prometheus-spec unconditional total).
     for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
       if (elapsed <= (HISTOGRAM_BUCKETS[i] as number)) {
         hist.state.buckets[i] = (hist.state.buckets[i] as number) + 1;
@@ -235,10 +238,17 @@ export function serve(port: number, handler: WorkerHandler, config: ServerConfig
       log('info', { port, msg: 'worker listening' });
     });
 
-    server.on('error', reject);
+    // Named handler so it can be removed before graceful shutdown.
+    // Errors from draining connections during shutdown are expected and must
+    // not race with the close callbacks — remove both listeners first.
+    const onError = (err: Error): void => reject(err);
+    server.once('error', onError);
+    mServer?.once('error', onError);
 
     const shutdown = (): void => {
       log('info', { msg: 'worker shutting down' });
+      server.removeListener('error', onError);
+      mServer?.removeListener('error', onError);
       // Hard deadline: resolve after 10 s even if servers are slow to drain.
       const timer = setTimeout(resolve, 10_000);
       if (typeof (timer as NodeJS.Timeout).unref === 'function') {

@@ -370,19 +370,32 @@ pub(crate) async fn init_metrics() -> Option<(Arc<WorkerMetrics>, tokio::task::J
 }
 
 async fn start_metrics_listener(listener: tokio::net::TcpListener, m: Arc<WorkerMetrics>, port: u16) {
-    let app = Router::new().route(
-        "/metrics",
-        get(move || {
-            let m = Arc::clone(&m);
-            async move {
-                let text = m.render_text();
-                axum::response::Response::builder()
-                    .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                    .body(axum::body::Body::from(text))
-                    .unwrap_or_default()
-            }
-        }),
-    );
+    // Apply a per-request timeout as a partial Slowloris mitigation.
+    // This doesn't cover the header-read phase (Axum doesn't expose ReadHeaderTimeout
+    // through its public API), but it bounds the maximum time any connection can hold
+    // a worker thread once the handler is dispatched. This port should be
+    // firewall-restricted to internal networks in production deployments.
+    let app = Router::new()
+        .route(
+            "/metrics",
+            get(move || {
+                let m = Arc::clone(&m);
+                async move {
+                    let text = m.render_text();
+                    axum::response::Response::builder()
+                        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                        .body(axum::body::Body::from(text))
+                        .unwrap_or_default()
+                }
+            }),
+        )
+        .layer(
+            tower::ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    |_: tower::BoxError| async { axum::http::StatusCode::REQUEST_TIMEOUT },
+                ))
+                .layer(tower::timeout::TimeoutLayer::new(std::time::Duration::from_secs(5))),
+        );
     if let Err(err) = axum::serve(listener, app).await {
         tracing::error!(metrics_port = port, error = %err, "worker metrics listener failed");
     }

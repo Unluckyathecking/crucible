@@ -21,6 +21,10 @@ prometheus = { version = "0.13", features = ["process"] }
 name = "crucible_sdk"
 path = "src/lib.rs"
 
+[dependencies.tower]
+version = "0.5"
+features = ["timeout"]
+
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "timeout"] }
 
