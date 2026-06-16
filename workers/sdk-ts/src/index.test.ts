@@ -297,8 +297,25 @@ test('metrics: /metrics endpoint serves text-format with bounded {operation,outc
     // Don't await: serve() blocks until a signal fires.
     const servePromise = serve(invokePort, () => ({ payload: 'ok', billable_units: 1 }));
 
-    // Give both listeners time to bind and start accepting connections.
-    await new Promise<void>((r) => setTimeout(r, 80));
+    // Poll both ports until they accept connections — more reliable than a fixed sleep
+    // on slow CI runners where loopback bind can take longer than a fixed delay.
+    async function waitForPort(port: number): Promise<void> {
+      for (let i = 0; i < 20; i++) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const req = http.request({ hostname: '127.0.0.1', port, method: 'GET', path: '/' },
+              (res) => { res.resume(); resolve(); });
+            req.on('error', reject);
+            req.end();
+          });
+          return;
+        } catch {
+          await new Promise<void>((r) => setTimeout(r, 10 * (i + 1)));
+        }
+      }
+      throw new Error(`port ${port} did not become ready in time`);
+    }
+    await Promise.all([waitForPort(invokePort), waitForPort(metricsPort)]);
 
     // One /invoke request with Connection: close so the server drains immediately on shutdown.
     await request(invokePort, '/invoke', 'POST', { operation: 'e2e_op' }, { 'Connection': 'close' });

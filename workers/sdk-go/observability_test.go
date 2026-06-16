@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- parity: names must be byte-identical across Go/Rust/TS --------------------
@@ -35,7 +36,10 @@ func TestMetricNamesParity(t *testing.T) {
 
 func TestMetricLabelCardinality(t *testing.T) {
 	m := newWorkerMetrics()
+	// Exercise both outcome values so the error counter path is also exercised.
 	m.observe("test_op", "ok", 0)
+	m.observe("test_op", "error", time.Millisecond)
+	m.observe("other_op", "ok", 500*time.Millisecond)
 
 	// Scrape the /metrics text output and verify no unbounded label names appear.
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -56,7 +60,13 @@ func TestMetricLabelCardinality(t *testing.T) {
 		t.Error("operation label not found in metrics output")
 	}
 	if !strings.Contains(body, `outcome="ok"`) {
-		t.Error("outcome label not found in metrics output")
+		t.Error(`outcome="ok" label not found in metrics output`)
+	}
+	if !strings.Contains(body, `outcome="error"`) {
+		t.Error(`outcome="error" label not found in metrics output`)
+	}
+	if !strings.Contains(body, `operation="other_op"`) {
+		t.Error("other_op operation label not found — multiple operations must not bleed into each other")
 	}
 }
 

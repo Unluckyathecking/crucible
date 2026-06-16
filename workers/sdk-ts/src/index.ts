@@ -271,9 +271,14 @@ function initMetrics(): { metrics: WorkerMetrics; server: http.Server } | null {
 
   const mServer = http.createServer((req, res) => {
     if (req.url === '/metrics' && req.method === 'GET') {
-      const body = metrics.renderText();
-      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
-      res.end(body);
+      try {
+        const body = metrics.renderText();
+        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+        res.end(body);
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Internal Server Error');
+      }
     } else {
       res.writeHead(404);
       res.end();
