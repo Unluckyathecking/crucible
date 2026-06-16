@@ -308,24 +308,33 @@ pub async fn serve(port: u16, handler: impl Handler) -> Result<(), ServeError> {
     Ok(())
 }
 
-/// init_metrics reads WORKER_METRICS_PORT and, if valid, creates the metrics struct and
-/// spawns a /metrics listener on that port. Returns None when the env var is unset or
-/// invalid — keeping metrics off by default so existing clones and smoke tests are unchanged.
-///
-/// This function is async so that `tokio::spawn` is always called from within an active
-/// Tokio runtime — callers outside of async contexts cannot accidentally invoke it.
+/// init_metrics reads WORKER_METRICS_PORT and, if valid, creates the metrics struct,
+/// binds the port synchronously, then spawns the /metrics listener. Returns None when
+/// the env var is unset, invalid, or the port cannot be bound — so the caller knows
+/// immediately whether metrics are active rather than discovering the failure later.
+/// Keeping metrics off by default means existing clones and smoke tests are unchanged.
 pub(crate) async fn init_metrics() -> Option<Arc<WorkerMetrics>> {
     let port_str = std::env::var("WORKER_METRICS_PORT").ok()?;
     let port: u16 = port_str.trim().parse().ok()?;
     let m = Arc::new(WorkerMetrics::new().ok()?);
+
+    // Bind synchronously before spawning — the caller gets None immediately if the
+    // port is unavailable rather than proceeding with a metrics handle that never serves.
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(l) => l,
+        Err(err) => {
+            tracing::warn!(metrics_port = port, error = %err, "WORKER_METRICS_PORT bind failed; metrics disabled");
+            return None;
+        }
+    };
+    tracing::info!(metrics_port = port, "worker metrics listening");
+
     let m_clone = Arc::clone(&m);
-    tokio::spawn(async move {
-        start_metrics_listener(port, m_clone).await;
-    });
+    tokio::spawn(start_metrics_listener(listener, m_clone, port));
     Some(m)
 }
 
-async fn start_metrics_listener(port: u16, m: Arc<WorkerMetrics>) {
+async fn start_metrics_listener(listener: tokio::net::TcpListener, m: Arc<WorkerMetrics>, port: u16) {
     let app = Router::new().route(
         "/metrics",
         get(move || {
@@ -339,18 +348,8 @@ async fn start_metrics_listener(port: u16, m: Arc<WorkerMetrics>) {
             }
         }),
     );
-    match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
-        Ok(listener) => {
-            tracing::info!(metrics_port = port, "worker metrics listening");
-            let _ = axum::serve(listener, app).await;
-        }
-        Err(err) => {
-            tracing::error!(
-                metrics_port = port,
-                error = %err,
-                "worker metrics listener failed to bind"
-            );
-        }
+    if let Err(err) = axum::serve(listener, app).await {
+        tracing::error!(metrics_port = port, error = %err, "worker metrics listener failed");
     }
 }
 

@@ -135,13 +135,16 @@ class WorkerMetrics {
       };
       this.durations.set(key, hist);
     }
-    hist.state.sum += elapsedSecs;
+    // Clamp to zero in case of clock skew (Date.now() subtraction can theoretically
+    // return a negative value on some platforms or when the clock is stepped back).
+    const elapsed = Math.max(0, elapsedSecs);
+    hist.state.sum += elapsed;
     hist.state.count++;
     // Increment only the first bucket boundary that fits the observation.
     // renderText accumulates these non-cumulatively to produce the Prometheus
     // cumulative _bucket output, so each bucket must store a non-cumulative count.
     for (let i = 0; i < HISTOGRAM_BUCKETS.length; i++) {
-      if (elapsedSecs <= (HISTOGRAM_BUCKETS[i] as number)) {
+      if (elapsed <= (HISTOGRAM_BUCKETS[i] as number)) {
         hist.state.buckets[i] = (hist.state.buckets[i] as number) + 1;
         break;
       }
@@ -211,15 +214,18 @@ export function createServer(handler: WorkerHandler, config: ServerConfig = {}):
  * Runs the worker on the given port and blocks until SIGINT/SIGTERM,
  * then drains in-flight requests for up to 10 s.
  * When WORKER_METRICS_PORT is set, a second server serving /metrics is started on
- * that port before the main server begins accepting connections.
+ * that port before the main server begins accepting connections. Both servers are
+ * shut down gracefully when the signal fires.
  */
 export function serve(port: number, handler: WorkerHandler, config: ServerConfig = {}): Promise<void> {
   const secret = config.sharedSecret ?? process.env['WORKER_SHARED_SECRET'] ?? '';
 
-  const metrics = initMetrics();
+  const metricsResult = initMetrics();
+  const metrics = metricsResult?.metrics;
+  const mServer = metricsResult?.server;
 
   const server = http.createServer((req, res) => {
-    void dispatch(req, res, handler, secret, metrics ?? undefined);
+    void dispatch(req, res, handler, secret, metrics);
   });
 
   return new Promise<void>((resolve, reject) => {
@@ -231,15 +237,19 @@ export function serve(port: number, handler: WorkerHandler, config: ServerConfig
 
     const shutdown = (): void => {
       log('info', { msg: 'worker shutting down' });
+      // Hard deadline: resolve after 10 s even if servers are slow to drain.
       const timer = setTimeout(resolve, 10_000);
       if (typeof (timer as NodeJS.Timeout).unref === 'function') {
         (timer as NodeJS.Timeout).unref();
       }
-      server.close((err) => {
-        clearTimeout(timer);
-        if (err) reject(err);
-        else resolve();
-      });
+      // Close both the invoke server and the metrics server (when running).
+      let pending = mServer ? 2 : 1;
+      const onClose = (err?: Error): void => {
+        if (err) { clearTimeout(timer); reject(err); return; }
+        if (--pending === 0) { clearTimeout(timer); resolve(); }
+      };
+      server.close(onClose);
+      mServer?.close(onClose);
     };
 
     process.once('SIGINT', shutdown);
@@ -250,7 +260,8 @@ export function serve(port: number, handler: WorkerHandler, config: ServerConfig
 // initMetrics reads WORKER_METRICS_PORT and, if valid, creates a WorkerMetrics instance
 // and starts a /metrics HTTP server on that port. Returns null when the env var is unset
 // or invalid — keeping metrics off by default so existing clones and smoke tests are unchanged.
-function initMetrics(): WorkerMetrics | null {
+// The returned server must be closed by the caller during shutdown so it doesn't leak.
+function initMetrics(): { metrics: WorkerMetrics; server: http.Server } | null {
   const portStr = process.env['WORKER_METRICS_PORT'];
   if (!portStr) return null;
   const port = parseInt(portStr, 10);
@@ -273,7 +284,7 @@ function initMetrics(): WorkerMetrics | null {
     log('info', { metrics_port: port, msg: 'worker metrics listening' });
   });
 
-  return metrics;
+  return { metrics, server: mServer };
 }
 
 /** Maximum age (or future skew) of a signed request in seconds. Mirrors the Stripe replay window. */

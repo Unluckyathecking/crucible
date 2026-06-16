@@ -107,32 +107,35 @@ func HandlerWithConfig(h HandlerFunc, cfg HandlerConfig) (http.Handler, error) {
 }
 
 // initMetrics reads WORKER_METRICS_PORT, starts a listener on that port if set, and
-// returns the metrics handle. Returns nil when the port is unset or invalid — keeping
-// metrics off by default so existing clones and smoke tests continue unchanged.
-func initMetrics() *workerMetrics {
+// returns the metrics handle and the running metrics HTTP server. Both are nil when the
+// port is unset or invalid — keeping metrics off by default so existing clones and smoke
+// tests continue unchanged.
+func initMetrics() (*workerMetrics, *http.Server) {
 	portStr := os.Getenv("WORKER_METRICS_PORT")
 	if portStr == "" {
-		return nil
+		return nil, nil
 	}
 	p, err := strconv.Atoi(portStr)
 	if err != nil || p <= 0 || p > 65535 {
 		log.Warn().Str("WORKER_METRICS_PORT", portStr).Msg("invalid WORKER_METRICS_PORT: must be 1-65535; metrics disabled")
-		return nil
+		return nil, nil
 	}
 	m := newWorkerMetrics()
-	if err := startMetricsListener(p, m); err != nil {
+	mSrv, err := startMetricsListener(p, m)
+	if err != nil {
 		log.Warn().Err(err).Int("metrics_port", p).Msg("WORKER_METRICS_PORT bind failed; metrics disabled")
-		return nil
+		return nil, nil
 	}
-	return m
+	return m, mSrv
 }
 
 // Serve runs the worker HTTP server on the given port and blocks until SIGINT/SIGTERM,
-// then drains in-flight requests for up to 10s.
+// then drains in-flight requests for up to 10s. When WORKER_METRICS_PORT is set, the
+// metrics server is also shut down gracefully before Serve returns.
 func Serve(port int, h HandlerFunc) error {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
-	m := initMetrics()
+	m, mSrv := initMetrics()
 	handler, err := HandlerWithConfig(h, HandlerConfig{
 		SharedSecret: os.Getenv("WORKER_SHARED_SECRET"),
 		metrics:      m,
@@ -164,6 +167,10 @@ func Serve(port int, h HandlerFunc) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	if mSrv != nil {
+		_ = mSrv.Shutdown(ctx)
+	}
 	return srv.Shutdown(ctx)
 }
 

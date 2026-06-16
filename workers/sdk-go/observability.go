@@ -76,14 +76,15 @@ func (m *workerMetrics) httpHandler() http.Handler {
 }
 
 // startMetricsListener binds port synchronously, then serves /metrics in a goroutine.
-// Returns an error if the port can't be bound — the caller can then return nil from
-// initMetrics rather than handing back a metrics handle that is never accessible.
+// Returns the running *http.Server and nil on success, or nil and an error if the port
+// can't be bound — the caller can then return nil from initMetrics rather than handing
+// back a metrics handle that is never accessible.
 // The separate listener ensures /metrics is never accidentally exposed through the
 // same load-balancer rule as /invoke.
-func startMetricsListener(port int, m *workerMetrics) error {
+func startMetricsListener(port int, m *workerMetrics) (*http.Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.httpHandler())
@@ -96,5 +97,5 @@ func startMetricsListener(port int, m *workerMetrics) error {
 			log.Error().Err(serveErr).Int("metrics_port", port).Msg("worker metrics listener failed")
 		}
 	}()
-	return nil
+	return srv, nil
 }

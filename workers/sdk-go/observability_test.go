@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -117,10 +118,26 @@ func TestMetricsRecordedOnError(t *testing.T) {
 // --- disabled path: nil metrics, no second listener, /invoke identical --------
 
 func TestMetricsDisabledPathNoSideEffects(t *testing.T) {
-	// initMetrics must return nil when WORKER_METRICS_PORT is unset.
+	// initMetrics must return nil,nil when WORKER_METRICS_PORT is completely unset
+	// (not just set to an empty string — os.LookupEnv distinguishes these cases).
+	saved, hadVal := os.LookupEnv("WORKER_METRICS_PORT")
+	os.Unsetenv("WORKER_METRICS_PORT")
+	defer func() {
+		if hadVal {
+			os.Setenv("WORKER_METRICS_PORT", saved)
+		} else {
+			os.Unsetenv("WORKER_METRICS_PORT")
+		}
+	}()
+	if m, srv := initMetrics(); m != nil || srv != nil {
+		t.Error("expected nil metrics when WORKER_METRICS_PORT is not set")
+	}
+
+	// An empty string must also disable metrics (os.Getenv returns "" for both cases,
+	// but explicitly verify the empty-string branch for completeness).
 	t.Setenv("WORKER_METRICS_PORT", "")
-	if m := initMetrics(); m != nil {
-		t.Error("expected nil metrics when WORKER_METRICS_PORT is unset")
+	if m, srv := initMetrics(); m != nil || srv != nil {
+		t.Error("expected nil metrics when WORKER_METRICS_PORT is empty string")
 	}
 
 	// invokeHandler with nil metrics must behave byte-for-byte like today.
