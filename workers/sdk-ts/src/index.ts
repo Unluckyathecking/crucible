@@ -200,8 +200,10 @@ class WorkerMetrics {
  *   POST /invoke  — decodes, verifies signature (if configured), calls handler.
  *   GET  /healthz — returns 200 OK.
  *
- * Use serve() for the standard lifecycle (signal handling, graceful drain).
- * Use createServer() when you need to manage the server lifecycle yourself.
+ * NOTE: Prometheus metrics are NOT wired when using createServer() directly.
+ * Use serve() for production — it reads WORKER_METRICS_PORT and starts the
+ * /metrics listener automatically alongside the /invoke server.
+ * createServer() is intended for tests and custom lifecycle management only.
  */
 export function createServer(handler: WorkerHandler, config: ServerConfig = {}): http.Server {
   const secret = config.sharedSecret ?? process.env['WORKER_SHARED_SECRET'] ?? '';
@@ -265,7 +267,7 @@ function initMetrics(): { metrics: WorkerMetrics; server: http.Server } | null {
   const portStr = process.env['WORKER_METRICS_PORT'];
   if (!portStr) return null;
   const port = parseInt(portStr, 10);
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) return null;
+  if (!Number.isFinite(port) || port < 0 || port > 65535) return null;
 
   const metrics = new WorkerMetrics();
 

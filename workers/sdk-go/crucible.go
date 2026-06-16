@@ -116,8 +116,8 @@ func initMetrics() (*workerMetrics, *http.Server) {
 		return nil, nil
 	}
 	p, err := strconv.Atoi(portStr)
-	if err != nil || p <= 0 || p > 65535 {
-		log.Warn().Str("WORKER_METRICS_PORT", portStr).Msg("invalid WORKER_METRICS_PORT: must be 1-65535; metrics disabled")
+	if err != nil || p < 0 || p > 65535 {
+		log.Warn().Str("WORKER_METRICS_PORT", portStr).Msg("invalid WORKER_METRICS_PORT: must be 0-65535; metrics disabled")
 		return nil, nil
 	}
 	m := newWorkerMetrics()

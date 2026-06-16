@@ -86,6 +86,7 @@ func startMetricsListener(port int, m *workerMetrics) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Info().Str("metrics_addr", ln.Addr().String()).Msg("worker metrics listening")
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.httpHandler())
 	srv := &http.Server{
