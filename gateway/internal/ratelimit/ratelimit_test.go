@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
@@ -397,5 +398,56 @@ func TestMiddleware_FailOpenOnRedisError(t *testing.T) {
 func TestRetryAfterMatchesWindowSeconds(t *testing.T) {
 	if retryAfterSeconds != windowSeconds {
 		t.Errorf("retryAfterSeconds (%d) != windowSeconds (%d); Retry-After must match the actual window", retryAfterSeconds, windowSeconds)
+	}
+}
+
+// TestAllow_BoundaryBurstCapped is the proof-of-correctness for the sliding-window
+// design. A fixed-minute bucket resets its counter at each clock minute, so a customer
+// can exhaust `limit` calls at second 59 and another `limit` at second 61 — 2× the
+// advertised cap across the boundary. The sliding window counts the last 60 s exactly:
+// prior entries that are still within 60 s continue to occupy slots, and no doubling
+// is possible.
+//
+// The test seeds the Redis sorted set directly (bypassing Allow) to place `limit`
+// entries 1 ms before the current minute boundary — always in the "previous"
+// fixed-minute bucket regardless of when the test runs. A fixed-window implementation
+// keyed by clock-minute would not count those entries (different bucket key), so all
+// subsequent Allow calls would succeed, yielding 2× the limit. The sliding window
+// counts anything in the last 60 s, so it must reject them.
+func TestAllow_BoundaryBurstCapped(t *testing.T) {
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	cust := fmt.Sprintf("test-boundary-%d", time.Now().UnixNano())
+	key := "rl:" + cust
+	defer rdb.Del(ctx, key)
+
+	const limit = 5
+	b := New(rdb)
+
+	// 1 ms before the start of the current minute: always in the "previous"
+	// fixed-minute bucket, and within the 60 s sliding window for all but the
+	// last millisecond of the minute (a 1-in-60 000 window — skip and rerun).
+	minuteStart := time.Now().Truncate(time.Minute)
+	seedTime := minuteStart.Add(-time.Millisecond)
+	if time.Since(seedTime) >= windowSeconds*time.Second {
+		t.Skip("seed timestamp would fall outside the 60 s window; rerun in a moment")
+	}
+	for i := 0; i < limit; i++ {
+		if err := rdb.ZAdd(ctx, key, redis.Z{
+			Score:  float64(seedTime.UnixMilli()),
+			Member: fmt.Sprintf("seed-%d", i),
+		}).Err(); err != nil {
+			t.Fatalf("seeding sorted set entry %d: %v", i, err)
+		}
+	}
+
+	// All subsequent Allow calls must be rejected: the sliding window still counts
+	// those entries within the last 60 s and the cap is already hit. A fixed-minute
+	// bucket starting a fresh minute would not count them — the 2× boundary burst.
+	for i := 0; i < 3; i++ {
+		_, err := b.Allow(ctx, cust, limit)
+		if !errors.Is(err, ErrLimited) {
+			t.Errorf("call %d: got %v, want ErrLimited — entries 1 ms before the minute boundary must still occupy slots in the 60 s sliding window", i, err)
+		}
 	}
 }
