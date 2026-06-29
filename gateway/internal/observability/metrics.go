@@ -17,6 +17,7 @@
 //	crucible_billing_unbillable_rows                     — unflushed row count with no Stripe customer (label-free gauge, flusher tick)
 //	crucible_billing_reconcile_errors_total              — flusher ticks where at least one reconcile query failed; non-zero means gauges may be stale
 //	crucible_rate_limited_total
+//	crucible_quota_exceeded_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
 //
@@ -136,6 +137,11 @@ var (
 		Help: "Number of requests rejected for exceeding rate limits.",
 	})
 
+	QuotaExceededTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_quota_exceeded_total",
+		Help: "Number of requests rejected for exceeding monthly quota.",
+	})
+
 	// Fail-open counters: incremented when Redis is unreachable and the request is
 	// admitted anyway (correct behaviour, but otherwise silent). A non-zero rate here
 	// means the limiter/quota is degraded and customers may be exceeding their caps.
@@ -169,6 +175,7 @@ type Metrics struct {
 	BillingUnbillableRows          prometheus.Gauge
 	BillingReconcileErrorsTotal    prometheus.Counter
 	RateLimitedTotal               prometheus.Counter
+	QuotaExceededTotal             prometheus.Counter
 	RateLimitFailOpen              prometheus.Counter
 	QuotaFailOpen                  prometheus.Counter
 }
@@ -240,6 +247,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_rate_limited_total",
 			Help: "Number of requests rejected for exceeding rate limits.",
 		}),
+		QuotaExceededTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_quota_exceeded_total",
+			Help: "Number of requests rejected for exceeding monthly quota.",
+		}),
 		RateLimitFailOpen: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "crucible_ratelimit_failopen_total",
 			Help: "Number of requests admitted because the rate-limit store (Redis) was unreachable.",
@@ -265,6 +276,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.BillingUnbillableRows,
 		m.BillingReconcileErrorsTotal,
 		m.RateLimitedTotal,
+		m.QuotaExceededTotal,
 		m.RateLimitFailOpen,
 		m.QuotaFailOpen,
 	)

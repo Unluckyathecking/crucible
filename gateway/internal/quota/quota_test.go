@@ -693,3 +693,74 @@ func TestMiddleware_QUOTA_EXCEEDED_ErrorEnvelopeShape(t *testing.T) {
 	// X-Quota-* headers must still be set with Remaining=0 on the deny path.
 	checkQuotaHeaders(t, rec.Header(), freeCap, 0)
 }
+
+// TestQuotaMiddleware_ExceededCounterIncrements asserts that crucible_quota_exceeded_total
+// increments exactly once on a 429 rejection and does not increment on an admitted request.
+func TestQuotaMiddleware_ExceededCounterIncrements(t *testing.T) {
+	rdb := newTestRedis(t)
+	pool := newTestPool(t)
+	plans := billing.NewPlanCache(pool)
+
+	freeCap := plans.MonthlyCap(context.Background(), "free")
+	if freeCap == 0 {
+		t.Skip("free plan has unlimited cap in this environment; skipping counter test")
+	}
+
+	tr := New(rdb)
+
+	// --- admission path: counter must NOT increment ---
+	admitKey := testKeyForPlan("free")
+	admitRedisKey := monthKey(admitKey.Customer.ID, time.Now().UTC())
+	t.Cleanup(func() { rdb.Del(context.Background(), admitRedisKey) })
+
+	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		MarkRecorded(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	before := testutil.ToFloat64(observability.QuotaExceededTotal)
+
+	ctx := auth.WithTestKey(context.Background(), admitKey)
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admit path: status = %d, want 200", rec.Code)
+	}
+	if got := testutil.ToFloat64(observability.QuotaExceededTotal); got != before {
+		t.Errorf("admit path: counter moved from %.0f to %.0f, want no change", before, got)
+	}
+
+	// --- rejection path: counter must increment by 1 ---
+	denyKey := testKeyForPlan("free")
+	denyRedisKey := monthKey(denyKey.Customer.ID, time.Now().UTC())
+	t.Cleanup(func() { rdb.Del(context.Background(), denyRedisKey) })
+
+	// Pre-fill counter to cap so the next request is rejected.
+	for i := int64(0); i < freeCap; i++ {
+		ok, _, _, _, err := tr.Reserve(context.Background(), denyKey.Customer.ID, freeCap)
+		if err != nil || !ok {
+			t.Fatalf("pre-fill reserve %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+
+	beforeDeny := testutil.ToFloat64(observability.QuotaExceededTotal)
+
+	denyHandler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called when quota is exceeded")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx2 := auth.WithTestKey(context.Background(), denyKey)
+	req2 := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx2)
+	rec2 := httptest.NewRecorder()
+	denyHandler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("deny path: status = %d, want 429", rec2.Code)
+	}
+	if got := testutil.ToFloat64(observability.QuotaExceededTotal); got != beforeDeny+1 {
+		t.Errorf("deny path: crucible_quota_exceeded_total = %.0f, want %.0f", got, beforeDeny+1)
+	}
+}
