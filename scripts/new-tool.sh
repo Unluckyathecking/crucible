@@ -86,6 +86,11 @@ git init -q -b main
 git add -A
 git -c user.email=template@local -c user.name="template" commit -q -m "Initial commit (cloned from crucible)" || true
 
+echo "==> running preflight doctor"
+if ! bash scripts/doctor.sh; then
+  echo "WARNING: doctor detected issues — see DOCTOR_FAIL lines above. Fix before running 'make dev'." >&2
+fi
+
 echo
 echo "Done. Your new product lives at $DEST"
 echo
@@ -93,6 +98,7 @@ echo "Next:"
 echo "  cd $DEST"
 echo "  cp .env.example .env"
 echo "  # Edit workers/active to point at your product worker."
-echo "  # Add a route per endpoint in gateway/internal/server/routes.go."
+echo "  # Add a route per endpoint in gateway/internal/server/routes_table.go."
 echo "  # Add plans in gateway/migrations/0003_seed_plans.sql."
+echo "  # Re-run scripts/doctor.sh after each adapt step to verify config."
 echo "  make dev"
