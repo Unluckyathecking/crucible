@@ -1120,3 +1120,58 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 	}
 }
 
+// TestInvokeNon2xx_WorkerBodyAbsentFromCustomerResponse is the route-level acceptance
+// gate for the non-2xx body-capture feature. It verifies that a distinctive diagnostic
+// body returned by the worker on a non-2xx response is captured for operator logs but
+// is completely absent from the customer-facing HTTP response envelope.
+func TestInvokeNon2xx_WorkerBodyAbsentFromCustomerResponse(t *testing.T) {
+	const workerDiagBody = "db_error: too many connections; pool_exhausted=true; retry_count=999"
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(workerDiagBody))
+	}))
+	defer worker.Close()
+
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	h := invoke(p, nil, "full", "test") // "full" mode to confirm even full-exposure never leaks non-2xx bodies
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/test", strings.NewReader(`{"input":"hello"}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+
+	customerResponse := w.Body.String()
+
+	// The worker's diagnostic body must NEVER appear in the customer-facing response.
+	// Operators see it via the structured log (log.Error().Err(err)); customers see only
+	// the sanitized WORKER_UNREACHABLE envelope.
+	if strings.Contains(customerResponse, workerDiagBody) {
+		t.Errorf("customer response contains worker diagnostic body %q; must be operator-only", workerDiagBody)
+	}
+	// Spot-check: none of the distinctive substrings should leak either.
+	for _, fragment := range []string{"db_error", "pool_exhausted", "retry_count"} {
+		if strings.Contains(customerResponse, fragment) {
+			t.Errorf("customer response leaks worker body fragment %q", fragment)
+		}
+	}
+
+	// The response IS the sanitized WORKER_UNREACHABLE envelope.
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("customer response is not valid JSON: %v", err)
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object in customer response, got %T", body["error"])
+	}
+	if errObj["code"] != apierror.WORKER_UNREACHABLE {
+		t.Errorf("customer error code = %q, want %q", errObj["code"], apierror.WORKER_UNREACHABLE)
+	}
+	if errObj["message"] != "worker unavailable" {
+		t.Errorf("customer error message = %q, want %q", errObj["message"], "worker unavailable")
+	}
+}
+

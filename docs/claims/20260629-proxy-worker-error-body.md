@@ -16,9 +16,9 @@ the customer-facing error capture in #115/#125.
 ## Change
 
 On a non-2xx worker response, capture a **size-bounded** slice of the worker's response body
-into the structured operator log (and/or a metric label that is bounded — do not use an
-unbounded body as a label). The captured body must NEVER appear in the customer-facing
-response envelope.
+into the structured operator log only. The captured body must NEVER appear in the
+customer-facing response envelope, and must not be used as a metric label (free-form body
+text creates unbounded label cardinality).
 
 ## Expected outcome / acceptance
 
