@@ -145,17 +145,24 @@ func TestInvoke_Non200(t *testing.T) {
 	defer worker.Close()
 
 	c := New(worker.URL, 5*time.Second, 0)
-	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	// (a) Body IS present in the operator log output: it surfaces in err.Error(), which
+	// the route handler forwards to zerolog via log.Error().Err(err).
+	// (b) Body is ABSENT from the caller-facing envelope: Invoke returns nil InvokeResponse
+	// on non-2xx, so the worker body can never reach the customer HTTP response.
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error for non-200, got nil")
 	}
-	// The body should surface in the error message so operators can triage worker failures
-	// without having to attach a debugger.
+	// (a) body and status code must surface in the operator log.
 	if !strings.Contains(err.Error(), "worker exploded") {
 		t.Errorf("error %q did not include worker response body", err.Error())
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("error %q did not include status code", err.Error())
+	}
+	// (b) InvokeResponse must be nil — body must not reach the caller-facing envelope.
+	if resp != nil {
+		t.Errorf("expected nil InvokeResponse on non-2xx, got %+v — worker body must not reach caller envelope", resp)
 	}
 }
 
@@ -168,13 +175,18 @@ func TestInvoke_Non200_BodyTruncated(t *testing.T) {
 	defer worker.Close()
 
 	c := New(worker.URL, 5*time.Second, 0)
-	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	// (a) body is captured; (b) InvokeResponse is nil so large bodies can't reach the customer.
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	// The body peek caps at 512 bytes so a chatty worker can't blow up log lines.
 	if len(err.Error()) > 700 {
 		t.Errorf("error too long (%d bytes); body should be truncated to ~512", len(err.Error()))
+	}
+	// (b) InvokeResponse must be nil even for large bodies.
+	if resp != nil {
+		t.Errorf("expected nil InvokeResponse on non-2xx, got %+v", resp)
 	}
 }
 
