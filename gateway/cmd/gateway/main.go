@@ -27,6 +27,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/runtime"
 	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
@@ -93,8 +94,13 @@ func main() {
 	}
 	defer func() { _ = redisClient.Close() }()
 
+	components, err := runtime.Assemble(rootCtx, cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("runtime assembly failed")
+	}
+
 	authStore := auth.NewStore(pool, redisClient, cfg.APIKeyHashSalt)
-	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns).
+	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns, components.Policy).
 		WithSecret(cfg.WorkerSharedSecret)
 	bucket := ratelimit.New(redisClient)
 	plans := billing.NewPlanCache(pool)
@@ -110,16 +116,17 @@ func main() {
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: server.NewRouter(&server.Deps{
-			Cfg:      cfg,
-			Proxy:    workerClient,
-			Auth:     authStore,
-			Bucket:   bucket,
-			Plans:    plans,
-			Recorder: recorder,
-			Webhook:  webhook,
-			Quota:    quotaTracker,
-			Redis:    &redisPinger{redisClient},
-			PG:       &pgPinger{pool},
+			Cfg:            cfg,
+			Proxy:          workerClient,
+			Auth:           authStore,
+			Bucket:         bucket,
+			Plans:          plans,
+			Recorder:       recorder,
+			Webhook:        webhook,
+			Quota:          quotaTracker,
+			Redis:          &redisPinger{redisClient},
+			PG:             &pgPinger{pool},
+			TracerProvider: components.TracerProvider,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -160,5 +167,8 @@ func main() {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	if err := components.Shutdown(shutdownCtx); err != nil {
+		log.Warn().Err(err).Msg("runtime shutdown failed")
+	}
 	authStore.Close()
 }
