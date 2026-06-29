@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
-    "test": "tsc && node --test dist/index.test.js"
+    "build": "tsc --ignoreDeprecations 5.0",
+    "test": "tsc --ignoreDeprecations 5.0 && node --test dist/index.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
