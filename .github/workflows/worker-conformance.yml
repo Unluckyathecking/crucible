@@ -5,49 +5,96 @@ on:
     branches: [main]
   pull_request:
 
+# Two complementary conformance jobs run in parallel:
+#
+# fixture-conformance — per-SDK in-process runners (Go/Rust/TS) each load
+#   workers/conformance/fixture.json as the single source of truth and assert
+#   the frozen /invoke contract without starting a real server.
+#
+# python-stub-conformance — the Python worker stub has no SDK; it is tested
+#   by spinning it up and running the external test/conformance suite against
+#   it, preserving the coverage that existed before this PR.
+#
+# fail-fast: false on the SDK matrix ensures every SDK gets a report even if
+# one fails.
 jobs:
-  conformance:
+  fixture-conformance:
     runs-on: ubuntu-latest
     strategy:
-      # Run all stubs even if one fails so every SDK gets a report.
       fail-fast: false
       matrix:
-        stub:
-          # ── Add new language stubs here; assertions never change. ──
+        sdk:
           - id: go
           - id: rust
           - id: ts
-          - id: python
 
-    name: conformance (${{ matrix.stub.id }} stub)
+    name: fixture-conformance (${{ matrix.sdk.id }})
     steps:
       - uses: actions/checkout@v4
 
-      # Go is always needed: the conformance suite itself is written in Go.
-      - uses: actions/setup-go@v5
+      # ── Go ────────────────────────────────────────────────────────────────
+
+      - name: Set up Go
+        if: matrix.sdk.id == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: workers/sdk-go/go.sum
+
+      - name: Go fixture conformance
+        if: matrix.sdk.id == 'go'
+        working-directory: workers/sdk-go
+        run: go test -race ./conformance/... -run TestFixtureDrivenConformance -v
+
+      # ── Rust ─────────────────────────────────────────────────────────────
+
+      - name: Set up Rust toolchain
+        if: matrix.sdk.id == 'rust'
+        uses: dtolnay/rust-toolchain@1.87
+
+      - name: Rust fixture conformance
+        if: matrix.sdk.id == 'rust'
+        working-directory: workers/sdk-rust/conformance
+        run: cargo test
+
+      # ── TypeScript ────────────────────────────────────────────────────────
+
+      - name: Set up Node.js
+        if: matrix.sdk.id == 'ts'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: TS fixture conformance
+        if: matrix.sdk.id == 'ts'
+        working-directory: workers/sdk-ts
+        run: |
+          npm ci
+          npm run build
+          node --test conformance/conformance.test.js
+
+  # ── Python stub (no SDK — use the external conformance-run.sh suite) ─────────
+
+  python-stub-conformance:
+    name: conformance (python stub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.25"
           cache: true
           cache-dependency-path: |
             workers/sdk-go/go.sum
-            workers/stubs/go/go.sum
             test/conformance/go.sum
 
-      - name: Set up Rust toolchain
-        if: matrix.stub.id == 'rust'
-        uses: dtolnay/rust-toolchain@1.87
-
-      - name: Set up Node.js
-        if: matrix.stub.id == 'ts'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Set up Python
-        if: matrix.stub.id == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Run conformance harness
-        run: bash scripts/conformance-run.sh ${{ matrix.stub.id }}
+      - name: Python stub conformance
+        run: bash scripts/conformance-run.sh python

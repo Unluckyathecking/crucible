@@ -1,0 +1,37 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "id": "healthz_exact_body",
+      "description": "GET /healthz returns HTTP 200, Content-Type application/json, and body exactly {\"status\":\"ok\"} with no extra whitespace",
+      "kind": "healthz_body"
+    },
+    {
+      "id": "non_post_invoke_method_rejected",
+      "description": "Non-POST methods on /invoke must be rejected; the frozen contract specifies 405 Method Not Allowed",
+      "kind": "method_not_allowed",
+      "expect": { "status": 405 },
+      "known_divergences": {
+        "ts": {
+          "status": 404,
+          "note": "TS SDK dispatch() returns 404 for non-POST /invoke instead of 405; tracked for a separate fix PR"
+        }
+      }
+    },
+    {
+      "id": "billable_units_floor",
+      "description": "A handler returning billable_units=0 must be normalised to 1 by the SDK before the response is sent",
+      "kind": "billable_units_floor"
+    },
+    {
+      "id": "apierror_envelope",
+      "description": "A handler WorkerError must surface as HTTP 200 with {\"error\":{\"code\":\"...\",\"message\":\"...\",\"retryable\":...}}; no payload or billable_units in the envelope",
+      "kind": "apierror_envelope"
+    },
+    {
+      "id": "empty_body_bad_request",
+      "description": "POST /invoke with an empty body must return a BAD_REQUEST structured error envelope (empty body is not valid JSON)",
+      "kind": "empty_body_bad_request"
+    }
+  ]
+}
