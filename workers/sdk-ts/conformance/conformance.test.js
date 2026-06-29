@@ -52,8 +52,9 @@ function withServer(handler, fn) {
 }
 
 /**
- * Send a raw HTTP request and return { status, headers, body } where body is
- * a parsed JSON value (or the raw string if JSON.parse fails).
+ * Send a raw HTTP request and return { status, headers, rawBody, body } where
+ * rawBody is the raw UTF-8 response string and body is a parsed JSON value
+ * (or rawBody if JSON.parse fails). rawBody is needed for byte-exact checks.
  */
 function rawRequest(port, path_, method, bodyStr, extraHeaders) {
   return new Promise((resolve, reject) => {
@@ -68,14 +69,14 @@ function rawRequest(port, path_, method, bodyStr, extraHeaders) {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf8');
-          let data;
+          const rawBody = Buffer.concat(chunks).toString('utf8');
+          let body;
           try {
-            data = JSON.parse(raw);
+            body = JSON.parse(rawBody);
           } catch {
-            data = raw;
+            body = rawBody;
           }
-          resolve({ status: res.statusCode, headers: res.headers, body: data });
+          resolve({ status: res.statusCode, headers: res.headers, rawBody, body });
         });
       },
     );
@@ -88,11 +89,13 @@ function rawRequest(port, path_, method, bodyStr, extraHeaders) {
 // ── Per-case assertion helpers ────────────────────────────────────────────────
 
 async function assertHealthzBody(port) {
-  const { status, headers, body } = await rawRequest(port, '/healthz', 'GET');
+  const { status, headers, rawBody } = await rawRequest(port, '/healthz', 'GET');
   assert.equal(status, 200, 'healthz must return HTTP 200');
   const ct = headers['content-type'] || '';
   assert.ok(ct.startsWith('application/json'), `healthz Content-Type must be application/json, got ${ct}`);
-  assert.deepEqual(body, { status: 'ok' }, 'healthz body must be exactly {"status":"ok"}');
+  // Compare raw bytes so any trailing whitespace, newline, or pretty-printing is caught.
+  assert.equal(rawBody, '{"status":"ok"}',
+    `healthz body must be exactly {"status":"ok"} with no extra bytes, got ${JSON.stringify(rawBody)}`);
 }
 
 async function assertMethodNotAllowed(port, expectedStatus) {
@@ -113,6 +116,8 @@ async function assertBillableUnitsFloor() {
       JSON.stringify({ operation: 'floor_test', payload: {} }));
     assert.equal(status, 200);
     const units = body && body.billable_units;
+    // Must be a JSON number (not a string) so serialisation regressions are caught.
+    assert.ok(typeof units === 'number', `billable_units must be a JSON number, got ${typeof units}`);
     assert.ok(units >= 1, `billable_units must be >= 1 after SDK normalisation, got ${units}`);
   });
 }
@@ -126,9 +131,11 @@ async function assertApiErrorEnvelope() {
     assert.ok(body.error, 'error field must be present');
     assert.equal(body.error.code, ERROR_CODE, 'error.code must match');
     assert.ok(body.error.message, 'error.message must be non-empty');
-    assert.ok(body.error.retryable !== undefined, 'error.retryable must be present');
-    assert.ok(!body.payload, 'error envelope must not contain payload');
-    assert.ok(!('billable_units' in body), 'error envelope must not contain billable_units');
+    // Must be a boolean, not just truthy/falsy — catches retryable:null.
+    assert.ok(typeof body.error.retryable === 'boolean', 'error.retryable must be a boolean');
+    // Key must be absent entirely, not just falsy — catches payload:null.
+    assert.ok(!('payload' in body), 'error envelope must not contain payload key');
+    assert.ok(!('billable_units' in body), 'error envelope must not contain billable_units key');
   });
 }
 
@@ -146,9 +153,16 @@ for (const tc of fixture.cases) {
   // Check for a known TS divergence.
   const tsDivergence = tc.known_divergences && tc.known_divergences.ts;
 
-  test(tc.id, async () => {
+  test(tc.id, async (t) => {
+    // method_not_allowed: canonical contract is 405 but TS SDK returns 404.
+    // Skip rather than asserting the wrong expected status so CI stays green
+    // without masking the contract violation. Fix lands in a separate SDK PR.
+    if (tc.kind === 'method_not_allowed' && tsDivergence) {
+      t.skip(`TS SDK returns ${tsDivergence.status} instead of 405; ${tsDivergence.note}`);
+      return;
+    }
+
     if (tsDivergence) {
-      // Use the diverged expected status rather than the canonical one.
       console.log(`  known TS divergence: ${tsDivergence.note}`);
     }
 
@@ -159,12 +173,10 @@ for (const tc of fixture.cases) {
           await assertHealthzBody(port);
           break;
 
-        case 'method_not_allowed': {
-          // Use diverged status for TS if documented; canonical is 405.
-          const expectedStatus = tsDivergence ? tsDivergence.status : 405;
-          await assertMethodNotAllowed(port, expectedStatus);
+        case 'method_not_allowed':
+          // Diverged cases are skipped above; reaching here means canonical 405.
+          await assertMethodNotAllowed(port, 405);
           break;
-        }
 
         case 'billable_units_floor':
           await assertBillableUnitsFloor();
