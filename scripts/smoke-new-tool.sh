@@ -6,6 +6,15 @@
 # (via .github/workflows/new-tool-smoke.yml) AND locally (via `make smoke-test-new-tool`).
 set -euo pipefail
 
+# Portable in-place sed (macOS requires -i '', Linux uses -i alone).
+_sed_i() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "$@"
+  else
+    sed -i "$@"
+  fi
+}
+
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
 WORK=$(mktemp -d -t crucible-smoke-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
@@ -34,19 +43,25 @@ if ! grep -rq "Unluckyathecking/demo_clone" --include='go.mod' .; then
   exit 1
 fi
 
-echo "==> sanity: gateway and dashboard env share the same API key prefix and salt"
-ROOT_PREFIX=$(grep '^API_KEY_PREFIX=' .env.example | cut -d= -f2)
-DASH_PREFIX=$(grep '^API_KEY_PREFIX=' dashboard/.env.example | cut -d= -f2)
-if [[ "$ROOT_PREFIX" != "$DASH_PREFIX" ]]; then
-  echo "FAIL: API_KEY_PREFIX mismatch — root='$ROOT_PREFIX' dashboard='$DASH_PREFIX'" >&2
+echo "==> doctor: preflight adapt-drift checks (pass on correctly-adapted tree)"
+bash scripts/doctor.sh
+
+echo "==> doctor: inject env-prefix drift, assert non-zero exit + named cause"
+cp dashboard/.env.example dashboard/.env.example.bak
+_sed_i 's/^API_KEY_PREFIX=.*/API_KEY_PREFIX=drifted_/' dashboard/.env.example
+doctor_rc=0
+doctor_out=$(bash scripts/doctor.sh 2>&1) || doctor_rc=$?
+mv dashboard/.env.example.bak dashboard/.env.example
+if [[ $doctor_rc -eq 0 ]]; then
+  echo "FAIL: doctor should exit non-zero on env-prefix drift but exited 0" >&2
   exit 1
 fi
-ROOT_SALT=$(grep '^API_KEY_HASH_SALT=' .env.example | cut -d= -f2)
-DASH_SALT=$(grep '^API_KEY_HASH_SALT=' dashboard/.env.example | cut -d= -f2)
-if [[ "$ROOT_SALT" != "$DASH_SALT" || "$ROOT_SALT" == "REPLACE_WITH"* ]]; then
-  echo "FAIL: API_KEY_HASH_SALT mismatch or placeholder not replaced" >&2
+if [[ "$doctor_out" != *"env_prefix_mismatch"* ]]; then
+  echo "FAIL: doctor output missing named cause 'env_prefix_mismatch'" >&2
+  printf 'Got:\n%s\n' "$doctor_out" >&2
   exit 1
 fi
+echo "  -> doctor correctly detected env-prefix drift (exit $doctor_rc, cause: env_prefix_mismatch)"
 
 echo "==> non-Go surfaces"
 
