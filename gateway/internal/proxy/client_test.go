@@ -105,6 +105,38 @@ func TestInvoke_WorkerError(t *testing.T) {
 	}
 }
 
+// TestInvoke_Non200_BodyAbsentFromEnvelope is the acceptance gate for the non-2xx
+// body-capture feature. It asserts both halves of the contract in one place:
+//   (a) the worker body IS present in the Go error — routes.go logs this to structured
+//       output, giving operators a triage signal without attaching a debugger.
+//   (b) the caller-facing *InvokeResponse (the envelope) is nil — the body is never
+//       propagated to the customer-facing HTTP response.
+func TestInvoke_Non200_BodyAbsentFromEnvelope(t *testing.T) {
+	const workerBody = "database unavailable: connection refused"
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(workerBody))
+	}))
+	defer worker.Close()
+
+	c := New(worker.URL, 5*time.Second, 0)
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+
+	// (a) Worker body surfaces in the operator error — routes.go logs err, so the body
+	// appears in the structured log without any extra log call in this package.
+	if err == nil {
+		t.Fatal("expected error for non-200 worker, got nil")
+	}
+	if !strings.Contains(err.Error(), workerBody) {
+		t.Errorf("operator error %q should contain worker body %q for triage", err.Error(), workerBody)
+	}
+
+	// (b) Caller-facing envelope is nil — the worker body never reaches the customer response.
+	if resp != nil {
+		t.Errorf("expected nil InvokeResponse on non-2xx worker, got %+v", resp)
+	}
+}
+
 func TestInvoke_Non200(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -113,17 +145,24 @@ func TestInvoke_Non200(t *testing.T) {
 	defer worker.Close()
 
 	c := New(worker.URL, 5*time.Second, 0)
-	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	// (a) Body IS present in the operator log output: it surfaces in err.Error(), which
+	// the route handler forwards to zerolog via log.Error().Err(err).
+	// (b) Body is ABSENT from the caller-facing envelope: Invoke returns nil InvokeResponse
+	// on non-2xx, so the worker body can never reach the customer HTTP response.
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error for non-200, got nil")
 	}
-	// The body should surface in the error message so operators can triage worker failures
-	// without having to attach a debugger.
+	// (a) body and status code must surface in the operator log.
 	if !strings.Contains(err.Error(), "worker exploded") {
 		t.Errorf("error %q did not include worker response body", err.Error())
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("error %q did not include status code", err.Error())
+	}
+	// (b) InvokeResponse must be nil — body must not reach the caller-facing envelope.
+	if resp != nil {
+		t.Errorf("expected nil InvokeResponse on non-2xx, got %+v — worker body must not reach caller envelope", resp)
 	}
 }
 
@@ -136,13 +175,18 @@ func TestInvoke_Non200_BodyTruncated(t *testing.T) {
 	defer worker.Close()
 
 	c := New(worker.URL, 5*time.Second, 0)
-	_, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
+	// (a) body is captured; (b) InvokeResponse is nil so large bodies can't reach the customer.
+	resp, err := c.Invoke(context.Background(), &InvokeRequest{Operation: "x"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	// The body peek caps at 512 bytes so a chatty worker can't blow up log lines.
 	if len(err.Error()) > 700 {
 		t.Errorf("error too long (%d bytes); body should be truncated to ~512", len(err.Error()))
+	}
+	// (b) InvokeResponse must be nil even for large bodies.
+	if resp != nil {
+		t.Errorf("expected nil InvokeResponse on non-2xx, got %+v", resp)
 	}
 }
 
