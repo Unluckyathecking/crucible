@@ -409,12 +409,11 @@ func TestRetryAfterMatchesWindowSeconds(t *testing.T) {
 // is possible.
 //
 // The test seeds the Redis sorted set directly (bypassing Allow) to place `limit`
-// entries 30 s in the past — within the 60 s sliding window but in what a fixed-minute
-// bucket would consider the "previous" minute (a new fixed minute started ~30 s ago).
-// Under a fixed-window implementation the current-minute counter would be zero and all
-// subsequent Allow calls would succeed, yielding 2× the limit. Under the sliding window
-// those 30-s-old entries still occupy their slots and every subsequent call must be
-// rejected.
+// entries 1 ms before the current minute boundary — always in the "previous"
+// fixed-minute bucket regardless of when the test runs. A fixed-window implementation
+// keyed by clock-minute would not count those entries (different bucket key), so all
+// subsequent Allow calls would succeed, yielding 2× the limit. The sliding window
+// counts anything in the last 60 s, so it must reject them.
 func TestAllow_BoundaryBurstCapped(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
@@ -425,12 +424,17 @@ func TestAllow_BoundaryBurstCapped(t *testing.T) {
 	const limit = 5
 	b := New(rdb)
 
-	// Seed `limit` entries at -30 s: within the 60 s sliding window, but 30 s
-	// into what a fixed-minute bucket would call the "previous" minute.
-	thirtySecondsAgo := time.Now().Add(-30 * time.Second).UnixMilli()
+	// 1 ms before the start of the current minute: always in the "previous"
+	// fixed-minute bucket, and within the 60 s sliding window for all but the
+	// last millisecond of the minute (a 1-in-60 000 window — skip and rerun).
+	minuteStart := time.Now().Truncate(time.Minute)
+	seedTime := minuteStart.Add(-time.Millisecond)
+	if time.Since(seedTime) >= windowSeconds*time.Second {
+		t.Skip("seed timestamp would fall outside the 60 s window; rerun in a moment")
+	}
 	for i := 0; i < limit; i++ {
 		if err := rdb.ZAdd(ctx, key, redis.Z{
-			Score:  float64(thirtySecondsAgo),
+			Score:  float64(seedTime.UnixMilli()),
 			Member: fmt.Sprintf("seed-%d", i),
 		}).Err(); err != nil {
 			t.Fatalf("seeding sorted set entry %d: %v", i, err)
@@ -438,11 +442,12 @@ func TestAllow_BoundaryBurstCapped(t *testing.T) {
 	}
 
 	// All subsequent Allow calls must be rejected: the sliding window still counts
-	// those 5 entries within the last 60 s and the cap is already hit.
+	// those entries within the last 60 s and the cap is already hit. A fixed-minute
+	// bucket starting a fresh minute would not count them — the 2× boundary burst.
 	for i := 0; i < 3; i++ {
 		_, err := b.Allow(ctx, cust, limit)
 		if !errors.Is(err, ErrLimited) {
-			t.Errorf("call %d: got %v, want ErrLimited — 30-s-old entries must still occupy window slots in a sliding window (a fixed-window would incorrectly allow 2× limit across minute boundaries)", i, err)
+			t.Errorf("call %d: got %v, want ErrLimited — entries 1 ms before the minute boundary must still occupy slots in the 60 s sliding window", i, err)
 		}
 	}
 }
