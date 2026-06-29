@@ -86,8 +86,8 @@ git init -q -b main
 git add -A
 git -c user.email=template@local -c user.name="template" commit -q -m "Initial commit (cloned from crucible)" || true
 
-echo "==> running preflight doctor on $DEST"
-if ! bash "$DEST/scripts/doctor.sh" "$DEST"; then
+echo "==> running preflight doctor"
+if ! bash scripts/doctor.sh; then
   echo "WARNING: doctor detected issues — see DOCTOR_FAIL lines above. Fix before running 'make dev'." >&2
 fi
 

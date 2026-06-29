@@ -37,16 +37,17 @@ dash_env="$REPO/dashboard/.env.example"
 [[ -f "$dash_env" ]] || _fail "env_missing: dashboard/.env.example not found"
 
 if [[ -f "$root_env" && -f "$dash_env" ]]; then
-  root_prefix=$(grep '^API_KEY_PREFIX=' "$root_env" | cut -d= -f2-)
-  dash_prefix=$(grep '^API_KEY_PREFIX=' "$dash_env" | cut -d= -f2-)
+  # Use || true so a missing key returns empty rather than aborting via set -e.
+  root_prefix=$(grep '^API_KEY_PREFIX=' "$root_env" | cut -d= -f2- || true)
+  dash_prefix=$(grep '^API_KEY_PREFIX=' "$dash_env" | cut -d= -f2- || true)
   if [[ -z "$root_prefix" || -z "$dash_prefix" ]]; then
     _fail "env_prefix_missing: API_KEY_PREFIX absent in one or both env files"
   elif [[ "$root_prefix" != "$dash_prefix" ]]; then
     _fail "env_prefix_mismatch: API_KEY_PREFIX — root='$root_prefix' dashboard='$dash_prefix'"
   fi
 
-  root_salt=$(grep '^API_KEY_HASH_SALT=' "$root_env" | cut -d= -f2-)
-  dash_salt=$(grep '^API_KEY_HASH_SALT=' "$dash_env" | cut -d= -f2-)
+  root_salt=$(grep '^API_KEY_HASH_SALT=' "$root_env" | cut -d= -f2- || true)
+  dash_salt=$(grep '^API_KEY_HASH_SALT=' "$dash_env" | cut -d= -f2- || true)
   if [[ -z "$root_salt" || -z "$dash_salt" ]]; then
     _fail "env_salt_missing: API_KEY_HASH_SALT absent in one or both env files"
   elif [[ "$root_salt" == "REPLACE_WITH"* ]]; then
@@ -73,6 +74,8 @@ else
   esac
   if [[ -z "$link_val" || ! -d "$abs_target" ]]; then
     _fail "symlink_dangling: workers/active -> '${link_val:-<empty>}' does not resolve to a directory"
+  elif [[ ! -f "$abs_target/Dockerfile" ]]; then
+    _fail "symlink_not_worker: workers/active -> '$link_val' resolves to a directory but has no Dockerfile — point it at a runnable worker stub, not an SDK or other directory"
   fi
 fi
 
