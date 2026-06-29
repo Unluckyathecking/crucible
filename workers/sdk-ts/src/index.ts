@@ -173,8 +173,14 @@ async function dispatch(
     return;
   }
 
-  if (req.url !== '/invoke' || req.method !== 'POST') {
+  if (req.url !== '/invoke') {
     res.writeHead(404);
+    res.end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.writeHead(405, { Allow: 'POST' });
     res.end();
     return;
   }

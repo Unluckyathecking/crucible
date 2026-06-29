@@ -10,13 +10,7 @@
       "id": "non_post_invoke_method_rejected",
       "description": "Non-POST methods on /invoke must be rejected; the frozen contract specifies 405 Method Not Allowed",
       "kind": "method_not_allowed",
-      "expect": { "status": 405 },
-      "known_divergences": {
-        "ts": {
-          "status": 404,
-          "note": "TS SDK dispatch() returns 404 for non-POST /invoke instead of 405; tracked for a separate fix PR"
-        }
-      }
+      "expect": { "status": 405 }
     },
     {
       "id": "billable_units_floor",
