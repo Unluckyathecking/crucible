@@ -173,7 +173,15 @@ async function dispatch(
     return;
   }
 
-  if (req.url !== '/invoke' || req.method !== 'POST') {
+  // Non-POST on /invoke → 405: the path is known, only the method is wrong.
+  // Go/Rust SDKs both return 405 with Allow: POST for this case.
+  if (req.url === '/invoke' && req.method !== 'POST') {
+    res.writeHead(405, { Allow: 'POST' });
+    res.end();
+    return;
+  }
+
+  if (req.url !== '/invoke') {
     res.writeHead(404);
     res.end();
     return;

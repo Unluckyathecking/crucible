@@ -5,14 +5,14 @@ import * as http from 'node:http';
 import { createServer, WorkerError } from './index';
 import type { ServerConfig, WorkerHandler } from './index';
 
-/** Send an HTTP request and return status + parsed JSON body. */
+/** Send an HTTP request and return status, parsed JSON body (null if empty), and response headers. */
 function rawRequest(
   port: number,
   path: string,
   method: string,
   bodyStr?: string,
   extraHeaders?: Record<string, string>,
-): Promise<{ status: number; data: unknown }> {
+): Promise<{ status: number; data: unknown; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string | number> = { ...extraHeaders };
     if (bodyStr !== undefined) {
@@ -24,9 +24,11 @@ function rawRequest(
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('end', () =>
-          resolve({ status: res.statusCode ?? 0, data: JSON.parse(Buffer.concat(chunks).toString()) }),
-        );
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString();
+          const data = raw.length > 0 ? JSON.parse(raw) : null;
+          resolve({ status: res.statusCode ?? 0, data, headers: res.headers });
+        });
       },
     );
     req.on('error', reject);
@@ -243,5 +245,22 @@ test('signature: disabled path — unsigned call succeeds when no secret configu
       !(data as Record<string, unknown>)['error'],
       `expected no error (signing disabled), got ${JSON.stringify(data)}`,
     );
+  });
+});
+
+// --- method-guard conformance cases ------------------------------------------
+
+test('non-POST /invoke returns 405 with Allow: POST', async () => {
+  await withServer(() => ({ payload: {} }), async (port) => {
+    const { status, headers } = await rawRequest(port, '/invoke', 'GET');
+    assert.equal(status, 405);
+    assert.equal(headers['allow'], 'POST');
+  });
+});
+
+test('unknown path returns 404', async () => {
+  await withServer(() => ({ payload: {} }), async (port) => {
+    const { status } = await rawRequest(port, '/unknown', 'GET');
+    assert.equal(status, 404);
   });
 });
