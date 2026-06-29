@@ -92,7 +92,9 @@ if [[ ! -f "$routes_table" ]]; then
   _fail "routes_missing: gateway/internal/server/routes_table.go not found"
 else
   # Extract Path values from V1Routes: lines matching 'Path: "..."'.
+  # Strip Go line-comments first so commented-out descriptors aren't counted.
   paths=$(grep 'Path:' "$routes_table" \
+    | grep -v '^[[:space:]]*//' \
     | sed 's/.*Path:[[:space:]]*"\([^"]*\)".*/\1/' \
     | grep '^/' || true)
 
