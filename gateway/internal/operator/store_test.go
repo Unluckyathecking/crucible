@@ -18,13 +18,19 @@ import (
 )
 
 // newTestPostgres returns a pool for the local test database, or skips the test
-// if Postgres is not reachable. When TEST_DATABASE_URL is set, failures are fatal.
+// if Postgres is not reachable. When TEST_DATABASE_URL or POSTGRES_DSN is set,
+// failures are fatal (Postgres is expected to be available in CI).
 func newTestPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	explicit := dsn != ""
 	if !explicit {
-		dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+		if v := os.Getenv("POSTGRES_DSN"); v != "" {
+			dsn = v
+			explicit = true
+		} else {
+			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
