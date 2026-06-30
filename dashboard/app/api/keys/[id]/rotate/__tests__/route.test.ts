@@ -42,12 +42,15 @@ function simulateRotateApiKey(
   store: FakeKey[],
 ): RotateResult {
   const now = new Date();
+  // Only keys with no expiry are eligible for rotation. Keys already in a grace
+  // window (future expires_at) cannot be rotated again — doing so would reset the
+  // expiry and let callers extend the old key's validity indefinitely.
   const active = store.find(
     (k) =>
       k.id === keyId &&
       k.customer_id === customerId &&
       k.revoked_at === null &&
-      (k.expires_at === null || k.expires_at > now),
+      k.expires_at === null,
   );
   if (active) {
     return { ok: true, newKey: "cru_live_NEWKEY", newKeyId: "new-uuid" };
@@ -151,9 +154,17 @@ describe("POST /api/keys/[id]/rotate — ownership and status", () => {
     expect(r.status).toBe(409);
   });
 
-  it("returns 200 for a key within its grace window", () => {
+  it("returns 409 for a key already in its grace window (cannot re-extend expiry)", () => {
+    // Codex P2: rotating a key with a future expires_at would reset expiry each call,
+    // letting callers extend the old key indefinitely. Only expires_at IS NULL keys rotate.
     const futureDate = new Date(Date.now() + 3600 * 1000);
     const store: FakeKey[] = [{ id: VALID_KEY_ID, customer_id: CUSTOMER_A, revoked_at: null, expires_at: futureDate }];
+    const r = simulateRotateRoute({ user: { email: "a@example.com" } }, VALID_KEY_ID, CUSTOMER_A, store);
+    expect(r.status).toBe(409);
+  });
+
+  it("returns 200 for a key with no expiry (normal active key)", () => {
+    const store: FakeKey[] = [{ id: VALID_KEY_ID, customer_id: CUSTOMER_A, revoked_at: null, expires_at: null }];
     const r = simulateRotateRoute({ user: { email: "a@example.com" } }, VALID_KEY_ID, CUSTOMER_A, store);
     expect(r.status).toBe(200);
   });
@@ -248,9 +259,11 @@ describe("rotateApiKey in db.ts — drift-detection smoke tests", () => {
     expect(rotateSection).toContain("FOR UPDATE");
   });
 
-  it("rotateApiKey SQL filters out revoked and expired keys on the lock query", () => {
+  it("rotateApiKey lock query restricts to never-expired keys only (expires_at IS NULL)", () => {
     expect(rotateSection).toContain("revoked_at IS NULL");
-    expect(rotateSection).toContain("expires_at");
+    // Must use expires_at IS NULL — not (IS NULL OR > NOW()) — so keys in a grace
+    // window cannot be rotated again to extend their expiry indefinitely.
+    expect(rotateSection).toContain("expires_at IS NULL");
   });
 
   it("rotateApiKey invalidates the auth cache for the old prefix", () => {

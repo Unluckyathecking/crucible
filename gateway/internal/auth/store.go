@@ -165,7 +165,7 @@ func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, g
 	err = tx.QueryRow(ctx, `
 		SELECT prefix, customer_id, name FROM api_keys
 		WHERE id = $1 AND revoked_at IS NULL
-		  AND (expires_at IS NULL OR expires_at > NOW())
+		  AND expires_at IS NULL
 		FOR UPDATE
 	`, keyID).Scan(&oldPrefix, &customerID, &oldName)
 	if err != nil {

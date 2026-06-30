@@ -240,7 +240,7 @@ export async function rotateApiKey(
     const lockResult = await client.query<{ prefix: string; name: string | null }>(
       `SELECT prefix, name FROM api_keys
        WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
-         AND (expires_at IS NULL OR expires_at > NOW())
+         AND expires_at IS NULL
        FOR UPDATE`,
       [keyId, customerId],
     );
