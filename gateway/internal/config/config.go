@@ -50,6 +50,10 @@ type Config struct {
 	APIKeyPrefix    string `envconfig:"API_KEY_PREFIX"     default:"cru_"`
 	APIKeyHashSalt  string `envconfig:"API_KEY_HASH_SALT"  required:"true"`
 	DashboardOrigin string `envconfig:"DASHBOARD_ORIGIN"   default:"http://localhost:3001"`
+	// OperatorToken gates the /v1/admin/* read-only subrouter. Empty (default)
+	// disables the admin routes entirely; they return 401 if reached.
+	// Generate with: openssl rand -hex 32
+	OperatorToken string `envconfig:"OPERATOR_TOKEN" default:""`
 
 	// Worker channel authentication — opt-in HMAC-SHA256 /invoke request signing.
 	// Empty (the default) disables signing, preserving today's behaviour.
@@ -85,6 +89,9 @@ func Load() (*Config, error) {
 	}
 	if len(c.APIKeyHashSalt) < 32 {
 		return nil, fmt.Errorf("API_KEY_HASH_SALT must be at least 32 bytes (got %d)", len(c.APIKeyHashSalt))
+	}
+	if c.OperatorToken != "" && len(c.OperatorToken) < 32 {
+		return nil, fmt.Errorf("OPERATOR_TOKEN must be at least 32 bytes when set (got %d); generate with: openssl rand -hex 32", len(c.OperatorToken))
 	}
 	switch c.ErrorExposure {
 	case "sanitized", "full":

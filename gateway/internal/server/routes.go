@@ -31,6 +31,7 @@ import (
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
@@ -91,6 +92,11 @@ type Deps struct {
 	// intentionally excluded — they are framework infrastructure, not worker calls.
 	// When nil (default when main.go is unmodified), events are silently dropped.
 	ErrorRecorder *errorlog.ErrorRecorder
+	// OperatorStore and OperatorToken together gate the /v1/admin/* read-only subrouter.
+	// Both must be non-nil / non-empty for the admin routes to be registered.
+	// The operator path is completely separate from the customer auth.Middleware path.
+	OperatorStore *operator.Store
+	OperatorToken string
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -176,6 +182,22 @@ func NewRouter(d *Deps) http.Handler {
 		r.Route("/v1/webhooks", func(r chi.Router) {
 			r.Use(auth.Middleware(d.Auth))
 			r.Get("/deliveries", webhookDeliveriesHandler(d.DB))
+		})
+	}
+
+	// === Framework operator/admin read-only routes (operator-token gated) ===
+	// Separate from the customer API-key path. No mutation of customer/plan/key/billing
+	// state is permitted here — see gateway/internal/operator/store.go.
+	// Routes are only registered when both OperatorStore and OperatorToken are set,
+	// so a missing OPERATOR_TOKEN env simply leaves /v1/admin/* unregistered.
+	if d.OperatorStore != nil && d.OperatorToken != "" {
+		r.Route("/v1/admin", func(r chi.Router) {
+			r.Use(operator.Middleware(d.OperatorToken))
+			r.Get("/customers", operator.ListCustomersHandler(d.OperatorStore))
+			r.Get("/customers/{id}", operator.GetCustomerHandler(d.OperatorStore))
+			r.Get("/customers/{id}/usage", operator.GetCustomerUsageHandler(d.OperatorStore))
+			r.Get("/audit", operator.ListAuditEventsHandler(d.OperatorStore))
+			r.Get("/plans", operator.ListPlansHandler(d.OperatorStore))
 		})
 	}
 

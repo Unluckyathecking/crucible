@@ -24,6 +24,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
@@ -127,6 +128,8 @@ func main() {
 			Redis:          &redisPinger{redisClient},
 			PG:             &pgPinger{pool},
 			TracerProvider: components.TracerProvider,
+			OperatorStore:  operator.NewStore(pool),
+			OperatorToken:  cfg.OperatorToken,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
