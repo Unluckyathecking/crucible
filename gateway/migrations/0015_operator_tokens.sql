@@ -13,9 +13,8 @@ CREATE TABLE IF NOT EXISTS operator_tokens (
 );
 
 -- Support efficient time-range scans on audit_log (used by /v1/admin/audit without customer filter).
+-- idx_audit_target_id ON audit_log(target_id, created_at DESC) already exists from 0005_audit_indexes.sql.
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at DESC);
--- Support efficient lookup of events where the customer is the target.
-CREATE INDEX IF NOT EXISTS idx_audit_log_target_id ON audit_log(target_id, created_at DESC);
 
 -- Support efficient customer list pagination ordered by created_at (used by /v1/admin/customers).
 CREATE INDEX IF NOT EXISTS idx_customers_created_at ON customers(created_at DESC);
