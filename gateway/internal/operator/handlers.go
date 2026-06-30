@@ -91,8 +91,22 @@ func GetCustomerUsageHandler(s *Store) http.HandlerFunc {
 				return
 			}
 		}
+		if start.IsZero() != end.IsZero() {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "start and end must be provided together", false)
+			return
+		}
 		if !start.IsZero() && !end.IsZero() && !end.After(start) {
 			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "end must be after start", false)
+			return
+		}
+
+		if _, err := s.CustomerByID(r.Context(), id); err != nil {
+			if err == pgx.ErrNoRows {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "customer not found", false)
+				return
+			}
+			log.Error().Err(err).Str("request_id", rid).Msg("operator: customer lookup failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
 			return
 		}
 

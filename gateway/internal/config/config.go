@@ -90,6 +90,9 @@ func Load() (*Config, error) {
 	if len(c.APIKeyHashSalt) < 32 {
 		return nil, fmt.Errorf("API_KEY_HASH_SALT must be at least 32 bytes (got %d)", len(c.APIKeyHashSalt))
 	}
+	if c.OperatorToken != "" && len(c.OperatorToken) < 32 {
+		return nil, fmt.Errorf("OPERATOR_TOKEN must be at least 32 bytes when set (got %d); generate with: openssl rand -hex 32", len(c.OperatorToken))
+	}
 	switch c.ErrorExposure {
 	case "sanitized", "full":
 	default:

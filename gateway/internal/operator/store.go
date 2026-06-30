@@ -198,7 +198,7 @@ type AuditEvent struct {
 
 // AuditFilter constrains the AuditEvents query.
 type AuditFilter struct {
-	CustomerID string     // maps to actor_id; empty = no filter
+	CustomerID string     // matches actor_id OR target_id (excluding self-loops); empty = no filter
 	Action     string     // empty = no filter
 	Start      *time.Time // nil = no lower bound
 	End        *time.Time // nil = no upper bound
@@ -230,7 +230,8 @@ func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent
 	var total int64
 	if err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM audit_log
-		WHERE ($1::text        IS NULL OR actor_id   = $1)
+		WHERE ($1::text        IS NULL OR actor_id = $1
+		                               OR (target_id = $1 AND (actor_id IS NULL OR actor_id != $1)))
 		  AND ($2::text        IS NULL OR action     = $2)
 		  AND ($3::timestamptz IS NULL OR created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR created_at <= $4)
@@ -242,7 +243,8 @@ func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent
 	rows, err := s.db.Query(ctx, `
 		SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
 		FROM audit_log
-		WHERE ($1::text        IS NULL OR actor_id   = $1)
+		WHERE ($1::text        IS NULL OR actor_id = $1
+		                               OR (target_id = $1 AND (actor_id IS NULL OR actor_id != $1)))
 		  AND ($2::text        IS NULL OR action     = $2)
 		  AND ($3::timestamptz IS NULL OR created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR created_at <= $4)
