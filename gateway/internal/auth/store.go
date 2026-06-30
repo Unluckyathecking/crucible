@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
 )
 
 // ErrKeyNotFound is returned when a presented API key isn't recognised.
@@ -22,6 +24,10 @@ var ErrKeyNotFound = errors.New("api key not found")
 // missTTL is how long an unknown prefix is cached as a negative sentinel to
 // absorb repeated DB probes on random-but-plausible prefixes (Case B DoS path).
 const missTTL = 30 * time.Second
+
+// maxGrace caps the rotation grace window server-side so callers cannot hold
+// both the old and the new key valid indefinitely.
+const maxGrace = 7 * 24 * time.Hour
 
 type Customer struct {
 	ID    uuid.UUID
@@ -128,6 +134,90 @@ func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
 	return nil
 }
 
+// Rotate issues a replacement key for keyID, setting the old key's expires_at to
+// now+grace (server-clamped to maxGrace) so both keys authenticate during the grace
+// window. The returned newFullKey is shown to the customer once; only the prefix and
+// hash are persisted.
+//
+// The old key's Redis cache entry is deleted after commit so the next Lookup re-reads
+// from Postgres and caches the new expires_at. This ensures the hot path can enforce
+// the expiry deadline without waiting for the 60s cache TTL to lapse — the key subtlety
+// the spec calls out: time-based validity with no event trigger.
+func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, grace time.Duration) (newFullKey string, newKeyID uuid.UUID, err error) {
+	if grace < 0 {
+		grace = 0
+	}
+	if grace > maxGrace {
+		grace = maxGrace
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Lock the old key for the duration of the transaction to prevent concurrent
+	// revocations or double-rotations from interleaving.
+	var oldPrefix string
+	var customerID uuid.UUID
+	var oldName *string
+	err = tx.QueryRow(ctx, `
+		SELECT prefix, customer_id, name FROM api_keys
+		WHERE id = $1 AND revoked_at IS NULL
+		  AND expires_at IS NULL
+		FOR UPDATE
+	`, keyID).Scan(&oldPrefix, &customerID, &oldName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", uuid.Nil, ErrKeyNotFound
+		}
+		return "", uuid.Nil, fmt.Errorf("rotate: lock old key: %w", err)
+	}
+
+	newFull, newPrefix, err := Generate(keyPrefix)
+	if err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: generate: %w", err)
+	}
+	newHash := Hash(s.salt, newFull)
+
+	err = tx.QueryRow(ctx, `
+		INSERT INTO api_keys (customer_id, prefix, hash, name)
+		VALUES ($1, $2, $3, $4) RETURNING id
+	`, customerID, newPrefix, newHash, oldName).Scan(&newKeyID)
+	if err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: insert new key: %w", err)
+	}
+
+	expiresAt := time.Now().Add(grace)
+	_, err = tx.Exec(ctx, `UPDATE api_keys SET expires_at = $1 WHERE id = $2`, expiresAt, keyID)
+	if err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: set expiry: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: commit: %w", err)
+	}
+
+	// Best-effort cache invalidation: force the next Lookup of the old key to re-read
+	// from Postgres so the new expires_at is stored in the cache entry. Mirrors Revoke.
+	_ = s.cache.Del(ctx, "auth:"+oldPrefix).Err()
+
+	// Best-effort audit — failure must not fail the rotation.
+	targetType := "api_key"
+	targetID := keyID.String()
+	_ = audit.Emit(ctx, s.db, audit.Event{
+		ActorType:  audit.ActorCustomer,
+		ActorID:    customerID.String(),
+		Action:     "api_key.rotated",
+		TargetType: &targetType,
+		TargetID:   &targetID,
+		Details:    map[string]any{"prefix": oldPrefix},
+	})
+
+	return newFull, newKeyID, nil
+}
+
 // Lookup returns the customer + key id for a presented API key.
 // Constant-time hash compare guards against timing-based prefix enumeration.
 func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
@@ -147,6 +237,12 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	if cached, err := s.cache.Get(ctx, "auth:"+prefix).Bytes(); err == nil {
 		var c cacheEntry
 		if json.Unmarshal(cached, &c) == nil && VerifyHash(wantHash, c.Hash) {
+			// Reject expired-but-cached keys immediately without waiting for the 60s TTL.
+			// expires_at is set during rotation; checking it here enforces the grace-window
+			// deadline on the hot path rather than only on the cold DB path.
+			if c.ExpiresAt != nil && time.Now().After(*c.ExpiresAt) {
+				return nil, ErrKeyNotFound
+			}
 			return &Key{
 				ID:       c.KeyID,
 				Customer: Customer{ID: c.CustomerID, Email: c.Email, Plan: c.Plan},
@@ -155,18 +251,21 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 	}
 
 	// Cold path: query Postgres (idx_api_keys_active_prefix makes this O(1) + verify).
+	// Excludes revoked and expired keys so the trust boundary is enforced in one query.
 	row := s.db.QueryRow(ctx, `
-		SELECT k.id, k.hash, c.id, c.email, c.plan_id
+		SELECT k.id, k.hash, c.id, c.email, c.plan_id, k.expires_at
 		FROM api_keys k
 		JOIN customers c ON c.id = k.customer_id
 		WHERE k.prefix = $1 AND k.revoked_at IS NULL
+		  AND (k.expires_at IS NULL OR k.expires_at > NOW())
 		LIMIT 1
 	`, prefix)
 
 	var keyID, customerID uuid.UUID
 	var storedHash []byte
 	var email, plan string
-	if err := row.Scan(&keyID, &storedHash, &customerID, &email, &plan); err != nil {
+	var expiresAt *time.Time
+	if err := row.Scan(&keyID, &storedHash, &customerID, &email, &plan, &expiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			_ = s.cache.Set(ctx, "auth:miss:"+prefix, "1", missTTL).Err()
 			return nil, ErrKeyNotFound
@@ -177,13 +276,15 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// Populate cache for the next call.
+	// Populate cache for the next call. ExpiresAt is included so the hot path can
+	// enforce the rotation grace-window deadline without another DB round-trip.
 	entry := cacheEntry{
 		KeyID:      keyID,
 		CustomerID: customerID,
 		Email:      email,
 		Plan:       plan,
 		Hash:       storedHash,
+		ExpiresAt:  expiresAt,
 	}
 	if payload, err := json.Marshal(entry); err == nil {
 		_ = s.cache.Set(ctx, "auth:"+prefix, payload, 60*time.Second).Err()
@@ -199,9 +300,10 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 }
 
 type cacheEntry struct {
-	KeyID      uuid.UUID `json:"k"`
-	CustomerID uuid.UUID `json:"c"`
-	Email      string    `json:"e"`
-	Plan       string    `json:"p"`
-	Hash       []byte    `json:"h"`
+	KeyID      uuid.UUID  `json:"k"`
+	CustomerID uuid.UUID  `json:"c"`
+	Email      string     `json:"e"`
+	Plan       string     `json:"p"`
+	Hash       []byte     `json:"h"`
+	ExpiresAt  *time.Time `json:"x,omitempty"`
 }

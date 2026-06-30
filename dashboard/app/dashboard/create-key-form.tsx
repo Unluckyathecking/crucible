@@ -114,6 +114,86 @@ export function CreateKeyForm({ existingNames }: CreateKeyFormProps) {
   );
 }
 
+interface RotateKeyButtonProps {
+  keyId: string;
+  keyPrefix: string;
+}
+
+type RotateState = { error: string | null; newKey: string | null };
+
+export function RotateKeyButton({ keyId, keyPrefix }: RotateKeyButtonProps) {
+  const router = useRouter();
+  const [state, formAction, isPending] = useActionState(
+    async (_prev: RotateState, _formData: FormData): Promise<RotateState> => {
+      try {
+        const res = await fetch(`/api/keys/${keyId}/rotate`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          body: JSON.stringify({ grace_secs: 3600 }),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          return { error: text || "Failed to rotate key", newKey: null };
+        }
+        const data = (await res.json()) as { key?: unknown };
+        if (typeof data.key !== "string") {
+          return { error: "Invalid response from server", newKey: null };
+        }
+        router.refresh();
+        return { error: null, newKey: data.key };
+      } catch (err) {
+        console.error("RotateKeyButton fetch failed:", err instanceof Error ? err.message : String(err));
+        return { error: "Network error. Try again.", newKey: null };
+      }
+    },
+    { error: null, newKey: null },
+  );
+
+  return (
+    <div className="inline-flex flex-col items-start gap-0.5">
+      <form
+        action={formAction}
+        onSubmit={(e) => {
+          if (
+            !window.confirm(
+              `Rotate key ${keyPrefix}? A new key will be issued. The old key stays valid for 1 hour, then expires automatically.`,
+            )
+          ) {
+            e.preventDefault();
+          }
+        }}
+      >
+        <button
+          type="submit"
+          disabled={isPending}
+          aria-label={`Rotate key ${keyPrefix}`}
+          className="px-2 py-0.5 text-xs text-amber-600 border border-amber-300 rounded hover:bg-amber-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isPending ? "Rotating…" : "Rotate"}
+        </button>
+      </form>
+      {state.error && (
+        <p className="text-xs text-red-600" role="alert">
+          {state.error}
+        </p>
+      )}
+      {state.newKey && (
+        <div className="p-2 bg-amber-50 border border-amber-200 rounded space-y-1 mt-1 max-w-xs">
+          <p className="text-xs text-amber-700 font-medium" role="status">
+            New key — copy now, won&apos;t be shown again. Old key valid for 1 hour.
+          </p>
+          <code className="block text-xs font-mono bg-white border border-amber-200 px-2 py-1 rounded break-all select-all">
+            {state.newKey}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface RevokeKeyButtonProps {
   keyId: string;
   keyPrefix: string;

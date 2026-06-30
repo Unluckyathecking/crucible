@@ -3,6 +3,7 @@ import { emitAuditEvent } from "@/lib/audit";
 import { getRedis } from "@/lib/redis";
 import { UUID_RE } from "@/lib/validation";
 import { MS_PER_DAY, MAX_USAGE_RANGE_DAYS } from "./constants";
+import { generateKey, hashKey } from "@/lib/keys";
 export { MAX_USAGE_RANGE_DAYS };
 
 declare global {
@@ -36,6 +37,7 @@ export interface ApiKeyRow {
   prefix: string;
   name: string | null;
   last_used_at: Date | null;
+  expires_at: Date | null;
 }
 
 export interface AuditEventRow {
@@ -81,8 +83,9 @@ export async function ensureCustomer(email: string): Promise<Customer> {
 
 export async function listKeys(customerId: string): Promise<ApiKeyRow[]> {
   const r = await pool.query<ApiKeyRow>(
-    `SELECT id, prefix, name, last_used_at FROM api_keys
+    `SELECT id, prefix, name, last_used_at, expires_at FROM api_keys
      WHERE customer_id = $1 AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > NOW())
      ORDER BY created_at DESC`,
     [customerId],
   );
@@ -193,6 +196,115 @@ export async function revokeApiKey(
     invalidateAuthCache(foundPrefix);
   }
   return "already_revoked";
+}
+
+// Grace period bounds mirror gateway/internal/auth/store.go maxGrace.
+const MAX_ROTATE_GRACE_SECS = 7 * 24 * 3600; // 7 days
+const DEFAULT_ROTATE_GRACE_SECS = 3600;        // 1 hour
+
+export type RotateResult =
+  | { ok: true; newKey: string; newKeyId: string }
+  | { ok: false; reason: "not_found" | "forbidden" | "already_expired" };
+
+// rotateApiKey issues a replacement key for keyId owned by customerId.
+// The old key's expires_at is set to now + graceSecs (server-clamped) so both keys
+// authenticate during the grace window. After the grace window, only the new key works.
+//
+// CLAUDE.md invariant #7: fires auth: cache DEL for the old prefix after the DB
+// transaction commits so the gateway's hot-path enforces the new expires_at immediately.
+export async function rotateApiKey(
+  keyId: string,
+  customerId: string,
+  graceSecs = DEFAULT_ROTATE_GRACE_SECS,
+): Promise<RotateResult> {
+  const clampedGrace = Math.max(
+    0,
+    Math.min(
+      Number.isFinite(graceSecs) ? Math.floor(graceSecs) : DEFAULT_ROTATE_GRACE_SECS,
+      MAX_ROTATE_GRACE_SECS,
+    ),
+  );
+
+  const salt = process.env.API_KEY_HASH_SALT;
+  if (!salt || salt.length < 32) {
+    throw new Error("API_KEY_HASH_SALT not configured");
+  }
+  const productPrefix = process.env.API_KEY_PREFIX ?? "cru_";
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Lock the old key for the duration of the transaction so concurrent revocations
+    // or double-rotations cannot interleave. Mirrors Store.Rotate in gateway.
+    const lockResult = await client.query<{ prefix: string; name: string | null }>(
+      `SELECT prefix, name FROM api_keys
+       WHERE id = $1 AND customer_id = $2 AND revoked_at IS NULL
+         AND expires_at IS NULL
+       FOR UPDATE`,
+      [keyId, customerId],
+    );
+
+    if (lockResult.rows.length === 0) {
+      // No active owned key — disambiguate not_found / forbidden / already_expired.
+      const check = await client.query<{ customer_id: string }>(
+        `SELECT customer_id::text FROM api_keys WHERE id = $1`,
+        [keyId],
+      );
+      await client.query("ROLLBACK");
+
+      if (check.rows.length === 0) return { ok: false, reason: "not_found" };
+      if (check.rows[0].customer_id !== customerId) return { ok: false, reason: "forbidden" };
+      return { ok: false, reason: "already_expired" };
+    }
+
+    const { prefix: oldPrefix, name } = lockResult.rows[0];
+
+    const { full: newFull, prefix: newPrefix } = generateKey(productPrefix);
+    const hash = hashKey(salt, newFull);
+
+    const insertResult = await client.query<{ id: string }>(
+      `INSERT INTO api_keys (customer_id, prefix, hash, name)
+       VALUES ($1, $2, $3, $4) RETURNING id::text AS id`,
+      [customerId, newPrefix, hash, name],
+    );
+    const newKeyId = insertResult.rows[0].id;
+
+    const expiresAt = new Date(Date.now() + clampedGrace * 1000);
+    await client.query(
+      `UPDATE api_keys SET expires_at = $1 WHERE id = $2`,
+      [expiresAt, keyId],
+    );
+
+    await client.query("COMMIT");
+
+    // Best-effort cache invalidation: force the gateway to re-read the old key from
+    // Postgres on the next request so the new expires_at is cached immediately.
+    // Fire-and-forget — a transient Redis failure just means the old key stays cached
+    // until the 60s TTL, which is acceptable. (CLAUDE.md invariant #7)
+    invalidateAuthCache(oldPrefix);
+
+    // Best-effort audit — failure must never roll back the completed rotation.
+    emitAuditEvent(pool, {
+      actorType: "customer",
+      actorId: customerId,
+      action: "api_key.rotated",
+      targetType: "api_key",
+      targetId: keyId,
+      details: { prefix: oldPrefix },
+    }).catch(() => {});
+
+    return { ok: true, newKey: newFull, newKeyId };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore rollback error; original error is re-thrown
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // listAuditEvents returns the most recent audit events for a customer:
