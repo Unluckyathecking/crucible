@@ -53,7 +53,10 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 }
 
 // seedCustomer inserts a minimal customers row and returns the new ID.
-// Registers a t.Cleanup to delete it (cascades to usage_events).
+// Registers a t.Cleanup to delete it. usage_events.customer_id and
+// api_keys.customer_id do NOT cascade-delete from customers (only api_keys does,
+// and not the other way), so the cleanup explicitly removes the child rows first
+// to keep the suite re-runnable against a persistent DB.
 func seedCustomer(t *testing.T, pool *pgxpool.Pool, email, planID string) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -66,7 +69,10 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, email, planID string) uuid.U
 		t.Fatalf("seedCustomer: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM customers WHERE id = $1`, id)
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM usage_events WHERE customer_id = $1`, id)
+		_, _ = pool.Exec(ctx, `DELETE FROM api_keys WHERE customer_id = $1`, id)
+		_, _ = pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, id)
 	})
 	return id
 }
