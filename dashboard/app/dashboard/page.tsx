@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ensureCustomer, listKeys, usageByOperation, listAuditEvents, AuditEventRow } from "@/lib/db";
 import { MS_PER_DAY } from "@/lib/constants";
-import { CreateKeyForm, RevokeKeyButton } from "./create-key-form";
+import { CreateKeyForm, RevokeKeyButton, RotateKeyButton } from "./create-key-form";
 import { SignOutButton } from "./sign-out-button";
 
 export const dynamic = "force-dynamic";
@@ -88,10 +88,16 @@ export default async function DashboardPage() {
                     {k.prefix}…{" "}
                     <span className="text-zinc-500">
                       ({k.name || "unnamed"} · last used{" "}
-                      {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"})
+                      {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}
+                      {k.expires_at
+                        ? ` · expires ${new Date(k.expires_at).toLocaleString()}`
+                        : ""})
                     </span>
                   </span>
-                  <RevokeKeyButton keyId={k.id} keyPrefix={k.prefix} />
+                  <div className="flex gap-1 items-center shrink-0">
+                    <RotateKeyButton keyId={k.id} keyPrefix={k.prefix} />
+                    <RevokeKeyButton keyId={k.id} keyPrefix={k.prefix} />
+                  </div>
                 </li>
               ))}
             </ul>

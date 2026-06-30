@@ -353,6 +353,102 @@ func TestLookup_NegativePrefixCache(t *testing.T) {
 	})
 }
 
+func TestStore_Rotate(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	s := NewStore(db, rdb, testSalt)
+	defer s.Close()
+
+	t.Run("full rotation lifecycle", func(t *testing.T) {
+		keyID, oldFull, oldPrefix := insertTestKey(t, ctx, db, testSalt)
+
+		// Rotate with a generous grace window so both keys are valid during the test.
+		newFull, newKeyID, err := s.Rotate(ctx, keyID, testPrefix, time.Hour)
+		if err != nil {
+			t.Fatalf("Rotate: %v", err)
+		}
+		if newFull == "" {
+			t.Fatal("Rotate returned empty newFull")
+		}
+		if newKeyID == uuid.Nil {
+			t.Fatal("Rotate returned zero newKeyID")
+		}
+
+		// Old key still authenticates during the grace window.
+		if _, err := s.Lookup(ctx, oldFull); err != nil {
+			t.Errorf("old key must authenticate during grace: %v", err)
+		}
+
+		// New key authenticates immediately after rotation.
+		if _, err := s.Lookup(ctx, newFull); err != nil {
+			t.Errorf("new key must authenticate: %v", err)
+		}
+
+		// Simulate grace expiry by backdating expires_at to the past.
+		_, err = db.Exec(ctx, `UPDATE api_keys SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`, keyID)
+		if err != nil {
+			t.Fatalf("backfill expires_at to past: %v", err)
+		}
+		// Evict the hot-path cache entry so the next Lookup re-reads the updated expires_at from Postgres.
+		rdb.Del(ctx, "auth:"+oldPrefix)
+
+		// Old key must be rejected after the grace window ends.
+		if _, err := s.Lookup(ctx, oldFull); !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("post-grace old key lookup = %v, want ErrKeyNotFound", err)
+		}
+
+		// New key must still authenticate after the old key expires.
+		if _, err := s.Lookup(ctx, newFull); err != nil {
+			t.Errorf("new key must still authenticate after old key expires: %v", err)
+		}
+	})
+
+	t.Run("Rotate on non-existent key returns ErrKeyNotFound", func(t *testing.T) {
+		_, _, err := s.Rotate(ctx, uuid.New(), testPrefix, time.Hour)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("Rotate(nonexistent) = %v, want ErrKeyNotFound", err)
+		}
+	})
+
+	t.Run("grace clamped to maxGrace when over limit", func(t *testing.T) {
+		keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
+		_, _, err := s.Rotate(ctx, keyID, testPrefix, 30*24*time.Hour) // 30 days > maxGrace (7 days)
+		if err != nil {
+			t.Errorf("Rotate with over-max grace = %v, want nil (should be clamped)", err)
+		}
+	})
+
+	t.Run("negative grace clamped to zero", func(t *testing.T) {
+		keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
+		_, _, err := s.Rotate(ctx, keyID, testPrefix, -time.Second)
+		if err != nil {
+			t.Errorf("Rotate with negative grace = %v, want nil (should clamp to 0)", err)
+		}
+	})
+
+	t.Run("hot-path cache rejects expired key without DB round-trip after Rotate+evict", func(t *testing.T) {
+		keyID, oldFull, _ := insertTestKey(t, ctx, db, testSalt)
+
+		// Populate the cache with a valid entry.
+		if _, err := s.Lookup(ctx, oldFull); err != nil {
+			t.Fatalf("initial Lookup: %v", err)
+		}
+
+		// Rotate with 0 grace — expires_at = NOW(); Rotate also fires cache DEL.
+		if _, _, err := s.Rotate(ctx, keyID, testPrefix, 0); err != nil {
+			t.Fatalf("Rotate(grace=0): %v", err)
+		}
+
+		// After Rotate fires DEL, the next Lookup hits Postgres, which now excludes
+		// the key (expires_at <= NOW()). ErrKeyNotFound must be returned.
+		if _, err := s.Lookup(ctx, oldFull); !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("Lookup after 0-grace Rotate = %v, want ErrKeyNotFound", err)
+		}
+	})
+}
+
 func TestStore_PrefixLookupIsCaseSensitive(t *testing.T) {
 	db := newTestPostgres(t)
 	defer db.Close()
