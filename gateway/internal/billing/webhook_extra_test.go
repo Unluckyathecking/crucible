@@ -166,7 +166,7 @@ func TestDispatch_UnknownEventType(t *testing.T) {
 		Type: "invoice.payment_failed",
 		Data: stripeEventData{Object: json.RawMessage(`{}`)},
 	}
-	if err := wh.dispatch(context.Background(), event); err != nil {
+	if _, err := wh.dispatch(context.Background(), event); err != nil {
 		t.Errorf("dispatch(unknown type) returned error: %v", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestHandleSubscriptionUpsert_MissingCustomer(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
+	if _, err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
 		t.Error("expected error for missing customer, got nil")
 	}
 
@@ -214,7 +214,7 @@ func TestHandleSubscriptionUpsert_MissingItems(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
+	if _, err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
 		t.Error("expected error for missing items, got nil")
 	}
 
@@ -244,7 +244,7 @@ func TestHandleSubscriptionUpsert_PlanNotFound(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
+	if _, err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
 		t.Error("expected error for plan not found, got nil")
 	}
 
@@ -278,7 +278,7 @@ func TestHandleSubscriptionUpsert_UpdateError(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
+	if _, err := wh.handleSubscriptionUpsert(context.Background(), event); err == nil {
 		t.Error("expected error for UPDATE failure, got nil")
 	}
 
@@ -308,7 +308,7 @@ func TestHandleSubscriptionDeleted_UpdateError(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := wh.handleSubscriptionDeleted(context.Background(), event); err == nil {
+	if _, err := wh.handleSubscriptionDeleted(context.Background(), event); err == nil {
 		t.Error("expected error for DELETE UPDATE failure, got nil")
 	}
 

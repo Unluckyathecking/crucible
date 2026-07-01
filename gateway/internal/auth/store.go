@@ -12,8 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // ErrKeyNotFound is returned when a presented API key isn't recognised.
@@ -54,6 +57,17 @@ type Store struct {
 	// write; the per-write 2s WithTimeout is the only bound on a stuck write.
 	rootCtx context.Context
 	cancel  context.CancelFunc
+	// emitter is optional; nil → Revoke/Rotate emit no outbound webhook event.
+	emitter *webhookout.Emitter
+}
+
+// SetEmitter wires the outbound webhook emitter used to notify customers of
+// key rotation/revocation. Called once from server.NewRouter, since the
+// emitter is constructed there (from Deps.DB) after main.go builds the Store.
+// A nil emitter (e.g. Deps.DB unset) makes emission a safe no-op — Emitter.Emit
+// nil-checks its receiver.
+func (s *Store) SetEmitter(e *webhookout.Emitter) {
+	s.emitter = e
 }
 
 func NewStore(db *pgxpool.Pool, cache *redis.Client, salt string) *Store {
@@ -115,11 +129,12 @@ func (s *Store) Close() {
 // Idempotent — revoking an already-revoked key returns nil.
 func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
 	var prefix string
+	var customerID uuid.UUID
 	err := s.db.QueryRow(ctx, `
 		UPDATE api_keys SET revoked_at = NOW()
 		WHERE id = $1 AND revoked_at IS NULL
-		RETURNING prefix
-	`, keyID).Scan(&prefix)
+		RETURNING prefix, customer_id
+	`, keyID).Scan(&prefix, &customerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already revoked or never existed — nothing to invalidate.
@@ -131,6 +146,18 @@ func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
 	// truth and the cache entry expires within 60 s — a small window of risk that callers
 	// who care can handle by rotating salts.
 	_ = s.cache.Del(ctx, "auth:"+prefix).Err()
+
+	// Best-effort outbound webhook emission. Never returned as an error: the
+	// revocation itself already committed, so an Emit failure (or nil emitter)
+	// must not fail or delay the caller.
+	if s.emitter != nil {
+		payload, err := json.Marshal(events.APIKeyRevokedPayload{CustomerID: customerID.String(), KeyID: keyID.String()})
+		if err != nil {
+			log.Warn().Err(err).Msg("webhook emit: api_key.revoked payload marshal failed")
+		} else if err := s.emitter.Emit(ctx, customerID, events.APIKeyRevoked, payload); err != nil {
+			log.Warn().Err(err).Str("key_id", keyID.String()).Msg("webhook emit failed for api_key.revoked")
+		}
+	}
 	return nil
 }
 
@@ -214,6 +241,21 @@ func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, g
 		TargetID:   &targetID,
 		Details:    map[string]any{"prefix": oldPrefix},
 	})
+
+	// Best-effort outbound webhook emission — failure must not fail the rotation,
+	// which already committed above.
+	if s.emitter != nil {
+		payload, err := json.Marshal(events.APIKeyRotatedPayload{
+			CustomerID: customerID.String(),
+			OldKeyID:   keyID.String(),
+			NewKeyID:   newKeyID.String(),
+		})
+		if err != nil {
+			log.Warn().Err(err).Msg("webhook emit: api_key.rotated payload marshal failed")
+		} else if err := s.emitter.Emit(ctx, customerID, events.APIKeyRotated, payload); err != nil {
+			log.Warn().Err(err).Str("key_id", keyID.String()).Msg("webhook emit failed for api_key.rotated")
+		}
+	}
 
 	return newFull, newKeyID, nil
 }

@@ -2,17 +2,21 @@ package quota
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // Middleware enforces per-customer monthly billable-unit caps via an ATOMIC reserve
@@ -43,7 +47,11 @@ import (
 //
 // Fail-open on Redis errors — better to bill an over-quota request than to refuse
 // service when our quota store blips. Operators see this via Prometheus / logs.
-func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Handler {
+//
+// emitter is optional (nil-safe, matching the framework's optional-Deps pattern):
+// when set, a quota.exceeded event is emitted best-effort on the 429 path so
+// customers can subscribe to a webhook instead of polling.
+func Middleware(t *Tracker, plans *billing.PlanCache, emitter *webhookout.Emitter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
@@ -89,6 +97,7 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				// Use resetAt from Reserve so the header matches the actual Redis EXPIREAT.
 				httputil.SetQuotaHeaders(w, cap, remaining, resetAt)
 				observability.QuotaExceededTotal.Inc()
+				emitQuotaExceeded(r.Context(), emitter, key.Customer.ID, key.Customer.Plan, cap)
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.QUOTA_EXCEEDED, "monthly usage quota reached", false) // false: cap is calendar-month, not time-windowed; retrying doesn't help
 				return
 			}
@@ -111,6 +120,20 @@ func Middleware(t *Tracker, plans *billing.PlanCache) func(http.Handler) http.Ha
 				backgroundRefund(t, key.Customer.ID.String(), reservedKey)
 			}
 		})
+	}
+}
+
+// emitQuotaExceeded fires a best-effort quota.exceeded webhook event. A nil
+// emitter (Deps.DB unset) or an Emit error never affects the 429 response
+// already being written by the caller — Emitter.Emit nil-checks its receiver.
+func emitQuotaExceeded(ctx context.Context, emitter *webhookout.Emitter, customerID uuid.UUID, plan string, cap int64) {
+	payload, err := json.Marshal(events.QuotaExceededPayload{CustomerID: customerID.String(), Plan: plan, Cap: cap})
+	if err != nil {
+		log.Warn().Err(err).Msg("webhook emit: quota.exceeded payload marshal failed")
+		return
+	}
+	if err := emitter.Emit(ctx, customerID, events.QuotaExceeded, payload); err != nil {
+		log.Warn().Err(err).Str("customer", customerID.String()).Msg("webhook emit failed for quota.exceeded")
 	}
 }
 
