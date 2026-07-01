@@ -1,11 +1,37 @@
 import NextAuth from "next-auth";
+import type { NextFetchEvent, NextRequest } from "next/server";
 import authConfig from "./auth.config";
 import { NextResponse } from "next/server";
-import { ALLOWED_ORIGIN } from "@/lib/env";
+import { ALLOWED_ORIGIN, getOperatorToken } from "@/lib/env";
+import { OPERATOR_SESSION_COOKIE, verifyOperatorSession } from "@/lib/operator/session";
 
 const { auth } = NextAuth(authConfig);
 
-export default auth((req) => {
+// Operator paths use a distinct session (a cookie issued only after presenting
+// OPERATOR_TOKEN at /operator/login) instead of the customer NextAuth session, so
+// a normal customer's dashboard login never grants /operator/* access. The login
+// page itself (and the server action it posts to, which Next.js routes to the
+// same /operator/login URL) is excluded so it's reachable without a session.
+async function handleOperatorRequest(req: NextRequest): Promise<Response> {
+  const { pathname } = req.nextUrl;
+  if (pathname === "/operator/login") {
+    return NextResponse.next();
+  }
+
+  const authorized = await verifyOperatorSession(req.cookies.get(OPERATOR_SESSION_COOKIE)?.value, getOperatorToken());
+  if (!authorized) {
+    if (pathname.startsWith("/api/")) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
+    return Response.redirect(new URL("/operator/login", req.nextUrl.origin));
+  }
+  return NextResponse.next();
+}
+
+const customerAuthMiddleware = auth((req, _event: NextFetchEvent) => {
   if (!req.auth) {
     // nextUrl.pathname is already percent-decoded by Next.js.
     // API routes get 401 JSON; page routes redirect to login.
@@ -42,6 +68,14 @@ export default auth((req) => {
   }
 });
 
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
+  const { pathname } = req.nextUrl;
+  if (pathname.startsWith("/operator") || pathname.startsWith("/api/operator")) {
+    return handleOperatorRequest(req);
+  }
+  return customerAuthMiddleware(req, event);
+}
+
 export const config = {
-  matcher: ["/dashboard/:path*", "/api/keys/:path*", "/api/usage"],
+  matcher: ["/dashboard/:path*", "/api/keys/:path*", "/api/usage", "/operator/:path*", "/api/operator/:path*"],
 };
