@@ -34,7 +34,13 @@ export default async function OperatorCustomerDetailPage({ params, searchParams 
   let usageError: string | null = null;
   if (usageResult.status === "fulfilled") {
     usage = usageResult.value;
-  } else if (usageResult.reason instanceof OperatorApiError) {
+  } else if (usageResult.reason instanceof OperatorApiError && usageResult.reason.status === 400) {
+    // Only the gateway's documented filter-validation failure (bad RFC3339,
+    // inverted range, mismatched start/end pair) is a user-fixable input
+    // error worth showing inline. Anything else (500 from usage aggregation,
+    // 502 from our own malformed-response check, etc.) is an operational
+    // failure and should surface through the normal error boundary/monitoring,
+    // not be silently downgraded to a 200 page with a small filter message.
     usageError = usageResult.reason.message;
   } else {
     throw usageResult.reason;

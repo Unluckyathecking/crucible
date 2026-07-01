@@ -71,9 +71,16 @@ function isPage<T>(value: unknown): value is Page<T> {
   );
 }
 
-function assertPage<T>(value: unknown, context: string): Page<T> {
+// assertPage validates both the envelope and every item in it — the gateway
+// contract promises Page<T>.items are all T, but only checking the envelope
+// (items is an array, total is a number) lets a single malformed row through
+// to render blank/garbled operator rows instead of failing loudly.
+function assertPage<T>(value: unknown, context: string, itemGuard: (item: unknown) => item is T): Page<T> {
   if (!isPage<T>(value)) {
     throw new OperatorApiError(`malformed response for ${context}: expected {items: [], total: number} envelope`, 502);
+  }
+  if (!value.items.every(itemGuard)) {
+    throw new OperatorApiError(`malformed response for ${context}: an item in the page failed shape validation`, 502);
   }
   return value;
 }
@@ -82,25 +89,84 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+// isSafeCount guards usage/audit counters that originate as Go int64 (Postgres
+// BIGINT) on the wire. The gateway doesn't string-encode these (unlike
+// lib/db.ts's ::text-cast + saturateBigIntString pattern for direct Postgres
+// reads), so by the time fetch's res.json() has parsed the body, a value
+// outside Number.isSafeInteger range may already be silently rounded —
+// rejecting it here means we never display a number we can't vouch for.
+function isSafeCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCustomerShape(value: unknown): value is Customer {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.email === "string" &&
+    typeof value.plan_id === "string" &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string"
+  );
+}
+
+function isAuditEventShape(value: unknown): value is AuditEvent {
+  return (
+    isRecord(value) &&
+    typeof value.id === "number" &&
+    typeof value.actor_type === "string" &&
+    typeof value.action === "string" &&
+    typeof value.created_at === "string"
+  );
+}
+
+function isOperationUsageShape(value: unknown): value is OperationUsage {
+  return isRecord(value) && typeof value.operation === "string" && isSafeCount(value.total_units) && isSafeCount(value.calls);
+}
+
+function isCustomerUsageResultShape(value: unknown): value is CustomerUsageResult {
+  return (
+    isRecord(value) &&
+    typeof value.period_start === "string" &&
+    typeof value.period_end === "string" &&
+    isSafeCount(value.total_units) &&
+    isSafeCount(value.total_calls) &&
+    Array.isArray(value.breakdown) &&
+    value.breakdown.every(isOperationUsageShape)
+  );
+}
+
+function isPlanShape(value: unknown): value is Plan {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.display_name === "string" &&
+    typeof value.rate_limit_per_minute === "number" &&
+    Number.isSafeInteger(value.rate_limit_per_minute) &&
+    typeof value.created_at === "string" &&
+    (value.monthly_unit_cap === undefined || value.monthly_unit_cap === null || isSafeCount(value.monthly_unit_cap))
+  );
+}
+
 function assertCustomer(value: unknown, context: string): Customer {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.email !== "string" || typeof value.plan_id !== "string") {
+  if (!isCustomerShape(value)) {
     throw new OperatorApiError(`malformed response for ${context}: expected a Customer object`, 502);
   }
-  return value as unknown as Customer;
+  return value;
 }
 
 function assertUsageResult(value: unknown, context: string): CustomerUsageResult {
-  if (!isRecord(value) || !Array.isArray(value.breakdown) || typeof value.total_units !== "number") {
+  if (!isCustomerUsageResultShape(value)) {
     throw new OperatorApiError(`malformed response for ${context}: expected a CustomerUsageResult object`, 502);
   }
-  return value as unknown as CustomerUsageResult;
+  return value;
 }
 
 function assertPlanArray(value: unknown, context: string): Plan[] {
-  if (!Array.isArray(value)) {
+  if (!Array.isArray(value) || !value.every(isPlanShape)) {
     throw new OperatorApiError(`malformed response for ${context}: expected an array of Plan`, 502);
   }
-  return value as Plan[];
+  return value;
 }
 
 function validateUuid(id: string, context: string): void {
@@ -149,7 +215,7 @@ export async function listCustomers(params: ListCustomersParams = {}): Promise<P
     page: params.page?.toString(),
     per_page: params.perPage?.toString(),
   });
-  return assertPage<Customer>(data, "listCustomers");
+  return assertPage<Customer>(data, "listCustomers", isCustomerShape);
 }
 
 export async function getCustomer(id: string): Promise<Customer> {
@@ -190,7 +256,7 @@ export async function listAuditEvents(params: ListAuditEventsParams = {}): Promi
     page: params.page?.toString(),
     per_page: params.perPage?.toString(),
   });
-  return assertPage<AuditEvent>(data, "listAuditEvents");
+  return assertPage<AuditEvent>(data, "listAuditEvents", isAuditEventShape);
 }
 
 export async function listPlans(): Promise<Plan[]> {

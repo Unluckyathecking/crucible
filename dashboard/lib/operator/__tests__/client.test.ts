@@ -93,6 +93,22 @@ describe("listCustomers — Page<Customer> envelope validation", () => {
     await expect(listCustomers()).rejects.toBeInstanceOf(OperatorApiError);
   });
 
+  it("rejects a page whose envelope is valid but an item is missing required fields", async () => {
+    mockFetchJson(200, { items: [{ id: VALID_UUID, email: "a@b.com" /* missing plan_id/created_at/updated_at */ }], total: 1 });
+    await expect(listCustomers()).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("rejects a page where one item among several fails shape validation", async () => {
+    mockFetchJson(200, {
+      items: [
+        { id: VALID_UUID, email: "a@b.com", plan_id: "pro", created_at: "x", updated_at: "x" },
+        { id: "not-even-checked-for-uuid-here", email: 12345 /* wrong type */, plan_id: "pro", created_at: "x", updated_at: "x" },
+      ],
+      total: 2,
+    });
+    await expect(listCustomers()).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
   it("surfaces the gateway's error message on a non-2xx response", async () => {
     mockFetchJson(401, { error: { status: 401, code: "UNAUTHORIZED", message: "invalid operator token" } });
     await expect(listCustomers()).rejects.toMatchObject({ message: "invalid operator token", status: 401 });
@@ -120,6 +136,11 @@ describe("listAuditEvents — Page<AuditEvent> envelope validation", () => {
     mockFetchJson(200, { events: [] });
     await expect(listAuditEvents()).rejects.toBeInstanceOf(OperatorApiError);
   });
+
+  it("rejects an audit page whose envelope is valid but an item has the wrong id type", async () => {
+    mockFetchJson(200, { items: [{ id: "42" /* should be a number */, actor_type: "customer", action: "key.created", created_at: "x" }], total: 1 });
+    await expect(listAuditEvents()).rejects.toBeInstanceOf(OperatorApiError);
+  });
 });
 
 describe("listPlans — array validation (not paginated)", () => {
@@ -132,6 +153,17 @@ describe("listPlans — array validation (not paginated)", () => {
   it("rejects a response that isn't an array", async () => {
     mockFetchJson(200, { items: [] });
     await expect(listPlans()).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("rejects a plan array containing an item with the wrong shape", async () => {
+    mockFetchJson(200, [{ id: "pro", display_name: "Pro" /* missing rate_limit_per_minute/created_at */ }]);
+    await expect(listPlans()).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("accepts a plan with an explicit null monthly_unit_cap (unlimited tier)", async () => {
+    mockFetchJson(200, [{ id: "enterprise", display_name: "Enterprise", rate_limit_per_minute: 1000, created_at: "x", monthly_unit_cap: null }]);
+    const plans = await listPlans();
+    expect(plans).toHaveLength(1);
   });
 });
 
@@ -168,5 +200,49 @@ describe("getCustomer / getCustomerUsage — id validation", () => {
     });
     const usage = await getCustomerUsage(VALID_UUID);
     expect(usage.breakdown).toHaveLength(1);
+  });
+
+  it("rejects total_units beyond Number.MAX_SAFE_INTEGER instead of displaying a silently-rounded value", async () => {
+    mockFetchJson(200, {
+      period_start: "2026-01-01T00:00:00Z",
+      period_end: "2026-02-01T00:00:00Z",
+      total_units: Number.MAX_SAFE_INTEGER + 2,
+      total_calls: 10,
+      breakdown: [],
+    });
+    await expect(getCustomerUsage(VALID_UUID)).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("rejects a negative counter as unsafe", async () => {
+    mockFetchJson(200, {
+      period_start: "2026-01-01T00:00:00Z",
+      period_end: "2026-02-01T00:00:00Z",
+      total_units: -1,
+      total_calls: 10,
+      breakdown: [],
+    });
+    await expect(getCustomerUsage(VALID_UUID)).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("rejects a non-integer counter (e.g. a float that slipped through JSON)", async () => {
+    mockFetchJson(200, {
+      period_start: "2026-01-01T00:00:00Z",
+      period_end: "2026-02-01T00:00:00Z",
+      total_units: 1.5,
+      total_calls: 10,
+      breakdown: [],
+    });
+    await expect(getCustomerUsage(VALID_UUID)).rejects.toBeInstanceOf(OperatorApiError);
+  });
+
+  it("rejects when a breakdown row's per-operation units exceed the safe integer range", async () => {
+    mockFetchJson(200, {
+      period_start: "2026-01-01T00:00:00Z",
+      period_end: "2026-02-01T00:00:00Z",
+      total_units: 100,
+      total_calls: 10,
+      breakdown: [{ operation: "op", total_units: Number.MAX_SAFE_INTEGER + 100, calls: 10 }],
+    });
+    await expect(getCustomerUsage(VALID_UUID)).rejects.toBeInstanceOf(OperatorApiError);
   });
 });
