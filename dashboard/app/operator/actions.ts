@@ -2,6 +2,7 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { ALLOWED_ORIGIN } from "@/lib/env";
 import { OPERATOR_SESSION_COOKIE, constantTimeTokenEquals, createOperatorSessionCookie } from "@/lib/operator/session";
 
 export async function operatorLogin(formData: FormData): Promise<void> {
@@ -17,7 +18,10 @@ export async function operatorLogin(formData: FormData): Promise<void> {
   store.set(session.name, session.value, {
     httpOnly: true,
     sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
+    // Matches the __csrf cookie's check in middleware.ts: NODE_ENV alone misses
+    // TLS-terminating proxies/staging where the origin is https but NODE_ENV
+    // isn't exactly "production".
+    secure: process.env.NODE_ENV === "production" || ALLOWED_ORIGIN.startsWith("https://"),
     path: "/",
     maxAge: session.maxAge,
   });
@@ -26,6 +30,9 @@ export async function operatorLogin(formData: FormData): Promise<void> {
 
 export async function operatorLogout(): Promise<void> {
   const store = await cookies();
-  store.delete(OPERATOR_SESSION_COOKIE);
+  // Explicit path: "/" — must match the path the cookie was set with (login,
+  // above) so the expiring Set-Cookie actually overwrites it regardless of
+  // which nested /operator/* route the sign-out form was submitted from.
+  store.delete({ name: OPERATOR_SESSION_COOKIE, path: "/" });
   redirect("/operator/login");
 }
