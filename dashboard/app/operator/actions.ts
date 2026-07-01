@@ -13,7 +13,7 @@ export async function operatorLogin(formData: FormData): Promise<void> {
     redirect("/operator/login?error=1");
   }
 
-  const session = await createOperatorSessionCookie();
+  const session = await createOperatorSessionCookie(expected);
   const store = await cookies();
   store.set(session.name, session.value, {
     httpOnly: true,

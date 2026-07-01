@@ -2,7 +2,7 @@ import NextAuth from "next-auth";
 import type { NextFetchEvent, NextRequest } from "next/server";
 import authConfig from "./auth.config";
 import { NextResponse } from "next/server";
-import { ALLOWED_ORIGIN } from "@/lib/env";
+import { ALLOWED_ORIGIN, getOperatorToken } from "@/lib/env";
 import { OPERATOR_SESSION_COOKIE, verifyOperatorSession } from "@/lib/operator/session";
 
 const { auth } = NextAuth(authConfig);
@@ -18,7 +18,7 @@ async function handleOperatorRequest(req: NextRequest): Promise<Response> {
     return NextResponse.next();
   }
 
-  const authorized = await verifyOperatorSession(req.cookies.get(OPERATOR_SESSION_COOKIE)?.value);
+  const authorized = await verifyOperatorSession(req.cookies.get(OPERATOR_SESSION_COOKIE)?.value, getOperatorToken());
   if (!authorized) {
     if (pathname.startsWith("/api/")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {

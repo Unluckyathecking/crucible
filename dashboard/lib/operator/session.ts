@@ -3,7 +3,14 @@
 // grants no access here — issuing this cookie requires presenting OPERATOR_TOKEN
 // once at /operator/login. Signed with AUTH_SECRET (already a required, per-deployment
 // secret) rather than a new env var; OPERATOR_TOKEN itself is never stored in the
-// cookie, so the browser never holds anything derived from it beyond this session marker.
+// cookie, so the browser never holds anything derived from it beyond a one-way digest.
+//
+// The payload also binds a SHA-256 digest of OPERATOR_TOKEN at issuance time.
+// Verification recomputes the digest of the *current* token and rejects on
+// mismatch, so rotating OPERATOR_TOKEN (e.g. after suspected exposure)
+// immediately invalidates every previously issued session instead of leaving
+// them valid for up to the full TTL. The digest is one-way and safe to carry in
+// the cookie: it can't be used to recover or forge the token.
 //
 // Uses Web Crypto (SubtleCrypto) exclusively, not node:crypto, so the same module
 // works in both the Edge middleware and Node route handlers without a runtime split.
@@ -46,47 +53,70 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-export interface OperatorSessionCookie {
-  name: string;
-  value: string;
-  maxAge: number;
+async function digestToken(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return bytesToBase64Url(new Uint8Array(digest));
 }
 
-export async function createOperatorSessionCookie(): Promise<OperatorSessionCookie> {
-  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
-  const payload = String(exp);
-  const key = await hmacKey(getSigningSecret());
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-  const value = `${payload}.${bytesToBase64Url(new Uint8Array(sig))}`;
-  return { name: OPERATOR_SESSION_COOKIE, value, maxAge: SESSION_TTL_SECONDS };
-}
-
-export async function verifyOperatorSession(cookieValue: string | undefined | null): Promise<boolean> {
-  if (!cookieValue) return false;
-  const dot = cookieValue.indexOf(".");
-  if (dot < 0) return false;
-  const payload = cookieValue.slice(0, dot);
-  const sigPart = cookieValue.slice(dot + 1);
-  const exp = Number(payload);
-  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
-  const sigBytes = base64UrlToBytes(sigPart);
-  if (!sigBytes) return false;
-  const key = await hmacKey(getSigningSecret());
-  return crypto.subtle.verify("HMAC", key, sigBytes as BufferSource, new TextEncoder().encode(payload));
-}
-
-// constantTimeTokenEquals compares candidate against the configured operator
-// token with timing normalized to a fixed-size digest, mirroring the gateway's
-// subtle.ConstantTimeCompare (which the gateway applies to the raw bytes; here
-// we hash first so comparison time never varies with the candidate's length).
-export async function constantTimeTokenEquals(candidate: string, expected: string): Promise<boolean> {
+// constantTimeStringEquals compares two strings with timing normalized to a
+// fixed-size digest (mirrors the gateway's subtle.ConstantTimeCompare, which
+// operates on raw bytes; hashing first here means comparison time never varies
+// with either input's length).
+async function constantTimeStringEquals(a: string, b: string): Promise<boolean> {
   const [da, db] = await Promise.all([
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(candidate)),
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(expected)),
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(a)),
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(b)),
   ]);
   const ba = new Uint8Array(da);
   const bb = new Uint8Array(db);
   let diff = 0;
   for (let i = 0; i < ba.length; i++) diff |= ba[i] ^ bb[i];
   return diff === 0;
+}
+
+export interface OperatorSessionCookie {
+  name: string;
+  value: string;
+  maxAge: number;
+}
+
+export async function createOperatorSessionCookie(operatorToken: string): Promise<OperatorSessionCookie> {
+  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  const tokenDigest = await digestToken(operatorToken);
+  const payload = `${exp}.${tokenDigest}`;
+  const key = await hmacKey(getSigningSecret());
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  const value = `${payload}.${bytesToBase64Url(new Uint8Array(sig))}`;
+  return { name: OPERATOR_SESSION_COOKIE, value, maxAge: SESSION_TTL_SECONDS };
+}
+
+// verifyOperatorSession requires the *current* OPERATOR_TOKEN so it can reject
+// sessions issued under a since-rotated token, even though the raw token is
+// never itself compared against anything stored client-side.
+export async function verifyOperatorSession(
+  cookieValue: string | undefined | null,
+  currentOperatorToken: string | undefined,
+): Promise<boolean> {
+  if (!cookieValue || !currentOperatorToken) return false;
+  const parts = cookieValue.split(".");
+  if (parts.length !== 3) return false;
+  const [expPart, tokenDigestPart, sigPart] = parts;
+  const payload = `${expPart}.${tokenDigestPart}`;
+  const exp = Number(expPart);
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
+  const sigBytes = base64UrlToBytes(sigPart);
+  if (!sigBytes) return false;
+  const key = await hmacKey(getSigningSecret());
+  const sigValid = await crypto.subtle.verify("HMAC", key, sigBytes as BufferSource, new TextEncoder().encode(payload));
+  if (!sigValid) return false;
+  const currentDigest = await digestToken(currentOperatorToken);
+  return constantTimeStringEquals(tokenDigestPart, currentDigest);
+}
+
+// constantTimeTokenEquals compares a login-form candidate against the
+// configured operator token. Exported separately from the internal
+// constantTimeStringEquals used for digest comparison above so call sites
+// document intent (comparing a raw candidate vs. comparing two digests).
+export async function constantTimeTokenEquals(candidate: string, expected: string): Promise<boolean> {
+  return constantTimeStringEquals(candidate, expected);
 }

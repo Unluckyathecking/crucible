@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { getOperatorToken } from "@/lib/env";
 import { OPERATOR_SESSION_COOKIE, verifyOperatorSession } from "@/lib/operator/session";
 import { OperatorApiError } from "@/lib/operator/client";
 
@@ -8,7 +9,7 @@ import { OperatorApiError } from "@/lib/operator/client";
 // middleware coverage. Returns a 401 Response to short-circuit, or null to proceed.
 export async function requireOperatorSession(): Promise<Response | null> {
   const store = await cookies();
-  const authorized = await verifyOperatorSession(store.get(OPERATOR_SESSION_COOKIE)?.value);
+  const authorized = await verifyOperatorSession(store.get(OPERATOR_SESSION_COOKIE)?.value, getOperatorToken());
   if (!authorized) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
