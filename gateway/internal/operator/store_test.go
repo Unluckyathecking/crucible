@@ -500,3 +500,93 @@ func TestHandler_ListPlans(t *testing.T) {
 		t.Error("expected at least one plan")
 	}
 }
+
+// TestHandler_GetCustomerUsage_ValidationErrors covers the five 400 branches in
+// GetCustomerUsageHandler that return before any Store/DB call, so NewStore(nil) is safe.
+func TestHandler_GetCustomerUsage_ValidationErrors(t *testing.T) {
+	s := operator.NewStore(nil)
+
+	validID := uuid.New().String()
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"invalid_uuid", "/v1/admin/customers/not-a-uuid/usage"},
+		{"invalid_start", "/v1/admin/customers/" + validID + "/usage?start=not-rfc3339"},
+		{"invalid_end", "/v1/admin/customers/" + validID + "/usage?end=not-rfc3339"},
+		{"unpaired_start_only", "/v1/admin/customers/" + validID + "/usage?start=2026-01-01T00:00:00Z"},
+		{"end_not_after_start", "/v1/admin/customers/" + validID + "/usage?start=2026-06-01T00:00:00Z&end=2026-01-01T00:00:00Z"},
+	}
+
+	r := chi.NewRouter()
+	r.Use(operator.Middleware("tok"))
+	r.Get("/v1/admin/customers/{id}/usage", operator.GetCustomerUsageHandler(s))
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer tok")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Error.Code != "BAD_REQUEST" {
+				t.Errorf("code: got %q, want %q", body.Error.Code, "BAD_REQUEST")
+			}
+		})
+	}
+}
+
+// TestHandler_ListAuditEvents_ValidationErrors covers the three 400 branches in
+// ListAuditEventsHandler that return before any Store/DB call, so NewStore(nil) is safe.
+// ListAuditEventsHandler has no existing validation tests.
+func TestHandler_ListAuditEvents_ValidationErrors(t *testing.T) {
+	s := operator.NewStore(nil)
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"invalid_start", "/v1/admin/audit?start=not-rfc3339"},
+		{"invalid_end", "/v1/admin/audit?end=not-rfc3339"},
+		{"end_not_after_start", "/v1/admin/audit?start=2026-06-01T00:00:00Z&end=2026-01-01T00:00:00Z"},
+	}
+
+	r := chi.NewRouter()
+	r.Use(operator.Middleware("tok"))
+	r.Get("/v1/admin/audit", operator.ListAuditEventsHandler(s))
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer tok")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Error.Code != "BAD_REQUEST" {
+				t.Errorf("code: got %q, want %q", body.Error.Code, "BAD_REQUEST")
+			}
+		})
+	}
+}
