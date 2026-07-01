@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 )
 
@@ -435,4 +436,38 @@ func TestBuild_OperationIDUniqueness(t *testing.T) {
 		{Path: "/a--b", Operation: "a--b", Summary: "First"},
 		{Path: "/a/b", Operation: "a/b", Summary: "Second"},
 	})
+}
+
+// TestBuild_WebhookEventCatalogueLocked asserts the document's `webhooks` section
+// documents exactly the event types in events.AllEventTypes — no more, no fewer.
+// Build() itself panics on drift (see buildWebhooks), so an added/removed/renamed
+// event type that isn't mirrored into openapi's descriptor list fails this test
+// (via the panic) instead of silently shipping an incomplete spec.
+func TestBuild_WebhookEventCatalogueLocked(t *testing.T) {
+	doc := openapi.Build(testRoutes)
+
+	if len(doc.Webhooks) != len(events.AllEventTypes) {
+		t.Fatalf("doc.Webhooks has %d entries, want %d (events.AllEventTypes)", len(doc.Webhooks), len(events.AllEventTypes))
+	}
+	for _, et := range events.AllEventTypes {
+		op, ok := doc.Webhooks[et]
+		if !ok {
+			t.Errorf("doc.Webhooks missing event type %q", et)
+			continue
+		}
+		if op.Post == nil {
+			t.Errorf("doc.Webhooks[%q] has no POST operation", et)
+			continue
+		}
+		if op.Post.Summary == "" {
+			t.Errorf("doc.Webhooks[%q] has empty summary", et)
+		}
+		if op.Post.RequestBody == nil {
+			t.Errorf("doc.Webhooks[%q] has no request body", et)
+			continue
+		}
+		if _, ok := op.Post.RequestBody.Content["application/json"]; !ok {
+			t.Errorf("doc.Webhooks[%q] request body has no application/json schema", et)
+		}
+	}
 }

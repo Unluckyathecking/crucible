@@ -13,10 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // db is the subset of *pgxpool.Pool used by this package. Extracted as an
@@ -47,10 +51,20 @@ func WithCacheDeleter(d CacheDeleter) WebhookOption {
 // Webhook receives Stripe events, verifies HMAC, dedupes via webhook_events,
 // and updates the customer's plan_id on subscription lifecycle events.
 type Webhook struct {
-	secret string
-	db     db
-	cache  CacheDeleter // optional; nil → no immediate cache invalidation
-	now    func() time.Time // injectable for tests
+	secret  string
+	db      db
+	cache   CacheDeleter // optional; nil → no immediate cache invalidation
+	now     func() time.Time // injectable for tests
+	emitter *webhookout.Emitter // optional; nil → no outbound webhook emission
+}
+
+// SetEmitter wires the outbound webhook emitter used to notify customers of
+// subscription lifecycle events. Called once from server.NewRouter, since the
+// emitter is constructed there (from Deps.DB) after main.go builds the Webhook.
+// A nil emitter (e.g. Deps.DB unset) makes emission a safe no-op — Emitter.Emit
+// nil-checks its receiver.
+func (h *Webhook) SetEmitter(e *webhookout.Emitter) {
+	h.emitter = e
 }
 
 // NewWebhook constructs a Webhook. opts allows injecting optional dependencies
@@ -254,19 +268,39 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		return err
 	}
 
-	// Invalidate cached auth entries so the upgraded plan applies immediately
+	// Look up the internal customer UUID once for both cache invalidation
 	// (CLAUDE.md invariant #7: plan changes bypass the revocation path, so the
-	// cache must be flushed explicitly). The SELECT for the customer UUID is
-	// skipped when no cache deleter is configured to keep the DB hot path minimal.
-	if h.cache != nil {
-		var customerID string
+	// cache must be flushed explicitly) and outbound webhook emission. Skipped
+	// entirely when neither is configured to keep the DB hot path minimal.
+	if h.cache != nil || h.emitter != nil {
+		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
-			h.invalidateCustomerCache(ctx, customerID)
+			if h.cache != nil {
+				h.invalidateCustomerCache(ctx, customerID.String())
+			}
+			h.emitSubscriptionEvent(ctx, events.SubscriptionUpdated, customerID, planID)
 		} else if !errors.Is(err, pgx.ErrNoRows) {
-			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription upsert")
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("customer lookup failed after subscription upsert")
 		}
 	}
 	return nil
+}
+
+// emitSubscriptionEvent is best-effort and non-blocking to the caller's success
+// path: an Emit error (or nil emitter) is logged, never returned, so it cannot
+// fail or delay the originating Stripe dispatch.
+func (h *Webhook) emitSubscriptionEvent(ctx context.Context, eventType string, customerID uuid.UUID, planID string) {
+	if h.emitter == nil {
+		return
+	}
+	payload, err := json.Marshal(events.SubscriptionEventPayload{CustomerID: customerID.String(), PlanID: planID})
+	if err != nil {
+		log.Warn().Err(err).Str("event_type", eventType).Msg("webhook emit: payload marshal failed")
+		return
+	}
+	if err := h.emitter.Emit(ctx, customerID, eventType, payload); err != nil {
+		log.Warn().Err(err).Str("event_type", eventType).Msg("webhook emit failed")
+	}
 }
 
 func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) error {
@@ -294,14 +328,17 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 		return err
 	}
 
-	// Same nil-guard as handleSubscriptionUpsert: skip the extra SELECT when no
-	// cache deleter is configured (CLAUDE.md invariant #7, cache-invalidation path).
-	if h.cache != nil {
-		var customerID string
+	// Same nil-guard as handleSubscriptionUpsert: skip the extra SELECT when
+	// neither cache invalidation nor webhook emission is configured.
+	if h.cache != nil || h.emitter != nil {
+		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
-			h.invalidateCustomerCache(ctx, customerID)
+			if h.cache != nil {
+				h.invalidateCustomerCache(ctx, customerID.String())
+			}
+			h.emitSubscriptionEvent(ctx, events.SubscriptionDeleted, customerID, "free")
 		} else if !errors.Is(err, pgx.ErrNoRows) {
-			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("cache invalidation: customer lookup failed after subscription deletion")
+			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("customer lookup failed after subscription deletion")
 		}
 	}
 	return nil

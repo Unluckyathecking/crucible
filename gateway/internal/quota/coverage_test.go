@@ -184,7 +184,7 @@ func TestMiddleware_RefundsWhenNoUsageRecorded(t *testing.T) {
 	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
 
 	// Handler runs but deliberately does NOT call MarkRecorded — simulates worker failure.
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 
@@ -222,7 +222,7 @@ func TestMiddleware_NoRefundWhenUsageRecorded(t *testing.T) {
 	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
 
 	// Handler succeeds and marks usage as recorded.
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		MarkRecorded(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))

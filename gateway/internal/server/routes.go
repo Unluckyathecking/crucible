@@ -110,6 +110,15 @@ func NewRouter(d *Deps) http.Handler {
 	// process exit (SIGTERM/SIGKILL) stops the goroutine. The worker's per-delivery
 	// timeout (10 s) bounds how long an individual POST can hold a DB connection.
 	emitter := webhookout.NewEmitter(context.Background(), d.DB)
+	// Wire the emitter into the framework components whose Emit call-sites live
+	// outside this package. Both are nil-safe if unset (e.g. in tests that build
+	// a partial Deps and never call NewRouter's webhook-serving paths).
+	if d.Webhook != nil {
+		d.Webhook.SetEmitter(emitter)
+	}
+	if d.Auth != nil {
+		d.Auth.SetEmitter(emitter)
+	}
 	// Snapshot V1Routes once so both openapi.Handler and the registration loop
 	// see the same stable slice for the lifetime of this router.
 	routes := make([]openapi.RouteDescriptor, len(V1Routes))
@@ -175,9 +184,9 @@ func NewRouter(d *Deps) http.Handler {
 	})
 
 	// === Outbound webhook delivery log (auth gated; active when DB is set) ===
-	// The emitter is wired above; the delivery-log route uses the DB directly so
-	// the handler is decoupled from the worker goroutine lifecycle.
-	_ = emitter // emitter drives the background worker; route uses d.DB directly
+	// The emitter is wired above (into d.Webhook, d.Auth, and quota.Middleware);
+	// the delivery-log route uses the DB directly so the handler is decoupled
+	// from the worker goroutine lifecycle.
 	if d.DB != nil {
 		r.Route("/v1/webhooks", func(r chi.Router) {
 			r.Use(auth.Middleware(d.Auth))
@@ -232,7 +241,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(ratelimit.Middleware(d.Bucket, d.Plans))
 		r.Use(idempotency.Middleware(idempStore))
 		r.Use(validate.Middleware(routes))
-		r.Use(quota.Middleware(d.Quota, d.Plans))
+		r.Use(quota.Middleware(d.Quota, d.Plans, emitter))
 		for _, rt := range routes {
 			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
 		}

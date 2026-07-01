@@ -232,7 +232,7 @@ func TestQuotaMiddleware_AuthRequiredBeforeQuota(t *testing.T) {
 	tr := New(rdb)
 
 	called := false
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -257,7 +257,7 @@ func TestQuotaMiddleware_UnlimitedPlanSkipsReserve(t *testing.T) {
 	tr := New(rdb)
 
 	called := false
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -314,7 +314,7 @@ func TestQuotaMiddleware_RejectsWhenOverCap(t *testing.T) {
 	t.Cleanup(func() { rdb.Del(context.Background(), monthKey(cust, time.Now())) })
 
 	called := false
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -366,7 +366,7 @@ func TestQuotaMiddleware_FailOpenOnRedisError(t *testing.T) {
 	rdb.Close()
 
 	called := false
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -420,7 +420,7 @@ func TestQuotaMiddleware_SuccessEmitsQuotaHeaders(t *testing.T) {
 	redisKey := monthKey(cust.ID, time.Now().UTC())
 	t.Cleanup(func() { rdb.Del(context.Background(), redisKey) })
 
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		MarkRecorded(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -523,7 +523,7 @@ func TestMiddleware_QuotaExceeded_TableDriven(t *testing.T) {
 			}
 
 			handlerCalled := false
-			handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				handlerCalled = true
 				w.WriteHeader(http.StatusOK)
 			}))
@@ -583,7 +583,7 @@ func TestMiddleware_RefundsWhenNoUsageRecorded_Concurrent(t *testing.T) {
 
 	// Handler always "fails" (no MarkRecorded), but the plan's cap (1000 for free
 	// fallback) is large enough that all 10 requests are admitted.
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Never call MarkRecorded — simulate worker failure for every request.
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -642,7 +642,7 @@ func TestMiddleware_QUOTA_EXCEEDED_ErrorEnvelopeShape(t *testing.T) {
 		}
 	}
 
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("inner handler must not be called when quota is exceeded")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -713,7 +713,7 @@ func TestQuotaMiddleware_ExceededCounterIncrements(t *testing.T) {
 	admitRedisKey := monthKey(admitKey.Customer.ID, time.Now().UTC())
 	t.Cleanup(func() { rdb.Del(context.Background(), admitRedisKey) })
 
-	handler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		MarkRecorded(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -747,7 +747,7 @@ func TestQuotaMiddleware_ExceededCounterIncrements(t *testing.T) {
 
 	beforeDeny := testutil.ToFloat64(observability.QuotaExceededTotal)
 
-	denyHandler := Middleware(tr, plans)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	denyHandler := Middleware(tr, plans, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("inner handler must not be called when quota is exceeded")
 		w.WriteHeader(http.StatusOK)
 	}))
