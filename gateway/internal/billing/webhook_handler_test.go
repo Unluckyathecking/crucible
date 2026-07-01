@@ -200,6 +200,100 @@ func TestHandleSubscriptionUpsert_WithCacheInvalidation(t *testing.T) {
 	}
 }
 
+// TestHandleSubscriptionUpsert_ZeroRowsAffected_NoEmission is a regression test
+// for a Codex finding: if the UPDATE matches no customer row (not yet linked to
+// this stripe_customer_id), the handler must not perform the follow-up SELECT
+// or emit — otherwise a customer link racing in between the UPDATE and SELECT
+// could make the SELECT succeed and emit subscription.updated for a plan_id
+// this handler never actually set. No SELECT-customers expectation is
+// registered, so if the code still issued it, ExpectationsWereMet would fail.
+func TestHandleSubscriptionUpsert_ZeroRowsAffected_NoEmission(t *testing.T) {
+	const (
+		customer = "cus_not_yet_linked"
+		priceID  = "price_pro"
+		planID   = "pro"
+	)
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT id FROM plans WHERE stripe_price_id`).
+		WithArgs(priceID).
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(planID))
+
+	mock.ExpectExec(`UPDATE customers SET plan_id`).
+		WithArgs(planID, customer).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	spy := &spyCacheDeleter{}
+	h := &Webhook{db: mock, now: time.Now, cache: spy}
+
+	obj := json.RawMessage(fmt.Sprintf(`{"customer":%q,"items":{"data":[{"price":{"id":%q}}]}}`, customer, priceID))
+	event := &stripeEvent{
+		ID:   "evt_zero_rows_upsert",
+		Type: "customer.subscription.created",
+		Data: stripeEventData{Object: obj},
+	}
+
+	emission, err := h.handleSubscriptionUpsert(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if emission != nil {
+		t.Errorf("expected nil emission when UPDATE affected zero rows, got %+v", emission)
+	}
+	if len(spy.calls) != 0 {
+		t.Errorf("expected no cache invalidation when UPDATE affected zero rows, got %v", spy.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations not met (unexpected extra query?): %v", err)
+	}
+}
+
+// TestHandleSubscriptionDeleted_ZeroRowsAffected_NoEmission mirrors the upsert
+// case: no SELECT-customers expectation is registered, so if handleSubscriptionDeleted
+// still issued it after a zero-row UPDATE, ExpectationsWereMet would fail.
+func TestHandleSubscriptionDeleted_ZeroRowsAffected_NoEmission(t *testing.T) {
+	const customer = "cus_not_yet_linked_del"
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`UPDATE customers SET plan_id = 'free'`).
+		WithArgs(customer).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	spy := &spyCacheDeleter{}
+	h := &Webhook{db: mock, now: time.Now, cache: spy}
+
+	obj := json.RawMessage(fmt.Sprintf(`{"customer":%q,"status":"canceled"}`, customer))
+	event := &stripeEvent{
+		ID:   "evt_zero_rows_deleted",
+		Type: "customer.subscription.deleted",
+		Data: stripeEventData{Object: obj},
+	}
+
+	emission, err := h.handleSubscriptionDeleted(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if emission != nil {
+		t.Errorf("expected nil emission when UPDATE affected zero rows, got %+v", emission)
+	}
+	if len(spy.calls) != 0 {
+		t.Errorf("expected no cache invalidation when UPDATE affected zero rows, got %v", spy.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("mock expectations not met (unexpected extra query?): %v", err)
+	}
+}
+
 // TestHandleSubscriptionDeleted_WithCacheInvalidation verifies that when a cache deleter
 // is configured, the downgrade handler invalidates Redis auth entries.
 func TestHandleSubscriptionDeleted_WithCacheInvalidation(t *testing.T) {

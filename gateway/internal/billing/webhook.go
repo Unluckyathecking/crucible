@@ -285,19 +285,23 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		return nil, err
 	}
 
-	if _, err := h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = $1, updated_at = NOW()
 		WHERE stripe_customer_id = $2
-	`, planID, obj.Customer); err != nil {
+	`, planID, obj.Customer)
+	if err != nil {
 		return nil, err
 	}
 
 	// Look up the internal customer UUID once for both cache invalidation
 	// (CLAUDE.md invariant #7: plan changes bypass the revocation path, so the
-	// cache must be flushed explicitly) and outbound webhook emission. Skipped
-	// entirely when neither is configured to keep the DB hot path minimal.
+	// cache must be flushed explicitly) and outbound webhook emission. Gated on
+	// RowsAffected() > 0: if the UPDATE above matched no row (customer not yet
+	// linked to this stripe_customer_id), a customer link racing in between this
+	// UPDATE and the SELECT below could otherwise make the SELECT succeed and
+	// emit subscription.updated for a plan_id this handler never actually set.
 	var emission *pendingEmission
-	if h.cache != nil || h.emitter != nil {
+	if tag.RowsAffected() > 0 && (h.cache != nil || h.emitter != nil) {
 		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			if h.cache != nil {
@@ -348,17 +352,20 @@ func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEv
 		return nil, nil
 	}
 
-	if _, err := h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = 'free', updated_at = NOW()
 		WHERE stripe_customer_id = $1
-	`, obj.Customer); err != nil {
+	`, obj.Customer)
+	if err != nil {
 		return nil, err
 	}
 
-	// Same nil-guard as handleSubscriptionUpsert: skip the extra SELECT when
-	// neither cache invalidation nor webhook emission is configured.
+	// Same RowsAffected() gate as handleSubscriptionUpsert: skip the extra SELECT
+	// (and never emit) when the UPDATE above matched no row, so a customer link
+	// racing in between this UPDATE and the SELECT below can't make us emit
+	// subscription.deleted for a downgrade this handler never actually applied.
 	var emission *pendingEmission
-	if h.cache != nil || h.emitter != nil {
+	if tag.RowsAffected() > 0 && (h.cache != nil || h.emitter != nil) {
 		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			if h.cache != nil {
