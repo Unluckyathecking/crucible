@@ -68,7 +68,7 @@ func TestHandleSubscriptionDeleted(t *testing.T) {
 				Data: stripeEventData{Object: json.RawMessage(obj)},
 			}
 
-			if err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
+			if _, err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -120,7 +120,7 @@ func TestHandleSubscriptionUpsert(t *testing.T) {
 				Data: stripeEventData{Object: obj},
 			}
 
-			if err := h.handleSubscriptionUpsert(context.Background(), event); err != nil {
+			if _, err := h.handleSubscriptionUpsert(context.Background(), event); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -175,7 +175,7 @@ func TestHandleSubscriptionUpsert_WithCacheInvalidation(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := h.handleSubscriptionUpsert(context.Background(), event); err != nil {
+	if _, err := h.handleSubscriptionUpsert(context.Background(), event); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestHandleSubscriptionDeleted_WithCacheInvalidation(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
+	if _, err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestHandleSubscriptionDeleted_CacheLookupError(t *testing.T) {
 		Data: stripeEventData{Object: obj},
 	}
 
-	if err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
+	if _, err := h.handleSubscriptionDeleted(context.Background(), event); err != nil {
 		t.Fatalf("expected nil (best-effort cache), got: %v", err)
 	}
 	if len(spy.calls) != 0 {

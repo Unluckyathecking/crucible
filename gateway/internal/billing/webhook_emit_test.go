@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,6 +178,72 @@ func TestHandle_EmitsSubscriptionDeletedWebhook(t *testing.T) {
 	}
 	if decoded.PlanID != "free" {
 		t.Errorf("payload.plan_id = %q, want free", decoded.PlanID)
+	}
+}
+
+// TestHandle_ConcurrentDeliveryDoesNotDuplicateEmission is a regression test for
+// the race Codex flagged: two deliveries of the same Stripe event can both pass
+// eventSeen() before either commits to webhook_events, so both would previously
+// call Emit unconditionally inside dispatch — enqueuing two webhook_deliveries
+// rows (with two different X-Webhook-Event-IDs) for one logical Stripe event.
+// Handle() now only emits when recordEvent confirms this delivery won the
+// ON CONFLICT DO NOTHING insert, so exactly one row must exist regardless of
+// which goroutine actually wins the race.
+func TestHandle_ConcurrentDeliveryDoesNotDuplicateEmission(t *testing.T) {
+	pool := newTestPool(t)
+
+	stripeCustomerID := "cus_" + uuid.NewString()[:12]
+	priceID := "price_" + uuid.NewString()[:12]
+	planID := "emit-race-" + uuid.NewString()[:8]
+
+	custID := insertEmitTestCustomer(t, pool, "free", stripeCustomerID)
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO plans (id, display_name, stripe_price_id, rate_limit_per_minute, monthly_unit_cap)
+		VALUES ($1, $1, $2, 60, 1000)
+	`, planID, priceID); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+
+	const whsec = "whsec_emit_race_test"
+	h := NewWebhook(whsec, pool)
+	h.SetEmitter(emitter)
+
+	body := []byte(fmt.Sprintf(
+		`{"id":%q,"type":"customer.subscription.updated","data":{"object":{"customer":%q,"items":{"data":[{"price":{"id":%q}}]}}}}`,
+		"evt_"+uuid.NewString(), stripeCustomerID, priceID))
+	ts := time.Now().Unix()
+	sig := newStripeHeader(whsec, body, ts)
+
+	const concurrentDeliveries = 5
+	var wg sync.WaitGroup
+	wg.Add(concurrentDeliveries)
+	for i := 0; i < concurrentDeliveries; i++ {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/webhooks/stripe", bytes.NewReader(body))
+			req.Header.Set("Stripe-Signature", sig)
+			rec := httptest.NewRecorder()
+			h.Handle(rec, req)
+			if rec.Code != 200 {
+				t.Errorf("Handle status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+
+	eventType, payload := queryOneDelivery(t, pool, custID)
+	if eventType != events.SubscriptionUpdated {
+		t.Errorf("event_type = %q, want %q", eventType, events.SubscriptionUpdated)
+	}
+	var decoded events.SubscriptionEventPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload is not valid SubscriptionEventPayload JSON: %v", err)
+	}
+	if decoded.CustomerID != custID.String() {
+		t.Errorf("payload.customer_id = %q, want %q", decoded.CustomerID, custID.String())
 	}
 }
 

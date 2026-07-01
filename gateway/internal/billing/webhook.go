@@ -110,7 +110,8 @@ func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// Dispatch FIRST. If the handler fails, do NOT record the event so Stripe's retry can re-process.
 	// Recording before dispatch (the old order) caused permanent loss of events on transient handler errors.
-	if err := h.dispatch(r.Context(), &event); err != nil {
+	emission, err := h.dispatch(r.Context(), &event)
+	if err != nil {
 		log.Error().Err(err).Str("event_type", event.Type).Msg("webhook handler failed")
 		http.Error(w, "handler error", http.StatusInternalServerError)
 		return
@@ -118,9 +119,22 @@ func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// Handler succeeded — record the event so future retries dedupe.
 	// If two deliveries race and both succeed at dispatch, ON CONFLICT keeps the table clean.
-	if _, err := h.recordEvent(r.Context(), event.ID, event.Type, body); err != nil {
+	recorded, err := h.recordEvent(r.Context(), event.ID, event.Type, body)
+	if err != nil {
 		log.Error().Err(err).Msg("webhook record failed AFTER successful dispatch — duplicate dispatch possible on retry")
 		// Still return 200 — the action ran. A re-dispatch is at worst a no-op (handler is idempotent on subscription state).
+	}
+
+	// Only emit when this request is not a confirmed loser of the recordEvent race:
+	// recordEvent's ON CONFLICT DO NOTHING means at most one of two concurrent
+	// deliveries of the same Stripe event gets recorded=true; the other must not
+	// also enqueue a second, differently-IDed webhook_deliveries row for customers.
+	// A recordEvent DB error is NOT treated as "lost the race" — we can't tell which
+	// side of the race we're on, and mirroring invariant #3's bias (duplicate dispatch
+	// is safe; permanent loss is not), we still emit rather than risk dropping the event.
+	lostDedupRace := err == nil && !recorded
+	if emission != nil && !lostDedupRace {
+		h.emitSubscriptionEvent(r.Context(), emission.eventType, emission.customerID, emission.planID)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -221,23 +235,33 @@ func (h *Webhook) recordEvent(ctx context.Context, id, eventType string, payload
 // twice on the same event yields the same result. The dispatch-then-record ordering above
 // accepts a low-probability double-dispatch (record race) in exchange for never losing an event.
 
-func (h *Webhook) dispatch(ctx context.Context, event *stripeEvent) error {
+// pendingEmission carries the outbound-webhook call deferred until after
+// recordEvent confirms this delivery is not a loser of the dedup race (see
+// Handle). A nil *pendingEmission means the dispatched handler has nothing to
+// emit (no emitter configured, or the event type carries no lifecycle event).
+type pendingEmission struct {
+	eventType  string
+	customerID uuid.UUID
+	planID     string
+}
+
+func (h *Webhook) dispatch(ctx context.Context, event *stripeEvent) (*pendingEmission, error) {
 	switch event.Type {
 	case "customer.subscription.created", "customer.subscription.updated":
 		return h.handleSubscriptionUpsert(ctx, event)
 	case "customer.subscription.deleted":
 		return h.handleSubscriptionDeleted(ctx, event)
 	case "checkout.session.completed":
-		return h.handleCheckoutSessionCompleted(ctx, event)
+		return nil, h.handleCheckoutSessionCompleted(ctx, event)
 	case "customer.created":
-		return h.handleCustomerCreated(ctx, event)
+		return nil, h.handleCustomerCreated(ctx, event)
 	default:
 		log.Info().Str("event_type", event.Type).Msg("webhook event ignored (no handler)")
-		return nil
+		return nil, nil
 	}
 }
 
-func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEvent) error {
+func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEvent) (*pendingEmission, error) {
 	var obj struct {
 		Customer string `json:"customer"`
 		Items    struct {
@@ -249,41 +273,44 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(event.Data.Object, &obj); err != nil {
-		return err
+		return nil, err
 	}
 	if obj.Customer == "" || len(obj.Items.Data) == 0 {
-		return errors.New("subscription missing customer or items")
+		return nil, errors.New("subscription missing customer or items")
 	}
 
 	priceID := obj.Items.Data[0].Price.ID
 	var planID string
 	if err := h.db.QueryRow(ctx, `SELECT id FROM plans WHERE stripe_price_id = $1`, priceID).Scan(&planID); err != nil {
-		return err
+		return nil, err
 	}
 
 	if _, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = $1, updated_at = NOW()
 		WHERE stripe_customer_id = $2
 	`, planID, obj.Customer); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Look up the internal customer UUID once for both cache invalidation
 	// (CLAUDE.md invariant #7: plan changes bypass the revocation path, so the
 	// cache must be flushed explicitly) and outbound webhook emission. Skipped
 	// entirely when neither is configured to keep the DB hot path minimal.
+	var emission *pendingEmission
 	if h.cache != nil || h.emitter != nil {
 		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			if h.cache != nil {
 				h.invalidateCustomerCache(ctx, customerID.String())
 			}
-			h.emitSubscriptionEvent(ctx, events.SubscriptionUpdated, customerID, planID)
+			if h.emitter != nil {
+				emission = &pendingEmission{eventType: events.SubscriptionUpdated, customerID: customerID, planID: planID}
+			}
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("customer lookup failed after subscription upsert")
 		}
 	}
-	return nil
+	return emission, nil
 }
 
 // emitSubscriptionEvent is best-effort and non-blocking to the caller's success
@@ -303,45 +330,48 @@ func (h *Webhook) emitSubscriptionEvent(ctx context.Context, eventType string, c
 	}
 }
 
-func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) error {
+func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) (*pendingEmission, error) {
 	var obj struct {
 		Customer string `json:"customer"`
 		Status   string `json:"status"`
 	}
 	if err := json.Unmarshal(event.Data.Object, &obj); err != nil {
-		return err
+		return nil, err
 	}
 	// Only downgrade if the subscription is actually canceled. A retried deleted
 	// event for a customer who has since re-subscribed will have a different active subscription.
 	if obj.Customer == "" {
 		log.Info().Msg("customer.subscription.deleted: missing customer field; skipping")
-		return nil
+		return nil, nil
 	}
 	if obj.Status != "canceled" {
-		return nil
+		return nil, nil
 	}
 
 	if _, err := h.db.Exec(ctx, `
 		UPDATE customers SET plan_id = 'free', updated_at = NOW()
 		WHERE stripe_customer_id = $1
 	`, obj.Customer); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Same nil-guard as handleSubscriptionUpsert: skip the extra SELECT when
 	// neither cache invalidation nor webhook emission is configured.
+	var emission *pendingEmission
 	if h.cache != nil || h.emitter != nil {
 		var customerID uuid.UUID
 		if err := h.db.QueryRow(ctx, `SELECT id FROM customers WHERE stripe_customer_id = $1 LIMIT 1`, obj.Customer).Scan(&customerID); err == nil {
 			if h.cache != nil {
 				h.invalidateCustomerCache(ctx, customerID.String())
 			}
-			h.emitSubscriptionEvent(ctx, events.SubscriptionDeleted, customerID, "free")
+			if h.emitter != nil {
+				emission = &pendingEmission{eventType: events.SubscriptionDeleted, customerID: customerID, planID: "free"}
+			}
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			log.Warn().Err(err).Str("stripe_customer_id", obj.Customer).Msg("customer lookup failed after subscription deletion")
 		}
 	}
-	return nil
+	return emission, nil
 }
 
 // handleCheckoutSessionCompleted links the Stripe customer to our customer row via
