@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { OperatorNav } from "../_components/operator-nav";
 import { Pagination } from "../_components/pagination";
-import { listAuditEvents } from "@/lib/operator/client";
+import { OperatorApiError, listAuditEvents } from "@/lib/operator/client";
+import type { AuditEvent, Page } from "@/lib/operator/client";
 
 export const dynamic = "force-dynamic";
 
@@ -21,14 +22,28 @@ export default async function OperatorAuditPage({ searchParams }: AuditPageProps
   const params = await searchParams;
   const page = Math.max(1, Number(params.page) || 1);
 
-  const events = await listAuditEvents({
-    customerId: params.customer_id,
-    action: params.action,
-    start: params.start,
-    end: params.end,
-    page,
-    perPage: PER_PAGE,
-  });
+  let events: Page<AuditEvent> | null = null;
+  let filterError: string | null = null;
+  try {
+    events = await listAuditEvents({
+      customerId: params.customer_id,
+      action: params.action,
+      start: params.start,
+      end: params.end,
+      page,
+      perPage: PER_PAGE,
+    });
+  } catch (err) {
+    // Only the gateway's documented filter-validation failure (bad RFC3339,
+    // inverted range, mismatched start/end pair) is a user-fixable input
+    // error worth showing inline, same treatment as the customer usage
+    // filters. Anything else (500, 502) re-throws to the error boundary.
+    if (err instanceof OperatorApiError && err.status === 400) {
+      filterError = err.message;
+    } else {
+      throw err;
+    }
+  }
 
   return (
     <main id="main-content" className="min-h-screen px-4 py-6 sm:px-6 sm:py-8 md:px-8">
@@ -88,45 +103,58 @@ export default async function OperatorAuditPage({ searchParams }: AuditPageProps
           </button>
         </form>
 
-        <div className="overflow-x-auto border border-zinc-200 dark:border-zinc-700 rounded-lg">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50 dark:bg-zinc-800 text-left">
-              <tr>
-                <th className="px-3 py-2">Time</th>
-                <th className="px-3 py-2">Actor</th>
-                <th className="px-3 py-2">Action</th>
-                <th className="px-3 py-2">Target</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.items.map((event) => (
-                <tr key={event.id} className="border-t border-zinc-200 dark:border-zinc-700">
-                  <td className="px-3 py-2 whitespace-nowrap">{new Date(event.created_at).toLocaleString()}</td>
-                  <td className="px-3 py-2">
-                    {event.actor_id ? (
-                      <Link href={`/operator/customers/${event.actor_id}`} className="underline">
-                        {event.actor_type}
-                      </Link>
-                    ) : (
-                      event.actor_type
+        {filterError ? (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {filterError}{" "}
+            <Link href="/operator/audit" className="underline">
+              Reset filters
+            </Link>
+          </p>
+        ) : (
+          events && (
+            <>
+              <div className="overflow-x-auto border border-zinc-200 dark:border-zinc-700 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-zinc-50 dark:bg-zinc-800 text-left">
+                    <tr>
+                      <th className="px-3 py-2">Time</th>
+                      <th className="px-3 py-2">Actor</th>
+                      <th className="px-3 py-2">Action</th>
+                      <th className="px-3 py-2">Target</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.items.map((event) => (
+                      <tr key={event.id} className="border-t border-zinc-200 dark:border-zinc-700">
+                        <td className="px-3 py-2 whitespace-nowrap">{new Date(event.created_at).toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          {event.actor_id ? (
+                            <Link href={`/operator/customers/${event.actor_id}`} className="underline">
+                              {event.actor_type}
+                            </Link>
+                          ) : (
+                            event.actor_type
+                          )}
+                        </td>
+                        <td className="px-3 py-2">{event.action}</td>
+                        <td className="px-3 py-2">{event.target_type ? `${event.target_type} ${event.target_id ?? ""}` : "—"}</td>
+                      </tr>
+                    ))}
+                    {events.items.length === 0 && (
+                      <tr>
+                        <td className="px-3 py-4 text-zinc-500" colSpan={4}>
+                          No audit events found.
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                  <td className="px-3 py-2">{event.action}</td>
-                  <td className="px-3 py-2">{event.target_type ? `${event.target_type} ${event.target_id ?? ""}` : "—"}</td>
-                </tr>
-              ))}
-              {events.items.length === 0 && (
-                <tr>
-                  <td className="px-3 py-4 text-zinc-500" colSpan={4}>
-                    No audit events found.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                  </tbody>
+                </table>
+              </div>
 
-        <Pagination basePath="/operator/audit" page={page} perPage={PER_PAGE} total={events.total} searchParams={params} />
+              <Pagination basePath="/operator/audit" page={page} perPage={PER_PAGE} total={events.total} searchParams={params} />
+            </>
+          )
+        )}
       </div>
     </main>
   );
