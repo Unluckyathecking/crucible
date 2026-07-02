@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 )
 
 // TestSign verifies that Sign produces a deterministic, non-empty HMAC-SHA256 hex digest
@@ -189,6 +191,43 @@ func TestDeliver_Failure_MaxAttempts(t *testing.T) {
 	case <-called:
 	case <-time.After(5 * time.Second):
 		t.Error("expected the endpoint to be called")
+	}
+}
+
+// TestDeliver_PrivateTarget_BlockedByGuard verifies that when the Emitter's
+// client uses the egress-guarded transport (as NewEmitter constructs it), a
+// delivery to a loopback URL never reaches the HTTP server: the guard fails
+// the dial closed, and deliver() records it through the normal failure path
+// (doErr != nil) rather than mistaking it for a successful 2xx response.
+func TestDeliver_PrivateTarget_BlockedByGuard(t *testing.T) {
+	secret, _ := GenerateSecret()
+
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	row := pendingRow{
+		id:       3,
+		eventID:  "evt-blocked",
+		payload:  []byte(`{}`),
+		attempts: 0,
+		url:      srv.URL, // httptest servers listen on 127.0.0.1 — loopback, must be blocked
+		secret:   secret,
+	}
+
+	// db is left nil: deliver()'s mark*/scheduleRetry calls all nil-check e.db
+	// and no-op, so this exercises the guard without requiring Postgres.
+	e := &Emitter{client: &http.Client{Timeout: deliveryTimeout, Transport: egress.GuardedTransport()}}
+	e.deliver(context.Background(), row)
+
+	select {
+	case <-called:
+		t.Fatal("guarded transport allowed a connection to a loopback target")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: the dial was blocked before any request reached the server.
 	}
 }
 

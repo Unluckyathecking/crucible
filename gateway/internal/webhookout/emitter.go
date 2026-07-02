@@ -29,6 +29,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 )
 
 const (
@@ -81,7 +83,7 @@ func NewEmitter(ctx context.Context, db *pgxpool.Pool) *Emitter {
 	workerCtx, cancel := context.WithCancel(ctx)
 	e := &Emitter{
 		db:     db,
-		client: &http.Client{Timeout: deliveryTimeout},
+		client: &http.Client{Timeout: deliveryTimeout, Transport: egress.GuardedTransport()},
 		cancel: cancel,
 	}
 	go e.run(workerCtx)
