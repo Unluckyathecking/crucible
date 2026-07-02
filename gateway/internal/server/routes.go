@@ -199,6 +199,12 @@ func NewRouter(d *Deps) http.Handler {
 	// state is permitted here — see gateway/internal/operator/store.go.
 	// Routes are only registered when both OperatorStore and OperatorToken are set,
 	// so a missing OPERATOR_TOKEN env simply leaves /v1/admin/* unregistered.
+	//
+	// The webhook dead-letter replay routes are the one mutation admitted into this
+	// otherwise read-only subrouter: they requeue rows for the existing Emitter worker
+	// to redeliver (see webhookout/replay.go) rather than opening a new send path. They
+	// additionally require d.DB (mirroring the d.DB-gated /v1/webhooks block above)
+	// since, unlike operator.Store, they talk to Postgres directly.
 	if d.OperatorStore != nil && d.OperatorToken != "" {
 		r.Route("/v1/admin", func(r chi.Router) {
 			r.Use(operator.Middleware(d.OperatorToken))
@@ -207,6 +213,11 @@ func NewRouter(d *Deps) http.Handler {
 			r.Get("/customers/{id}/usage", operator.GetCustomerUsageHandler(d.OperatorStore))
 			r.Get("/audit", operator.ListAuditEventsHandler(d.OperatorStore))
 			r.Get("/plans", operator.ListPlansHandler(d.OperatorStore))
+			if d.DB != nil {
+				r.Get("/webhooks/deadletters", webhookout.ListDeadLettersHandler(d.DB))
+				r.Post("/webhooks/deadletters/{id}/replay", webhookout.ReplaySingleHandler(d.DB))
+				r.Post("/webhooks/deadletters/replay", webhookout.ReplayBulkHandler(d.DB))
+			}
 		})
 	}
 
