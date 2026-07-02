@@ -1,0 +1,101 @@
+// Package egress provides a hardened outbound HTTP transport that blocks
+// connections to loopback, private (RFC 1918 / RFC 4193), link-local, and
+// unspecified IP ranges. It exists to close SSRF vectors in framework code
+// that makes outbound HTTP calls to attacker-influenced destinations — e.g.
+// webhookout's delivery worker POSTing to customer-registered
+// webhook_endpoints.url.
+//
+// The check runs inside the dialer's Control hook, which fires after DNS
+// resolution but before the TCP handshake completes, so it inspects the
+// actual IP address about to be dialed rather than the original hostname.
+// This closes the DNS-rebinding gap: a hostname that resolves to a public IP
+// at webhook registration time but a private IP at delivery time is still
+// blocked, because the check runs fresh on every dial rather than once at
+// registration.
+package egress
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"syscall"
+	"time"
+)
+
+// dialTimeout bounds the TCP handshake for a single connection attempt.
+const dialTimeout = 10 * time.Second
+
+// GuardedTransport returns an *http.Transport whose dialer refuses to
+// complete any TCP connection to a loopback, private, link-local, or
+// unspecified address (IPv4 or IPv6, including IPv4-mapped IPv6). It is safe
+// to share across goroutines, like any *http.Transport.
+func GuardedTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 30 * time.Second,
+		Control:   blockPrivateAddr,
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = dialer.DialContext
+	// http.DefaultTransport.Clone() carries over Proxy: ProxyFromEnvironment.
+	// If HTTP_PROXY/HTTPS_PROXY is set on the gateway host, a proxied request
+	// only dials the proxy through Control — the proxy then resolves and
+	// connects to the customer-controlled webhook host itself, bypassing this
+	// guard entirely. Disable proxying so every delivery dials the
+	// destination directly and is subject to blockPrivateAddr.
+	t.Proxy = nil
+	return t
+}
+
+// blockPrivateAddr is a net.Dialer.Control hook. The runtime calls it after
+// DNS resolution and socket creation but before connect(2), with address
+// holding the resolved IP the dialer is about to connect to — so this sees
+// the real destination regardless of what hostname the client requested.
+func blockPrivateAddr(_ string, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("egress: split host/port %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("egress: unparseable dial address %q", host)
+	}
+	if Blocked(ip) {
+		return fmt.Errorf("egress: destination %s is blocked (loopback/private/link-local/unspecified)", ip)
+	}
+	return nil
+}
+
+// Blocked reports whether ip falls in a loopback, private (RFC 1918 IPv4 /
+// RFC 4193 fc00::/7 IPv6), link-local, unspecified, or special-purpose range.
+//
+// net.IP's IsLoopback/IsPrivate/IsLinkLocal*/IsUnspecified helpers already
+// normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:169.254.169.254) via
+// To4() before matching, so no separate unwrapping step is needed here.
+//
+// net.IP has no helper for 0.0.0.0/8 ("this" network, RFC 791 §3.2 — only the
+// single address 0.0.0.0 counts as IsUnspecified) or 100.64.0.0/10 (shared
+// address space / CGNAT, RFC 6598), so those are checked explicitly below.
+// This keeps parity with dashboard/app/api/webhooks/route.ts's
+// isPrivateHostname, which rejects both at registration time; without this,
+// a hostname that resolves to e.g. 0.1.2.3 or 100.64.1.1 would be considered
+// unsafe at registration but allowed through at delivery time.
+func Blocked(ip net.IP) bool {
+	if ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsUnspecified() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 0 {
+			return true // 0.0.0.0/8
+		}
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return true // 100.64.0.0/10
+		}
+	}
+	return false
+}
