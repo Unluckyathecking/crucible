@@ -2,6 +2,7 @@ package webhookout
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,8 +69,15 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, email string) uuid.UUID {
 	return id
 }
 
-// seedEndpoint inserts a webhook_endpoints row for customerID.
+// seedEndpoint inserts an active webhook_endpoints row for customerID.
 func seedEndpoint(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, url string) uuid.UUID {
+	t.Helper()
+	return seedEndpointActive(t, pool, customerID, url, true)
+}
+
+// seedEndpointActive inserts a webhook_endpoints row for customerID with an
+// explicit active flag, so tests can exercise the inactive-endpoint replay guard.
+func seedEndpointActive(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, url string, active bool) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
 	secret, err := GenerateSecret()
@@ -78,11 +86,11 @@ func seedEndpoint(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, url st
 	}
 	var id uuid.UUID
 	err = pool.QueryRow(ctx,
-		`INSERT INTO webhook_endpoints (customer_id, url, secret) VALUES ($1, $2, $3) RETURNING id`,
-		customerID, url, secret,
+		`INSERT INTO webhook_endpoints (customer_id, url, secret, active) VALUES ($1, $2, $3, $4) RETURNING id`,
+		customerID, url, secret, active,
 	).Scan(&id)
 	if err != nil {
-		t.Fatalf("seedEndpoint: %v", err)
+		t.Fatalf("seedEndpointActive: %v", err)
 	}
 	return id
 }
@@ -190,6 +198,22 @@ func TestReplayByID_NonDeadLetterRow_NoOp(t *testing.T) {
 	}
 }
 
+func TestReplayByID_InactiveEndpoint(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "replay-inactive-single@example.com")
+	epID := seedEndpointActive(t, pool, custID, "https://example.com/hook", false)
+	id := seedDelivery(t, pool, epID, "dead_letter", seedDeliveryOpts{attempts: 7})
+
+	err := ReplayByID(context.Background(), pool, id)
+	if !errors.Is(err, ErrEndpointInactive) {
+		t.Fatalf("ReplayByID: got err %v, want ErrEndpointInactive", err)
+	}
+
+	if s := fetchDelivery(t, pool, id); s.status != "dead_letter" {
+		t.Errorf("row was mutated despite inactive endpoint: got status %q", s.status)
+	}
+}
+
 func TestReplayByID_NotFound(t *testing.T) {
 	pool := newTestPostgres(t)
 	err := ReplayByID(context.Background(), pool, -1)
@@ -244,6 +268,28 @@ func TestReplayByEndpoint_NoMatches(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Fatalf("got %d ids, want 0", len(ids))
+	}
+}
+
+func TestReplayByEndpoint_InactiveEndpoint_NoRequeue(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "replay-inactive-bulk@example.com")
+	epID := seedEndpointActive(t, pool, custID, "https://example.com/hook", false)
+	id1 := seedDelivery(t, pool, epID, "dead_letter", seedDeliveryOpts{attempts: 7})
+	id2 := seedDelivery(t, pool, epID, "dead_letter", seedDeliveryOpts{attempts: 7})
+
+	ids, err := ReplayByEndpoint(context.Background(), pool, epID)
+	if err != nil {
+		t.Fatalf("ReplayByEndpoint: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("requeued ids for inactive endpoint: got %d, want 0 (%v)", len(ids), ids)
+	}
+	if s := fetchDelivery(t, pool, id1); s.status != "dead_letter" {
+		t.Errorf("id1 was mutated despite inactive endpoint: got status %q", s.status)
+	}
+	if s := fetchDelivery(t, pool, id2); s.status != "dead_letter" {
+		t.Errorf("id2 was mutated despite inactive endpoint: got status %q", s.status)
 	}
 }
 
@@ -303,6 +349,40 @@ func TestListDeadLetters_OrderedMostRecentFirst(t *testing.T) {
 	}
 	if newerIdx > olderIdx {
 		t.Errorf("expected newer row (id=%d) before older row (id=%d), got indices %d and %d", newer, older, newerIdx, olderIdx)
+	}
+}
+
+func TestListDeadLetters_ReportsEndpointActive(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "list-endpoint-active@example.com")
+	activeEP := seedEndpointActive(t, pool, custID, "https://example.com/active", true)
+	inactiveEP := seedEndpointActive(t, pool, custID, "https://example.com/inactive", false)
+
+	activeID := seedDelivery(t, pool, activeEP, "dead_letter", seedDeliveryOpts{attempts: 7})
+	inactiveID := seedDelivery(t, pool, inactiveEP, "dead_letter", seedDeliveryOpts{attempts: 7})
+
+	page, err := ListDeadLetters(context.Background(), pool, DeadLettersFilter{Page: 1, PerPage: 100})
+	if err != nil {
+		t.Fatalf("ListDeadLetters: %v", err)
+	}
+
+	var sawActive, sawInactive bool
+	for _, it := range page.Items {
+		switch it.ID {
+		case activeID:
+			sawActive = true
+			if !it.EndpointActive {
+				t.Errorf("delivery %d: endpoint_active = false, want true", it.ID)
+			}
+		case inactiveID:
+			sawInactive = true
+			if it.EndpointActive {
+				t.Errorf("delivery %d: endpoint_active = true, want false", it.ID)
+			}
+		}
+	}
+	if !sawActive || !sawInactive {
+		t.Fatalf("seeded rows missing from listing: sawActive=%v sawInactive=%v", sawActive, sawInactive)
 	}
 }
 

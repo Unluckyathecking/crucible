@@ -64,6 +64,10 @@ func ReplaySingleHandler(db *pgxpool.Pool) http.HandlerFunc {
 				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "dead-letter delivery not found", false)
 				return
 			}
+			if err == ErrEndpointInactive {
+				apierror.Write(w, rid, http.StatusConflict, "ENDPOINT_INACTIVE", "endpoint is inactive; reactivate it before replaying", false)
+				return
+			}
 			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: replay by id failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "replay failed", false)
 			return

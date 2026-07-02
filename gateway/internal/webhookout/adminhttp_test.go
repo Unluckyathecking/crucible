@@ -81,6 +81,22 @@ func TestListDeadLettersHandler_OK(t *testing.T) {
 	if !found {
 		t.Errorf("seeded delivery id %d not present in listing", id)
 	}
+
+	// The wire format must encode id as a JSON string, not a number: decoding
+	// into map[string]any (rather than the typed DeadLetterDelivery, whose
+	// `,string` tag would transparently paper over a numeric wire value)
+	// surfaces what actually went over the wire.
+	var raw struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+	for _, item := range raw.Items {
+		if _, isString := item["id"].(string); !isString {
+			t.Errorf("id field is not a JSON string: %#v (type %T)", item["id"], item["id"])
+		}
+	}
 }
 
 func TestReplaySingleHandler_OK(t *testing.T) {
@@ -127,6 +143,26 @@ func TestReplaySingleHandler_NotFound(t *testing.T) {
 	rec := doRequest(t, h, http.MethodPost, "/v1/admin/webhooks/deadletters/999999999/replay", testOperatorToken)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReplaySingleHandler_InactiveEndpoint_Conflict(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "adminhttp-single-inactive@example.com")
+	epID := seedEndpointActive(t, pool, custID, "https://example.com/hook", false)
+	id := seedDelivery(t, pool, epID, "dead_letter", seedDeliveryOpts{attempts: 7})
+
+	h := newDeadLetterRouter(pool)
+	path := fmt.Sprintf("/v1/admin/webhooks/deadletters/%d/replay", id)
+	rec := doRequest(t, h, http.MethodPost, path, testOperatorToken)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if s := fetchDelivery(t, pool, id); s.status != "dead_letter" {
+		t.Errorf("row was mutated despite inactive endpoint: got status %q", s.status)
+	}
+	if n := countAuditRows(t, pool, ActionDeliveryReplayed, id); n != 0 {
+		t.Errorf("audit rows written for a blocked replay: got %d, want 0", n)
 	}
 }
 
