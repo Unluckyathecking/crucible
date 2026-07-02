@@ -79,6 +79,14 @@ func TestGuardedTransport_ClonesDefaultTransport(t *testing.T) {
 	if tr == def {
 		t.Fatal("GuardedTransport must not return the shared http.DefaultTransport")
 	}
+	// Regression: http.DefaultTransport.Clone() carries over
+	// Proxy: ProxyFromEnvironment. A proxied request only dials the proxy
+	// through Control — the proxy itself then resolves and connects to the
+	// customer-controlled webhook host, bypassing the guard entirely. Proxy
+	// must be disabled so every delivery dials the destination directly.
+	if tr.Proxy != nil {
+		t.Fatal("GuardedTransport must disable Proxy so it cannot be used to bypass the dial-time IP guard")
+	}
 }
 
 // TestBlocked_DirectIPChecks spot-checks the exported Blocked predicate

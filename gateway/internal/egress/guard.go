@@ -37,6 +37,13 @@ func GuardedTransport() *http.Transport {
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DialContext = dialer.DialContext
+	// http.DefaultTransport.Clone() carries over Proxy: ProxyFromEnvironment.
+	// If HTTP_PROXY/HTTPS_PROXY is set on the gateway host, a proxied request
+	// only dials the proxy through Control — the proxy then resolves and
+	// connects to the customer-controlled webhook host itself, bypassing this
+	// guard entirely. Disable proxying so every delivery dials the
+	// destination directly and is subject to blockPrivateAddr.
+	t.Proxy = nil
 	return t
 }
 
