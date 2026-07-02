@@ -67,16 +67,35 @@ func blockPrivateAddr(_ string, address string, _ syscall.RawConn) error {
 }
 
 // Blocked reports whether ip falls in a loopback, private (RFC 1918 IPv4 /
-// RFC 4193 fc00::/7 IPv6), link-local, or unspecified range.
+// RFC 4193 fc00::/7 IPv6), link-local, unspecified, or special-purpose range.
 //
 // net.IP's IsLoopback/IsPrivate/IsLinkLocal*/IsUnspecified helpers already
 // normalize IPv4-mapped IPv6 addresses (e.g. ::ffff:169.254.169.254) via
 // To4() before matching, so no separate unwrapping step is needed here.
+//
+// net.IP has no helper for 0.0.0.0/8 ("this" network, RFC 791 §3.2 — only the
+// single address 0.0.0.0 counts as IsUnspecified) or 100.64.0.0/10 (shared
+// address space / CGNAT, RFC 6598), so those are checked explicitly below.
+// This keeps parity with dashboard/app/api/webhooks/route.ts's
+// isPrivateHostname, which rejects both at registration time; without this,
+// a hostname that resolves to e.g. 0.1.2.3 or 100.64.1.1 would be considered
+// unsafe at registration but allowed through at delivery time.
 func Blocked(ip net.IP) bool {
-	return ip.IsLoopback() ||
+	if ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
-		ip.IsUnspecified()
+		ip.IsUnspecified() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 0 {
+			return true // 0.0.0.0/8
+		}
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return true // 100.64.0.0/10
+		}
+	}
+	return false
 }
