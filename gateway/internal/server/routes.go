@@ -204,6 +204,17 @@ func NewRouter(d *Deps) http.Handler {
 	// customer comes strictly from auth.FromContext, so this can only ever
 	// return the caller's own usage.
 	//
+	// Registered as a direct, method-specific r.Get rather than r.Route(...):
+	// r.Route mounts a subrouter via chi's Mount, which claims ALL HTTP methods
+	// at that exact path (verified empirically — chi's radix tree matches the
+	// static "/v1/usage" node before ever considering the "/v1/*" wildcard the
+	// per-product block below is mounted under). If a product clone ever names
+	// an invoke route "/usage", a Route-based mount here would 405 every
+	// POST /v1/usage before it reached the product handler, even though both
+	// "coexist" from chi's registration API — they don't coexist in the actual
+	// tree walk. r.With(...).Get registers only the GET method at this node, so
+	// a same-path product POST mounted afterward is unaffected.
+	//
 	// Gated on d.Auth rather than d.DB: unlike webhookDeliveriesHandler (which
 	// dereferences its *pgxpool.Pool directly and would panic if nil),
 	// selfusage.Handler is nil-DB/nil-Quota/nil-Plans-safe by design — an unset
@@ -214,10 +225,7 @@ func NewRouter(d *Deps) http.Handler {
 	// leaving it unregistered for the synthetic no-Auth Deps NewRouter's own
 	// tests build.
 	if d.Auth != nil {
-		r.Route("/v1/usage", func(r chi.Router) {
-			r.Use(auth.Middleware(d.Auth))
-			r.Get("/", selfusage.Handler(d.DB, d.Quota, d.Plans))
-		})
+		r.With(auth.Middleware(d.Auth)).Get("/v1/usage", selfusage.Handler(d.DB, d.Quota, d.Plans))
 	}
 
 	// === Framework operator/admin read-only routes (operator-token gated) ===
