@@ -3,6 +3,7 @@ import {
   ensureCustomer,
   insertWebhookEndpoint,
   listWebhookEndpoints,
+  parseSubscribedEvents,
 } from "@/lib/db";
 
 /** Maximum URL length we accept to prevent DB bloat from adversarial input. */
@@ -107,6 +108,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   let rawUrl = "";
+  let rawSubscribedEvents: unknown;
   const contentType = request.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
     let body: unknown;
@@ -118,6 +120,7 @@ export async function POST(request: Request): Promise<Response> {
     rawUrl = typeof (body as Record<string, unknown>).url === "string"
       ? ((body as Record<string, unknown>).url as string).trim()
       : "";
+    rawSubscribedEvents = (body as Record<string, unknown>).subscribed_events;
   } else {
     let formData: FormData;
     try {
@@ -126,6 +129,18 @@ export async function POST(request: Request): Promise<Response> {
       return new Response("Invalid form data", { status: 400 });
     }
     rawUrl = ((formData.get("url") as string | undefined) || "").trim();
+    // FormData can't carry a native array, so the form encodes subscribed
+    // event types as a comma-separated string; an absent/empty field means
+    // "subscribe to every event" (null), matching the JSON path's semantics.
+    const rawField = (formData.get("subscribed_events") as string | undefined) || "";
+    rawSubscribedEvents = rawField.trim()
+      ? rawField.split(",").map((s) => s.trim()).filter(Boolean)
+      : null;
+  }
+
+  const subscribed = parseSubscribedEvents(rawSubscribedEvents);
+  if (!subscribed.ok) {
+    return new Response(subscribed.error, { status: 400 });
   }
 
   if (!rawUrl) {
@@ -161,7 +176,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const customer = await ensureCustomer(session.user.email);
-    const endpoint = await insertWebhookEndpoint(customer.id, parsedUrl.toString());
+    const endpoint = await insertWebhookEndpoint(customer.id, parsedUrl.toString(), subscribed.events);
     // Return the secret once. cache-control: no-store prevents any caching layer
     // from retaining the secret beyond this response.
     return new Response(JSON.stringify(endpoint), {

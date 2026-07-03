@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 )
 
 // TestSign verifies that Sign produces a deterministic, non-empty HMAC-SHA256 hex digest
@@ -269,5 +271,113 @@ func TestEmitInvalidJSON(t *testing.T) {
 	e := &Emitter{db: nil}
 	if err := e.Emit(context.Background(), uuid.New(), "test", []byte(`not-json`)); err == nil {
 		t.Fatal("expected error for invalid JSON payload, got nil")
+	}
+}
+
+// seedEndpointSubscribed inserts an active webhook_endpoints row with an explicit
+// subscribed_events value. Passing subscribed == nil stores SQL NULL (subscribed
+// to every event type); a non-nil slice — including an empty one — is stored as-is.
+func seedEndpointSubscribed(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, url string, subscribed []string) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	secret, err := GenerateSecret()
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+	var id uuid.UUID
+	err = pool.QueryRow(ctx,
+		`INSERT INTO webhook_endpoints (customer_id, url, secret, active, subscribed_events) VALUES ($1, $2, $3, TRUE, $4) RETURNING id`,
+		customerID, url, secret, subscribed,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("seedEndpointSubscribed: %v", err)
+	}
+	return id
+}
+
+// countDeliveriesForEndpoint returns the number of webhook_deliveries rows queued
+// for endpointID, regardless of status.
+func countDeliveriesForEndpoint(t *testing.T, pool *pgxpool.Pool, endpointID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM webhook_deliveries WHERE endpoint_id = $1`, endpointID,
+	).Scan(&n)
+	if err != nil {
+		t.Fatalf("countDeliveriesForEndpoint: %v", err)
+	}
+	return n
+}
+
+// TestEmit_SubscriptionFilter_UnsubscribedEndpointGetsZeroRows is the acceptance
+// check for the per-endpoint subscription predicate: an endpoint subscribed to a
+// different event type than the one emitted must receive no delivery row at all.
+func TestEmit_SubscriptionFilter_UnsubscribedEndpointGetsZeroRows(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emit-sub-unsubscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{events.SubscriptionUpdated})
+
+	e := &Emitter{db: pool}
+	if err := e.Emit(context.Background(), custID, events.QuotaExceeded, []byte(`{}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, epID); n != 0 {
+		t.Errorf("deliveries for unsubscribed event type: got %d, want 0", n)
+	}
+}
+
+// TestEmit_SubscriptionFilter_SubscribedEndpointReceives verifies that an
+// endpoint subscribed to the emitted event type does get a delivery row.
+func TestEmit_SubscriptionFilter_SubscribedEndpointReceives(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emit-sub-subscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{events.QuotaExceeded})
+
+	e := &Emitter{db: pool}
+	if err := e.Emit(context.Background(), custID, events.QuotaExceeded, []byte(`{}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, epID); n != 1 {
+		t.Errorf("deliveries for subscribed event type: got %d, want 1", n)
+	}
+}
+
+// TestEmit_SubscriptionFilter_NilSubscriptionMeansAllEvents is the backward-
+// compatibility check: rows with no explicit subscription (subscribed_events IS
+// NULL) must keep receiving every catalogue event, matching pre-0017 behavior.
+func TestEmit_SubscriptionFilter_NilSubscriptionMeansAllEvents(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emit-sub-nil@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", nil)
+
+	e := &Emitter{db: pool}
+	if err := e.Emit(context.Background(), custID, events.APIKeyRevoked, []byte(`{}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, epID); n != 1 {
+		t.Errorf("deliveries for endpoint with nil subscription: got %d, want 1", n)
+	}
+}
+
+// TestValidateSubscribedEvents covers the nil/valid/invalid cases of the Go-side
+// registration helper.
+func TestValidateSubscribedEvents(t *testing.T) {
+	if err := ValidateSubscribedEvents(nil); err != nil {
+		t.Errorf("nil slice: got err %v, want nil", err)
+	}
+	if err := ValidateSubscribedEvents([]string{}); err != nil {
+		t.Errorf("empty slice: got err %v, want nil", err)
+	}
+	if err := ValidateSubscribedEvents([]string{events.QuotaExceeded, events.APIKeyRotated}); err != nil {
+		t.Errorf("valid types: got err %v, want nil", err)
+	}
+	if err := ValidateSubscribedEvents([]string{"bogus.event"}); err == nil {
+		t.Error("unknown event type: got nil error, want non-nil")
+	}
+	if err := ValidateSubscribedEvents([]string{events.QuotaExceeded, "bogus.event"}); err == nil {
+		t.Error("mixed valid/unknown event types: got nil error, want non-nil")
 	}
 }

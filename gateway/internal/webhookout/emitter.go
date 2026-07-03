@@ -31,6 +31,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 )
 
 const (
@@ -98,10 +99,14 @@ func (e *Emitter) Stop() {
 	e.cancel()
 }
 
-// Emit fans an event out to all active endpoints registered by customerID by
-// inserting one webhook_deliveries row per endpoint in a single INSERT…SELECT.
-// A nil Emitter or a customer with no active endpoints is a safe no-op.
-// payload must be valid JSON; an error is returned otherwise.
+// Emit fans an event out to all active endpoints registered by customerID that
+// are subscribed to eventType, inserting one webhook_deliveries row per matching
+// endpoint in a single INSERT…SELECT. An endpoint whose subscribed_events is
+// NULL (the default — see 0017_webhook_subscriptions.sql) is subscribed to
+// every event type, preserving the pre-0017 all-or-nothing fan-out for rows
+// that never set an explicit subscription. A nil Emitter or a customer with no
+// matching endpoints is a safe no-op. payload must be valid JSON; an error is
+// returned otherwise.
 func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType string, payload []byte) error {
 	if e == nil {
 		return nil
@@ -115,8 +120,25 @@ func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType stri
 		SELECT $1, $2, we.id, $3::jsonb
 		FROM webhook_endpoints we
 		WHERE we.customer_id = $4 AND we.active = TRUE
+		  AND (we.subscribed_events IS NULL OR $2 = ANY(we.subscribed_events))
 	`, eventID, eventType, string(payload), customerID)
 	return err
+}
+
+// ValidateSubscribedEvents reports an error naming the first entry in
+// eventTypes that is not a member of events.AllEventTypes. A nil or empty
+// slice — meaning "subscribed to every event" — is always valid. Non-Go
+// registration paths (e.g. the dashboard's TypeScript API routes) cannot
+// import this package directly and must keep their own event-type list in
+// sync with events.AllEventTypes; this is the Go-side check for any call path
+// that does have access to it.
+func ValidateSubscribedEvents(eventTypes []string) error {
+	for _, t := range eventTypes {
+		if !events.IsValidEventType(t) {
+			return fmt.Errorf("webhookout: unknown event type %q", t)
+		}
+	}
+	return nil
 }
 
 // GenerateSecret returns 32 cryptographically random bytes for use as an endpoint
