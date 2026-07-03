@@ -580,15 +580,64 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// it from such mutations.
 	routes := make([]RouteDescriptor, len(invokeRoutes))
 	copy(routes, invokeRoutes)
-	b, err := json.Marshal(Build(routes))
+	doc := Build(routes)
+	// GET /v1/usage is framework infra (see routes.go), not a per-product invoke
+	// route, so it is layered onto the served document here rather than added to
+	// Build()'s static paths: Build() is also called directly by
+	// server.TestV1RoutesDriftGuard, which asserts every /v1/* path it produces
+	// (other than /v1/billing/*) is POST-only — the invariant that keeps
+	// per-product routes and their documentation from drifting apart. Merging
+	// here documents the endpoint in the actual served /openapi.json without
+	// perturbing that invoke-route-only guarantee.
+	doc.Paths["/v1/usage"] = usagePathItem()
+	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
 	}
-	doc := b
+	body := b
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentTypeJSON)
-		if _, err := w.Write(doc); err != nil {
+		if _, err := w.Write(body); err != nil {
 			log.Printf("openapi: write: %v", err)
 		}
+	}
+}
+
+// usagePathItem documents GET /v1/usage: the authenticated customer's
+// current billing-period usage against their plan quota (see
+// gateway/internal/selfusage). Framework infra, not a per-product invoke
+// route — kept out of Build()'s invoke-route paths; see Handler.
+func usagePathItem() PathItem {
+	return PathItem{
+		Get: &Operation{
+			OperationID: "get_usage",
+			Summary:     "Get the authenticated customer's current billing-period usage against their plan quota",
+			Tags:        []string{"usage"},
+			Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+			Responses: map[string]Response{
+				"200": {
+					Description: "Current-period usage — same signals the quota middleware enforces against",
+					Content: map[string]MediaType{
+						contentTypeJSON: {Schema: &Schema{
+							Type: "object",
+							Properties: map[string]*Schema{
+								"plan_id":      {Type: "string", Description: "The customer's current plan id"},
+								"used":         {Type: "integer", Description: "Billable units consumed so far this calendar month"},
+								"cap":          {Type: "integer", Description: "Monthly billable-unit cap for the customer's plan (0 = unlimited)"},
+								"remaining":    {Type: "integer", Description: "Billable units remaining this month (-1 = unlimited)"},
+								"period_start": {Type: "string", Description: "RFC3339 start of the current UTC billing period"},
+								"period_end":   {Type: "string", Description: "RFC3339 end of the current UTC billing period"},
+								"total_units":  {Type: "integer", Description: "Sum of billable_units across all operations this period"},
+								"total_calls":  {Type: "integer", Description: "Count of usage_events rows across all operations this period"},
+								"breakdown":    {Type: "array", Description: "Per-operation usage, ordered by total_units descending"},
+							},
+							Required: []string{"plan_id", "used", "cap", "remaining", "period_start", "period_end", "total_units", "total_calls", "breakdown"},
+						}},
+					},
+				},
+				"401": errResp("Unauthorized — missing or invalid API key"),
+				"500": errResp("Internal server error"),
+			},
+		},
 	}
 }
