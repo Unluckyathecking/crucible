@@ -417,3 +417,76 @@ func TestInvokeSignature_DisabledPathSucceeds(t *testing.T) {
 		t.Fatalf("expected success (signing disabled), got error envelope: %v", resp["error"])
 	}
 }
+
+// --- verifyWorkerSig: direct error-branch coverage ----------------------------
+// The invoke-handler tests above exercise verifyWorkerSig only indirectly and
+// only via the happy-path and missing-header / wrong-secret / tampered / past-stale
+// cases.  Four concrete parser/validation branches are never reached that way.
+
+// TestVerifyWorkerSig_ErrorBranches calls verifyWorkerSig directly to cover:
+//  1. Malformed header (missing t= or v1=)
+//  2. Non-numeric timestamp
+//  3. Future-skew timestamp (exercises the diff<0 absolute-value arm)
+//  4. Bad hex / wrong-length signature value
+func TestVerifyWorkerSig_ErrorBranches(t *testing.T) {
+	const secret = "test-verify-secret"
+	body := []byte(`{"request_id":"test"}`)
+
+	// A syntactically valid 64-char hex (32 bytes) — not a correct HMAC, but used
+	// only in cases that fail before the HMAC compare step.
+	const zeroHex = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	validTS := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	futureTS := strconv.FormatInt(time.Now().UTC().Add(10*time.Minute).Unix(), 10)
+
+	cases := []struct {
+		name    string
+		header  string
+		wantErr string
+	}{
+		{
+			name:    "missing t field",
+			header:  "v1=" + zeroHex,
+			wantErr: "malformed signature header",
+		},
+		{
+			name:    "missing v1 field",
+			header:  "t=" + validTS,
+			wantErr: "malformed signature header",
+		},
+		{
+			name:    "non-numeric timestamp",
+			header:  "t=notanumber,v1=" + zeroHex,
+			wantErr: "invalid timestamp in signature header",
+		},
+		{
+			// Timestamp 10 minutes in the future — exercises the diff < 0 branch
+			// (line 186 of crucible.go) before the window check rejects it as stale.
+			name:    "future timestamp beyond window",
+			header:  "t=" + futureTS + ",v1=" + zeroHex,
+			wantErr: "stale timestamp in signature header",
+		},
+		{
+			name:    "invalid hex in signature value",
+			header:  "t=" + validTS + ",v1=not!valid!hex",
+			wantErr: "invalid signature value",
+		},
+		{
+			name:    "valid hex but wrong length (too short)",
+			header:  "t=" + validTS + ",v1=deadbeef",
+			wantErr: "invalid signature value",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyWorkerSig(tc.header, body, []byte(secret))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if err.Error() != tc.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
