@@ -54,10 +54,16 @@ func Handler(db *pgxpool.Pool, tracker *quota.Tracker, plans *billing.PlanCache)
 			return
 		}
 
-		var capUnits int64
-		if plans != nil {
-			capUnits = plans.MonthlyCap(r.Context(), key.Customer.Plan)
-		}
+		// start/end and the tracker read are both derived from "now" and must agree
+		// on which calendar month they mean: quota.Tracker.Current internally takes
+		// its own time.Now() snapshot to pick the Redis key, so a request straddling
+		// 00:00 UTC on the 1st could otherwise pair one month's `used` with the next
+		// month's period/breakdown. Taking the period snapshot immediately before
+		// the tracker read (rather than after the DB-bound plan-cache/breakdown
+		// calls below) shrinks that window to the two adjacent statements here.
+		// Tracker.Current doesn't accept an injected timestamp, so this narrows
+		// the race rather than eliminating it outright.
+		start, end := CurrentBillingPeriod()
 
 		var used uint64
 		if tracker != nil {
@@ -70,6 +76,11 @@ func Handler(db *pgxpool.Pool, tracker *quota.Tracker, plans *billing.PlanCache)
 			used = u
 		}
 
+		var capUnits int64
+		if plans != nil {
+			capUnits = plans.MonthlyCap(r.Context(), key.Customer.Plan)
+		}
+
 		remaining := int64(-1)
 		if capUnits > 0 {
 			remaining = capUnits - int64(used)
@@ -78,7 +89,6 @@ func Handler(db *pgxpool.Pool, tracker *quota.Tracker, plans *billing.PlanCache)
 			}
 		}
 
-		start, end := CurrentBillingPeriod()
 		breakdown, totalUnits, totalCalls, err := store.Breakdown(r.Context(), key.Customer.ID, start, end)
 		if err != nil {
 			log.Error().Err(err).Str("request_id", rid).Msg("selfusage: breakdown query failed")

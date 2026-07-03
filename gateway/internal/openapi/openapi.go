@@ -589,7 +589,16 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// per-product routes and their documentation from drifting apart. Merging
 	// here documents the endpoint in the actual served /openapi.json without
 	// perturbing that invoke-route-only guarantee.
-	doc.Paths["/v1/usage"] = usagePathItem()
+	//
+	// Set only Get on whatever PathItem is already there rather than replacing
+	// it outright: a product clone could name an invoke route "/usage" (POST
+	// /v1/usage, routed independently through the per-product V1Routes block —
+	// chi dispatches by method, so it coexists fine with this GET at runtime),
+	// and a wholesale overwrite here would silently drop that POST operation
+	// from the served document.
+	usageItem := doc.Paths["/v1/usage"]
+	usageItem.Get = usagePathItem().Get
+	doc.Paths["/v1/usage"] = usageItem
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
