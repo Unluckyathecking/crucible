@@ -35,6 +35,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/selfusage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/validate"
@@ -192,6 +193,39 @@ func NewRouter(d *Deps) http.Handler {
 			r.Use(auth.Middleware(d.Auth))
 			r.Get("/deliveries", webhookDeliveriesHandler(d.DB))
 		})
+	}
+
+	// === Framework customer usage self-service route (auth gated; read-only) ===
+	// GET /v1/usage: the caller's own current-period consumption, quota cap,
+	// remaining balance, and per-operation breakdown — derived from the same
+	// quota.Tracker/billing.PlanCache signals the quota middleware enforces
+	// against. Framework infra, not a product /invoke route: no metering, no
+	// quota/rate-limit/idempotency gating, and no customer_id parameter — the
+	// customer comes strictly from auth.FromContext, so this can only ever
+	// return the caller's own usage.
+	//
+	// Registered as a direct, method-specific r.Get rather than r.Route(...):
+	// r.Route mounts a subrouter via chi's Mount, which claims ALL HTTP methods
+	// at that exact path (verified empirically — chi's radix tree matches the
+	// static "/v1/usage" node before ever considering the "/v1/*" wildcard the
+	// per-product block below is mounted under). If a product clone ever names
+	// an invoke route "/usage", a Route-based mount here would 405 every
+	// POST /v1/usage before it reached the product handler, even though both
+	// "coexist" from chi's registration API — they don't coexist in the actual
+	// tree walk. r.With(...).Get registers only the GET method at this node, so
+	// a same-path product POST mounted afterward is unaffected.
+	//
+	// Gated on d.Auth rather than d.DB: unlike webhookDeliveriesHandler (which
+	// dereferences its *pgxpool.Pool directly and would panic if nil),
+	// selfusage.Handler is nil-DB/nil-Quota/nil-Plans-safe by design — an unset
+	// dependency degrades its slice of the response instead of erroring. d.Auth
+	// is the one dependency every real deployment always sets (cmd/gateway/main.go
+	// constructs it unconditionally), so gating on it means this route is live in
+	// every real gateway today — not just once Deps.DB is wired — while still
+	// leaving it unregistered for the synthetic no-Auth Deps NewRouter's own
+	// tests build.
+	if d.Auth != nil {
+		r.With(auth.Middleware(d.Auth)).Get("/v1/usage", selfusage.Handler(d.DB, d.Quota, d.Plans))
 	}
 
 	// === Framework operator/admin read-only routes (operator-token gated) ===
