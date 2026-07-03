@@ -545,6 +545,10 @@ export function isValidWebhookEventType(t: string): t is WebhookEventType {
  * Parses the subscribed_events field of a webhook registration/update request.
  * undefined/null means "subscribe to every event" (stored as SQL NULL); any
  * other value must be an array of strings, each a member of WEBHOOK_EVENT_TYPES.
+ * Rejects arrays longer than the catalogue itself (only possible via repeats,
+ * since every entry must be a distinct catalogue member) so a caller can't
+ * bloat the stored TEXT[] — deduped on top of that, since ANY(subscribed_events)
+ * is rescanned on every Emit.
  */
 export function parseSubscribedEvents(
   value: unknown,
@@ -553,7 +557,10 @@ export function parseSubscribedEvents(
   if (!Array.isArray(value)) {
     return { ok: false, error: "subscribed_events must be an array of strings" };
   }
-  const seen: string[] = [];
+  if (value.length > WEBHOOK_EVENT_TYPES.length) {
+    return { ok: false, error: `subscribed_events must not exceed ${WEBHOOK_EVENT_TYPES.length} entries` };
+  }
+  const seen = new Set<string>();
   for (const v of value) {
     if (typeof v !== "string") {
       return { ok: false, error: "subscribed_events must contain only strings" };
@@ -561,9 +568,9 @@ export function parseSubscribedEvents(
     if (!isValidWebhookEventType(v)) {
       return { ok: false, error: `unknown event type: ${v}` };
     }
-    seen.push(v);
+    seen.add(v);
   }
-  return { ok: true, events: seen };
+  return { ok: true, events: [...seen] };
 }
 
 export interface WebhookEndpointRow {

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useRouter } from "next/navigation";
 
 /**
  * EventTypeCheckboxes renders an "All events" toggle plus a per-type checkbox
@@ -164,6 +165,7 @@ export function EditSubscriptionButton({
   eventTypes: readonly string[];
   current: string[] | null;
 }) {
+  const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<string[] | null>(current);
   const [saved, setSaved] = useState<string[] | null>(current);
@@ -189,6 +191,10 @@ export function EditSubscriptionButton({
       }
       setSaved(draft);
       setEditing(false);
+      // The "Subscribed:" text next to this button is rendered by the server
+      // page from its own ep.subscribed_events prop, not from this component's
+      // state — refresh so it picks up the change instead of showing stale data.
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
     } finally {

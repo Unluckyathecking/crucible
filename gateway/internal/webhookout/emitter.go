@@ -208,7 +208,11 @@ func (e *Emitter) processDue(ctx context.Context) error {
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// SELECT … FOR UPDATE SKIP LOCKED claims due rows; concurrent worker instances
-	// (multi-replica deployments) skip locked rows rather than blocking.
+	// (multi-replica deployments) skip locked rows rather than blocking. The
+	// subscribed_events check is re-evaluated here (not just at Emit-time) so a
+	// customer narrowing an endpoint's subscription after a row was already
+	// queued stops that row from being delivered too, instead of only affecting
+	// events emitted afterward.
 	rows, err := tx.Query(ctx, `
 		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret
 		FROM webhook_deliveries d
@@ -216,6 +220,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 		WHERE d.status = 'pending'
 		  AND d.next_attempt_at <= NOW()
 		  AND we.active = TRUE
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 		ORDER BY d.next_attempt_at ASC
 		LIMIT $1
 		FOR UPDATE OF d SKIP LOCKED

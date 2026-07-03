@@ -91,8 +91,16 @@ export async function PATCH(
     return new Response("Invalid JSON", { status: 400 });
   }
 
+  // A non-object body (array, string, number, null) has no subscribed_events
+  // property, and reading it would yield undefined — which parseSubscribedEvents
+  // treats as "subscribe to every event". Reject explicitly so a malformed body
+  // can never silently broaden a restricted endpoint's subscription.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return new Response("Request body must be a JSON object", { status: 400 });
+  }
+
   const subscribed = parseSubscribedEvents(
-    (body as Record<string, unknown> | null)?.subscribed_events,
+    (body as Record<string, unknown>).subscribed_events,
   );
   if (!subscribed.ok) {
     return new Response(subscribed.error, { status: 400 });

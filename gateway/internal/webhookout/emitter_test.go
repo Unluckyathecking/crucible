@@ -381,3 +381,93 @@ func TestValidateSubscribedEvents(t *testing.T) {
 		t.Error("mixed valid/unknown event types: got nil error, want non-nil")
 	}
 }
+
+// TestProcessDue_SkipsRowsNotMatchingCurrentSubscription verifies that the
+// delivery worker's claim query re-checks subscribed_events at claim time, not
+// just at Emit-time: a row queued before a customer narrows an endpoint's
+// subscription must never be delivered once it falls outside the current
+// subscription, so it's left pending (never claimed) rather than delivered.
+func TestProcessDue_SkipsRowsNotMatchingCurrentSubscription(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "claim-sub-filter@example.com")
+
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// seedDelivery always inserts event_type 'test.event' (see replay_test.go);
+	// subscribing the endpoint to a different type means that row no longer
+	// matches its current subscription.
+	epID := seedEndpointSubscribed(t, pool, custID, srv.URL, []string{events.QuotaExceeded})
+	id := seedDelivery(t, pool, epID, "pending", seedDeliveryOpts{attempts: 0})
+
+	e := &Emitter{db: pool, client: &http.Client{Timeout: deliveryTimeout}}
+	if err := e.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+
+	select {
+	case <-called:
+		t.Fatal("endpoint was called for an event type outside its current subscription")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: the row was never claimed.
+	}
+
+	got := fetchDelivery(t, pool, id)
+	if got.status != "pending" {
+		t.Errorf("status: got %q, want pending (row should remain unclaimed)", got.status)
+	}
+	if got.attempts != 0 {
+		t.Errorf("attempts: got %d, want 0", got.attempts)
+	}
+}
+
+// TestProcessDue_DeliversRowsMatchingCurrentSubscription is the companion
+// positive case: the claim-time subscription predicate must not over-filter
+// rows whose event type the endpoint is still subscribed to.
+func TestProcessDue_DeliversRowsMatchingCurrentSubscription(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "claim-sub-match@example.com")
+
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	epID := seedEndpointSubscribed(t, pool, custID, srv.URL, []string{"test.event"})
+	id := seedDelivery(t, pool, epID, "pending", seedDeliveryOpts{attempts: 0})
+
+	e := &Emitter{db: pool, client: &http.Client{Timeout: deliveryTimeout}}
+	if err := e.processDue(context.Background()); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected the endpoint to be called for a matching subscription")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := fetchDelivery(t, pool, id)
+		if s.status == "delivered" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("row never delivered: got %q", s.status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

@@ -35,7 +35,10 @@ function parseSubscribedEvents(
   if (!Array.isArray(value)) {
     return { ok: false, error: "subscribed_events must be an array of strings" };
   }
-  const seen: string[] = [];
+  if (value.length > WEBHOOK_EVENT_TYPES.length) {
+    return { ok: false, error: `subscribed_events must not exceed ${WEBHOOK_EVENT_TYPES.length} entries` };
+  }
+  const seen = new Set<string>();
   for (const v of value) {
     if (typeof v !== "string") {
       return { ok: false, error: "subscribed_events must contain only strings" };
@@ -43,9 +46,9 @@ function parseSubscribedEvents(
     if (!isValidWebhookEventType(v)) {
       return { ok: false, error: `unknown event type: ${v}` };
     }
-    seen.push(v);
+    seen.add(v);
   }
-  return { ok: true, events: seen };
+  return { ok: true, events: [...seen] };
 }
 
 function parseFormSubscribedEvents(rawField: string): string[] | null {
@@ -107,6 +110,28 @@ describe("parseSubscribedEvents", () => {
   it("accepts every member of WEBHOOK_EVENT_TYPES", () => {
     const result = parseSubscribedEvents([...WEBHOOK_EVENT_TYPES]);
     expect(result.ok).toBe(true);
+  });
+
+  it("dedupes repeated valid event types", () => {
+    const result = parseSubscribedEvents(["quota.exceeded", "quota.exceeded", "api_key.rotated"]);
+    expect(result).toEqual({ ok: true, events: ["quota.exceeded", "api_key.rotated"] });
+  });
+
+  it("rejects an array longer than the catalogue itself", () => {
+    const tooMany = Array(WEBHOOK_EVENT_TYPES.length + 1).fill("quota.exceeded");
+    const result = parseSubscribedEvents(tooMany);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain(String(WEBHOOK_EVENT_TYPES.length));
+    }
+  });
+
+  it("rejects a very large array of duplicates without scanning them all for validity", () => {
+    // Regression guard: the length cap must be checked before per-entry
+    // validation so an adversarial huge array is rejected in O(1), not O(n).
+    const huge = Array(100_000).fill("quota.exceeded");
+    const result = parseSubscribedEvents(huge);
+    expect(result.ok).toBe(false);
   });
 });
 
