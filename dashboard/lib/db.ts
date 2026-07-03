@@ -664,6 +664,15 @@ export async function revokeWebhookEndpoint(
  * Update the subscribed event types for an existing, active endpoint owned by
  * customerId. Passing null clears any explicit subscription, reverting the
  * endpoint to receiving every catalogue event (the pre-0017 default).
+ *
+ * When narrowing to an explicit list, this also prunes any pending/dead_letter
+ * webhook_deliveries rows for event types no longer in that list. Without this,
+ * a row queued while subscribed, then orphaned by processDue's claim-time
+ * subscription check (emitter.go) after narrowing, would sit in 'pending'
+ * forever and silently become deliverable again if the customer later re-adds
+ * that event type — reviving an event they'd already opted out of. Rows
+ * currently 'delivering' are left alone; an attempt already in flight
+ * completes normally.
  */
 export async function updateWebhookEndpointSubscription(
   endpointId: string,
@@ -676,7 +685,18 @@ export async function updateWebhookEndpointSubscription(
      RETURNING id::text AS id`,
     [endpointId, customerId, subscribedEvents],
   );
-  if (update.rows.length > 0) return "ok";
+  if (update.rows.length > 0) {
+    if (subscribedEvents !== null) {
+      await pool.query(
+        `DELETE FROM webhook_deliveries
+         WHERE endpoint_id = $1
+           AND status IN ('pending', 'dead_letter')
+           AND event_type <> ALL($2)`,
+        [endpointId, subscribedEvents],
+      );
+    }
+    return "ok";
+  }
 
   const check = await pool.query<{ customer_id: string }>(
     `SELECT customer_id::text FROM webhook_endpoints WHERE id = $1`,
