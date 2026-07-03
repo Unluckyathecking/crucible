@@ -339,11 +339,16 @@ func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
 	defer cancel()
-	_, err := e.db.Exec(ctx, `
-		UPDATE webhook_deliveries
+	tag, err := e.db.Exec(ctx, `
+		UPDATE webhook_deliveries AS d
 		SET status = 'dead_letter', attempts = $2, last_response_code = $3, claimed_at = NULL
-		WHERE id = $1
+		FROM webhook_endpoints AS we
+		WHERE d.id = $1 AND we.id = d.endpoint_id
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 	`, id, attempts, statusCode)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = e.deleteUnsubscribedRow(ctx, id)
+	}
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark dead_letter failed")
 	}
@@ -362,12 +367,29 @@ func (e *Emitter) scheduleRetry(id int64, newAttempts int, statusCode *int) {
 		idx = len(backoffSchedule) - 1
 	}
 	nextAt := time.Now().Add(backoffSchedule[idx])
-	_, err := e.db.Exec(ctx, `
-		UPDATE webhook_deliveries
+	tag, err := e.db.Exec(ctx, `
+		UPDATE webhook_deliveries AS d
 		SET status = 'pending', attempts = $2, next_attempt_at = $3, last_response_code = $4, claimed_at = NULL
-		WHERE id = $1
+		FROM webhook_endpoints AS we
+		WHERE d.id = $1 AND we.id = d.endpoint_id
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 	`, id, newAttempts, nextAt, statusCode)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = e.deleteUnsubscribedRow(ctx, id)
+	}
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: schedule retry failed")
 	}
+}
+
+// deleteUnsubscribedRow removes a webhook_deliveries row whose recording UPDATE
+// (scheduleRetry/markDeadLetter) matched zero rows because the endpoint's
+// subscription no longer includes this row's event type. This is the same
+// narrowing the customer already opted into via updateWebhookEndpointSubscription
+// (dashboard/lib/db.ts) — without it, a row whose delivery attempt was already
+// in flight when the subscription changed would survive that cleanup and could
+// be delivered again if the customer later re-subscribed to the dropped type.
+func (e *Emitter) deleteUnsubscribedRow(ctx context.Context, id int64) error {
+	_, err := e.db.Exec(ctx, `DELETE FROM webhook_deliveries WHERE id = $1`, id)
+	return err
 }

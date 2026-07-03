@@ -471,3 +471,95 @@ func TestProcessDue_DeliversRowsMatchingCurrentSubscription(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// rowExists reports whether a webhook_deliveries row with the given id exists.
+func rowExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
+	t.Helper()
+	var exists bool
+	err := pool.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id,
+	).Scan(&exists)
+	if err != nil {
+		t.Fatalf("rowExists(%d): %v", id, err)
+	}
+	return exists
+}
+
+// TestScheduleRetry_SubscribedRow_UpdatesNormally verifies scheduleRetry's
+// added subscription check doesn't change behavior for a row whose event type
+// the endpoint is still subscribed to: seedDelivery's rows are always
+// event_type 'test.event', so subscribing to exactly that type must update
+// normally, not delete.
+func TestScheduleRetry_SubscribedRow_UpdatesNormally(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "retry-subscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{"test.event"})
+	id := seedDelivery(t, pool, epID, "delivering", seedDeliveryOpts{attempts: 1})
+
+	e := &Emitter{db: pool}
+	e.scheduleRetry(id, 2, nil)
+
+	got := fetchDelivery(t, pool, id)
+	if got.status != "pending" {
+		t.Errorf("status: got %q, want pending", got.status)
+	}
+	if got.attempts != 2 {
+		t.Errorf("attempts: got %d, want 2", got.attempts)
+	}
+}
+
+// TestScheduleRetry_UnsubscribedRow_DeletesRowInstead verifies that when a
+// delivery attempt fails for a row whose event type the endpoint is no longer
+// subscribed to (narrowed while the attempt was in flight), scheduleRetry
+// deletes the row instead of writing it back to 'pending' — otherwise the row
+// would survive indefinitely and become deliverable again if the customer
+// later re-subscribed to that event type.
+func TestScheduleRetry_UnsubscribedRow_DeletesRowInstead(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "retry-unsubscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{"quota.exceeded"})
+	id := seedDelivery(t, pool, epID, "delivering", seedDeliveryOpts{attempts: 1})
+
+	e := &Emitter{db: pool}
+	e.scheduleRetry(id, 2, nil)
+
+	if rowExists(t, pool, id) {
+		t.Error("row for an unsubscribed event type was not deleted by scheduleRetry")
+	}
+}
+
+// TestMarkDeadLetter_SubscribedRow_UpdatesNormally is markDeadLetter's
+// companion to TestScheduleRetry_SubscribedRow_UpdatesNormally.
+func TestMarkDeadLetter_SubscribedRow_UpdatesNormally(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "deadletter-subscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{"test.event"})
+	id := seedDelivery(t, pool, epID, "delivering", seedDeliveryOpts{attempts: maxAttempts - 1})
+
+	e := &Emitter{db: pool}
+	e.markDeadLetter(id, maxAttempts, nil)
+
+	got := fetchDelivery(t, pool, id)
+	if got.status != "dead_letter" {
+		t.Errorf("status: got %q, want dead_letter", got.status)
+	}
+	if got.attempts != maxAttempts {
+		t.Errorf("attempts: got %d, want %d", got.attempts, maxAttempts)
+	}
+}
+
+// TestMarkDeadLetter_UnsubscribedRow_DeletesRowInstead is markDeadLetter's
+// companion to TestScheduleRetry_UnsubscribedRow_DeletesRowInstead.
+func TestMarkDeadLetter_UnsubscribedRow_DeletesRowInstead(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "deadletter-unsubscribed@example.com")
+	epID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook", []string{"quota.exceeded"})
+	id := seedDelivery(t, pool, epID, "delivering", seedDeliveryOpts{attempts: maxAttempts - 1})
+
+	e := &Emitter{db: pool}
+	e.markDeadLetter(id, maxAttempts, nil)
+
+	if rowExists(t, pool, id) {
+		t.Error("row for an unsubscribed event type was not deleted by markDeadLetter")
+	}
+}
