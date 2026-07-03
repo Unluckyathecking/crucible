@@ -1,0 +1,73 @@
+# Resilience alerts — Redis fail-open and worker circuit-breaker state.
+#
+# Metric reference (gateway/internal/observability/metrics.go):
+#
+#   crucible_ratelimit_failopen_total  — Counter; incremented each request admitted
+#                                        because the rate-limit Redis store was unreachable.
+#                                        Non-zero rate means customers may silently exceed
+#                                        per-minute rate-limit caps.
+#
+#   crucible_quota_failopen_total      — Counter; same semantics for monthly-quota Redis.
+#                                        Non-zero rate means customers may silently exceed
+#                                        their monthly usage caps.
+#
+#   crucible_worker_breaker_state      — Gauge; 0=closed (healthy), 1=open (fast-failing),
+#                                        2=half-open (probing). State 1 sustained means every
+#                                        worker call returns 503 immediately.
+
+groups:
+  - name: crucible-resilience
+    interval: 1m
+    rules:
+      # Alert when the rate-limit Redis check is failing open (rate > 0 sustained).
+      # Fail-open is the correct behaviour when Redis is unreachable, but it is silent:
+      # customers can issue requests far above their per-minute cap. A 2-minute window
+      # filters the one-off blip on a rolling restart while catching sustained degradation.
+      - alert: RateLimitFailOpenDetected
+        expr: rate(crucible_ratelimit_failopen_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate-limit Redis fail-open active ({{ $value | humanize }} req/s admitted without limit check)"
+          description: >
+            crucible_ratelimit_failopen_total is incrementing for 2 minutes.
+            The rate-limit Redis store is unreachable; requests are admitted without
+            enforcing per-minute caps. Customers may exceed their rate-limit tier.
+            Check Redis health and gateway logs for connection errors.
+
+      # Alert when the quota Redis check is failing open (rate > 0 sustained).
+      # Same fail-open semantics as rate-limit: correct behaviour, but monthly quota
+      # is not enforced while Redis is down. A 2-minute window matches RateLimitFailOpen
+      # so both fire together during a full Redis outage.
+      - alert: QuotaFailOpenDetected
+        expr: rate(crucible_quota_failopen_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Quota Redis fail-open active ({{ $value | humanize }} req/s admitted without quota check)"
+          description: >
+            crucible_quota_failopen_total is incrementing for 2 minutes.
+            The quota Redis store is unreachable; requests are admitted without
+            enforcing monthly usage caps. Customers may exceed their quota tier.
+            Check Redis health and gateway logs for connection errors.
+
+      # Alert when the worker circuit breaker is stuck open (state == 1) for 5 minutes.
+      # State 1 means every incoming /v1/* request fast-fails with 503 without reaching
+      # the worker — sustained open means the worker is down or unreachable. The 5-minute
+      # window absorbs normal transient opens (e.g., a rolling worker deploy) while catching
+      # a genuinely stuck breaker. Half-open (state == 2) is self-healing and not alerted.
+      - alert: WorkerBreakerStuckOpen
+        expr: crucible_worker_breaker_state == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker circuit breaker stuck open (all worker calls fast-failing)"
+          description: >
+            crucible_worker_breaker_state has been 1 (open) for 5 minutes.
+            The circuit breaker is not recovering to half-open, which means every
+            /v1/* request returns 503 without reaching the worker.
+            Check the worker process health, network connectivity from the gateway,
+            and crucible_worker_errors_total for the failure pattern that tripped the breaker.
