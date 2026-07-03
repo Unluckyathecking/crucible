@@ -195,7 +195,7 @@ func NewRouter(d *Deps) http.Handler {
 		})
 	}
 
-	// === Framework customer usage self-service route (auth gated; active when DB is set) ===
+	// === Framework customer usage self-service route (auth gated; read-only) ===
 	// GET /v1/usage: the caller's own current-period consumption, quota cap,
 	// remaining balance, and per-operation breakdown — derived from the same
 	// quota.Tracker/billing.PlanCache signals the quota middleware enforces
@@ -204,10 +204,16 @@ func NewRouter(d *Deps) http.Handler {
 	// customer comes strictly from auth.FromContext, so this can only ever
 	// return the caller's own usage.
 	//
-	// Gated on d.DB (mirroring the /v1/webhooks block above) even though the
-	// handler itself is nil-DB-safe: the per-operation breakdown needs
-	// usage_events, so there is nothing useful to serve until Deps.DB is wired.
-	if d.DB != nil {
+	// Gated on d.Auth rather than d.DB: unlike webhookDeliveriesHandler (which
+	// dereferences its *pgxpool.Pool directly and would panic if nil),
+	// selfusage.Handler is nil-DB/nil-Quota/nil-Plans-safe by design — an unset
+	// dependency degrades its slice of the response instead of erroring. d.Auth
+	// is the one dependency every real deployment always sets (cmd/gateway/main.go
+	// constructs it unconditionally), so gating on it means this route is live in
+	// every real gateway today — not just once Deps.DB is wired — while still
+	// leaving it unregistered for the synthetic no-Auth Deps NewRouter's own
+	// tests build.
+	if d.Auth != nil {
 		r.Route("/v1/usage", func(r chi.Router) {
 			r.Use(auth.Middleware(d.Auth))
 			r.Get("/", selfusage.Handler(d.DB, d.Quota, d.Plans))
