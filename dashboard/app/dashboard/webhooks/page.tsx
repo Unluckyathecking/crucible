@@ -7,10 +7,12 @@ import {
   listWebhookDeliveries,
   WebhookEndpointRow,
   WebhookDeliveryRow,
+  WEBHOOK_EVENT_TYPES,
 } from "@/lib/db";
 import {
   WebhooksFormClient,
   RevokeEndpointButton,
+  EditSubscriptionButton,
 } from "./webhooks-client";
 
 export const dynamic = "force-dynamic";
@@ -81,7 +83,7 @@ export default async function WebhooksPage() {
           {/* Add endpoint form (client component for secret reveal-once UX) */}
           <div className="mb-4 rounded-lg border border-zinc-200 p-4">
             <h3 className="text-sm font-medium mb-2">Add endpoint</h3>
-            <WebhooksFormClient />
+            <WebhooksFormClient eventTypes={WEBHOOK_EVENT_TYPES} />
           </div>
 
           {/* Endpoint list */}
@@ -92,7 +94,7 @@ export default async function WebhooksPage() {
               {endpoints.map((ep: WebhookEndpointRow) => (
                 <div
                   key={ep.id}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3"
+                  className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 px-4 py-3"
                 >
                   <div>
                     <span className="font-mono text-sm break-all">
@@ -102,8 +104,23 @@ export default async function WebhooksPage() {
                       Added {formatDate(ep.created_at)} · ID:{" "}
                       <code className="font-mono">{ep.id.slice(0, 8)}…</code>
                     </p>
+                    <p className="text-xs text-zinc-500 mt-1">
+                      Subscribed:{" "}
+                      {ep.subscribed_events === null
+                        ? "All events"
+                        : ep.subscribed_events.length === 0
+                          ? "None"
+                          : ep.subscribed_events.join(", ")}
+                    </p>
                   </div>
-                  <RevokeEndpointButton endpointId={ep.id} />
+                  <div className="shrink-0 flex flex-col items-end gap-2">
+                    <RevokeEndpointButton endpointId={ep.id} />
+                    <EditSubscriptionButton
+                      endpointId={ep.id}
+                      eventTypes={WEBHOOK_EVENT_TYPES}
+                      current={ep.subscribed_events}
+                    />
+                  </div>
                 </div>
               ))}
             </div>

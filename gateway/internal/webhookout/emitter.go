@@ -31,6 +31,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 )
 
 const (
@@ -98,10 +99,14 @@ func (e *Emitter) Stop() {
 	e.cancel()
 }
 
-// Emit fans an event out to all active endpoints registered by customerID by
-// inserting one webhook_deliveries row per endpoint in a single INSERT…SELECT.
-// A nil Emitter or a customer with no active endpoints is a safe no-op.
-// payload must be valid JSON; an error is returned otherwise.
+// Emit fans an event out to all active endpoints registered by customerID that
+// are subscribed to eventType, inserting one webhook_deliveries row per matching
+// endpoint in a single INSERT…SELECT. An endpoint whose subscribed_events is
+// NULL (the default — see 0017_webhook_subscriptions.sql) is subscribed to
+// every event type, preserving the pre-0017 all-or-nothing fan-out for rows
+// that never set an explicit subscription. A nil Emitter or a customer with no
+// matching endpoints is a safe no-op. payload must be valid JSON; an error is
+// returned otherwise.
 func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType string, payload []byte) error {
 	if e == nil {
 		return nil
@@ -115,8 +120,25 @@ func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType stri
 		SELECT $1, $2, we.id, $3::jsonb
 		FROM webhook_endpoints we
 		WHERE we.customer_id = $4 AND we.active = TRUE
+		  AND (we.subscribed_events IS NULL OR $2 = ANY(we.subscribed_events))
 	`, eventID, eventType, string(payload), customerID)
 	return err
+}
+
+// ValidateSubscribedEvents reports an error naming the first entry in
+// eventTypes that is not a member of events.AllEventTypes. A nil or empty
+// slice — meaning "subscribed to every event" — is always valid. Non-Go
+// registration paths (e.g. the dashboard's TypeScript API routes) cannot
+// import this package directly and must keep their own event-type list in
+// sync with events.AllEventTypes; this is the Go-side check for any call path
+// that does have access to it.
+func ValidateSubscribedEvents(eventTypes []string) error {
+	for _, t := range eventTypes {
+		if !events.IsValidEventType(t) {
+			return fmt.Errorf("webhookout: unknown event type %q", t)
+		}
+	}
+	return nil
 }
 
 // GenerateSecret returns 32 cryptographically random bytes for use as an endpoint
@@ -186,7 +208,11 @@ func (e *Emitter) processDue(ctx context.Context) error {
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// SELECT … FOR UPDATE SKIP LOCKED claims due rows; concurrent worker instances
-	// (multi-replica deployments) skip locked rows rather than blocking.
+	// (multi-replica deployments) skip locked rows rather than blocking. The
+	// subscribed_events check is re-evaluated here (not just at Emit-time) so a
+	// customer narrowing an endpoint's subscription after a row was already
+	// queued stops that row from being delivered too, instead of only affecting
+	// events emitted afterward.
 	rows, err := tx.Query(ctx, `
 		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret
 		FROM webhook_deliveries d
@@ -194,6 +220,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 		WHERE d.status = 'pending'
 		  AND d.next_attempt_at <= NOW()
 		  AND we.active = TRUE
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 		ORDER BY d.next_attempt_at ASC
 		LIMIT $1
 		FOR UPDATE OF d SKIP LOCKED
@@ -312,11 +339,16 @@ func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
 	defer cancel()
-	_, err := e.db.Exec(ctx, `
-		UPDATE webhook_deliveries
+	tag, err := e.db.Exec(ctx, `
+		UPDATE webhook_deliveries AS d
 		SET status = 'dead_letter', attempts = $2, last_response_code = $3, claimed_at = NULL
-		WHERE id = $1
+		FROM webhook_endpoints AS we
+		WHERE d.id = $1 AND we.id = d.endpoint_id
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 	`, id, attempts, statusCode)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = e.deleteUnsubscribedRow(ctx, id)
+	}
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark dead_letter failed")
 	}
@@ -335,12 +367,29 @@ func (e *Emitter) scheduleRetry(id int64, newAttempts int, statusCode *int) {
 		idx = len(backoffSchedule) - 1
 	}
 	nextAt := time.Now().Add(backoffSchedule[idx])
-	_, err := e.db.Exec(ctx, `
-		UPDATE webhook_deliveries
+	tag, err := e.db.Exec(ctx, `
+		UPDATE webhook_deliveries AS d
 		SET status = 'pending', attempts = $2, next_attempt_at = $3, last_response_code = $4, claimed_at = NULL
-		WHERE id = $1
+		FROM webhook_endpoints AS we
+		WHERE d.id = $1 AND we.id = d.endpoint_id
+		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
 	`, id, newAttempts, nextAt, statusCode)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = e.deleteUnsubscribedRow(ctx, id)
+	}
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: schedule retry failed")
 	}
+}
+
+// deleteUnsubscribedRow removes a webhook_deliveries row whose recording UPDATE
+// (scheduleRetry/markDeadLetter) matched zero rows because the endpoint's
+// subscription no longer includes this row's event type. This is the same
+// narrowing the customer already opted into via updateWebhookEndpointSubscription
+// (dashboard/lib/db.ts) — without it, a row whose delivery attempt was already
+// in flight when the subscription changed would survive that cleanup and could
+// be delivered again if the customer later re-subscribed to the dropped type.
+func (e *Emitter) deleteUnsubscribedRow(ctx context.Context, id int64) error {
+	_, err := e.db.Exec(ctx, `DELETE FROM webhook_deliveries WHERE id = $1`, id)
+	return err
 }

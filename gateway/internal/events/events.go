@@ -32,6 +32,20 @@ var AllEventTypes = []string{
 	APIKeyRevoked,
 }
 
+// IsValidEventType reports whether eventType is a member of AllEventTypes.
+// Callers that accept an event-type value from outside this package — e.g.
+// webhook endpoint subscription registration — should validate against this
+// helper rather than re-deriving the catalogue set, so additions to
+// AllEventTypes are picked up automatically instead of drifting out of sync.
+func IsValidEventType(eventType string) bool {
+	for _, t := range AllEventTypes {
+		if t == eventType {
+			return true
+		}
+	}
+	return false
+}
+
 // SubscriptionEventPayload is the payload for SubscriptionUpdated and
 // SubscriptionDeleted. PlanID is "free" for SubscriptionDeleted.
 type SubscriptionEventPayload struct {

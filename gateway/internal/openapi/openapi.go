@@ -129,6 +129,7 @@ type Parameter struct {
 type Operation struct {
 	OperationID string                `json:"operationId,omitempty"`
 	Summary     string                `json:"summary,omitempty"`
+	Description string                `json:"description,omitempty"`
 	Tags        []string              `json:"tags,omitempty"`
 	Security    []SecurityRequirement `json:"security,omitempty"`
 	Parameters  []Parameter           `json:"parameters,omitempty"`
@@ -319,6 +320,14 @@ func validateRouteDescriptor(rt RouteDescriptor) {
 	}
 }
 
+// webhookSubscriptionNote documents the per-endpoint subscription behavior added
+// in 0017_webhook_subscriptions.sql: a registered endpoint only receives event
+// types it is subscribed to (webhook_endpoints.subscribed_events), with a
+// backward-compatible default of "all events" for endpoints that never set an
+// explicit subscription.
+const webhookSubscriptionNote = "Delivered only to endpoints subscribed to this event type. " +
+	"An endpoint with no explicit subscribed_events value receives every event type (default)."
+
 // webhookEventDescriptors documents the payload schema for each outbound webhook
 // event type. Kept manually in sync with gateway/internal/events.AllEventTypes;
 // buildWebhooks panics at Build() time (caught by TestBuild_WebhookEventCatalogueLocked)
@@ -408,6 +417,7 @@ func buildWebhooks() map[string]PathItem {
 			Post: &Operation{
 				OperationID: "webhook_" + strings.ReplaceAll(strings.ReplaceAll(wd.eventType, ".", "_"), "-", "_"),
 				Summary:     wd.summary,
+				Description: webhookSubscriptionNote,
 				Tags:        []string{"webhooks"},
 				RequestBody: &RequestBody{
 					Required: true,
