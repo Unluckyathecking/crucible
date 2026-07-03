@@ -358,6 +358,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker invocation failed")
+			observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_UNREACHABLE).Inc()
 			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_UNREACHABLE, "worker unavailable", true)
 			return
 		}
@@ -397,6 +398,7 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 				Str("request_id", rid).
 				Str("operation", operation).
 				Msg("worker returned success with billable_units<1 — rejecting")
+			observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_BAD_RESPONSE).Inc()
 			apierror.Write(w, rid, http.StatusBadGateway, apierror.WORKER_BAD_RESPONSE, "worker contract violation", false)
 			return
 		}

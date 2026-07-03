@@ -15,12 +15,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
@@ -1117,6 +1119,50 @@ func TestV1RoutesDriftGuard(t *testing.T) {
 		if strings.HasPrefix(rt.Path, "/billing/") {
 			t.Errorf("V1Routes must not contain billing paths (handled separately in NewRouter): %q", rt.Path)
 		}
+	}
+}
+
+// TestInvokeWorkerUnreachableIncrementsMetric asserts that the WORKER_UNREACHABLE
+// counter is incremented when the worker transport call fails (err != nil path).
+func TestInvokeWorkerUnreachableIncrementsMetric(t *testing.T) {
+	worker := successWorker(1, "")
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	worker.Close() // cause connection refused so Invoke returns an error
+
+	h := invoke(p, nil, "sanitized", "echo")
+
+	before := testutil.ToFloat64(observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_UNREACHABLE))
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	if got := testutil.ToFloat64(observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_UNREACHABLE)); got != before+1 {
+		t.Errorf("WorkerErrorsTotal[WORKER_UNREACHABLE] = %v, want %v", got, before+1)
+	}
+}
+
+// TestInvokeBillableUnitsViolationIncrementsMetric asserts that the WORKER_BAD_RESPONSE
+// counter is incremented when the worker returns billable_units < 1 (invariant #2 path).
+func TestInvokeBillableUnitsViolationIncrementsMetric(t *testing.T) {
+	worker := successWorker(0, "") // billable_units=0 triggers the trust-boundary rejection
+	defer worker.Close()
+
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	h := invoke(p, nil, "sanitized", "echo")
+
+	before := testutil.ToFloat64(observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_BAD_RESPONSE))
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	if got := testutil.ToFloat64(observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_BAD_RESPONSE)); got != before+1 {
+		t.Errorf("WorkerErrorsTotal[WORKER_BAD_RESPONSE] = %v, want %v", got, before+1)
 	}
 }
 
