@@ -15,10 +15,7 @@ package webhookout
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/channelsig"
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 )
@@ -154,13 +152,10 @@ func GenerateSecret() ([]byte, error) {
 
 // Sign computes HMAC-SHA256 over "timestamp.body" using secret and returns the
 // lowercase hex digest. Mirrors the inbound Stripe verifier's payload construction
-// so the customer-side verification algorithm is symmetric.
+// so the customer-side verification algorithm is symmetric. Delegates to the shared
+// channelsig primitive; kept as a wrapper so existing callers and tests are unaffected.
 func Sign(secret []byte, timestamp string, body []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(timestamp))
-	_, _ = mac.Write([]byte("."))
-	_, _ = mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
+	return channelsig.Sign(secret, timestamp, body)
 }
 
 func (e *Emitter) run(ctx context.Context) {
