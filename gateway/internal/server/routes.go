@@ -134,9 +134,13 @@ func NewRouter(d *Deps) http.Handler {
 	r.Use(observability.Middleware)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
+	// AllowedMethods includes DELETE for the browser-facing preflight on
+	// DELETE /v1/webhooks/endpoints/{id} (go-chi/cors withholds
+	// Access-Control-Allow-Origin/Methods on a preflight whose
+	// Access-Control-Request-Method isn't in this list).
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
 		ExposedHeaders:   []string{"X-Idempotent-Replayed", "Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"},
 		AllowCredentials: false,
@@ -184,14 +188,19 @@ func NewRouter(d *Deps) http.Handler {
 		r.Post("/portal", billingPortalHandler(d))
 	})
 
-	// === Outbound webhook delivery log (auth gated; active when DB is set) ===
+	// === Outbound webhook delivery log + endpoint management (auth gated; active when DB is set) ===
 	// The emitter is wired above (into d.Webhook, d.Auth, and quota.Middleware);
-	// the delivery-log route uses the DB directly so the handler is decoupled
-	// from the worker goroutine lifecycle.
+	// these routes use the DB directly so they're decoupled from the worker
+	// goroutine lifecycle. The endpoint CRUD routes are the write-counterpart to
+	// the read-only delivery log: registering/listing/deleting webhook_endpoints
+	// rows was previously reachable only through the NextAuth dashboard.
 	if d.DB != nil {
 		r.Route("/v1/webhooks", func(r chi.Router) {
 			r.Use(auth.Middleware(d.Auth))
 			r.Get("/deliveries", webhookDeliveriesHandler(d.DB))
+			r.Post("/endpoints", webhookout.CreateEndpointHandler(d.DB, authCustomerID))
+			r.Get("/endpoints", webhookout.ListEndpointsHandler(d.DB, authCustomerID))
+			r.Delete("/endpoints/{id}", webhookout.DeleteEndpointHandler(d.DB, authCustomerID))
 		})
 	}
 
@@ -460,6 +469,17 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status(), reqPayload)
 		})
 	}
+}
+
+// authCustomerID adapts auth.FromContext to webhookout.CustomerIDFunc. Defined
+// here (rather than in webhookout) because webhookout cannot import auth — see
+// webhookout.CustomerIDFunc's doc comment for why.
+func authCustomerID(r *http.Request) (uuid.UUID, bool) {
+	key := auth.FromContext(r.Context())
+	if key == nil {
+		return uuid.Nil, false
+	}
+	return key.Customer.ID, true
 }
 
 // webhookDeliveriesHandler returns the authenticated customer's 100 most recent
