@@ -674,6 +674,138 @@ func TestIdempotencyKeyIsolation(t *testing.T) {
 	}
 }
 
+// TestWebhookDeliveriesIDORIsolation verifies that GET /v1/webhooks/deliveries is
+// tenant-scoped: customer A sees only their own delivery rows and never B's
+// event_id, endpoint URL, or response code. The handler's sole isolation guard
+// is WHERE we.customer_id = $1 in the deliveries JOIN; this test catches a
+// regression if that clause is removed or mis-parameterised.
+func TestWebhookDeliveriesIDORIsolation(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := harness.NewGatewayTestServer(t, baseOpts(t, echoWorker(1)))
+	ts.CreatePlan(t, "wd-idor-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
+
+	customerIDA, keyA := ts.CreateCustomer(t, "wd-idor-A-"+uuid.New().String()+"@example.com", "wd-idor-plan")
+	customerIDB, _ := ts.CreateCustomer(t, "wd-idor-B-"+uuid.New().String()+"@example.com", "wd-idor-plan")
+
+	endpointIDA := uuid.New()
+	endpointIDB := uuid.New()
+	eventIDA := "evt_A_" + uuid.New().String()
+	eventIDB := "evt_B_" + uuid.New().String()
+	urlA := "https://a.example.com/webhook"
+	urlB := "https://b.example.com/webhook"
+
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer seedCancel()
+
+	if _, err := ts.DB.Exec(seedCtx,
+		`INSERT INTO webhook_endpoints (id, customer_id, url, secret, active) VALUES ($1, $2, $3, $4, true)`,
+		endpointIDA, customerIDA, urlA, []byte("secret-a"),
+	); err != nil {
+		t.Fatalf("seed endpoint A: %v", err)
+	}
+	if _, err := ts.DB.Exec(seedCtx,
+		`INSERT INTO webhook_endpoints (id, customer_id, url, secret, active) VALUES ($1, $2, $3, $4, true)`,
+		endpointIDB, customerIDB, urlB, []byte("secret-b"),
+	); err != nil {
+		t.Fatalf("seed endpoint B: %v", err)
+	}
+	if _, err := ts.DB.Exec(seedCtx,
+		`INSERT INTO webhook_deliveries (event_id, endpoint_id, payload, status, attempts, last_response_code) VALUES ($1, $2, '{}', 'delivered', 1, 200)`,
+		eventIDA, endpointIDA,
+	); err != nil {
+		t.Fatalf("seed delivery A: %v", err)
+	}
+	if _, err := ts.DB.Exec(seedCtx,
+		`INSERT INTO webhook_deliveries (event_id, endpoint_id, payload, status, attempts, last_response_code) VALUES ($1, $2, '{}', 'delivered', 1, 201)`,
+		eventIDB, endpointIDB,
+	); err != nil {
+		t.Fatalf("seed delivery B: %v", err)
+	}
+
+	type deliveryItem struct {
+		EventID          string `json:"event_id"`
+		EndpointURL      string `json:"endpoint_url"`
+		LastResponseCode *int   `json:"last_response_code"`
+	}
+
+	// customer A sees only their own rows.
+	reqA, err := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, ts.Server.URL+"/v1/webhooks/deliveries", nil)
+	if err != nil {
+		t.Fatalf("build request A: %v", err)
+	}
+	reqA.Header.Set("Authorization", "Bearer "+keyA)
+	respA, err := client.Do(reqA)
+	if err != nil {
+		t.Fatalf("send request A: %v", err)
+	}
+	bodyA := drainBody(t, respA)
+	if respA.StatusCode != http.StatusOK {
+		t.Fatalf("customer A: want 200, got %d: %s", respA.StatusCode, bodyA)
+	}
+	var deliveriesA []deliveryItem
+	if err := json.Unmarshal(bodyA, &deliveriesA); err != nil {
+		t.Fatalf("customer A: decode response: %v\nbody: %s", err, bodyA)
+	}
+	foundA := false
+	for _, d := range deliveriesA {
+		if d.EventID == eventIDA {
+			foundA = true
+		}
+		if d.EventID == eventIDB {
+			t.Errorf("IDOR: customer A sees customer B event_id %q", eventIDB)
+		}
+		if d.EndpointURL == urlB {
+			t.Errorf("IDOR: customer A sees customer B endpoint_url %q", urlB)
+		}
+		if d.LastResponseCode != nil && *d.LastResponseCode == 201 {
+			t.Errorf("IDOR: customer A sees customer B last_response_code 201")
+		}
+	}
+	if !foundA {
+		t.Errorf("customer A: own event_id %q not found in response", eventIDA)
+	}
+
+	// no Authorization header → 401.
+	reqNoAuth, err := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, ts.Server.URL+"/v1/webhooks/deliveries", nil)
+	if err != nil {
+		t.Fatalf("build no-auth request: %v", err)
+	}
+	respNoAuth, err := client.Do(reqNoAuth)
+	if err != nil {
+		t.Fatalf("send no-auth request: %v", err)
+	}
+	bodyNoAuth := drainBody(t, respNoAuth)
+	if respNoAuth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no auth: want 401, got %d: %s", respNoAuth.StatusCode, bodyNoAuth)
+	}
+
+	// structurally valid but unregistered key → 401.
+	absentKey, _, genErr := auth.Generate(harness.TestAPIKeyPrefix)
+	if genErr != nil {
+		t.Fatalf("generate absent key: %v", genErr)
+	}
+	reqInvalid, err := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, ts.Server.URL+"/v1/webhooks/deliveries", nil)
+	if err != nil {
+		t.Fatalf("build invalid-key request: %v", err)
+	}
+	reqInvalid.Header.Set("Authorization", "Bearer "+absentKey)
+	respInvalid, err := client.Do(reqInvalid)
+	if err != nil {
+		t.Fatalf("send invalid-key request: %v", err)
+	}
+	bodyInvalid := drainBody(t, respInvalid)
+	if respInvalid.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid key: want 401, got %d: %s", respInvalid.StatusCode, bodyInvalid)
+	}
+	if code := errorCode(t, bodyInvalid); code != "UNAUTHORIZED" {
+		t.Errorf("invalid key: error.code: got %q, want UNAUTHORIZED", code)
+	}
+}
+
 // TestCrossCustomerIsolation: requests from A never appear in B's rows, and vice versa.
 func TestCrossCustomerIsolation(t *testing.T) {
 	t.Parallel()
