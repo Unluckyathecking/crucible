@@ -112,8 +112,9 @@ func (s Schema) MarshalJSON() ([]byte, error) {
 
 // PathItem holds the operations for a single URL path.
 type PathItem struct {
-	Get  *Operation `json:"get,omitempty"`
-	Post *Operation `json:"post,omitempty"`
+	Get    *Operation `json:"get,omitempty"`
+	Post   *Operation `json:"post,omitempty"`
+	Delete *Operation `json:"delete,omitempty"`
 }
 
 // Parameter describes a single operation parameter (header, query, path, or cookie).
@@ -609,6 +610,26 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	usageItem := doc.Paths["/v1/usage"]
 	usageItem.Get = usagePathItem().Get
 	doc.Paths["/v1/usage"] = usageItem
+
+	// Layer the webhook-endpoint management routes on for the same reason and
+	// in the same manner as /v1/usage above: framework infra, not per-product
+	// invoke routes, so they must stay out of Build()'s invoke-route-only paths
+	// (see server.TestV1RoutesDriftGuard) but should still appear in the
+	// document actually served to API consumers.
+	for path, item := range webhookEndpointsPathItems() {
+		existing := doc.Paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		doc.Paths[path] = existing
+	}
+
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
@@ -656,6 +677,94 @@ func usagePathItem() PathItem {
 				},
 				"401": errResp("Unauthorized — missing or invalid API key"),
 				"500": errResp("Internal server error"),
+			},
+		},
+	}
+}
+
+// webhookEndpointsPathItems documents POST/GET /v1/webhooks/endpoints and
+// DELETE /v1/webhooks/endpoints/{id}: the customer-facing CRUD tier for
+// outbound webhook endpoint registration (see gateway/internal/webhookout).
+// Framework infra, not a per-product invoke route — kept out of Build()'s
+// invoke-route paths for the same reason as usagePathItem; see Handler.
+func webhookEndpointsPathItems() map[string]PathItem {
+	endpointProps := map[string]*Schema{
+		"id":                {Type: "string", Description: "Endpoint UUID"},
+		"url":               {Type: "string", Description: "The registered HTTPS delivery URL"},
+		"active":            {Type: "boolean"},
+		"subscribed_events": {Type: "array", Description: "Event types this endpoint receives; null means every event type"},
+		"created_at":        {Type: "string", Description: "RFC3339 creation timestamp"},
+	}
+	createdProps := map[string]*Schema{}
+	for k, v := range endpointProps {
+		createdProps[k] = v
+	}
+	createdProps["secret_hex"] = &Schema{Type: "string", Description: "Signing secret, hex-encoded. Returned exactly once — store it now, it cannot be retrieved again."}
+	createdSchema := &Schema{Type: "object", Properties: createdProps, Required: []string{"id", "url", "active", "created_at", "secret_hex"}}
+
+	createRequestSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"url":               {Type: "string", Description: "Must be https:// and must not resolve to a private/loopback/link-local address"},
+			"subscribed_events": {Type: "array", Description: "Optional subset of event types; omit or null to receive every event type"},
+		},
+		Required: []string{"url"},
+	}
+
+	return map[string]PathItem{
+		"/v1/webhooks/endpoints": {
+			Post: &Operation{
+				OperationID: "create_webhook_endpoint",
+				Summary:     "Register a new outbound webhook endpoint",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				RequestBody: &RequestBody{
+					Required: true,
+					Content:  map[string]MediaType{contentTypeJSON: {Schema: createRequestSchema}},
+				},
+				Responses: map[string]Response{
+					"201": {
+						Description: "Endpoint registered; secret_hex is present only in this response",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: createdSchema}},
+					},
+					"400": errResp("Bad request — invalid url, or unknown subscribed_events entry"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+			Get: &Operation{
+				OperationID: "list_webhook_endpoints",
+				Summary:     "List the authenticated customer's registered webhook endpoints",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Responses: map[string]Response{
+					"200": {
+						Description: "The caller's registered endpoints (secrets never included)",
+						Content: map[string]MediaType{
+							contentTypeJSON: {Schema: &Schema{Type: "array", Description: "Array of webhook endpoint objects", Properties: map[string]*Schema{}}},
+						},
+					},
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+		"/v1/webhooks/endpoints/{id}": {
+			Delete: &Operation{
+				OperationID: "delete_webhook_endpoint",
+				Summary:     "Deactivate a registered webhook endpoint owned by the authenticated customer",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Endpoint UUID", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"204": {Description: "Endpoint deactivated"},
+					"400": errResp("Bad request — malformed endpoint id"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Endpoint not found (includes ids owned by another customer)"),
+					"500": errResp("Internal server error"),
+				},
 			},
 		},
 	}
