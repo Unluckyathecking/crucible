@@ -6,9 +6,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/channelsig"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/resilience"
 )
@@ -94,8 +92,9 @@ type clientMetrics struct {
 
 // workerSigHeader is the header carrying the HMAC-SHA256 channel-auth signature.
 // Format: t=<unix-seconds>,v1=<hex-sha256-hmac>
-// Mirrors the outbound-webhook signing scheme (webhookout.Sign) so the payload
-// construction is byte-identical: HMAC-SHA256(secret, timestamp + "." + body).
+// Uses channelsig.Sign, the same primitive the outbound-webhook signer
+// (webhookout.Sign) uses, so the payload construction is byte-identical:
+// HMAC-SHA256(secret, timestamp + "." + body).
 const workerSigHeader = "X-Worker-Signature"
 
 // Client forwards InvokeRequests to a worker.
@@ -394,15 +393,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, requestID string, m *c
 		req.Header.Set("X-Request-ID", requestID)
 	}
 	// Sign the /invoke request when a shared secret is configured.
-	// Signing scheme mirrors webhookout.Sign: HMAC-SHA256(secret, ts + "." + body).
+	// Signing scheme is channelsig's: HMAC-SHA256(secret, ts + "." + body).
 	// Empty sharedSecret → no header → today's behaviour preserved (opt-in only).
 	if len(c.sharedSecret) > 0 {
 		ts := strconv.FormatInt(time.Now().UTC().Unix(), 10)
-		mac := hmac.New(sha256.New, c.sharedSecret)
-		_, _ = mac.Write([]byte(ts))
-		_, _ = mac.Write([]byte("."))
-		_, _ = mac.Write(body)
-		req.Header.Set(workerSigHeader, "t="+ts+",v1="+hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set(workerSigHeader, channelsig.Header(ts, channelsig.Sign(c.sharedSecret, ts, body)))
 	}
 	// Propagate W3C traceparent when a span is active in ctx; no-op when absent.
 	// X-Request-ID and X-Worker-Signature set above are not removed or modified.
