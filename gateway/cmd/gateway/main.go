@@ -126,6 +126,7 @@ func main() {
 			Webhook:        webhook,
 			Quota:          quotaTracker,
 			Redis:          &redisPinger{redisClient},
+			DB:             pool,
 			PG:             &pgPinger{pool},
 			TracerProvider: components.TracerProvider,
 			OperatorStore:  operator.NewStore(pool),
