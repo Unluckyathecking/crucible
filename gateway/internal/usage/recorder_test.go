@@ -112,6 +112,7 @@ func TestNewRecorder_withDB(t *testing.T) {
 func TestRecord_tableDriven(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 	op := "test.operation"
 
 	tests := []struct {
@@ -171,6 +172,7 @@ func TestRecord_tableDriven(t *testing.T) {
 func TestRecord_multipleCalls(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	r := NewRecorder(pool, nil)
 	for i := range 5 {
@@ -194,6 +196,7 @@ func TestRecord_multipleCalls(t *testing.T) {
 func TestRecord_withQuota(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	cache := newTestRedis(t)
 	qTracker := quota.New(cache)
@@ -234,6 +237,7 @@ func TestRecord_withQuota(t *testing.T) {
 func TestRecord_quotaRedisError_Tolerated(t *testing.T) {
 	pool := newTestPool(t)
 	custID, apiKeyID := setupTestCustomer(t, pool)
+	t.Cleanup(func() { deleteUsageRows(t, pool, custID) })
 
 	cache := newTestRedis(t)
 	qTracker := quota.New(cache)
