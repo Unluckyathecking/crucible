@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 )
 
 // maxEndpointURLLength bounds the url column against adversarial input,
@@ -101,6 +102,36 @@ func ValidateEndpointURL(raw string) error {
 	return nil
 }
 
+// normalizeSubscribedEvents validates, caps, and deduplicates a customer-
+// supplied subscribed_events array before it reaches storage. nil (omitted)
+// passes through unchanged — meaning "every event type". Without the cap, a
+// caller could submit a near-body-limit array of repeated valid event types;
+// that oversized TEXT[] would then be scanned by every `= ANY(subscribed_events)`
+// filter in Emit/processDue on every event this gateway ever emits. Mirrors
+// dashboard/lib/db.ts's parseSubscribedEvents (cap at the catalogue size,
+// dedupe via a set) so both registration paths enforce the same bound.
+func normalizeSubscribedEvents(input []string) ([]string, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if len(input) > len(events.AllEventTypes) {
+		return nil, fmt.Errorf("subscribed_events must not exceed %d entries", len(events.AllEventTypes))
+	}
+	if err := ValidateSubscribedEvents(input); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(input))
+	out := make([]string, 0, len(input))
+	for _, e := range input {
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // CreateEndpoint validates rawURL and subscribedEvents, mints a fresh signing
 // secret, and inserts a new webhook_endpoints row owned by customerID. The
 // returned SecretHex is the only time the secret is ever surfaced.
@@ -108,7 +139,8 @@ func CreateEndpoint(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID,
 	if err := ValidateEndpointURL(rawURL); err != nil {
 		return EndpointCreated{}, &validationError{err}
 	}
-	if err := ValidateSubscribedEvents(subscribedEvents); err != nil {
+	subscribedEvents, err := normalizeSubscribedEvents(subscribedEvents)
+	if err != nil {
 		return EndpointCreated{}, &validationError{err}
 	}
 

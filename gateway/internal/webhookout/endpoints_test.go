@@ -116,6 +116,103 @@ func TestCreateEndpointHandler_ExplicitSubscribedEvents(t *testing.T) {
 	}
 }
 
+// TestCreateEndpointHandler_DedupesSubscribedEvents asserts a subscribed_events
+// array containing the same valid event type repeated is stored deduplicated,
+// not verbatim.
+func TestCreateEndpointHandler_DedupesSubscribedEvents(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "create-subs-dedup@example.com")
+	r := newEndpointsRouter(pool)
+
+	req := createEndpointReq(t, cust, map[string]any{
+		"url":               "https://example.com/hook",
+		"subscribed_events": []string{events.QuotaExceeded, events.QuotaExceeded, events.QuotaExceeded},
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var created EndpointCreated
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(created.SubscribedEvents) != 1 {
+		t.Fatalf("subscribed_events = %v, want exactly 1 deduplicated entry", created.SubscribedEvents)
+	}
+}
+
+// TestCreateEndpointHandler_RejectsOversizedSubscribedEvents asserts a
+// subscribed_events array longer than the full event catalogue is rejected
+// before it ever reaches storage, rather than being persisted as an
+// oversized TEXT[] that every `= ANY(subscribed_events)` filter in
+// Emit/processDue would scan on every emitted event.
+func TestCreateEndpointHandler_RejectsOversizedSubscribedEvents(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "create-subs-oversized@example.com")
+	r := newEndpointsRouter(pool)
+
+	oversized := make([]string, len(events.AllEventTypes)+1)
+	for i := range oversized {
+		oversized[i] = events.QuotaExceeded
+	}
+	req := createEndpointReq(t, cust, map[string]any{
+		"url":               "https://example.com/hook",
+		"subscribed_events": oversized,
+	})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestNormalizeSubscribedEvents exercises the validation/cap/dedupe function
+// directly, table-style.
+func TestNormalizeSubscribedEvents(t *testing.T) {
+	tooMany := make([]string, len(events.AllEventTypes)+1)
+	for i := range tooMany {
+		tooMany[i] = events.QuotaExceeded
+	}
+
+	cases := []struct {
+		name      string
+		input     []string
+		wantErr   bool
+		wantCount int
+	}{
+		{"nil means all events", nil, false, 0},
+		{"empty means no events", []string{}, false, 0},
+		{"single valid entry", []string{events.QuotaExceeded}, false, 1},
+		{"duplicates collapse", []string{events.QuotaExceeded, events.QuotaExceeded}, false, 1},
+		{"unknown event type rejected", []string{"not.a.real.event"}, true, 0},
+		{"too many entries rejected", tooMany, true, 0},
+		{"exactly the catalogue size allowed", events.AllEventTypes, false, len(events.AllEventTypes)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := normalizeSubscribedEvents(c.input)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("normalizeSubscribedEvents(%v) err = %v, wantErr = %v", c.input, err, c.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if c.input == nil {
+				if out != nil {
+					t.Errorf("nil input produced non-nil output: %v", out)
+				}
+				return
+			}
+			if len(out) != c.wantCount {
+				t.Errorf("normalizeSubscribedEvents(%v) = %v, want %d entries", c.input, out, c.wantCount)
+			}
+		})
+	}
+}
+
 func TestCreateEndpointHandler_RejectsNonHTTPS(t *testing.T) {
 	pool := newTestPostgres(t)
 	cust := seedCustomer(t, pool, "reject-http@example.com")

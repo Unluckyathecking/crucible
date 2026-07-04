@@ -134,9 +134,13 @@ func NewRouter(d *Deps) http.Handler {
 	r.Use(observability.Middleware)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
+	// AllowedMethods includes DELETE for the browser-facing preflight on
+	// DELETE /v1/webhooks/endpoints/{id} (go-chi/cors withholds
+	// Access-Control-Allow-Origin/Methods on a preflight whose
+	// Access-Control-Request-Method isn't in this list).
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
 		ExposedHeaders:   []string{"X-Idempotent-Replayed", "Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"},
 		AllowCredentials: false,
