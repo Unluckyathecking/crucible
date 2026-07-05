@@ -202,6 +202,18 @@ func NewRouter(d *Deps) http.Handler {
 			r.Get("/endpoints", webhookout.ListEndpointsHandler(d.DB, authCustomerID))
 			r.Delete("/endpoints/{id}", webhookout.DeleteEndpointHandler(d.DB, authCustomerID))
 		})
+
+		// === Customer API-key self-management (auth gated; active when DB is set) ===
+		// GET/rotate/DELETE parity with the dashboard's key management UI
+		// (dashboard/app/api/keys) for API-key-only (headless) customers.
+		// Registered here, not in per-product V1Routes, for the same reason as
+		// /v1/webhooks above: framework infra every clone inherits.
+		r.Route("/v1/keys", func(r chi.Router) {
+			r.Use(auth.Middleware(d.Auth))
+			r.Get("/", auth.ListKeysHandler(d.Auth))
+			r.Post("/{id}/rotate", auth.RotateKeysHandler(d.Auth, d.Cfg.APIKeyPrefix))
+			r.Delete("/{id}", auth.RevokeKeysHandler(d.Auth))
+		})
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===
