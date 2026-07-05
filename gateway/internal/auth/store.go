@@ -147,6 +147,19 @@ func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
 	// who care can handle by rotating salts.
 	_ = s.cache.Del(ctx, "auth:"+prefix).Err()
 
+	// Best-effort audit — failure must not fail the revocation. Mirrors Rotate's
+	// audit.Emit call below.
+	targetType := "api_key"
+	targetID := keyID.String()
+	_ = audit.Emit(ctx, s.db, audit.Event{
+		ActorType:  audit.ActorCustomer,
+		ActorID:    customerID.String(),
+		Action:     "api_key.revoked",
+		TargetType: &targetType,
+		TargetID:   &targetID,
+		Details:    map[string]any{"prefix": prefix},
+	})
+
 	// Best-effort outbound webhook emission. Never returned as an error: the
 	// revocation itself already committed, so an Emit failure (or nil emitter)
 	// must not fail or delay the caller.
@@ -339,6 +352,66 @@ func (s *Store) Lookup(ctx context.Context, fullKey string) (*Key, error) {
 		ID:       keyID,
 		Customer: Customer{ID: customerID, Email: email, Plan: plan},
 	}, nil
+}
+
+// KeyListItem is the customer-visible projection of an active api_keys row —
+// the hash is intentionally never selected, mirroring webhookout.Endpoint's
+// exclusion of its secret column. Field order matches the SELECT in List for
+// pgx.RowToStructByPos.
+type KeyListItem struct {
+	ID         uuid.UUID
+	Prefix     string
+	Name       *string
+	LastUsedAt *time.Time
+	ExpiresAt  *time.Time
+	CreatedAt  time.Time
+}
+
+// List returns customerID's active (non-revoked, non-expired) API keys, most
+// recently created first. Never selects the hash column.
+func (s *Store) List(ctx context.Context, customerID uuid.UUID) ([]KeyListItem, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, prefix, name, last_used_at, expires_at, created_at
+		FROM api_keys
+		WHERE customer_id = $1 AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > NOW())
+		ORDER BY created_at DESC
+	`, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[KeyListItem])
+	if err != nil {
+		return nil, fmt.Errorf("scan api keys: %w", err)
+	}
+	if items == nil {
+		items = []KeyListItem{}
+	}
+	return items, nil
+}
+
+// Owner returns the customer_id owning the active (non-revoked) key with id
+// keyID, or ErrKeyNotFound if no such key exists.
+//
+// Revoke and Rotate are id-only — they don't themselves filter by customer_id
+// (Revoke is also called from contexts where the caller's identity isn't yet
+// resolved). Owner lets the HTTP layer perform an IDOR-safe ownership check
+// before ever invoking those methods with a caller-supplied id: not-found and
+// owned-by-someone-else must be indistinguishable to the caller.
+func (s *Store) Owner(ctx context.Context, keyID uuid.UUID) (uuid.UUID, error) {
+	var customerID uuid.UUID
+	err := s.db.QueryRow(ctx, `
+		SELECT customer_id FROM api_keys WHERE id = $1 AND revoked_at IS NULL
+	`, keyID).Scan(&customerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, ErrKeyNotFound
+		}
+		return uuid.Nil, fmt.Errorf("lookup key owner: %w", err)
+	}
+	return customerID, nil
 }
 
 type cacheEntry struct {
