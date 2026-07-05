@@ -114,6 +114,7 @@ func (s Schema) MarshalJSON() ([]byte, error) {
 type PathItem struct {
 	Get    *Operation `json:"get,omitempty"`
 	Post   *Operation `json:"post,omitempty"`
+	Patch  *Operation `json:"patch,omitempty"`
 	Delete *Operation `json:"delete,omitempty"`
 }
 
@@ -624,6 +625,9 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		if item.Post != nil {
 			existing.Post = item.Post
 		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
 		if item.Delete != nil {
 			existing.Delete = item.Delete
 		}
@@ -639,6 +643,9 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		}
 		if item.Post != nil {
 			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
 		}
 		if item.Delete != nil {
 			existing.Delete = item.Delete
@@ -727,6 +734,19 @@ func webhookEndpointsPathItems() map[string]PathItem {
 		Required: []string{"url"},
 	}
 
+	updateSubscriptionRequestSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"subscribed_events": {Type: "array", Description: "Replaces the endpoint's subscribed event types; omit or null to resubscribe to every event type"},
+		},
+	}
+
+	rotateSecretResponseSchema := &Schema{
+		Type:       "object",
+		Properties: map[string]*Schema{"secret_hex": {Type: "string", Description: "The new signing secret, hex-encoded. Returned exactly once — store it now, it cannot be retrieved again. The previous secret stops verifying immediately."}},
+		Required:   []string{"secret_hex"},
+	}
+
 	return map[string]PathItem{
 		"/v1/webhooks/endpoints": {
 			Post: &Operation{
@@ -766,6 +786,26 @@ func webhookEndpointsPathItems() map[string]PathItem {
 			},
 		},
 		"/v1/webhooks/endpoints/{id}": {
+			Patch: &Operation{
+				OperationID: "update_webhook_endpoint_subscription",
+				Summary:     "Replace the subscribed event types for a webhook endpoint owned by the authenticated customer",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Endpoint UUID", Schema: &Schema{Type: "string"}},
+				},
+				RequestBody: &RequestBody{
+					Required: false,
+					Content:  map[string]MediaType{contentTypeJSON: {Schema: updateSubscriptionRequestSchema}},
+				},
+				Responses: map[string]Response{
+					"204": {Description: "Subscription updated"},
+					"400": errResp("Bad request — malformed endpoint id, invalid json body, or unknown subscribed_events entry"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Endpoint not found (includes ids owned by another customer)"),
+					"500": errResp("Internal server error"),
+				},
+			},
 			Delete: &Operation{
 				OperationID: "delete_webhook_endpoint",
 				Summary:     "Deactivate a registered webhook endpoint owned by the authenticated customer",
@@ -776,6 +816,27 @@ func webhookEndpointsPathItems() map[string]PathItem {
 				},
 				Responses: map[string]Response{
 					"204": {Description: "Endpoint deactivated"},
+					"400": errResp("Bad request — malformed endpoint id"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Endpoint not found (includes ids owned by another customer)"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+		"/v1/webhooks/endpoints/{id}/rotate-secret": {
+			Post: &Operation{
+				OperationID: "rotate_webhook_endpoint_secret",
+				Summary:     "Rotate the signing secret for a webhook endpoint owned by the authenticated customer",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Endpoint UUID", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Secret rotated; secret_hex is present only in this response",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: rotateSecretResponseSchema}},
+					},
 					"400": errResp("Bad request — malformed endpoint id"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
 					"404": errResp("Endpoint not found (includes ids owned by another customer)"),

@@ -188,6 +188,74 @@ func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID) 
 	return items, nil
 }
 
+// UpdateEndpointSubscription replaces the subscribed_events set for an active
+// endpoint owned by customerID, applying the same validate/cap/dedupe rules
+// as CreateEndpoint: nil resubscribes to every event type; a non-nil
+// (possibly empty) slice restricts delivery to that subset. On narrowing
+// (subscribedEvents non-nil), also deletes now-stale pending/dead_letter
+// webhook_deliveries rows for event types no longer subscribed to —
+// processDue (emitter.go) skips rows whose endpoint no longer matches rather
+// than resolving them, so without this cleanup they would orphan as
+// perpetual pending. Mirrors dashboard/lib/db.ts's
+// updateWebhookEndpointSubscription. Returns ErrEndpointNotFound both when id
+// doesn't exist and when it belongs to a different customer, matching
+// DeleteEndpoint's IDOR-safe convention.
+func UpdateEndpointSubscription(ctx context.Context, db *pgxpool.Pool, id, customerID uuid.UUID, subscribedEvents []string) error {
+	subscribedEvents, err := normalizeSubscribedEvents(subscribedEvents)
+	if err != nil {
+		return &validationError{err}
+	}
+
+	tag, err := db.Exec(ctx, `
+		UPDATE webhook_endpoints SET subscribed_events = $3
+		WHERE id = $1 AND customer_id = $2 AND active = TRUE
+	`, id, customerID, subscribedEvents)
+	if err != nil {
+		return fmt.Errorf("webhookout: update endpoint subscription: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrEndpointNotFound
+	}
+
+	if subscribedEvents != nil {
+		if _, err := db.Exec(ctx, `
+			DELETE FROM webhook_deliveries
+			WHERE endpoint_id = $1
+			  AND status IN ('pending', 'dead_letter')
+			  AND event_type <> ALL($2)
+		`, id, subscribedEvents); err != nil {
+			return fmt.Errorf("webhookout: prune stale deliveries: %w", err)
+		}
+	}
+	return nil
+}
+
+// RotateEndpointSecret generates a fresh signing secret for an active
+// endpoint owned by customerID and overwrites the stored secret; the old
+// secret stops verifying immediately (Sign/Verify read the current column
+// value on every delivery). The returned hex-encoded secret is the only time
+// it is ever surfaced, mirroring CreateEndpoint's SecretHex. Returns
+// ErrEndpointNotFound both when id doesn't exist and when it belongs to a
+// different customer (IDOR-safe).
+func RotateEndpointSecret(ctx context.Context, db *pgxpool.Pool, id, customerID uuid.UUID) (string, error) {
+	secret, err := GenerateSecret()
+	if err != nil {
+		return "", fmt.Errorf("webhookout: rotate endpoint secret: %w", err)
+	}
+
+	tag, err := db.Exec(ctx, `
+		UPDATE webhook_endpoints SET secret = $3
+		WHERE id = $1 AND customer_id = $2 AND active = TRUE
+	`, id, customerID, secret)
+	if err != nil {
+		return "", fmt.Errorf("webhookout: rotate endpoint secret: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrEndpointNotFound
+	}
+	return hex.EncodeToString(secret), nil
+}
+
 // DeleteEndpoint deactivates (soft-deletes) an endpoint owned by customerID.
 // Soft-delete — rather than a hard DELETE — preserves webhook_deliveries
 // history (FK is ON DELETE CASCADE) and mirrors the active-flag convention

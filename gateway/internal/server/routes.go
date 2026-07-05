@@ -134,13 +134,13 @@ func NewRouter(d *Deps) http.Handler {
 	r.Use(observability.Middleware)
 	r.Use(mw.SecurityHeaders)
 	r.Use(mw.BodyLimit(d.Cfg.BodyLimitBytes))
-	// AllowedMethods includes DELETE for the browser-facing preflight on
-	// DELETE /v1/webhooks/endpoints/{id} (go-chi/cors withholds
+	// AllowedMethods includes DELETE and PATCH for the browser-facing preflight
+	// on DELETE and PATCH /v1/webhooks/endpoints/{id} (go-chi/cors withholds
 	// Access-Control-Allow-Origin/Methods on a preflight whose
 	// Access-Control-Request-Method isn't in this list).
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{d.Cfg.DashboardOrigin},
-		AllowedMethods:   []string{"GET", "POST", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"},
 		ExposedHeaders:   []string{"X-Idempotent-Replayed", "Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset"},
 		AllowCredentials: false,
@@ -201,6 +201,8 @@ func NewRouter(d *Deps) http.Handler {
 			r.Post("/endpoints", webhookout.CreateEndpointHandler(d.DB, authCustomerID))
 			r.Get("/endpoints", webhookout.ListEndpointsHandler(d.DB, authCustomerID))
 			r.Delete("/endpoints/{id}", webhookout.DeleteEndpointHandler(d.DB, authCustomerID))
+			r.Patch("/endpoints/{id}", webhookout.UpdateEndpointSubscriptionHandler(d.DB, authCustomerID))
+			r.Post("/endpoints/{id}/rotate-secret", webhookout.RotateEndpointSecretHandler(d.DB, authCustomerID))
 		})
 
 		// === Customer API-key self-management (auth gated; active when DB is set) ===

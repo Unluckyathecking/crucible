@@ -92,6 +92,100 @@ func ListEndpointsHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.Hand
 	}
 }
 
+// updateEndpointSubscriptionRequest is the PATCH /v1/webhooks/endpoints/{id}
+// request body. SubscribedEvents omitted (absent from the JSON body) decodes
+// to nil, meaning "resubscribe to every event type" — the same convention as
+// createEndpointRequest.
+type updateEndpointSubscriptionRequest struct {
+	SubscribedEvents []string `json:"subscribed_events"`
+}
+
+// UpdateEndpointSubscriptionHandler handles PATCH /v1/webhooks/endpoints/{id}:
+// replaces the subscribed_events set for an endpoint owned by the
+// authenticated customer. An id owned by another customer, or that doesn't
+// exist, returns 404 either way (IDOR-safe).
+func UpdateEndpointSubscriptionHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		custID, ok := customerID(r)
+		if !ok {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid endpoint id", false)
+			return
+		}
+
+		var body updateEndpointSubscriptionRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
+			return
+		}
+
+		if err := UpdateEndpointSubscription(r.Context(), db, id, custID, body.SubscribedEvents); err != nil {
+			var ve *validationError
+			if errors.As(err, &ve) {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, ve.Error(), false)
+				return
+			}
+			if errors.Is(err, ErrEndpointNotFound) {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "webhook endpoint not found", false)
+				return
+			}
+			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: update endpoint subscription failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "update endpoint subscription failed", false)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// rotateEndpointSecretResponse is the POST
+// /v1/webhooks/endpoints/{id}/rotate-secret response body.
+type rotateEndpointSecretResponse struct {
+	SecretHex string `json:"secret_hex"`
+}
+
+// RotateEndpointSecretHandler handles POST
+// /v1/webhooks/endpoints/{id}/rotate-secret: issues a fresh signing secret for
+// an endpoint owned by the authenticated customer, invalidating the old one.
+// The new secret is returned exactly once, like CreateEndpointHandler's.
+func RotateEndpointSecretHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		custID, ok := customerID(r)
+		if !ok {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid endpoint id", false)
+			return
+		}
+
+		secretHex, err := RotateEndpointSecret(r.Context(), db, id, custID)
+		if err != nil {
+			if errors.Is(err, ErrEndpointNotFound) {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "webhook endpoint not found", false)
+				return
+			}
+			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: rotate endpoint secret failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "rotate endpoint secret failed", false)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(rotateEndpointSecretResponse{SecretHex: secretHex})
+	}
+}
+
 // DeleteEndpointHandler handles DELETE /v1/webhooks/endpoints/{id}: deactivates
 // an endpoint owned by the authenticated customer. An id owned by another
 // customer, or that doesn't exist, returns 404 either way (IDOR-safe).

@@ -3,6 +3,7 @@ package webhookout
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,8 @@ func newEndpointsRouter(pool *pgxpool.Pool) http.Handler {
 	r.Post("/v1/webhooks/endpoints", CreateEndpointHandler(pool, testCustomerIDFunc))
 	r.Get("/v1/webhooks/endpoints", ListEndpointsHandler(pool, testCustomerIDFunc))
 	r.Delete("/v1/webhooks/endpoints/{id}", DeleteEndpointHandler(pool, testCustomerIDFunc))
+	r.Patch("/v1/webhooks/endpoints/{id}", UpdateEndpointSubscriptionHandler(pool, testCustomerIDFunc))
+	r.Post("/v1/webhooks/endpoints/{id}/rotate-secret", RotateEndpointSecretHandler(pool, testCustomerIDFunc))
 	return r
 }
 
@@ -477,6 +480,361 @@ func TestDeleteEndpointHandler_InvalidID(t *testing.T) {
 	}
 }
 
+// patchEndpointReq builds a PATCH /v1/webhooks/endpoints/{id} request carrying
+// body as its JSON payload, in customerID's auth context.
+func patchEndpointReq(t *testing.T, customerID uuid.UUID, id uuid.UUID, body map[string]any) *http.Request {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/v1/webhooks/endpoints/"+id.String(), bytes.NewReader(raw))
+	return req.WithContext(testKeyContext(customerID))
+}
+
+// seedDeliveryForEvent inserts a webhook_deliveries row with an explicit
+// event_type and status, for exercising PATCH's stale-row cleanup — unlike
+// replay_test.go's seedDelivery, which hardcodes event_type to "test.event".
+func seedDeliveryForEvent(t *testing.T, pool *pgxpool.Pool, endpointID uuid.UUID, eventType, status string) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO webhook_deliveries (event_id, event_type, endpoint_id, payload, status)
+		VALUES ($1, $2, $3, '{}'::jsonb, $4)
+		RETURNING id
+	`, uuid.NewString(), eventType, endpointID, status).Scan(&id)
+	if err != nil {
+		t.Fatalf("seedDeliveryForEvent: %v", err)
+	}
+	return id
+}
+
+// deliveryExists reports whether a webhook_deliveries row with id still exists.
+func deliveryExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
+	t.Helper()
+	var exists bool
+	err := pool.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id,
+	).Scan(&exists)
+	if err != nil {
+		t.Fatalf("deliveryExists(%d): %v", id, err)
+	}
+	return exists
+}
+
+// storedSubscribedEvents reads back webhook_endpoints.subscribed_events directly.
+func storedSubscribedEvents(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) []string {
+	t.Helper()
+	var events []string
+	err := pool.QueryRow(context.Background(),
+		`SELECT subscribed_events FROM webhook_endpoints WHERE id = $1`, id,
+	).Scan(&events)
+	if err != nil {
+		t.Fatalf("storedSubscribedEvents(%s): %v", id, err)
+	}
+	return events
+}
+
+// storedSecret reads back webhook_endpoints.secret directly.
+func storedSecret(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) []byte {
+	t.Helper()
+	var secret []byte
+	err := pool.QueryRow(context.Background(),
+		`SELECT secret FROM webhook_endpoints WHERE id = $1`, id,
+	).Scan(&secret)
+	if err != nil {
+		t.Fatalf("storedSecret(%s): %v", id, err)
+	}
+	return secret
+}
+
+func TestUpdateEndpointSubscriptionHandler_Persists(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-persist@example.com")
+	r := newEndpointsRouter(pool)
+
+	createRec := httptest.NewRecorder()
+	r.ServeHTTP(createRec, createEndpointReq(t, cust, map[string]any{"url": "https://example.com/hook"}))
+	var created EndpointCreated
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, cust, created.ID, map[string]any{
+		"subscribed_events": []string{events.QuotaExceeded, events.APIKeyRevoked},
+	}))
+	if patchRec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	got := storedSubscribedEvents(t, pool, created.ID)
+	if len(got) != 2 {
+		t.Fatalf("subscribed_events = %v, want 2 entries", got)
+	}
+}
+
+// TestUpdateEndpointSubscriptionHandler_ResubscribeAll asserts that an omitted
+// (or explicit null) subscribed_events reverts a previously-narrowed endpoint
+// back to nil — subscribed to every event type — mirroring
+// dashboard/lib/db.ts:677's NULL-means-all convention.
+func TestUpdateEndpointSubscriptionHandler_ResubscribeAll(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-resub-all@example.com")
+	r := newEndpointsRouter(pool)
+
+	createRec := httptest.NewRecorder()
+	r.ServeHTTP(createRec, createEndpointReq(t, cust, map[string]any{
+		"url":               "https://example.com/hook",
+		"subscribed_events": []string{events.QuotaExceeded},
+	}))
+	var created EndpointCreated
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, cust, created.ID, map[string]any{"subscribed_events": nil}))
+	if patchRec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	if got := storedSubscribedEvents(t, pool, created.ID); got != nil {
+		t.Errorf("subscribed_events = %v, want nil (all events)", got)
+	}
+}
+
+// TestUpdateEndpointSubscriptionHandler_PrunesStaleDeliveries asserts that
+// narrowing subscribed_events deletes pending/dead_letter deliveries for
+// event types no longer subscribed to, but leaves deliveries for still-
+// subscribed event types (and non-pending/dead_letter statuses) untouched —
+// mirroring dashboard/lib/db.ts:685-693.
+func TestUpdateEndpointSubscriptionHandler_PrunesStaleDeliveries(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-prune@example.com")
+	epID := seedEndpoint(t, pool, cust, "https://example.com/hook")
+
+	stalePending := seedDeliveryForEvent(t, pool, epID, events.APIKeyRevoked, "pending")
+	staleDeadLetter := seedDeliveryForEvent(t, pool, epID, events.APIKeyRevoked, "dead_letter")
+	keptPending := seedDeliveryForEvent(t, pool, epID, events.QuotaExceeded, "pending")
+	inFlight := seedDeliveryForEvent(t, pool, epID, events.APIKeyRevoked, "delivering")
+
+	r := newEndpointsRouter(pool)
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, cust, epID, map[string]any{
+		"subscribed_events": []string{events.QuotaExceeded},
+	}))
+	if patchRec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	if deliveryExists(t, pool, stalePending) {
+		t.Error("stale pending delivery for unsubscribed event type should have been deleted")
+	}
+	if deliveryExists(t, pool, staleDeadLetter) {
+		t.Error("stale dead_letter delivery for unsubscribed event type should have been deleted")
+	}
+	if !deliveryExists(t, pool, keptPending) {
+		t.Error("pending delivery for a still-subscribed event type should NOT have been deleted")
+	}
+	if !deliveryExists(t, pool, inFlight) {
+		t.Error("in-flight (delivering) delivery should NOT have been deleted, even for an unsubscribed event type")
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_OwnedByOtherCustomer_404(t *testing.T) {
+	pool := newTestPostgres(t)
+	owner := seedCustomer(t, pool, "patch-owner@example.com")
+	attacker := seedCustomer(t, pool, "patch-attacker@example.com")
+	epID := seedEndpoint(t, pool, owner, "https://example.com/hook")
+	r := newEndpointsRouter(pool)
+
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, attacker, epID, map[string]any{
+		"subscribed_events": []string{events.QuotaExceeded},
+	}))
+
+	if patchRec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (IDOR-safe)", patchRec.Code)
+	}
+	if got := storedSubscribedEvents(t, pool, epID); got != nil {
+		t.Errorf("subscribed_events = %v, cross-customer PATCH must not have taken effect", got)
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_NotFound(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-notfound@example.com")
+	r := newEndpointsRouter(pool)
+
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, cust, uuid.New(), map[string]any{
+		"subscribed_events": []string{events.QuotaExceeded},
+	}))
+
+	if patchRec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", patchRec.Code)
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_InvalidID(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-invalid-id@example.com")
+	r := newEndpointsRouter(pool)
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/webhooks/endpoints/not-a-uuid", bytes.NewReader([]byte(`{}`))).
+		WithContext(testKeyContext(cust))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_NoAuth(t *testing.T) {
+	pool := newTestPostgres(t)
+	r := newEndpointsRouter(pool)
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/webhooks/endpoints/"+uuid.New().String(), bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_RejectsUnknownEventType(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-unknown-event@example.com")
+	epID := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	r := newEndpointsRouter(pool)
+
+	patchRec := httptest.NewRecorder()
+	r.ServeHTTP(patchRec, patchEndpointReq(t, cust, epID, map[string]any{
+		"subscribed_events": []string{"not.a.real.event"},
+	}))
+
+	if patchRec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", patchRec.Code)
+	}
+}
+
+func TestRotateEndpointSecretHandler_Success(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "rotate-ok@example.com")
+	r := newEndpointsRouter(pool)
+
+	createRec := httptest.NewRecorder()
+	r.ServeHTTP(createRec, createEndpointReq(t, cust, map[string]any{"url": "https://example.com/hook"}))
+	var created EndpointCreated
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	originalSecret := storedSecret(t, pool, created.ID)
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+created.ID.String()+"/rotate-secret", nil).
+		WithContext(testKeyContext(cust))
+	rotateRec := httptest.NewRecorder()
+	r.ServeHTTP(rotateRec, rotateReq)
+	if rotateRec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rotateRec.Code, rotateRec.Body.String())
+	}
+	if got := rotateRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", got, "no-store")
+	}
+
+	var rotated struct {
+		SecretHex string `json:"secret_hex"`
+	}
+	if err := json.Unmarshal(rotateRec.Body.Bytes(), &rotated); err != nil {
+		t.Fatalf("decode rotate response: %v", err)
+	}
+	if len(rotated.SecretHex) != 64 { // 32 bytes hex-encoded
+		t.Errorf("secret_hex length = %d, want 64", len(rotated.SecretHex))
+	}
+	if rotated.SecretHex == created.SecretHex {
+		t.Error("rotated secret_hex must differ from the original")
+	}
+
+	newSecret := storedSecret(t, pool, created.ID)
+	if hex.EncodeToString(newSecret) != rotated.SecretHex {
+		t.Error("stored secret does not match the returned secret_hex")
+	}
+	if hex.EncodeToString(originalSecret) == hex.EncodeToString(newSecret) {
+		t.Error("stored secret was not actually rotated")
+	}
+	// The old secret must no longer verify against a signature.
+	if Sign(originalSecret, "123", []byte("body")) == Sign(newSecret, "123", []byte("body")) {
+		t.Error("signatures computed with the old and new secret must differ")
+	}
+}
+
+func TestRotateEndpointSecretHandler_OwnedByOtherCustomer_404(t *testing.T) {
+	pool := newTestPostgres(t)
+	owner := seedCustomer(t, pool, "rotate-owner@example.com")
+	attacker := seedCustomer(t, pool, "rotate-attacker@example.com")
+	epID := seedEndpoint(t, pool, owner, "https://example.com/hook")
+	originalSecret := storedSecret(t, pool, epID)
+	r := newEndpointsRouter(pool)
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+epID.String()+"/rotate-secret", nil).
+		WithContext(testKeyContext(attacker))
+	rotateRec := httptest.NewRecorder()
+	r.ServeHTTP(rotateRec, rotateReq)
+
+	if rotateRec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (IDOR-safe)", rotateRec.Code)
+	}
+	if got := storedSecret(t, pool, epID); hex.EncodeToString(got) != hex.EncodeToString(originalSecret) {
+		t.Error("cross-customer rotate-secret must not have taken effect")
+	}
+}
+
+func TestRotateEndpointSecretHandler_NotFound(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "rotate-notfound@example.com")
+	r := newEndpointsRouter(pool)
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+uuid.New().String()+"/rotate-secret", nil).
+		WithContext(testKeyContext(cust))
+	rotateRec := httptest.NewRecorder()
+	r.ServeHTTP(rotateRec, rotateReq)
+
+	if rotateRec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rotateRec.Code)
+	}
+}
+
+func TestRotateEndpointSecretHandler_InvalidID(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "rotate-invalid-id@example.com")
+	r := newEndpointsRouter(pool)
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/not-a-uuid/rotate-secret", nil).
+		WithContext(testKeyContext(cust))
+	rotateRec := httptest.NewRecorder()
+	r.ServeHTTP(rotateRec, rotateReq)
+
+	if rotateRec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rotateRec.Code)
+	}
+}
+
+func TestRotateEndpointSecretHandler_NoAuth(t *testing.T) {
+	pool := newTestPostgres(t)
+	r := newEndpointsRouter(pool)
+
+	rotateReq := httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+uuid.New().String()+"/rotate-secret", nil)
+	rotateRec := httptest.NewRecorder()
+	r.ServeHTTP(rotateRec, rotateReq)
+
+	if rotateRec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rotateRec.Code)
+	}
+}
+
 // TestValidateEndpointURL exercises the validation function directly, table-style.
 func TestValidateEndpointURL(t *testing.T) {
 	cases := []struct {
@@ -515,7 +873,9 @@ func TestValidateEndpointURL(t *testing.T) {
 // TestOpenAPI_WebhookEndpointsPathsDocumented asserts the served /openapi.json
 // (openapi.Handler's output, not Build()'s own return value — these are
 // framework infra layered on the same way as /v1/usage, see
-// openapi.webhookEndpointsPathItems) documents all three routes this PR adds.
+// openapi.webhookEndpointsPathItems) documents every webhook-endpoint-lifecycle
+// route: the original create/list/delete tier plus this PR's PATCH subscription
+// update and POST rotate-secret.
 func TestOpenAPI_WebhookEndpointsPathsDocumented(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	rec := httptest.NewRecorder()
@@ -529,6 +889,7 @@ func TestOpenAPI_WebhookEndpointsPathsDocumented(t *testing.T) {
 		Paths map[string]struct {
 			Get    json.RawMessage `json:"get"`
 			Post   json.RawMessage `json:"post"`
+			Patch  json.RawMessage `json:"patch"`
 			Delete json.RawMessage `json:"delete"`
 		} `json:"paths"`
 	}
@@ -553,5 +914,16 @@ func TestOpenAPI_WebhookEndpointsPathsDocumented(t *testing.T) {
 	}
 	if byID.Delete == nil {
 		t.Error("/v1/webhooks/endpoints/{id} has no DELETE operation documented")
+	}
+	if byID.Patch == nil {
+		t.Error("/v1/webhooks/endpoints/{id} has no PATCH operation documented")
+	}
+
+	rotate, ok := doc.Paths["/v1/webhooks/endpoints/{id}/rotate-secret"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/webhooks/endpoints/{id}/rotate-secret path")
+	}
+	if rotate.Post == nil {
+		t.Error("/v1/webhooks/endpoints/{id}/rotate-secret has no POST operation documented")
 	}
 }
