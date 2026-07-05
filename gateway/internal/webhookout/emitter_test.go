@@ -563,3 +563,50 @@ func TestMarkDeadLetter_UnsubscribedRow_DeletesRowInstead(t *testing.T) {
 		t.Error("row for an unsubscribed event type was not deleted by markDeadLetter")
 	}
 }
+
+// seedEndpointInactiveSubscribed inserts an inactive (active=FALSE) endpoint row
+// with an explicit subscribed_events list. Used to verify that DeleteEndpoint's
+// soft-delete (which sets active=FALSE) stops new events from queuing even when the
+// endpoint's subscription still matches the emitted event type.
+func seedEndpointInactiveSubscribed(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, url string, subscribed []string) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	secret, err := GenerateSecret()
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+	var id uuid.UUID
+	err = pool.QueryRow(ctx,
+		`INSERT INTO webhook_endpoints (customer_id, url, secret, active, subscribed_events) VALUES ($1, $2, $3, FALSE, $4) RETURNING id`,
+		customerID, url, secret, subscribed,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("seedEndpointInactiveSubscribed: %v", err)
+	}
+	return id
+}
+
+// TestEmit_InactiveEndpoint_GetsZeroRows verifies the active=TRUE guard in Emit
+// (emitter.go:120): a soft-deleted endpoint (active=FALSE, as set by DeleteEndpoint)
+// must not receive any webhook_deliveries rows, even when it is subscribed to the
+// emitted event type. An active sibling endpoint subscribed to the same type must
+// receive exactly one row, confirming Emit is not suppressing all deliveries.
+func TestEmit_InactiveEndpoint_GetsZeroRows(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emit-inactive-endpoint@example.com")
+
+	inactiveID := seedEndpointInactiveSubscribed(t, pool, custID, "https://example.com/hook-inactive", []string{events.QuotaExceeded})
+	activeID := seedEndpointSubscribed(t, pool, custID, "https://example.com/hook-active", []string{events.QuotaExceeded})
+
+	e := &Emitter{db: pool}
+	if err := e.Emit(context.Background(), custID, events.QuotaExceeded, []byte(`{}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, inactiveID); n != 0 {
+		t.Errorf("deliveries for inactive (soft-deleted) endpoint: got %d, want 0", n)
+	}
+	if n := countDeliveriesForEndpoint(t, pool, activeID); n != 1 {
+		t.Errorf("deliveries for active sibling endpoint: got %d, want 1", n)
+	}
+}
