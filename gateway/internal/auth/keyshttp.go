@@ -153,9 +153,13 @@ func RotateKeysHandler(store *Store, keyPrefix string) http.HandlerFunc {
 
 		newFullKey, _, err := store.Rotate(r.Context(), id, keyPrefix, grace)
 		if err != nil {
+			if errors.Is(err, ErrKeyRotating) {
+				apierror.Write(w, rid, http.StatusConflict, apierror.KEY_ALREADY_ROTATED, "key already rotated; in grace period", false)
+				return
+			}
 			if errors.Is(err, ErrKeyNotFound) {
-				// Benign race: the key was revoked or rotated between the
-				// ownership check above and this call. Same IDOR-safe 404.
+				// The key was revoked or deleted between the ownership check and this call.
+				// Same IDOR-safe 404.
 				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "api key not found", false)
 				return
 			}

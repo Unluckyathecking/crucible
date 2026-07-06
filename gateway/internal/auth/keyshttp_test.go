@@ -276,6 +276,45 @@ func TestRotateKeysHandler_NotFound(t *testing.T) {
 	}
 }
 
+func TestRotateKeysHandler_InGraceKey_409(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+
+	s := NewStore(db, rdb, testSalt)
+	defer s.Close()
+	keyID, custID, _, _ := insertKeysTestKey(t, ctx, db, testSalt)
+
+	r := newKeysRouter(s)
+
+	// First rotate: succeeds, puts the original key in grace (expires_at set).
+	req1 := authedRequest(http.MethodPost, "/v1/keys/"+keyID.String()+"/rotate", []byte(`{}`), custID)
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	r.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first rotate status = %d, want 200, body = %s", rec1.Code, rec1.Body.String())
+	}
+
+	// Second rotate of the same (now in-grace) key: must return 409, not 404.
+	req2 := authedRequest(http.MethodPost, "/v1/keys/"+keyID.String()+"/rotate", []byte(`{}`), custID)
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("re-rotate of in-grace key status = %d, want 409, body = %s", rec2.Code, rec2.Body.String())
+	}
+	var body map[string]map[string]string
+	if err := json.Unmarshal(rec2.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode 409 response: %v", err)
+	}
+	if code := body["error"]["code"]; code != "KEY_ALREADY_ROTATED" {
+		t.Errorf("error code = %q, want KEY_ALREADY_ROTATED", code)
+	}
+}
+
 // --- Revoke -------------------------------------------------------------------
 
 func TestRevokeKeysHandler_ImmediateCacheInvalidation(t *testing.T) {

@@ -412,6 +412,21 @@ func TestStore_Rotate(t *testing.T) {
 		}
 	})
 
+	t.Run("Rotate on in-grace key returns ErrKeyRotating", func(t *testing.T) {
+		keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
+
+		// First rotation puts the old key in grace with expires_at set.
+		if _, _, err := s.Rotate(ctx, keyID, testPrefix, time.Hour); err != nil {
+			t.Fatalf("first Rotate: %v", err)
+		}
+
+		// Re-rotating the same in-grace key must return ErrKeyRotating, not ErrKeyNotFound.
+		_, _, err := s.Rotate(ctx, keyID, testPrefix, time.Hour)
+		if !errors.Is(err, ErrKeyRotating) {
+			t.Errorf("Rotate(in-grace key) = %v, want ErrKeyRotating", err)
+		}
+	})
+
 	t.Run("grace clamped to maxGrace when over limit", func(t *testing.T) {
 		keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
 		_, _, err := s.Rotate(ctx, keyID, testPrefix, 30*24*time.Hour) // 30 days > maxGrace (7 days)
