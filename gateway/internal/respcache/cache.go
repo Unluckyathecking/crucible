@@ -9,6 +9,7 @@
 package respcache
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -66,14 +67,21 @@ func Key(operation string, payload []byte) (string, error) {
 // canonicalize re-marshals arbitrary JSON so that semantically identical
 // payloads produce byte-identical output regardless of source key order.
 // encoding/json sorts object keys alphabetically when marshaling a decoded
-// map[string]interface{}, so decode-then-reencode is sufficient on its own;
-// no custom key sort is needed.
+// map[string]interface{}, so decode-then-reencode normalises key order for free.
+//
+// UseNumber is required: plain json.Unmarshal decodes every JSON number as
+// float64, which loses precision for integers > 2^53. Two semantically different
+// requests — {"id":9007199254740992} and {"id":9007199254740993} — would
+// canonicalize to the same bytes without it. json.Number marshals back as its
+// exact source digits, so large integers and high-precision decimals survive.
 func canonicalize(payload []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return []byte("null"), nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
 	var v interface{}
-	if err := json.Unmarshal(payload, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
 	return json.Marshal(v)
