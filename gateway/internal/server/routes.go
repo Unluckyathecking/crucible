@@ -36,6 +36,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
+	"github.com/Unluckyathecking/crucible/gateway/internal/selferrors"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selfusage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
@@ -222,6 +223,26 @@ func NewRouter(d *Deps) http.Handler {
 			r.Post("/{id}/rotate", auth.RotateKeysHandler(d.Auth, d.Cfg.APIKeyPrefix))
 			r.Delete("/{id}", auth.RevokeKeysHandler(d.Auth))
 		})
+
+		// === Customer error-history self-service route (auth gated; active
+		// when DB is set; read-only) ===
+		// GET /v1/errors: the caller's own error_events rows recorded by
+		// v1ErrorCapture below on every non-2xx /v1 response — newest-first,
+		// date/operation/code-filtered, paginated. The API-key-authenticated
+		// counterpart to the dashboard's error-history view
+		// (dashboard/app/api/errors). Framework infra, not a per-product
+		// invoke route: no customer_id parameter — the customer comes
+		// strictly from auth.FromContext, so this can only ever return the
+		// caller's own error history.
+		//
+		// Registered as a direct, method-specific r.With(...).Get rather than
+		// r.Route(...), for the same reason as GET /v1/usage below: r.Route
+		// mounts a subrouter via chi's Mount, which claims ALL HTTP methods at
+		// that exact path. A method-specific registration lets the static
+		// "/v1/errors" node match ahead of the "/v1/*" wildcard the
+		// per-product block below is mounted under, without capturing
+		// POST/other methods at this path.
+		r.With(auth.Middleware(d.Auth)).Get("/v1/errors", selferrors.Handler(d.DB))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===

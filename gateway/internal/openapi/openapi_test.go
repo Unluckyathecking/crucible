@@ -438,6 +438,96 @@ func TestBuild_OperationIDUniqueness(t *testing.T) {
 	})
 }
 
+// TestOpenAPI_ErrorsPathDocumented asserts GET /v1/errors is present in the
+// actual served /openapi.json (openapi.Handler's output) with a 200 response
+// and API-key security. /v1/errors is deliberately absent from
+// openapi.Build()'s own return value — it's framework infra, not a
+// per-product invoke route, and server.TestV1RoutesDriftGuard asserts every
+// /v1/* path Build() produces (other than /v1/billing/*) is POST-only. The
+// endpoint is layered onto the document inside Handler instead, mirroring
+// usagePathItem/keysPathItems, so it's documented for API consumers without
+// perturbing that invoke-route guarantee.
+func TestOpenAPI_ErrorsPathDocumented(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(nil)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Get *struct {
+				Security  []map[string][]string `json:"security"`
+				Responses map[string]struct {
+					Description string `json:"description"`
+				} `json:"responses"`
+			} `json:"get"`
+			Post json.RawMessage `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	item, ok := doc.Paths["/v1/errors"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/errors path")
+	}
+	if item.Get == nil {
+		t.Fatal("/v1/errors has no GET operation documented")
+	}
+	if item.Post != nil {
+		t.Error("/v1/errors should not document a POST operation")
+	}
+	if _, ok := item.Get.Responses["200"]; !ok {
+		t.Error("/v1/errors GET missing a 200 response schema")
+	}
+	if len(item.Get.Security) == 0 {
+		t.Error("/v1/errors GET should require API key security like other authenticated endpoints")
+	}
+}
+
+// TestOpenAPI_ErrorsPathPreservesProductPOST asserts that if a product clone
+// names a per-product invoke route "/errors" (POST /v1/errors, registered
+// through the ordinary V1Routes mechanism), layering the self-service GET
+// onto the document doesn't clobber that route's documentation.
+func TestOpenAPI_ErrorsPathPreservesProductPOST(t *testing.T) {
+	routes := []openapi.RouteDescriptor{
+		{Path: "/errors", Operation: "errors", Summary: "Invoke errors worker operation (authenticated)"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(routes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Get  json.RawMessage `json:"get"`
+			Post json.RawMessage `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	item, ok := doc.Paths["/v1/errors"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/errors path")
+	}
+	if item.Get == nil {
+		t.Error("/v1/errors lost its self-service GET operation when a product POST route shares the path")
+	}
+	if item.Post == nil {
+		t.Error("/v1/errors lost its product POST operation — self-service GET overwrote it")
+	}
+}
+
 // TestBuild_WebhookEventCatalogueLocked asserts the document's `webhooks` section
 // documents exactly the event types in events.AllEventTypes — no more, no fewer.
 // Build() itself panics on drift (see buildWebhooks), so an added/removed/renamed
