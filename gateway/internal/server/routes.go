@@ -35,6 +35,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selfusage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
@@ -81,6 +82,11 @@ type Deps struct {
 	// DB is optional. When set, the idempotency middleware is active on /v1 routes.
 	// When nil (default when main.go is unmodified), the middleware is a pass-through.
 	DB *pgxpool.Pool
+	// RespCache is optional. When set, /v1 routes that declare a positive TTL in
+	// RespCacheTTLSeconds (routes_table.go) are served from the gateway's
+	// content-addressed result cache on a hit. When nil (default when main.go is
+	// unmodified), the respcache middleware is a strict pass-through.
+	RespCache *respcache.Store
 	// Checkout is optional. When set, POST /v1/billing/checkout and
 	// POST /v1/billing/portal are active. When nil (default when main.go is
 	// unmodified), both endpoints return 503 so the rest of the gateway is unaffected.
@@ -287,6 +293,9 @@ func NewRouter(d *Deps) http.Handler {
 	//   idempotency    — replays exit here; before validation and quota.
 	//   validate       — rejects malformed bodies before quota is reserved.
 	//   quota          — only reached by genuine, well-formed, non-replay requests.
+	//   respcache      — mounted per-route, immediately in front of invoke; a hit
+	//                    still reserves quota (already done above) and still
+	//                    meters, it only skips the worker HTTP round-trip.
 
 	// Pre-compile every regex pattern in RequestSchemas to catch RE2-incompatible
 	// patterns (e.g. ECMAScript lookaheads) at startup. An invalid pattern is a
@@ -311,7 +320,9 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(validate.Middleware(routes))
 		r.Use(quota.Middleware(d.Quota, d.Plans, emitter))
 		for _, rt := range routes {
-			r.Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
+			ttl := d.Cfg.ClampRespCacheTTL(RespCacheTTLSeconds[rt.Path])
+			cacheMW := respcache.Middleware(d.RespCache, d.Recorder, rt.Operation, ttl)
+			r.With(cacheMW).Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
 		}
 	})
 

@@ -10,3 +10,16 @@ import "github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 var V1Routes = []openapi.RouteDescriptor{
 	{Path: "/echo", Operation: "echo", Summary: "Invoke echo worker operation (authenticated)"},
 }
+
+// RespCacheTTLSeconds opts a /v1 route (by its RouteDescriptor.Path) into the
+// framework's response-result-cache (gateway/internal/respcache): the gateway
+// serves a cached worker response for identical (operation, payload) requests
+// instead of re-invoking the worker. Absent, zero, or negative means the route
+// is never cached — this is the framework default. A positive value is the
+// per-entry TTL in seconds, clamped to config.RespCacheMaxTTLSeconds by
+// NewRouter. One line per cacheable endpoint, e.g.:
+//
+//	var RespCacheTTLSeconds = map[string]int{
+//		"/lookup": 300,
+//	}
+var RespCacheTTLSeconds = map[string]int{}
