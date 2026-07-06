@@ -20,6 +20,9 @@
 //	crucible_quota_exceeded_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
+//	crucible_respcache_hits_total{operation}             — requests served from respcache (worker skipped)
+//	crucible_respcache_misses_total{operation}           — respcache lookups that missed (worker invoked)
+//	crucible_respcache_failopen_total{operation}         — requests admitted because Redis store errored
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -154,6 +157,27 @@ var (
 		Name: "crucible_quota_failopen_total",
 		Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
 	})
+
+	// RespCacheHitsTotal counts requests served from the content-addressed respcache,
+	// skipping the worker round-trip. operation is bounded (fixed V1Routes set).
+	RespCacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_hits_total",
+		Help: "Number of requests served from the respcache (worker round-trip skipped), by operation.",
+	}, []string{"operation"})
+
+	// RespCacheMissesTotal counts respcache lookups that fell through to the worker.
+	RespCacheMissesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_misses_total",
+		Help: "Number of respcache lookups that missed (worker was invoked), by operation.",
+	}, []string{"operation"})
+
+	// RespCacheFailOpenTotal counts requests admitted after a Redis store error.
+	// A non-zero rate here means the respcache is degraded and every request is
+	// hitting the worker — mirrors the crucible_ratelimit_failopen_total pattern.
+	RespCacheFailOpenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_failopen_total",
+		Help: "Number of requests admitted because the respcache store (Redis) returned an error, by operation.",
+	}, []string{"operation"})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -178,6 +202,9 @@ type Metrics struct {
 	QuotaExceededTotal             prometheus.Counter
 	RateLimitFailOpen              prometheus.Counter
 	QuotaFailOpen                  prometheus.Counter
+	RespCacheHitsTotal             *prometheus.CounterVec
+	RespCacheMissesTotal           *prometheus.CounterVec
+	RespCacheFailOpenTotal         *prometheus.CounterVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -259,6 +286,18 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_quota_failopen_total",
 			Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
 		}),
+		RespCacheHitsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_hits_total",
+			Help: "Number of requests served from the respcache (worker round-trip skipped), by operation.",
+		}, []string{"operation"}),
+		RespCacheMissesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_misses_total",
+			Help: "Number of respcache lookups that missed (worker was invoked), by operation.",
+		}, []string{"operation"}),
+		RespCacheFailOpenTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_failopen_total",
+			Help: "Number of requests admitted because the respcache store (Redis) returned an error, by operation.",
+		}, []string{"operation"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -279,6 +318,9 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.QuotaExceededTotal,
 		m.RateLimitFailOpen,
 		m.QuotaFailOpen,
+		m.RespCacheHitsTotal,
+		m.RespCacheMissesTotal,
+		m.RespCacheFailOpenTotal,
 	)
 	return m
 }

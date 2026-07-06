@@ -10,9 +10,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
@@ -97,7 +101,7 @@ func TestMiddleware_NilStore_Passthrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	h := respcache.Middleware(nil, nil, "echo", time.Minute)(inner)
+	h := respcache.Middleware(nil, nil, "echo", time.Minute, nil)(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
@@ -127,7 +131,7 @@ func TestMiddleware_ZeroTTL_NeverCaches(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	h := respcache.Middleware(store, nil, operation, 0)(inner)
+	h := respcache.Middleware(store, nil, operation, 0, nil)(inner)
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
@@ -171,7 +175,7 @@ func TestMiddleware_Miss_CallsNextAndPopulatesCache(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"result":"fresh"}`))
 	})
-	h := respcache.Middleware(store, nil, operation, time.Minute)(inner)
+	h := respcache.Middleware(store, nil, operation, time.Minute, nil)(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -223,7 +227,7 @@ func TestMiddleware_Hit_SkipsNextServesFromCache(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("worker must not be invoked on a cache hit")
 	})
-	h := respcache.Middleware(store, nil, operation, time.Minute)(inner)
+	h := respcache.Middleware(store, nil, operation, time.Minute, nil)(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -262,7 +266,7 @@ func TestMiddleware_ErrorResponse_NotCached(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(`{"error":{"code":"WORKER_UNREACHABLE"}}`))
 	})
-	h := respcache.Middleware(store, nil, operation, time.Minute)(inner)
+	h := respcache.Middleware(store, nil, operation, time.Minute, nil)(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -296,7 +300,7 @@ func TestMiddleware_BillableUnitsBelowOne_NotCached(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	h := respcache.Middleware(store, nil, operation, time.Minute)(inner)
+	h := respcache.Middleware(store, nil, operation, time.Minute, nil)(inner)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -327,7 +331,7 @@ func TestMiddleware_TTLExpiry_ReInvokesWorker(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	h := respcache.Middleware(store, nil, operation, 200*time.Millisecond)(inner)
+	h := respcache.Middleware(store, nil, operation, 200*time.Millisecond, nil)(inner)
 
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
 	h.ServeHTTP(httptest.NewRecorder(), req1)
@@ -387,7 +391,7 @@ func TestMiddleware_HitStillMeters(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("worker must not be invoked on a cache hit")
 	})
-	h := auth.Middleware(authStore)(respcache.Middleware(store, recorder, operation, time.Minute)(inner))
+	h := auth.Middleware(authStore)(respcache.Middleware(store, recorder, operation, time.Minute, nil)(inner))
 
 	before := usageEventCount(t, pool, customerID, operation)
 
@@ -403,5 +407,126 @@ func TestMiddleware_HitStillMeters(t *testing.T) {
 	after := usageEventCount(t, pool, customerID, operation)
 	if after != before+1 {
 		t.Errorf("usage_events count = %d, want %d (a cache hit must still meter usage)", after, before+1)
+	}
+}
+
+// TestMiddleware_HitsCounter asserts that a seeded-Redis cache hit increments
+// crucible_respcache_hits_total and does not increment the miss counter.
+func TestMiddleware_HitsCounter(t *testing.T) {
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	store := respcache.NewStore(rdb)
+	metrics := observability.NewMetricsForTest(prometheus.NewRegistry())
+	operation := "echo-hits-counter-" + time.Now().String()
+	body := `{"a":1}`
+	key, err := respcache.Key(operation, []byte(body))
+	if err != nil {
+		t.Fatalf("Key: %v", err)
+	}
+	t.Cleanup(func() { rdb.Del(ctx, "respcache:"+key) })
+
+	cached := &respcache.Entry{
+		StatusCode:    http.StatusOK,
+		Body:          []byte(`{"result":"cached"}`),
+		ContentType:   "application/json",
+		BillableUnits: 1,
+	}
+	if err := store.Set(ctx, key, cached, time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("worker must not be invoked on a cache hit")
+	})
+	h := respcache.Middleware(store, nil, operation, time.Minute, metrics)(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := testutil.ToFloat64(metrics.RespCacheHitsTotal.WithLabelValues(operation)); got != 1 {
+		t.Errorf("hits counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.RespCacheMissesTotal.WithLabelValues(operation)); got != 0 {
+		t.Errorf("misses counter = %v, want 0 on a hit", got)
+	}
+}
+
+// TestMiddleware_MissesCounter asserts that a cache miss increments
+// crucible_respcache_misses_total and does not increment the hit counter.
+func TestMiddleware_MissesCounter(t *testing.T) {
+	rdb := newTestRedis(t)
+	store := respcache.NewStore(rdb)
+	metrics := observability.NewMetricsForTest(prometheus.NewRegistry())
+	operation := "echo-misses-counter-" + time.Now().String()
+	body := `{"a":1}`
+	key, err := respcache.Key(operation, []byte(body))
+	if err != nil {
+		t.Fatalf("Key: %v", err)
+	}
+	t.Cleanup(func() { rdb.Del(context.Background(), "respcache:"+key) })
+
+	var invoked int
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		invoked++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Billable-Units", "1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":"fresh"}`))
+	})
+	h := respcache.Middleware(store, nil, operation, time.Minute, metrics)(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if invoked != 1 {
+		t.Fatalf("expected worker invoked once on a miss, got %d", invoked)
+	}
+	if got := testutil.ToFloat64(metrics.RespCacheMissesTotal.WithLabelValues(operation)); got != 1 {
+		t.Errorf("misses counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metrics.RespCacheHitsTotal.WithLabelValues(operation)); got != 0 {
+		t.Errorf("hits counter = %v, want 0 on a miss", got)
+	}
+}
+
+// TestMiddleware_Counter_FailOpenIncrements asserts that a Redis store.Get error
+// increments crucible_respcache_failopen_total and the request is still served.
+func TestMiddleware_Counter_FailOpenIncrements(t *testing.T) {
+	// A client pointing at a port with nothing listening returns an error
+	// immediately, triggering the fail-open path without needing to kill real Redis.
+	badRDB := redis.NewClient(&redis.Options{
+		Addr:        "localhost:19999",
+		DialTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = badRDB.Close() })
+	store := respcache.NewStore(badRDB)
+
+	operation := "echo-counter-failopen"
+	body := `{"a":1}`
+
+	var invoked int
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		invoked++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	h := respcache.Middleware(store, nil, operation, time.Minute, nil)(inner)
+
+	before := testutil.ToFloat64(observability.RespCacheFailOpenTotal.WithLabelValues(operation))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("fail-open must still serve the response: status = %d, want 200", w.Code)
+	}
+	if invoked != 1 {
+		t.Errorf("fail-open must invoke the worker: invoked = %d, want 1", invoked)
+	}
+
+	after := testutil.ToFloat64(observability.RespCacheFailOpenTotal.WithLabelValues(operation))
+	if after != before+1 {
+		t.Errorf("crucible_respcache_failopen_total{operation=%q} = %v, want %v", operation, after, before+1)
 	}
 }
