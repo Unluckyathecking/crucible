@@ -24,6 +24,12 @@ import (
 // "row exists but hash mismatch" to avoid leaking which prefix is real.
 var ErrKeyNotFound = errors.New("api key not found")
 
+// ErrKeyRotating is returned by Store.Rotate when the key exists and is owned
+// by the caller but already has expires_at set — it was rotated once and is
+// still in its grace window. Distinct from ErrKeyNotFound so the HTTP layer
+// can return 409 instead of a misleading 404.
+var ErrKeyRotating = errors.New("api key already rotated; in grace period")
+
 // missTTL is how long an unknown prefix is cached as a negative sentinel to
 // absorb repeated DB probes on random-but-plausible prefixes (Case B DoS path).
 const missTTL = 30 * time.Second
@@ -210,6 +216,20 @@ func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, g
 	`, keyID).Scan(&oldPrefix, &customerID, &oldName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Distinguish "already rotated (in-grace)" from "genuinely absent/revoked".
+			// A key that passed ownedKeyID's ownership check (Owner only filters revoked_at)
+			// but has expires_at set was rotated once and is still in its grace window —
+			// re-rotating it must return ErrKeyRotating → 409, not a misleading 404.
+			var inGrace bool
+			_ = tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM api_keys
+					WHERE id = $1 AND revoked_at IS NULL AND expires_at IS NOT NULL
+				)
+			`, keyID).Scan(&inGrace)
+			if inGrace {
+				return "", uuid.Nil, ErrKeyRotating
+			}
 			return "", uuid.Nil, ErrKeyNotFound
 		}
 		return "", uuid.Nil, fmt.Errorf("rotate: lock old key: %w", err)

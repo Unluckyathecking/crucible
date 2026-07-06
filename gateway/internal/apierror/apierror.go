@@ -23,6 +23,7 @@ const (
 	IDEMPOTENCY_CONFLICT    = "IDEMPOTENCY_CONFLICT"
 	IDEMPOTENCY_KEY_REUSE   = "IDEMPOTENCY_KEY_REUSE"
 	IDEMPOTENCY_KEY_INVALID = "IDEMPOTENCY_KEY_INVALID"
+	KEY_ALREADY_ROTATED     = "KEY_ALREADY_ROTATED"
 
 	// UNKNOWN is the Prometheus metric label used when a worker error response omits
 	// the error code field. It is lowercase to preserve existing Grafana/dashboard
