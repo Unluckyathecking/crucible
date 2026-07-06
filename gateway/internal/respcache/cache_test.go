@@ -111,6 +111,45 @@ func TestKey_MalformedPayload_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestKey_LargeIntegersPreservePrecision is the acceptance test for the UseNumber
+// fix: integers above 2^53 that differ by 1 must produce different cache keys.
+// Without UseNumber, both collapse to 9.007199254740992e+15 after the float64
+// round-trip and generate the same key, causing cross-request cache collisions.
+func TestKey_LargeIntegersPreservePrecision(t *testing.T) {
+	a := `{"id":9007199254740992}`
+	b := `{"id":9007199254740993}`
+	ka, err := respcache.Key("lookup", []byte(a))
+	if err != nil {
+		t.Fatalf("Key(a): %v", err)
+	}
+	kb, err := respcache.Key("lookup", []byte(b))
+	if err != nil {
+		t.Fatalf("Key(b): %v", err)
+	}
+	if ka == kb {
+		t.Errorf("Key must differ for large integers that differ by 1: both = %q", ka)
+	}
+}
+
+// TestKey_LargeIntegerOrderIsCanonicalized confirms that UseNumber does not
+// break key-order normalisation: an object with large-integer values and
+// reordered keys must still hash to the same key.
+func TestKey_LargeIntegerOrderIsCanonicalized(t *testing.T) {
+	ab := `{"a":9007199254740992,"b":9007199254740993}`
+	ba := `{"b":9007199254740993,"a":9007199254740992}`
+	kab, err := respcache.Key("lookup", []byte(ab))
+	if err != nil {
+		t.Fatalf("Key(ab): %v", err)
+	}
+	kba, err := respcache.Key("lookup", []byte(ba))
+	if err != nil {
+		t.Fatalf("Key(ba): %v", err)
+	}
+	if kab != kba {
+		t.Errorf("Key must be stable under object key reordering with large integers: %q != %q", kab, kba)
+	}
+}
+
 func TestStore_SetAndGet_RoundTrips(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
