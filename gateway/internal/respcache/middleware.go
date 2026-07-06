@@ -12,6 +12,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
@@ -106,11 +107,13 @@ func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl ti
 			entry, err := store.Get(r.Context(), key)
 			if err != nil {
 				log.Warn().Err(err).Str("operation", operation).Msg("respcache: get failed, failing open")
+				observability.RespCacheFailOpenTotal.WithLabelValues(operation).Inc()
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			if entry != nil {
+				observability.RespCacheHitsTotal.WithLabelValues(operation).Inc()
 				if authKey := auth.FromContext(r.Context()); authKey != nil {
 					rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 					// r.Context(), not a derived context: recorder.Record calls
@@ -139,6 +142,7 @@ func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl ti
 				return
 			}
 
+			observability.RespCacheMissesTotal.WithLabelValues(operation).Inc()
 			cw := newCaptureWriter()
 			next.ServeHTTP(cw, r)
 

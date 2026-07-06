@@ -20,6 +20,9 @@
 //	crucible_quota_exceeded_total
 //	crucible_ratelimit_failopen_total
 //	crucible_quota_failopen_total
+//	crucible_respcache_hits_total{operation}             — requests served from the response cache
+//	crucible_respcache_misses_total{operation}           — cache misses forwarded to the worker
+//	crucible_respcache_failopen_total{operation}         — cache store errors; request admitted via fail-open
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -154,6 +157,22 @@ var (
 		Name: "crucible_quota_failopen_total",
 		Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
 	})
+
+	// RespCache counters: operation is bounded (the fixed V1Routes set) so cardinality is safe.
+	RespCacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_hits_total",
+		Help: "Number of requests served from the response cache, by operation.",
+	}, []string{"operation"})
+
+	RespCacheMissesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_misses_total",
+		Help: "Number of cache misses forwarded to the worker, by operation.",
+	}, []string{"operation"})
+
+	RespCacheFailOpenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_respcache_failopen_total",
+		Help: "Number of requests admitted because the response-cache store (Redis) was unreachable, by operation.",
+	}, []string{"operation"})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -178,6 +197,9 @@ type Metrics struct {
 	QuotaExceededTotal             prometheus.Counter
 	RateLimitFailOpen              prometheus.Counter
 	QuotaFailOpen                  prometheus.Counter
+	RespCacheHitsTotal             *prometheus.CounterVec
+	RespCacheMissesTotal           *prometheus.CounterVec
+	RespCacheFailOpenTotal         *prometheus.CounterVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -259,6 +281,18 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_quota_failopen_total",
 			Help: "Number of requests admitted because the quota store (Redis) was unreachable.",
 		}),
+		RespCacheHitsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_hits_total",
+			Help: "Number of requests served from the response cache, by operation.",
+		}, []string{"operation"}),
+		RespCacheMissesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_misses_total",
+			Help: "Number of cache misses forwarded to the worker, by operation.",
+		}, []string{"operation"}),
+		RespCacheFailOpenTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_respcache_failopen_total",
+			Help: "Number of requests admitted because the response-cache store (Redis) was unreachable, by operation.",
+		}, []string{"operation"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -279,6 +313,9 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.QuotaExceededTotal,
 		m.RateLimitFailOpen,
 		m.QuotaFailOpen,
+		m.RespCacheHitsTotal,
+		m.RespCacheMissesTotal,
+		m.RespCacheFailOpenTotal,
 	)
 	return m
 }
