@@ -801,3 +801,73 @@ func TestConfigDurationHelpers(t *testing.T) {
 		t.Errorf("BreakerCooldown = %v, want %v", got, want)
 	}
 }
+
+func TestRespCacheMaxTTLSecondsDefault(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.RespCacheMaxTTLSeconds != 3600 {
+		t.Errorf("RespCacheMaxTTLSeconds = %d, want 3600", c.RespCacheMaxTTLSeconds)
+	}
+}
+
+func TestRespCacheMaxTTLSecondsZeroReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "RESP_CACHE_MAX_TTL_SECONDS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for RESP_CACHE_MAX_TTL_SECONDS=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "RESP_CACHE_MAX_TTL_SECONDS") {
+		t.Errorf("error %q does not mention RESP_CACHE_MAX_TTL_SECONDS", err.Error())
+	}
+}
+
+func TestRespCacheMaxTTLSecondsNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "RESP_CACHE_MAX_TTL_SECONDS", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for negative RESP_CACHE_MAX_TTL_SECONDS, got nil")
+	}
+}
+
+func TestRespCacheMaxTTLSecondsTooHighReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "RESP_CACHE_MAX_TTL_SECONDS", "604801")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for RESP_CACHE_MAX_TTL_SECONDS above 7 days, got nil")
+	}
+}
+
+// TestClampRespCacheTTL covers a valid TTL, a negative value, and an over-max
+// value, per the response-result-cache acceptance criteria.
+func TestClampRespCacheTTL(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "RESP_CACHE_MAX_TTL_SECONDS", "60")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got, want := c.ClampRespCacheTTL(30), 30*time.Second; got != want {
+		t.Errorf("ClampRespCacheTTL(30) = %v, want %v", got, want)
+	}
+	if got, want := c.ClampRespCacheTTL(-5), time.Duration(0); got != want {
+		t.Errorf("ClampRespCacheTTL(-5) = %v, want %v (never cache)", got, want)
+	}
+	if got, want := c.ClampRespCacheTTL(0), time.Duration(0); got != want {
+		t.Errorf("ClampRespCacheTTL(0) = %v, want %v (never cache)", got, want)
+	}
+	if got, want := c.ClampRespCacheTTL(120), 60*time.Second; got != want {
+		t.Errorf("ClampRespCacheTTL(120) = %v, want %v (clamped to max)", got, want)
+	}
+}

@@ -28,6 +28,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/runtime"
 	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
@@ -110,6 +111,7 @@ func main() {
 	stripe := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeMeterName)
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
+	respCacheStore := respcache.NewStore(redisClient)
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
@@ -127,6 +129,7 @@ func main() {
 			Quota:          quotaTracker,
 			Redis:          &redisPinger{redisClient},
 			DB:             pool,
+			RespCache:      respCacheStore,
 			PG:             &pgPinger{pool},
 			TracerProvider: components.TracerProvider,
 			OperatorStore:  operator.NewStore(pool),

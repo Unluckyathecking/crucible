@@ -15,6 +15,8 @@ import (
 const (
 	minErrorPayloadMaxBytes = 12      // must cover len(payloadTruncationMarker)
 	maxErrorPayloadMaxBytes = 1048576 // 1 MiB
+
+	maxRespCacheMaxTTLSeconds = 604800 // 7 days
 )
 
 type Config struct {
@@ -67,6 +69,13 @@ type Config struct {
 	// Opt-in capture of request bodies on 4xx/5xx; default OFF. Never logged/labeled.
 	ErrorPayloadCapture  bool `envconfig:"ERROR_PAYLOAD_CAPTURE"   default:"false"`
 	ErrorPayloadMaxBytes int  `envconfig:"ERROR_PAYLOAD_MAX_BYTES" default:"4096"`
+
+	// Response result cache — opt-in, content-addressed cache of successful
+	// worker responses (see internal/respcache). A route only caches when it
+	// declares a positive CacheTTLSeconds; this is the ceiling every such TTL
+	// is clamped to, so a per-product route table can never grant an entry an
+	// unreasonably long lifetime.
+	RespCacheMaxTTLSeconds int `envconfig:"RESP_CACHE_MAX_TTL_SECONDS" default:"3600"`
 
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
@@ -167,6 +176,12 @@ func Load() (*Config, error) {
 	if c.ErrorPayloadCapture && c.ErrorPayloadMaxBytes > maxErrorPayloadMaxBytes {
 		return nil, fmt.Errorf("ERROR_PAYLOAD_MAX_BYTES must be <= %d (1 MiB) when ERROR_PAYLOAD_CAPTURE=true (got %d)", maxErrorPayloadMaxBytes, c.ErrorPayloadMaxBytes)
 	}
+	if c.RespCacheMaxTTLSeconds <= 0 {
+		return nil, fmt.Errorf("RESP_CACHE_MAX_TTL_SECONDS must be > 0 (got %d)", c.RespCacheMaxTTLSeconds)
+	}
+	if c.RespCacheMaxTTLSeconds > maxRespCacheMaxTTLSeconds {
+		return nil, fmt.Errorf("RESP_CACHE_MAX_TTL_SECONDS must be <= %d (7 days) (got %d)", maxRespCacheMaxTTLSeconds, c.RespCacheMaxTTLSeconds)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
@@ -215,4 +230,19 @@ func (c *Config) RetryBaseBackoff() time.Duration {
 // Use this when constructing a resilience.BreakerConfig to avoid unit mismatch.
 func (c *Config) BreakerCooldown() time.Duration {
 	return time.Duration(c.WorkerBreakerCooldownMS) * time.Millisecond
+}
+
+// ClampRespCacheTTL normalizes a route's requested respcache TTL (seconds)
+// into a Duration, capped at RespCacheMaxTTLSeconds. A non-positive input
+// means "never cache" and returns 0. The route-level TTL is a compile-time
+// value from the per-product route table, not untrusted input, so an
+// over-max value is silently capped rather than rejected.
+func (c *Config) ClampRespCacheTTL(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > c.RespCacheMaxTTLSeconds {
+		seconds = c.RespCacheMaxTTLSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
