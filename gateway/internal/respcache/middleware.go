@@ -79,7 +79,10 @@ func (c *captureWriter) flush(w http.ResponseWriter) {
 // runs and so never records usage on its own. On a miss, invoke() runs
 // normally (including its own recorder.Record); Middleware only observes the
 // response to decide whether to populate the cache.
-func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl time.Duration) func(http.Handler) http.Handler {
+//
+// metrics is optional (nil = no-op for test-isolated counters). Package-level
+// observability vars are always incremented for production /metrics output.
+func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl time.Duration, metrics *observability.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if store == nil || ttl <= 0 {
@@ -108,12 +111,18 @@ func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl ti
 			if err != nil {
 				log.Warn().Err(err).Str("operation", operation).Msg("respcache: get failed, failing open")
 				observability.RespCacheFailOpenTotal.WithLabelValues(operation).Inc()
+				if metrics != nil {
+					metrics.RespCacheFailOpenTotal.WithLabelValues(operation).Inc()
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			if entry != nil {
 				observability.RespCacheHitsTotal.WithLabelValues(operation).Inc()
+				if metrics != nil {
+					metrics.RespCacheHitsTotal.WithLabelValues(operation).Inc()
+				}
 				if authKey := auth.FromContext(r.Context()); authKey != nil {
 					rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
 					// r.Context(), not a derived context: recorder.Record calls
@@ -143,6 +152,9 @@ func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl ti
 			}
 
 			observability.RespCacheMissesTotal.WithLabelValues(operation).Inc()
+			if metrics != nil {
+				metrics.RespCacheMissesTotal.WithLabelValues(operation).Inc()
+			}
 			cw := newCaptureWriter()
 			next.ServeHTTP(cw, r)
 

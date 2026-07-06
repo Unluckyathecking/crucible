@@ -321,7 +321,7 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(quota.Middleware(d.Quota, d.Plans, emitter))
 		for _, rt := range routes {
 			ttl := d.Cfg.ClampRespCacheTTL(RespCacheTTLSeconds[rt.Path])
-			cacheMW := respcache.Middleware(d.RespCache, d.Recorder, rt.Operation, ttl)
+			cacheMW := respcache.Middleware(d.RespCache, d.Recorder, rt.Operation, ttl, nil)
 			r.With(cacheMW).Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
 		}
 	})
