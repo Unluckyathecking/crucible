@@ -580,7 +580,7 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			FROM webhook_deliveries d
 			JOIN webhook_endpoints we ON we.id = d.endpoint_id
 			WHERE we.customer_id = $1
-			ORDER BY d.created_at DESC
+			ORDER BY d.created_at DESC, d.id DESC
 			LIMIT $2 OFFSET $3
 		`, key.Customer.ID, perPage, offset)
 		if err != nil {
