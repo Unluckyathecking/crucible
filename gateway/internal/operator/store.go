@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // Store exposes SELECT-only views of the Crucible data model for operator use.
@@ -34,12 +36,6 @@ type Customer struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-// Page is the standard paginated response envelope.
-type Page[T any] struct {
-	Items []T   `json:"items"`
-	Total int64 `json:"total"`
-}
-
 // CustomersFilter constrains the Customers query.
 type CustomersFilter struct {
 	PlanID  string // empty = no filter
@@ -48,17 +44,18 @@ type CustomersFilter struct {
 }
 
 func (f *CustomersFilter) normalize() {
-	if f.PerPage <= 0 || f.PerPage > 100 {
-		f.PerPage = 20
-	}
-	if f.Page < 1 {
-		f.Page = 1
-	}
+	f.Page, f.PerPage = paging.Clamp(f.Page, f.PerPage, 20, 100)
 }
 
-// Customers returns a paginated list of customers, optionally filtered by plan.
-func (s *Store) Customers(ctx context.Context, f CustomersFilter) (Page[Customer], error) {
+// Customers returns a paginated list of customers, optionally filtered by
+// plan. Returns paging.ErrPageTooLarge if f.Page/f.PerPage would push the
+// OFFSET past paging.MaxOffset.
+func (s *Store) Customers(ctx context.Context, f CustomersFilter) (paging.Page[Customer], error) {
 	f.normalize()
+	offset, err := paging.Offset(f.Page, f.PerPage)
+	if err != nil {
+		return paging.Page[Customer]{}, err
+	}
 
 	var planID *string
 	if f.PlanID != "" {
@@ -70,10 +67,9 @@ func (s *Store) Customers(ctx context.Context, f CustomersFilter) (Page[Customer
 		SELECT COUNT(*) FROM customers
 		WHERE ($1::text IS NULL OR plan_id = $1)
 	`, planID).Scan(&total); err != nil {
-		return Page[Customer]{}, err
+		return paging.Page[Customer]{}, err
 	}
 
-	offset := (f.Page - 1) * f.PerPage
 	rows, err := s.db.Query(ctx, `
 		SELECT id, email, stripe_customer_id, plan_id, created_at, updated_at
 		FROM customers
@@ -82,18 +78,18 @@ func (s *Store) Customers(ctx context.Context, f CustomersFilter) (Page[Customer
 		LIMIT $2 OFFSET $3
 	`, planID, f.PerPage, offset)
 	if err != nil {
-		return Page[Customer]{}, err
+		return paging.Page[Customer]{}, err
 	}
 	defer rows.Close()
 
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Customer])
 	if err != nil {
-		return Page[Customer]{}, err
+		return paging.Page[Customer]{}, err
 	}
 	if items == nil {
 		items = []Customer{}
 	}
-	return Page[Customer]{Items: items, Total: total}, nil
+	return paging.Page[Customer]{Items: items, Total: total}, nil
 }
 
 // CustomerByID returns a single customer by UUID.
@@ -207,17 +203,18 @@ type AuditFilter struct {
 }
 
 func (f *AuditFilter) normalize() {
-	if f.PerPage <= 0 || f.PerPage > 100 {
-		f.PerPage = 20
-	}
-	if f.Page < 1 {
-		f.Page = 1
-	}
+	f.Page, f.PerPage = paging.Clamp(f.Page, f.PerPage, 20, 100)
 }
 
 // AuditEvents returns a paginated list of audit_log rows, most-recent first.
-func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent], error) {
+// Returns paging.ErrPageTooLarge if f.Page/f.PerPage would push the OFFSET
+// past paging.MaxOffset.
+func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (paging.Page[AuditEvent], error) {
 	f.normalize()
+	offset, err := paging.Offset(f.Page, f.PerPage)
+	if err != nil {
+		return paging.Page[AuditEvent]{}, err
+	}
 
 	var customerID, action *string
 	if f.CustomerID != "" {
@@ -236,10 +233,9 @@ func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent
 		  AND ($3::timestamptz IS NULL OR created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR created_at <= $4)
 	`, customerID, action, f.Start, f.End).Scan(&total); err != nil {
-		return Page[AuditEvent]{}, err
+		return paging.Page[AuditEvent]{}, err
 	}
 
-	offset := (f.Page - 1) * f.PerPage
 	rows, err := s.db.Query(ctx, `
 		SELECT id, actor_type, actor_id, action, target_type, target_id, details, created_at
 		FROM audit_log
@@ -252,7 +248,7 @@ func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent
 		LIMIT $5 OFFSET $6
 	`, customerID, action, f.Start, f.End, f.PerPage, offset)
 	if err != nil {
-		return Page[AuditEvent]{}, err
+		return paging.Page[AuditEvent]{}, err
 	}
 	defer rows.Close()
 
@@ -262,15 +258,15 @@ func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) (Page[AuditEvent
 		var rawDetails []byte
 		if err := rows.Scan(&ev.ID, &ev.ActorType, &ev.ActorID, &ev.Action,
 			&ev.TargetType, &ev.TargetID, &rawDetails, &ev.CreatedAt); err != nil {
-			return Page[AuditEvent]{}, err
+			return paging.Page[AuditEvent]{}, err
 		}
 		ev.Details = json.RawMessage(rawDetails)
 		items = append(items, ev)
 	}
 	if err := rows.Err(); err != nil {
-		return Page[AuditEvent]{}, err
+		return paging.Page[AuditEvent]{}, err
 	}
-	return Page[AuditEvent]{Items: items, Total: total}, nil
+	return paging.Page[AuditEvent]{Items: items, Total: total}, nil
 }
 
 // Plan is the operator-visible projection of a plans row.

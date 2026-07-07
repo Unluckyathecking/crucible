@@ -21,6 +21,16 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
+)
+
+// Default/max page size for GET /v1/keys. Store.List has no LIMIT/OFFSET
+// parameters (a customer's active-key count is always small), so pagination
+// here slices the already-materialized result via the shared paging helper
+// rather than pushing page/per_page into SQL.
+const (
+	defaultKeysPageSize = 20
+	maxKeysPageSize     = 100
 )
 
 // Rotate grace bounds mirror dashboard/app/api/keys/[id]/rotate/route.ts's
@@ -63,6 +73,15 @@ func ListKeysHandler(store *Store) http.HandlerFunc {
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "list keys failed", false)
 			return
 		}
+
+		pp := paging.ParseQuery(r.URL.Query(), "per_page")
+		page, perPage := paging.Clamp(pp.Page, pp.PerPage, defaultKeysPageSize, maxKeysPageSize)
+		offset, err := paging.Offset(page, perPage)
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+			return
+		}
+		items = paging.Slice(items, offset, perPage)
 
 		out := make([]keyItemResponse, len(items))
 		for i, it := range items {

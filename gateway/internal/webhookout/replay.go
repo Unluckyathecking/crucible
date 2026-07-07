@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // ActionDeliveryReplayed is the stable audit_log action recorded for every
@@ -49,11 +51,10 @@ type DeadLetterDelivery struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
-// Page is the standard paginated response envelope, mirroring operator.Page[T].
-type Page[T any] struct {
-	Items []T   `json:"items"`
-	Total int64 `json:"total"`
-}
+// Page is the standard paginated response envelope, aliased to the shared
+// paging.Page[T] so every /v1/admin list endpoint speaks the same wire
+// format without duplicating the type.
+type Page[T any] = paging.Page[T]
 
 // DeadLettersFilter constrains the ListDeadLetters query.
 type DeadLettersFilter struct {
@@ -62,18 +63,19 @@ type DeadLettersFilter struct {
 }
 
 func (f *DeadLettersFilter) normalize() {
-	if f.PerPage <= 0 || f.PerPage > 100 {
-		f.PerPage = 20
-	}
-	if f.Page < 1 {
-		f.Page = 1
-	}
+	f.Page, f.PerPage = paging.Clamp(f.Page, f.PerPage, 20, 100)
 }
 
 // ListDeadLetters returns a paginated list of dead_letter webhook_deliveries
 // rows, most-recent first, joined to their endpoint's url and customer_id.
+// Returns paging.ErrPageTooLarge if f.Page/f.PerPage would push the OFFSET
+// past paging.MaxOffset.
 func ListDeadLetters(ctx context.Context, db *pgxpool.Pool, f DeadLettersFilter) (Page[DeadLetterDelivery], error) {
 	f.normalize()
+	offset, err := paging.Offset(f.Page, f.PerPage)
+	if err != nil {
+		return Page[DeadLetterDelivery]{}, err
+	}
 
 	var total int64
 	if err := db.QueryRow(ctx, `
@@ -82,7 +84,6 @@ func ListDeadLetters(ctx context.Context, db *pgxpool.Pool, f DeadLettersFilter)
 		return Page[DeadLetterDelivery]{}, fmt.Errorf("webhookout: count dead letters: %w", err)
 	}
 
-	offset := (f.Page - 1) * f.PerPage
 	rows, err := db.Query(ctx, `
 		SELECT d.id, d.event_id, d.event_type, d.endpoint_id, we.url, we.active, we.customer_id,
 		       d.attempts, d.last_response_code, d.created_at

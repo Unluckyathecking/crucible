@@ -2,6 +2,7 @@ package operator
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // ListCustomersHandler handles GET /v1/admin/customers.
@@ -30,6 +32,10 @@ func ListCustomersHandler(s *Store) http.HandlerFunc {
 			PerPage: perPage,
 		})
 		if err != nil {
+			if errors.Is(err, paging.ErrPageTooLarge) {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+				return
+			}
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: list customers failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
 			return
@@ -157,6 +163,10 @@ func ListAuditEventsHandler(s *Store) http.HandlerFunc {
 
 		result, err := s.AuditEvents(r.Context(), f)
 		if err != nil {
+			if errors.Is(err, paging.ErrPageTooLarge) {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+				return
+			}
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: list audit events failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
 			return

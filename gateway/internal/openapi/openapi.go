@@ -792,6 +792,10 @@ func webhookEndpointsPathItems() map[string]PathItem {
 				Summary:     "List the authenticated customer's registered webhook endpoints",
 				Tags:        []string{"webhooks"},
 				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
+					{Name: "per_page", In: "query", Description: "Page size; default 20, capped at 100", Schema: &Schema{Type: "integer"}},
+				},
 				Responses: map[string]Response{
 					"200": {
 						Description: "The caller's registered endpoints (secrets never included)",
@@ -907,6 +911,10 @@ func keysPathItems() map[string]PathItem {
 				Summary:     "List the authenticated customer's active API keys",
 				Tags:        []string{"keys"},
 				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
+					{Name: "per_page", In: "query", Description: "Page size; default 20, capped at 100", Schema: &Schema{Type: "integer"}},
+				},
 				Responses: map[string]Response{
 					"200": {
 						Description: "The caller's active API keys (hash and full key never included)",

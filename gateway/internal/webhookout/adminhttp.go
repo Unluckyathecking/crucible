@@ -3,6 +3,7 @@ package webhookout
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // replayActorID identifies the operator-token bearer in audit_log rows. The
@@ -39,6 +41,10 @@ func ListDeadLettersHandler(db *pgxpool.Pool) http.HandlerFunc {
 
 		result, err := ListDeadLetters(r.Context(), db, DeadLettersFilter{Page: page, PerPage: perPage})
 		if err != nil {
+			if errors.Is(err, paging.ErrPageTooLarge) {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+				return
+			}
 			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: list dead letters failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
 			return
