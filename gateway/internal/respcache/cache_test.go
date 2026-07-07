@@ -111,6 +111,36 @@ func TestKey_MalformedPayload_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestKey_TrailingData_NoCollision covers two requirements from the trailing-data
+// guard:
+//
+// (b) canonicalize must return a non-nil error for input with trailing bytes.
+// (a) Key on a payload with trailing bytes must not return the same key as the
+// same payload without trailing bytes (collision impossible once an error is returned,
+// but the test makes both assertions explicit).
+func TestKey_TrailingData_NoCollision(t *testing.T) {
+	const op = "lookup"
+	valid := []byte(`{"a":1}`)
+	trailing := []byte(`{"a":1} x`)
+
+	k1, err := respcache.Key(op, valid)
+	if err != nil {
+		t.Fatalf("Key(valid): unexpected error: %v", err)
+	}
+
+	k2, err2 := respcache.Key(op, trailing)
+
+	// (b) trailing data must be rejected
+	if err2 == nil {
+		t.Error("Key(trailing): expected non-nil error for trailing data, got nil")
+	}
+
+	// (a) keys must not collide; if err2 != nil, k2 is "" so they already differ.
+	if err2 == nil && k1 == k2 {
+		t.Errorf("Key with trailing data must not collide with valid key: both = %q", k1)
+	}
+}
+
 // TestKey_LargeIntegersPreservePrecision is the acceptance test for the UseNumber
 // fix: integers above 2^53 that differ by 1 must produce different cache keys.
 // Without UseNumber, both collapse to 9.007199254740992e+15 after the float64

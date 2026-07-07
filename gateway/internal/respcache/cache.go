@@ -84,6 +84,9 @@ func canonicalize(payload []byte) ([]byte, error) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
+	if dec.More() {
+		return nil, errors.New("trailing data after JSON value")
+	}
 	return json.Marshal(v)
 }
 
