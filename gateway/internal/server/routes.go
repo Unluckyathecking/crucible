@@ -32,6 +32,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
@@ -528,9 +529,9 @@ func authCustomerID(r *http.Request) (uuid.UUID, bool) {
 	return key.Customer.ID, true
 }
 
-// webhookDeliveriesHandler returns the authenticated customer's 100 most recent
-// outbound webhook deliveries across all their registered endpoints.
-// GET /v1/webhooks/deliveries
+// webhookDeliveriesHandler returns a paginated list of the authenticated
+// customer's outbound webhook deliveries across all their registered endpoints.
+// GET /v1/webhooks/deliveries?page=1&per_page=20
 func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 	type item struct {
 		ID               string    `json:"id"`
@@ -541,6 +542,10 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 		LastResponseCode *int      `json:"last_response_code,omitempty"`
 		CreatedAt        time.Time `json:"created_at"`
 	}
+	const (
+		defaultPageSize = 20
+		maxPageSize     = 100
+	)
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		key := auth.FromContext(r.Context())
@@ -548,6 +553,27 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
 		}
+
+		pp := paging.ParseQuery(r.URL.Query(), "per_page")
+		page, perPage := paging.Clamp(pp.Page, pp.PerPage, defaultPageSize, maxPageSize)
+		offset, err := paging.Offset(page, perPage)
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+			return
+		}
+
+		var total int64
+		if err := db.QueryRow(r.Context(), `
+			SELECT COUNT(*)
+			FROM webhook_deliveries d
+			JOIN webhook_endpoints we ON we.id = d.endpoint_id
+			WHERE we.customer_id = $1
+		`, key.Customer.ID).Scan(&total); err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries count failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
+			return
+		}
+
 		rows, err := db.Query(r.Context(), `
 			SELECT d.id::text, d.event_id, we.url, d.status, d.attempts,
 			       d.last_response_code, d.created_at
@@ -555,15 +581,15 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 			JOIN webhook_endpoints we ON we.id = d.endpoint_id
 			WHERE we.customer_id = $1
 			ORDER BY d.created_at DESC
-			LIMIT 100
-		`, key.Customer.ID)
+			LIMIT $2 OFFSET $3
+		`, key.Customer.ID, perPage, offset)
 		if err != nil {
 			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries query failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "query failed", false)
 			return
 		}
 		defer rows.Close()
-		var out []item
+		items := []item{}
 		for rows.Next() {
 			var it item
 			if err := rows.Scan(&it.ID, &it.EventID, &it.EndpointURL, &it.Status,
@@ -572,18 +598,17 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "scan failed", false)
 				return
 			}
-			out = append(out, it)
+			items = append(items, it)
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Str("request_id", rid).Msg("webhook deliveries rows error")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "rows error", false)
 			return
 		}
-		if out == nil {
-			out = []item{}
-		}
+
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
+		_ = json.NewEncoder(w).Encode(paging.Page[item]{Items: items, Total: total})
 	}
 }
 
