@@ -16,6 +16,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
@@ -389,27 +390,47 @@ type KeyListItem struct {
 
 // List returns customerID's active (non-revoked, non-expired) API keys, most
 // recently created first. Never selects the hash column.
-func (s *Store) List(ctx context.Context, customerID uuid.UUID) ([]KeyListItem, error) {
+// List returns a paginated page of customerID's active (non-revoked,
+// unexpired) API keys, most-recently created first, plus the total matching
+// row count across all pages. page/perPage must already be clamped (see
+// paging.Clamp) — List only computes the SQL OFFSET, returning
+// paging.ErrPageTooLarge if it would exceed paging.MaxOffset.
+func (s *Store) List(ctx context.Context, customerID uuid.UUID, page, perPage int) (paging.Page[KeyListItem], error) {
+	offset, err := paging.Offset(page, perPage)
+	if err != nil {
+		return paging.Page[KeyListItem]{}, err
+	}
+
+	var total int64
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM api_keys
+		WHERE customer_id = $1 AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > NOW())
+	`, customerID).Scan(&total); err != nil {
+		return paging.Page[KeyListItem]{}, fmt.Errorf("count api keys: %w", err)
+	}
+
 	rows, err := s.db.Query(ctx, `
 		SELECT id, prefix, name, last_used_at, expires_at, created_at
 		FROM api_keys
 		WHERE customer_id = $1 AND revoked_at IS NULL
 		  AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY created_at DESC
-	`, customerID)
+		LIMIT $2 OFFSET $3
+	`, customerID, perPage, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list api keys: %w", err)
+		return paging.Page[KeyListItem]{}, fmt.Errorf("list api keys: %w", err)
 	}
 	defer rows.Close()
 
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[KeyListItem])
 	if err != nil {
-		return nil, fmt.Errorf("scan api keys: %w", err)
+		return paging.Page[KeyListItem]{}, fmt.Errorf("scan api keys: %w", err)
 	}
 	if items == nil {
 		items = []KeyListItem{}
 	}
-	return items, nil
+	return paging.Page[KeyListItem]{Items: items, Total: total}, nil
 }
 
 // Owner returns the customer_id owning the active (non-revoked) key with id

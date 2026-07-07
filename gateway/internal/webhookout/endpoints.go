@@ -21,6 +21,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // maxEndpointURLLength bounds the url column against adversarial input,
@@ -164,28 +165,46 @@ func CreateEndpoint(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID,
 	return out, nil
 }
 
-// ListEndpoints returns customerID's active webhook endpoints, most-recently
-// created first. Never selects the secret column.
-func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID) ([]Endpoint, error) {
+// ListEndpoints returns a paginated page of customerID's active webhook
+// endpoints, most-recently created first, plus the total matching row count
+// across all pages. Never selects the secret column. page/perPage must
+// already be clamped (see paging.Clamp) — ListEndpoints only computes the SQL
+// OFFSET, returning paging.ErrPageTooLarge if it would exceed
+// paging.MaxOffset.
+func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, page, perPage int) (paging.Page[Endpoint], error) {
+	offset, err := paging.Offset(page, perPage)
+	if err != nil {
+		return paging.Page[Endpoint]{}, err
+	}
+
+	var total int64
+	if err := db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM webhook_endpoints
+		WHERE customer_id = $1 AND active = TRUE
+	`, customerID).Scan(&total); err != nil {
+		return paging.Page[Endpoint]{}, fmt.Errorf("webhookout: count endpoints: %w", err)
+	}
+
 	rows, err := db.Query(ctx, `
 		SELECT id, url, active, subscribed_events, created_at
 		FROM webhook_endpoints
 		WHERE customer_id = $1 AND active = TRUE
 		ORDER BY created_at DESC
-	`, customerID)
+		LIMIT $2 OFFSET $3
+	`, customerID, perPage, offset)
 	if err != nil {
-		return nil, fmt.Errorf("webhookout: list endpoints: %w", err)
+		return paging.Page[Endpoint]{}, fmt.Errorf("webhookout: list endpoints: %w", err)
 	}
 	defer rows.Close()
 
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Endpoint])
 	if err != nil {
-		return nil, fmt.Errorf("webhookout: scan endpoints: %w", err)
+		return paging.Page[Endpoint]{}, fmt.Errorf("webhookout: scan endpoints: %w", err)
 	}
 	if items == nil {
 		items = []Endpoint{}
 	}
-	return items, nil
+	return paging.Page[Endpoint]{Items: items, Total: total}, nil
 }
 
 // UpdateEndpointSubscription replaces the subscribed_events set for an active

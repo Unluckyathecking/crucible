@@ -15,10 +15,9 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
-// Default/max page size for GET /v1/webhooks/endpoints. ListEndpoints has no
-// LIMIT/OFFSET parameters (a customer's endpoint count is always small), so
-// pagination here slices the already-materialized result via the shared
-// paging helper rather than pushing page/per_page into SQL.
+// Default/max page size for GET /v1/webhooks/endpoints. ListEndpoints pushes
+// page/per_page into a SQL LIMIT/OFFSET rather than slicing an
+// already-materialized result.
 const (
 	defaultEndpointsPageSize = 20
 	maxEndpointsPageSize     = 100
@@ -89,25 +88,23 @@ func ListEndpointsHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.Hand
 			return
 		}
 
-		items, err := ListEndpoints(r.Context(), db, custID)
+		pp := paging.ParseQuery(r.URL.Query(), "per_page")
+		page, perPage := paging.Clamp(pp.Page, pp.PerPage, defaultEndpointsPageSize, maxEndpointsPageSize)
+
+		result, err := ListEndpoints(r.Context(), db, custID, page, perPage)
 		if err != nil {
+			if errors.Is(err, paging.ErrPageTooLarge) {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+				return
+			}
 			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: list endpoints failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "list endpoints failed", false)
 			return
 		}
 
-		pp := paging.ParseQuery(r.URL.Query(), "per_page")
-		page, perPage := paging.Clamp(pp.Page, pp.PerPage, defaultEndpointsPageSize, maxEndpointsPageSize)
-		offset, err := paging.Offset(page, perPage)
-		if err != nil {
-			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
-			return
-		}
-		items = paging.Slice(items, offset, perPage)
-
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(items)
+		_ = json.NewEncoder(w).Encode(result)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // testCustomerCtxKey carries the stand-in "authenticated customer" for tests.
@@ -335,15 +336,15 @@ func TestListEndpointsHandler_SecretNeverSerialized(t *testing.T) {
 		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
 	}
 
-	var rows []map[string]json.RawMessage
-	if err := json.Unmarshal(listRec.Body.Bytes(), &rows); err != nil {
+	var page paging.Page[map[string]json.RawMessage]
+	if err := json.Unmarshal(listRec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("got %d rows, want 1", len(rows))
+	if len(page.Items) != 1 {
+		t.Fatalf("got %d rows, want 1", len(page.Items))
 	}
 	for _, field := range []string{"secret_hex", "secret"} {
-		if _, present := rows[0][field]; present {
+		if _, present := page.Items[0][field]; present {
 			t.Errorf("list response row contains forbidden field %q", field)
 		}
 	}
@@ -371,12 +372,12 @@ func TestListEndpointsHandler_ScopedToCustomer(t *testing.T) {
 	listRec := httptest.NewRecorder()
 	r.ServeHTTP(listRec, listReq)
 
-	var rows []Endpoint
-	if err := json.Unmarshal(listRec.Body.Bytes(), &rows); err != nil {
+	var page paging.Page[Endpoint]
+	if err := json.Unmarshal(listRec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("customer A sees %d endpoints, want exactly their own 1", len(rows))
+	if len(page.Items) != 1 {
+		t.Fatalf("customer A sees %d endpoints, want exactly their own 1", len(page.Items))
 	}
 }
 
@@ -408,12 +409,12 @@ func TestDeleteEndpointHandler_OwnedByOtherCustomer_404(t *testing.T) {
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/webhooks/endpoints", nil).WithContext(testKeyContext(owner))
 	listRec := httptest.NewRecorder()
 	r.ServeHTTP(listRec, listReq)
-	var rows []Endpoint
-	if err := json.Unmarshal(listRec.Body.Bytes(), &rows); err != nil {
+	var page paging.Page[Endpoint]
+	if err := json.Unmarshal(listRec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("owner sees %d endpoints after failed cross-customer delete, want 1", len(rows))
+	if len(page.Items) != 1 {
+		t.Fatalf("owner sees %d endpoints after failed cross-customer delete, want 1", len(page.Items))
 	}
 }
 
@@ -441,12 +442,12 @@ func TestDeleteEndpointHandler_Success(t *testing.T) {
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/webhooks/endpoints", nil).WithContext(testKeyContext(cust))
 	listRec := httptest.NewRecorder()
 	r.ServeHTTP(listRec, listReq)
-	var rows []Endpoint
-	if err := json.Unmarshal(listRec.Body.Bytes(), &rows); err != nil {
+	var page paging.Page[Endpoint]
+	if err := json.Unmarshal(listRec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(rows) != 0 {
-		t.Fatalf("deleted endpoint still appears in list: %v", rows)
+	if len(page.Items) != 0 {
+		t.Fatalf("deleted endpoint still appears in list: %v", page.Items)
 	}
 }
 

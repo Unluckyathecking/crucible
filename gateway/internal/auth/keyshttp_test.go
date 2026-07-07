@@ -14,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 // insertKeysTestKey mirrors insertTestKey (store_test.go) but also returns the
@@ -89,15 +91,18 @@ func TestListKeysHandler_ScopedToCustomer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var items []keyItemResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+	var page paging.Page[keyItemResponse]
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("got %d keys, want exactly 1 (custB's key must not appear)", len(items))
+	if page.Total != 1 {
+		t.Fatalf("total = %d, want exactly 1 (custB's key must not appear)", page.Total)
 	}
-	if items[0].Prefix != prefixA {
-		t.Errorf("prefix = %q, want %q", items[0].Prefix, prefixA)
+	if len(page.Items) != 1 {
+		t.Fatalf("got %d keys, want exactly 1 (custB's key must not appear)", len(page.Items))
+	}
+	if page.Items[0].Prefix != prefixA {
+		t.Errorf("prefix = %q, want %q", page.Items[0].Prefix, prefixA)
 	}
 }
 
