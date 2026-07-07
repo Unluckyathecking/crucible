@@ -800,7 +800,15 @@ func webhookEndpointsPathItems() map[string]PathItem {
 					"200": {
 						Description: "The caller's registered endpoints (secrets never included)",
 						Content: map[string]MediaType{
-							contentTypeJSON: {Schema: &Schema{Type: "array", Description: "Array of webhook endpoint objects", Properties: map[string]*Schema{}}},
+							contentTypeJSON: {Schema: &Schema{
+								Type:        "object",
+								Description: "Paginated envelope of registered webhook endpoints",
+								Properties: map[string]*Schema{
+									"items": {Type: "array", Description: "Webhook endpoint objects for this page", Properties: map[string]*Schema{}},
+									"total": {Type: "integer", Description: "Total registered endpoints across all pages"},
+								},
+								Required: []string{"items", "total"},
+							}},
 						},
 					},
 					"401": errResp("Unauthorized — missing or invalid API key"),
@@ -919,7 +927,15 @@ func keysPathItems() map[string]PathItem {
 					"200": {
 						Description: "The caller's active API keys (hash and full key never included)",
 						Content: map[string]MediaType{
-							contentTypeJSON: {Schema: &Schema{Type: "array", Description: "Array of API key objects", Properties: keyItemSchema.Properties}},
+							contentTypeJSON: {Schema: &Schema{
+								Type:        "object",
+								Description: "Paginated envelope of the caller's active API keys",
+								Properties: map[string]*Schema{
+									"items": {Type: "array", Description: "API key objects for this page", Properties: keyItemSchema.Properties},
+									"total": {Type: "integer", Description: "Total active keys across all pages"},
+								},
+								Required: []string{"items", "total"},
+							}},
 						},
 					},
 					"401": errResp("Unauthorized — missing or invalid API key"),
