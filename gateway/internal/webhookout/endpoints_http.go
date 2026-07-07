@@ -12,6 +12,16 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
+)
+
+// Default/max page size for GET /v1/webhooks/endpoints. ListEndpoints has no
+// LIMIT/OFFSET parameters (a customer's endpoint count is always small), so
+// pagination here slices the already-materialized result via the shared
+// paging helper rather than pushing page/per_page into SQL.
+const (
+	defaultEndpointsPageSize = 20
+	maxEndpointsPageSize     = 100
 )
 
 // CustomerIDFunc extracts the authenticated customer id from a request,
@@ -85,6 +95,15 @@ func ListEndpointsHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.Hand
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "list endpoints failed", false)
 			return
 		}
+
+		pp := paging.ParseQuery(r.URL.Query(), "per_page")
+		page, perPage := paging.Clamp(pp.Page, pp.PerPage, defaultEndpointsPageSize, maxEndpointsPageSize)
+		offset, err := paging.Offset(page, perPage)
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+			return
+		}
+		items = paging.Slice(items, offset, perPage)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")

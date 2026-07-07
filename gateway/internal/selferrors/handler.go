@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
 
 const (
@@ -24,9 +24,6 @@ const (
 	defaultRangeDays = 30
 	maxRangeDays     = 90
 	maxFilterLength  = 128
-	// maxOffset bounds page*limit so a pathological page number can't force an
-	// unbounded OFFSET scan.
-	maxOffset = 10_000_000
 )
 
 // operationFilterRE and codeFilterRE mirror the dashboard's
@@ -127,28 +124,13 @@ func Handler(db *pgxpool.Pool) http.HandlerFunc {
 			code = &v
 		}
 
-		page := 1
-		if v := q.Get("page"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-				page = n
-			}
-		}
-		limit := defaultPageSize
-		if v := q.Get("limit"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n >= 1 {
-				limit = n
-				if limit > maxPageSize {
-					limit = maxPageSize
-				}
-			}
-		}
-		// Reject before multiplying: page is caller-controlled and could be
-		// large enough that (page-1)*limit overflows int.
-		if page-1 > maxOffset/limit {
+		pp := paging.ParseQuery(q, "limit")
+		page, limit := paging.Clamp(pp.Page, pp.PerPage, defaultPageSize, maxPageSize)
+		offset, err := paging.Offset(page, limit)
+		if err != nil {
 			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
 			return
 		}
-		offset := (page - 1) * limit
 
 		events, hasMore, err := store.Query(r.Context(), key.Customer.ID, from, toExclusive, operation, code, limit, offset)
 		if err != nil {
