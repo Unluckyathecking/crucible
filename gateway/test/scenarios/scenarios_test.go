@@ -744,12 +744,15 @@ func TestWebhookDeliveriesIDORIsolation(t *testing.T) {
 	if respA.StatusCode != http.StatusOK {
 		t.Fatalf("customer A: want 200, got %d: %s", respA.StatusCode, bodyA)
 	}
-	var deliveriesA []deliveryItem
-	if err := json.Unmarshal(bodyA, &deliveriesA); err != nil {
+	var pageA struct {
+		Items []deliveryItem `json:"items"`
+		Total int64          `json:"total"`
+	}
+	if err := json.Unmarshal(bodyA, &pageA); err != nil {
 		t.Fatalf("customer A: decode response: %v\nbody: %s", err, bodyA)
 	}
 	foundA := false
-	for _, d := range deliveriesA {
+	for _, d := range pageA.Items {
 		if d.EventID == eventIDA {
 			foundA = true
 		}
