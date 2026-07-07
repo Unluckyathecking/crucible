@@ -543,7 +543,9 @@ func webhookDeliveriesHandler(db *pgxpool.Pool) http.HandlerFunc {
 		CreatedAt        time.Time `json:"created_at"`
 	}
 	const (
-		defaultPageSize = 20
+		// default matches the previous hardcoded LIMIT 100 to avoid silently
+		// truncating callers that omit per_page; explicit per_page can go lower.
+		defaultPageSize = 100
 		maxPageSize     = 100
 	)
 	return func(w http.ResponseWriter, r *http.Request) {
