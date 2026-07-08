@@ -55,18 +55,40 @@ type ReadyzResponse struct {
 	Status string            `json:"status"`
 }
 
+// ListErrorsResponseDataItem is one row of ListErrors's "data" list.
+type ListErrorsResponseDataItem struct {
+	Created_at      string `json:"created_at"`
+	Error_code      string `json:"error_code"`
+	Http_status     int64  `json:"http_status"`
+	Id              int64  `json:"id"`
+	Message         string `json:"message"`
+	Operation       string `json:"operation"`
+	Request_id      string `json:"request_id"`
+	Request_payload string `json:"request_payload"`
+}
+
 // ListErrorsResponse is returned by ListErrors.
 type ListErrorsResponse struct {
-	Data     []any `json:"data"`
-	Has_more bool  `json:"has_more"`
-	Limit    int64 `json:"limit"`
-	Page     int64 `json:"page"`
+	Data     []ListErrorsResponseDataItem `json:"data"`
+	Has_more bool                         `json:"has_more"`
+	Limit    int64                        `json:"limit"`
+	Page     int64                        `json:"page"`
+}
+
+// ListKeysResponseItemsItem is one row of ListKeys's "items" list.
+type ListKeysResponseItemsItem struct {
+	Created_at   string `json:"created_at"`
+	Expires_at   string `json:"expires_at"`
+	Id           string `json:"id"`
+	Last_used_at string `json:"last_used_at"`
+	Name         string `json:"name"`
+	Prefix       string `json:"prefix"`
 }
 
 // ListKeysResponse is returned by ListKeys.
 type ListKeysResponse struct {
-	Items []any `json:"items"`
-	Total int64 `json:"total"`
+	Items []ListKeysResponseItemsItem `json:"items"`
+	Total int64                       `json:"total"`
 }
 
 // RotateKeyResponse is returned by RotateKey.
@@ -255,13 +277,12 @@ func (c *Client) RevokeKey(ctx context.Context, apiKey string, id string) error 
 // RotateKey calls POST /v1/keys/{id}/rotate (rotate key).
 // apiKey is sent as the X-API-Key header.
 func (c *Client) RotateKey(ctx context.Context, apiKey string, id string, payload any) (*RotateKeyResponse, error) {
-	var body []byte
-	if payload != nil {
-		var err error
-		body, err = json.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("crucible: marshal payload: %w", err)
-		}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("crucible: marshal payload: %w", err)
 	}
 	path := fmt.Sprintf("/v1/keys/%s/rotate", url.PathEscape(id))
 	resp, err := c.do(ctx, http.MethodPost, path, apiKey, body)
@@ -366,13 +387,12 @@ func (c *Client) DeleteWebhookEndpoint(ctx context.Context, apiKey string, id st
 // UpdateWebhookEndpointSubscription calls PATCH /v1/webhooks/endpoints/{id} (update webhook endpoint subscription).
 // apiKey is sent as the X-API-Key header.
 func (c *Client) UpdateWebhookEndpointSubscription(ctx context.Context, apiKey string, id string, payload any) error {
-	var body []byte
-	if payload != nil {
-		var err error
-		body, err = json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("crucible: marshal payload: %w", err)
-		}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("crucible: marshal payload: %w", err)
 	}
 	path := fmt.Sprintf("/v1/webhooks/endpoints/%s", url.PathEscape(id))
 	resp, err := c.do(ctx, http.MethodPatch, path, apiKey, body)
@@ -441,6 +461,7 @@ func checkError(resp *http.Response) error {
 			Code      string `json:"code"`
 			Message   string `json:"message"`
 			Retryable bool   `json:"retryable"`
+			RequestID string `json:"request_id"`
 		} `json:"error"`
 	}
 	// Read up to 64 KiB + 1; the extra byte lets us detect oversized bodies explicitly.
@@ -464,5 +485,6 @@ func checkError(resp *http.Response) error {
 		Code:      envelope.Error.Code,
 		Message:   envelope.Error.Message,
 		Retryable: envelope.Error.Retryable,
+		RequestID: envelope.Error.RequestID,
 	}
 }

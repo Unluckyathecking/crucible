@@ -328,13 +328,17 @@ func TestListErrors_queryEncoding(t *testing.T) {
 	_, _ = c.ListErrors(context.Background(), "test-key", "v", "v", "v", "v", 2, 2)
 }
 
-func TestRotateKey_omitsOptionalBody(t *testing.T) {
+func TestRotateKey_defaultsMissingOptionalBody(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if ct := r.Header.Get("Content-Type"); ct != "" {
-			t.Errorf("Content-Type = %q, want none (no body sent)", ct)
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json (a body must still be sent)", ct)
 		}
-		if r.ContentLength > 0 {
-			t.Errorf("ContentLength = %d, want 0 (no body sent)", r.ContentLength)
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if len(reqBody) != 0 {
+			t.Errorf("request body = %v, want {}", reqBody)
 		}
 		writeJSON(w, map[string]any{})
 	})

@@ -188,15 +188,20 @@ package crucible
 import "fmt"
 
 // APIError is returned when the gateway responds with a non-2xx status.
-// It models the error envelope: {{"error":{{"code":"...","message":"...","retryable":true}}}}.
+// It models the error envelope: {{"error":{{"code":"...","message":"...","retryable":true,"request_id":"..."}}}}.
 type APIError struct {{
 \tCode      string
 \tMessage   string
 \tRetryable bool
+\t// RequestID is the X-Request-ID the gateway echoed back in the error
+\t// envelope (apierror.Write sets it on every error response); use it to
+\t// correlate a failed call with gateway logs when reporting issues. May be
+\t// empty if the gateway never generated one for the request.
+\tRequestID string
 }}
 
 func (e *APIError) Error() string {{
-\treturn fmt.Sprintf("crucible: %s: %s (retryable=%v)", e.Code, e.Message, e.Retryable)
+\treturn fmt.Sprintf("crucible: %s: %s (retryable=%v, request_id=%s)", e.Code, e.Message, e.Retryable, e.RequestID)
 }}
 """)
 
@@ -211,6 +216,45 @@ def go_response_type(op):
         return go_name(op.op_id) + "Response"
     return "map[string]any"
 
+# array_item_properties returns the element row's `properties` dict for an
+# array-typed field schema, or {} if it has none. Checks this codebase's
+# openapi.go idiom of attaching `properties` directly to the array schema
+# (non-standard JSON Schema, but what /v1/errors and /v1/keys actually use)
+# as well as the standards-correct `items.properties` shape, so either
+# documents a typed row instead of falling back to an untyped list.
+def array_item_properties(fschema):
+    if fschema.get("properties"):
+        return fschema["properties"]
+    items = fschema.get("items")
+    if isinstance(items, dict) and items.get("properties"):
+        return items["properties"]
+    return {}
+
+def go_leaf_type(fschema):
+    ftype = fschema.get("type", "any")
+    add   = fschema.get("additionalProperties")
+    if ftype == "string":
+        return "string"
+    elif ftype == "boolean":
+        return "bool"
+    elif ftype == "integer":
+        return "int64"
+    elif ftype == "number":
+        return "float64"
+    elif ftype == "array":
+        return "[]any"
+    elif ftype == "object" and add:
+        inner    = add.get("type", "any")
+        inner_go = {"string": "string", "integer": "int64", "number": "float64", "boolean": "bool"}.get(inner, "any")
+        return f"map[string]{inner_go}"
+    return "any"
+
+def go_struct_field_block(props):
+    return "\n".join(
+        f'\t{fname.capitalize()} {go_leaf_type(fschema)} `json:"{fname}"`'
+        for fname, fschema in sorted(props.items())
+    )
+
 def go_response_structs():
     parts = []
     for op in ops:
@@ -223,23 +267,19 @@ def go_response_structs():
         for fname, fschema in sorted(props.items()):
             go_field = fname.capitalize()
             ftype = fschema.get("type", "any")
-            add   = fschema.get("additionalProperties")
-            if ftype == "string":
-                go_type = "string"
-            elif ftype == "boolean":
-                go_type = "bool"
-            elif ftype == "integer":
-                go_type = "int64"
-            elif ftype == "number":
-                go_type = "float64"
-            elif ftype == "array":
-                go_type = "[]any"
-            elif ftype == "object" and add:
-                inner    = add.get("type", "any")
-                inner_go = {"string": "string", "integer": "int64", "number": "float64", "boolean": "bool"}.get(inner, "any")
-                go_type  = f"map[string]{inner_go}"
+            if ftype == "array":
+                item_props = array_item_properties(fschema)
+                if item_props:
+                    item_type = f"{rtype}{fname.capitalize()}Item"
+                    parts.append(
+                        f'// {item_type} is one row of {go_name(op.op_id)}\'s "{fname}" list.\n'
+                        f"type {item_type} struct {{\n{go_struct_field_block(item_props)}\n}}"
+                    )
+                    go_type = f"[]{item_type}"
+                else:
+                    go_type = "[]any"
             else:
-                go_type = "any"
+                go_type = go_leaf_type(fschema)
             fields.append(f'\t{go_field} {go_type} `json:"{fname}"`')
         field_block = "\n".join(fields)
         parts.append(
@@ -332,17 +372,20 @@ def go_method(op):
             "\t}",
         ]
     elif op.has_body:
-        # requestBody is optional in the spec: payload == nil means "send no
-        # body" (e.g. POST /v1/keys/{id}/rotate falls back to a default grace
-        # period), not "send a JSON null body".
+        # requestBody is optional in the spec: payload == nil means "use
+        # server-side defaults" (e.g. POST /v1/keys/{id}/rotate falls back to
+        # a default grace period). It must NOT become an empty (zero-byte)
+        # request body: some optional-body handlers decode with
+        # json.Decoder.Decode and treat that io.EOF as a 400 (no special
+        # case for "no body sent"), so this always sends a valid JSON body —
+        # {} by default — never omits it outright.
         lines += [
-            "\tvar body []byte",
-            "\tif payload != nil {",
-            "\t\tvar err error",
-            "\t\tbody, err = json.Marshal(payload)",
-            "\t\tif err != nil {",
-            f'\t\t\treturn {nil_ret}fmt.Errorf("crucible: marshal payload: %w", err)',
-            "\t\t}",
+            "\tif payload == nil {",
+            "\t\tpayload = map[string]any{}",
+            "\t}",
+            "\tbody, err := json.Marshal(payload)",
+            "\tif err != nil {",
+            f'\t\treturn {nil_ret}fmt.Errorf("crucible: marshal payload: %w", err)',
             "\t}",
         ]
     lines += path_lines
@@ -466,6 +509,7 @@ func checkError(resp *http.Response) error {{
 \t\t\tCode      string `json:"code"`
 \t\t\tMessage   string `json:"message"`
 \t\t\tRetryable bool   `json:"retryable"`
+\t\t\tRequestID string `json:"request_id"`
 \t\t}} `json:"error"`
 \t}}
 \t// Read up to 64 KiB + 1; the extra byte lets us detect oversized bodies explicitly.
@@ -489,6 +533,7 @@ func checkError(resp *http.Response) error {{
 \t\tCode:      envelope.Error.Code,
 \t\tMessage:   envelope.Error.Message,
 \t\tRetryable: envelope.Error.Retryable,
+\t\tRequestID: envelope.Error.RequestID,
 \t}}
 }}
 """)
@@ -688,8 +733,10 @@ if first_query_op:
     ])
 
 # Optional-body regression test: omitting payload (nil) on a route whose
-# requestBody.required is false must send no body/Content-Type at all,
-# not a JSON "null" body.
+# requestBody.required is false must still send a valid JSON body ({}) with
+# Content-Type set — some optional-body handlers decode with
+# json.Decoder.Decode and treat a fully empty body's io.EOF as a 400, so a
+# zero-byte body is not a safe universal choice for "no payload provided".
 optional_body_test_go = ""
 if first_optional_body_op:
     fn_ob = go_name(first_optional_body_op.op_id)
@@ -698,7 +745,7 @@ if first_optional_body_op:
         call_parts_ob.append('"test-key"')
     for p in first_optional_body_op.path_params:
         call_parts_ob.append(f'"test-{p}"')
-    call_parts_ob.append("nil")  # explicit nil payload — omit the body entirely
+    call_parts_ob.append("nil")  # explicit nil payload — falls back to {}
     for name, ptype in first_optional_body_op.query_params:
         call_parts_ob.append("0" if ptype == "integer" else '""')
     call_ob = f"c.{fn_ob}(context.Background(), {', '.join(call_parts_ob)})"
@@ -712,13 +759,17 @@ if first_optional_body_op:
         call_assign_ob = f"\t_, err := {call_ob}"
 
     optional_body_test_go = "\n\n" + "\n".join([
-        f"func Test{fn_ob}_omitsOptionalBody(t *testing.T) {{",
+        f"func Test{fn_ob}_defaultsMissingOptionalBody(t *testing.T) {{",
         '\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {',
-        '\t\tif ct := r.Header.Get("Content-Type"); ct != "" {',
-        '\t\t\tt.Errorf("Content-Type = %q, want none (no body sent)", ct)',
+        '\t\tif ct := r.Header.Get("Content-Type"); ct != "application/json" {',
+        '\t\t\tt.Errorf("Content-Type = %q, want application/json (a body must still be sent)", ct)',
         '\t\t}',
-        '\t\tif r.ContentLength > 0 {',
-        '\t\t\tt.Errorf("ContentLength = %d, want 0 (no body sent)", r.ContentLength)',
+        '\t\tvar reqBody map[string]any',
+        '\t\tif err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {',
+        '\t\t\tt.Fatalf("decode request body: %v", err)',
+        '\t\t}',
+        '\t\tif len(reqBody) != 0 {',
+        '\t\t\tt.Errorf("request body = %v, want {}", reqBody)',
         '\t\t}',
         resp_line_ob,
         '\t})',
@@ -854,24 +905,33 @@ export interface ErrorBody {
     code: string;
     message: string;
     retryable?: boolean;
+    request_id?: string;
   };
 }
 
 /**
  * ApiError is thrown when the gateway returns a non-2xx status.
- * It models the error envelope: {"error":{"code":"...","message":"...","retryable":true}}.
+ * It models the error envelope: {"error":{"code":"...","message":"...","retryable":true,"request_id":"..."}}.
  */
 export class ApiError extends Error {
   readonly code: string;
   readonly retryable: boolean | undefined;
   readonly status: number;
+  /**
+   * The X-Request-ID the gateway echoed back in the error envelope
+   * (apierror.Write sets it on every error response); use it to correlate a
+   * failed call with gateway logs when reporting issues. Undefined if the
+   * gateway never generated one for the request.
+   */
+  readonly requestId: string | undefined;
 
-  constructor(status: number, code: string, message: string, retryable?: boolean) {
+  constructor(status: number, code: string, message: string, retryable?: boolean, requestId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.requestId = requestId;
     // Restore prototype chain (required when extending built-ins in ES5 targets).
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -883,6 +943,7 @@ export class ApiError extends Error {
     let code = "UNKNOWN";
     let message = `HTTP ${resp.status}`;
     let retryable: boolean | undefined;
+    let requestId: string | undefined;
     try {
       const body = (await resp.json()) as ErrorBody;
       // Use || / ?? so the defensive defaults survive a partial error object ({"error":{}}).
@@ -891,10 +952,11 @@ export class ApiError extends Error {
       code = body.error.code || code;
       message = body.error.message || message;
       retryable = body.error.retryable ?? retryable;
+      requestId = body.error.request_id || requestId;
     } catch (e) {
       message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
-    return new ApiError(resp.status, code, message, retryable);
+    return new ApiError(resp.status, code, message, retryable, requestId);
   }
 }
 """)
@@ -910,6 +972,24 @@ def ts_response_type(op):
         return go_name(op.op_id) + "Response"
     return "Record<string, unknown>"
 
+def ts_leaf_type(fschema):
+    ftype = fschema.get("type", "unknown")
+    add   = fschema.get("additionalProperties")
+    if ftype == "string":
+        return "string"
+    elif ftype == "boolean":
+        return "boolean"
+    elif ftype == "integer" or ftype == "number":
+        return "number"
+    elif ftype == "object" and add:
+        inner    = add.get("type", "unknown")
+        inner_ts = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean"}.get(inner, "unknown")
+        return f"Record<string, {inner_ts}>"
+    return "unknown"
+
+def ts_interface_field_block(props):
+    return "\n".join(f"  {fname}: {ts_leaf_type(fschema)};" for fname, fschema in sorted(props.items()))
+
 def ts_response_interface(op):
     rtype = ts_response_type(op)
     if rtype in ("void", "Record<string, unknown>"):
@@ -917,32 +997,31 @@ def ts_response_interface(op):
     schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
     props   = schema.get("properties", {})
     fields  = []
+    nested_interfaces = []
     for fname, fschema in sorted(props.items()):
         ftype = fschema.get("type", "unknown")
-        add   = fschema.get("additionalProperties")
-        if ftype == "string":
-            ts_type = "string"
-        elif ftype == "boolean":
-            ts_type = "boolean"
-        elif ftype == "integer" or ftype == "number":
-            ts_type = "number"
-        elif ftype == "array":
-            # The Go structs backing these responses use a bare slice field
-            # with no `omitempty`, which encodes as JSON null when nil (e.g.
-            # a webhook endpoint created without subscribed_events); the
-            # OpenAPI schema has no way to mark that nullability, so this
-            # generator assumes it for every array field rather than
-            # promising callers a type array methods can be called on
-            # unconditionally.
-            ts_type = "unknown[] | null"
-        elif ftype == "object" and add:
-            inner    = add.get("type", "unknown")
-            inner_ts = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean"}.get(inner, "unknown")
-            ts_type  = f"Record<string, {inner_ts}>"
+        if ftype == "array":
+            item_props = array_item_properties(fschema)
+            if item_props:
+                item_type = f"{rtype}{fname.capitalize()}Item"
+                nested_interfaces.append(
+                    f"export interface {item_type} {{\n{ts_interface_field_block(item_props)}\n}}\n"
+                )
+                ts_type = f"{item_type}[] | null"
+            else:
+                # The Go structs backing these responses use a bare slice
+                # field with no `omitempty`, which encodes as JSON null when
+                # nil (e.g. a webhook endpoint created without
+                # subscribed_events); the OpenAPI schema has no way to mark
+                # that nullability, so this generator assumes it for every
+                # array field rather than promising callers a type array
+                # methods can be called on unconditionally.
+                ts_type = "unknown[] | null"
         else:
-            ts_type = "unknown"
+            ts_type = ts_leaf_type(fschema)
         fields.append(f"  {fname}: {ts_type};")
-    return f"export interface {rtype} {{\n" + "\n".join(fields) + "\n}\n"
+    iface = f"export interface {rtype} {{\n" + "\n".join(fields) + "\n}\n"
+    return "".join(nested_interfaces) + iface
 
 interfaces = "".join(iface for op in ops if (iface := ts_response_interface(op)))
 
@@ -964,10 +1043,10 @@ def ts_method(op):
     if op.has_body and op.body_required:
         param_parts.append("payload: Record<string, unknown>")
     elif op.has_body:
-        # requestBody is optional in the spec: omitting payload means "send
-        # no body" (e.g. POST /v1/keys/{id}/rotate falls back to a default
-        # grace period) — request()/requestVoid() already treat body ===
-        # undefined as "omit the body entirely".
+        # requestBody is optional in the spec: omitting payload means "use
+        # server-side defaults" (e.g. POST /v1/keys/{id}/rotate falls back
+        # to a default grace period). The body sent is never fully omitted
+        # though — see body_arg below.
         param_parts.append("payload?: Record<string, unknown>")
     for name, ptype in op.query_params:
         ts_type = "number" if ptype == "integer" else "string"
@@ -990,7 +1069,16 @@ def ts_method(op):
         call_path_expr = base_path_expr
 
     method_upper = op.method.upper()
-    body_arg     = "payload" if op.has_body else "undefined"
+    if op.has_body and op.body_required:
+        body_arg = "payload"
+    elif op.has_body:
+        # Some optional-body handlers decode with json.Decoder.Decode and
+        # treat an empty (zero-byte) body's io.EOF as a 400 — there's no
+        # universal "no body sent" case they all tolerate — so this always
+        # sends a valid JSON body, {} by default, never omits it outright.
+        body_arg = "payload ?? {}"
+    else:
+        body_arg = "undefined"
     api_key_expr = "apiKey ?? this.defaultApiKey" if op.secure else "undefined"
 
     doc_lines = [
@@ -1109,9 +1197,21 @@ export class Client {{
 """)
 
 # ── src/index.ts ──────────────────────────────────────────────────────────────
+def ts_item_type_names(op):
+    rtype = ts_response_type(op)
+    if rtype in ("void", "Record<string, unknown>"):
+        return []
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
+    names = []
+    for fname, fschema in sorted(schema.get("properties", {}).items()):
+        if fschema.get("type") == "array" and array_item_properties(fschema):
+            names.append(f"{rtype}{fname.capitalize()}Item")
+    return names
+
 type_exports = ", ".join(
     t for op in ops
-    if (t := ts_response_type(op)) not in ("Record<string, unknown>", "void")
+    for t in ([ts_response_type(op)] + ts_item_type_names(op))
+    if t not in ("Record<string, unknown>", "void")
 )
 type_export_line = (
     f'export type {{ ClientOptions{", " + type_exports if type_exports else ""} }} from "./client";\n'
@@ -1287,14 +1387,16 @@ if first_query_op:
     ])
 
 # Optional-body regression test: omitting payload on a route whose
-# requestBody.required is false must send no body/Content-Type at all.
+# requestBody.required is false must still send a valid JSON body ({}) with
+# Content-Type set — some optional-body handlers 400 on a fully empty body
+# (see gen-clients.sh's ts_method for why), so this is not a zero-byte send.
 optional_body_test_ts = ""
 if first_optional_body_op:
     fn_ob = ts_name(first_optional_body_op.op_id)
     call_args_ob = []
     for p in first_optional_body_op.path_params:
         call_args_ob.append(f'"test-{p}"')
-    call_args_ob.append("undefined")  # explicit: omit the body entirely
+    call_args_ob.append("undefined")  # explicit: falls back to {}
     for name, ptype in first_optional_body_op.query_params:
         call_args_ob.append("undefined")
     if first_optional_body_op.secure:
@@ -1303,7 +1405,7 @@ if first_optional_body_op:
 
     optional_body_test_ts = "\n\n" + "\n".join([
         f'describe("Client.{fn_ob} optional body", () => {{',
-        '  it("omits the request body entirely when payload is not provided", async () => {',
+        '  it("sends an empty JSON object when payload is not provided", async () => {',
         '    let capturedInit: RequestInit | undefined;',
         '    const capFetch: typeof globalThis.fetch = async (_url, init) => {',
         '      capturedInit = init;',
@@ -1311,9 +1413,9 @@ if first_optional_body_op:
         '    };',
         '    const c = new Client("http://gw.test", { fetch: capFetch });',
         f'    {call_ob};',
-        '    assert.equal(capturedInit!.body, undefined);',
-        '    const hdrs = (capturedInit!.headers ?? {}) as Record<string, string>;',
-        '    assert.equal(hdrs["Content-Type"], undefined);',
+        '    assert.equal(capturedInit!.body, "{}");',
+        '    const hdrs = capturedInit!.headers as Record<string, string>;',
+        '    assert.equal(hdrs["Content-Type"], "application/json");',
         '  });',
         '});',
     ])

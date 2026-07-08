@@ -6,13 +6,18 @@ package crucible
 import "fmt"
 
 // APIError is returned when the gateway responds with a non-2xx status.
-// It models the error envelope: {"error":{"code":"...","message":"...","retryable":true}}.
+// It models the error envelope: {"error":{"code":"...","message":"...","retryable":true,"request_id":"..."}}.
 type APIError struct {
 	Code      string
 	Message   string
 	Retryable bool
+	// RequestID is the X-Request-ID the gateway echoed back in the error
+	// envelope (apierror.Write sets it on every error response); use it to
+	// correlate a failed call with gateway logs when reporting issues. May be
+	// empty if the gateway never generated one for the request.
+	RequestID string
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("crucible: %s: %s (retryable=%v)", e.Code, e.Message, e.Retryable)
+	return fmt.Sprintf("crucible: %s: %s (retryable=%v, request_id=%s)", e.Code, e.Message, e.Retryable, e.RequestID)
 }

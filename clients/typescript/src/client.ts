@@ -10,14 +10,32 @@ export interface ReadyzResponse {
   checks: Record<string, string>;
   status: string;
 }
+export interface ListErrorsResponseDataItem {
+  created_at: string;
+  error_code: string;
+  http_status: number;
+  id: number;
+  message: string;
+  operation: string;
+  request_id: string;
+  request_payload: string;
+}
 export interface ListErrorsResponse {
-  data: unknown[] | null;
+  data: ListErrorsResponseDataItem[] | null;
   has_more: boolean;
   limit: number;
   page: number;
 }
+export interface ListKeysResponseItemsItem {
+  created_at: string;
+  expires_at: string;
+  id: string;
+  last_used_at: string;
+  name: string;
+  prefix: string;
+}
 export interface ListKeysResponse {
-  items: unknown[] | null;
+  items: ListKeysResponseItemsItem[] | null;
   total: number;
 }
 export interface RotateKeyResponse {
@@ -149,7 +167,7 @@ export class Client {
    * @param apiKey - Override the default API key for this call.
    */
   async rotateKey(id: string, payload?: Record<string, unknown>, apiKey?: string): Promise<RotateKeyResponse> {
-    return this.request<RotateKeyResponse>("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, payload, apiKey ?? this.defaultApiKey);
+    return this.request<RotateKeyResponse>("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, payload ?? {}, apiKey ?? this.defaultApiKey);
   }
 
   /**
@@ -194,7 +212,7 @@ export class Client {
    * @param apiKey - Override the default API key for this call.
    */
   async updateWebhookEndpointSubscription(id: string, payload?: Record<string, unknown>, apiKey?: string): Promise<void> {
-    await this.requestVoid("PATCH", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, payload, apiKey ?? this.defaultApiKey);
+    await this.requestVoid("PATCH", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, payload ?? {}, apiKey ?? this.defaultApiKey);
   }
 
   /**

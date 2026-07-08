@@ -443,7 +443,7 @@ describe("Client.listErrors query encoding", () => {
 });
 
 describe("Client.rotateKey optional body", () => {
-  it("omits the request body entirely when payload is not provided", async () => {
+  it("sends an empty JSON object when payload is not provided", async () => {
     let capturedInit: RequestInit | undefined;
     const capFetch: typeof globalThis.fetch = async (_url, init) => {
       capturedInit = init;
@@ -451,9 +451,9 @@ describe("Client.rotateKey optional body", () => {
     };
     const c = new Client("http://gw.test", { fetch: capFetch });
     await c.rotateKey("test-id", undefined, "key");
-    assert.equal(capturedInit!.body, undefined);
-    const hdrs = (capturedInit!.headers ?? {}) as Record<string, string>;
-    assert.equal(hdrs["Content-Type"], undefined);
+    assert.equal(capturedInit!.body, "{}");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["Content-Type"], "application/json");
   });
 });
 
