@@ -18,7 +18,7 @@ export interface ListErrorsResponseDataItem {
   message: string;
   operation: string;
   request_id: string;
-  request_payload: string;
+  request_payload: string | null;
 }
 export interface ListErrorsResponse {
   data: ListErrorsResponseDataItem[] | null;
@@ -28,10 +28,10 @@ export interface ListErrorsResponse {
 }
 export interface ListKeysResponseItemsItem {
   created_at: string;
-  expires_at: string;
+  expires_at: string | null;
   id: string;
-  last_used_at: string;
-  name: string;
+  last_used_at: string | null;
+  name: string | null;
   prefix: string;
 }
 export interface ListKeysResponse {

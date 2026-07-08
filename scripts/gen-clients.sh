@@ -972,20 +972,35 @@ def ts_response_type(op):
         return go_name(op.op_id) + "Response"
     return "Record<string, unknown>"
 
+# nullable_by_description flags a leaf field as nullable based on this
+# codebase's openapi.go convention: every field whose wire value can actually
+# be JSON null documents that in its Description ("null if unset", "null
+# otherwise", "null means every event type", etc — audited against every
+# Description in openapi.go, zero false positives). There's no structured
+# schema-level nullability signal available (the Schema type has no such
+# field, and per-item schemas built from a reused Properties map, like the
+# /v1/keys and /v1/errors list rows, don't even carry a sibling "required"
+# list to fall back on), so this is the only spec-derivable signal gen-
+# clients.sh has for it.
+def nullable_by_description(fschema):
+    return "null" in fschema.get("description", "").lower()
+
 def ts_leaf_type(fschema):
     ftype = fschema.get("type", "unknown")
     add   = fschema.get("additionalProperties")
     if ftype == "string":
-        return "string"
+        base = "string"
     elif ftype == "boolean":
-        return "boolean"
+        base = "boolean"
     elif ftype == "integer" or ftype == "number":
-        return "number"
+        base = "number"
     elif ftype == "object" and add:
         inner    = add.get("type", "unknown")
         inner_ts = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean"}.get(inner, "unknown")
-        return f"Record<string, {inner_ts}>"
-    return "unknown"
+        base = f"Record<string, {inner_ts}>"
+    else:
+        base = "unknown"
+    return f"{base} | null" if nullable_by_description(fschema) else base
 
 def ts_interface_field_block(props):
     return "\n".join(f"  {fname}: {ts_leaf_type(fschema)};" for fname, fschema in sorted(props.items()))

@@ -1,13 +1,21 @@
 package openapi_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
+	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 )
 
 // codegenParam and codegenOp are deliberately minimal, hand-rolled JSON
@@ -119,6 +127,104 @@ func TestOpenAPI_QueryParamTypesAreCodegenSupported(t *testing.T) {
 				if !supported[p.Schema.Type] {
 					t.Errorf("%s %s: operation %s has query parameter %q with schema type %q; scripts/gen-clients.sh only supports \"string\" and \"integer\" — extend it before adding this type", method, path, op.OperationID, p.Name, p.Schema.Type)
 				}
+			}
+		}
+	}
+}
+
+// stubHealthChecker satisfies server.HealthChecker without a live dependency;
+// chi.Walk below only enumerates registered routes, it never dispatches a
+// request, so Ping is never actually called.
+type stubHealthChecker struct{}
+
+func (stubHealthChecker) Ping(_ context.Context) error { return nil }
+
+// selfServiceRoutes lists the framework self-service /v1 paths documented via
+// openapi.Handler's hand-maintained layering functions (usagePathItem,
+// keysPathItems, webhookEndpointsPathItems, errorsPathItems) rather than
+// derived from server.V1Routes like the per-product invoke routes. Because
+// they're hand-maintained in two places — the actual chi registration in
+// server/routes.go's NewRouter, and the documentation in openapi.go — the two
+// can drift independently; this list is what TestOpenAPI_SelfServiceRoutesMatchRouterMounts
+// cross-checks.
+var selfServiceRoutes = []string{
+	"/v1/keys",
+	"/v1/keys/{id}",
+	"/v1/keys/{id}/rotate",
+	"/v1/webhooks/endpoints",
+	"/v1/webhooks/endpoints/{id}",
+	"/v1/webhooks/endpoints/{id}/rotate-secret",
+	"/v1/errors",
+	"/v1/usage",
+}
+
+// TestOpenAPI_SelfServiceRoutesMatchRouterMounts guards the gap
+// TestV1RoutesDriftGuard (gateway/internal/server/routes_test.go) doesn't
+// cover: that one only cross-checks per-product /v1 invoke routes (derived
+// from the single V1Routes table both NewRouter and openapi.Build read) — it
+// never touches the framework self-service routes, which are registered in
+// NewRouter directly and documented via openapi.Handler's layering functions
+// separately, with no shared source of truth. If a route in one drifts from
+// the other (renamed, removed, or a method added/dropped) without updating
+// both, callers of the served OpenAPI document — and therefore the SDKs this
+// package's other codegen tests guard — would silently document a route
+// that doesn't exist, or miss one that does.
+//
+// Builds the real router the same way TestV1RoutesDriftGuard does: a mostly
+// nil *server.Deps is safe because chi.Walk only enumerates registered
+// routes, it never dispatches a request, so handler constructors that close
+// over Deps fields never dereference them here (see NewRouter's comments).
+// d.DB and d.Auth must be non-nil (zero-value, non-functional stand-ins are
+// fine) because the self-service routes are conditionally registered behind
+// `if d.DB != nil` / `if d.Auth != nil` checks in NewRouter.
+func TestOpenAPI_SelfServiceRoutesMatchRouterMounts(t *testing.T) {
+	healthy := stubHealthChecker{}
+	authStore := auth.NewStore(&pgxpool.Pool{}, nil, "test-salt")
+	t.Cleanup(authStore.Close)
+
+	d := &server.Deps{
+		Cfg:   &config.Config{BodyLimitBytes: 1048576, APIKeyPrefix: "cru_", DashboardOrigin: "http://localhost:3001"},
+		Redis: healthy,
+		PG:    healthy,
+		DB:    &pgxpool.Pool{},
+		Auth:  authStore,
+	}
+	router := server.NewRouter(d)
+	chiRoutes, ok := router.(chi.Routes)
+	if !ok {
+		t.Fatalf("NewRouter returned %T which does not implement chi.Routes; chi.Walk unavailable", router)
+	}
+
+	mounted := make(map[string]map[string]bool, len(selfServiceRoutes))
+	if err := chi.Walk(chiRoutes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		// chi reports a Route group's own index handler (r.Get("/", ...)
+		// inside r.Route("/v1/keys", ...)) with a trailing slash ("/v1/keys/"),
+		// unlike named sub-paths ("/v1/webhooks/endpoints"); trim it so that
+		// distinction — a chi formatting artifact, not a real path — doesn't
+		// register as a false mismatch below.
+		route = strings.TrimSuffix(route, "/")
+		if mounted[route] == nil {
+			mounted[route] = make(map[string]bool)
+		}
+		mounted[route][method] = true
+		return nil
+	}); err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+
+	documented := servedPaths(t)
+
+	for _, path := range selfServiceRoutes {
+		docMethods := documented[path]
+		mountedMethods := mounted[path]
+		for method := range docMethods {
+			if !mountedMethods[strings.ToUpper(method)] {
+				t.Errorf("openapi.Handler documents %s %s but server.NewRouter has no such mount", strings.ToUpper(method), path)
+			}
+		}
+		for method := range mountedMethods {
+			if _, ok := docMethods[strings.ToLower(method)]; !ok {
+				t.Errorf("server.NewRouter mounts %s %s but openapi.Handler does not document it", method, path)
 			}
 		}
 	}
