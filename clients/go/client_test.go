@@ -93,6 +93,199 @@ func TestInvokeEcho(t *testing.T) {
 	}
 }
 
+func TestListErrors(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/errors" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"data": []any{}, "has_more": true, "limit": 1, "page": 1})
+	})
+	_, err := c.ListErrors(context.Background(), "test-key", "", "", "", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListKeys(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/keys" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"items": []any{}, "total": 1})
+	})
+	_, err := c.ListKeys(context.Background(), "test-key", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevokeKey(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/keys/test-id" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	err := c.RevokeKey(context.Background(), "test-key", "test-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRotateKey(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/keys/test-id/rotate" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if reqBody["x"] == nil {
+			t.Error("expected request body to contain key x")
+		}
+		writeJSON(w, map[string]any{"key": "ok"})
+	})
+	resp, err := c.RotateKey(context.Background(), "test-key", "test-id", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Key != "ok" {
+		t.Errorf("Key = %q, want %q", resp.Key, "ok")
+	}
+}
+
+func TestGetUsage(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/usage" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"breakdown": []any{}, "cap": 1, "period_end": "ok", "period_start": "ok", "plan_id": "ok", "remaining": 1, "total_calls": 1, "total_units": 1, "used": 1})
+	})
+	resp, err := c.GetUsage(context.Background(), "test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Period_end != "ok" {
+		t.Errorf("Period_end = %q, want %q", resp.Period_end, "ok")
+	}
+}
+
+func TestListWebhookEndpoints(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/webhooks/endpoints" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"items": []any{}, "total": 1})
+	})
+	_, err := c.ListWebhookEndpoints(context.Background(), "test-key", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateWebhookEndpoint(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/webhooks/endpoints" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if reqBody["x"] == nil {
+			t.Error("expected request body to contain key x")
+		}
+		writeJSON(w, map[string]any{"active": true, "created_at": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": []any{}, "url": "ok"})
+	})
+	resp, err := c.CreateWebhookEndpoint(context.Background(), "test-key", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Created_at != "ok" {
+		t.Errorf("Created_at = %q, want %q", resp.Created_at, "ok")
+	}
+}
+
+func TestDeleteWebhookEndpoint(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/webhooks/endpoints/test-id" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	err := c.DeleteWebhookEndpoint(context.Background(), "test-key", "test-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateWebhookEndpointSubscription(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v1/webhooks/endpoints/test-id" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if reqBody["x"] == nil {
+			t.Error("expected request body to contain key x")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	err := c.UpdateWebhookEndpointSubscription(context.Background(), "test-key", "test-id", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRotateWebhookEndpointSecret(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/webhooks/endpoints/test-id/rotate-secret" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"secret_hex": "ok"})
+	})
+	resp, err := c.RotateWebhookEndpointSecret(context.Background(), "test-key", "test-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Secret_hex != "ok" {
+		t.Errorf("Secret_hex = %q, want %q", resp.Secret_hex, "ok")
+	}
+}
+
 func TestInvokeEcho_nullBody(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -107,6 +300,51 @@ func TestInvokeEcho_nullBody(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty map, got %v", got)
+	}
+}
+
+func TestListErrors_queryEncoding(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("from"); got != "v" {
+			t.Errorf("query from = %q, want %q", got, "v")
+		}
+		if got := r.URL.Query().Get("to"); got != "v" {
+			t.Errorf("query to = %q, want %q", got, "v")
+		}
+		if got := r.URL.Query().Get("operation"); got != "v" {
+			t.Errorf("query operation = %q, want %q", got, "v")
+		}
+		if got := r.URL.Query().Get("code"); got != "v" {
+			t.Errorf("query code = %q, want %q", got, "v")
+		}
+		if got := r.URL.Query().Get("page"); got != "2" {
+			t.Errorf("query page = %q, want %q", got, "2")
+		}
+		if got := r.URL.Query().Get("limit"); got != "2" {
+			t.Errorf("query limit = %q, want %q", got, "2")
+		}
+		writeJSON(w, map[string]any{})
+	})
+	_, _ = c.ListErrors(context.Background(), "test-key", "v", "v", "v", "v", 2, 2)
+}
+
+func TestRotateKey_defaultsMissingOptionalBody(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json (a body must still be sent)", ct)
+		}
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if len(reqBody) != 0 {
+			t.Errorf("request body = %v, want {}", reqBody)
+		}
+		writeJSON(w, map[string]any{})
+	})
+	_, err := c.RotateKey(context.Background(), "test-key", "test-id", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

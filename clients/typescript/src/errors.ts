@@ -7,24 +7,33 @@ export interface ErrorBody {
     code: string;
     message: string;
     retryable?: boolean;
+    request_id?: string;
   };
 }
 
 /**
  * ApiError is thrown when the gateway returns a non-2xx status.
- * It models the error envelope: {"error":{"code":"...","message":"...","retryable":true}}.
+ * It models the error envelope: {"error":{"code":"...","message":"...","retryable":true,"request_id":"..."}}.
  */
 export class ApiError extends Error {
   readonly code: string;
   readonly retryable: boolean | undefined;
   readonly status: number;
+  /**
+   * The X-Request-ID the gateway echoed back in the error envelope
+   * (apierror.Write sets it on every error response); use it to correlate a
+   * failed call with gateway logs when reporting issues. Undefined if the
+   * gateway never generated one for the request.
+   */
+  readonly requestId: string | undefined;
 
-  constructor(status: number, code: string, message: string, retryable?: boolean) {
+  constructor(status: number, code: string, message: string, retryable?: boolean, requestId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.requestId = requestId;
     // Restore prototype chain (required when extending built-ins in ES5 targets).
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -36,6 +45,7 @@ export class ApiError extends Error {
     let code = "UNKNOWN";
     let message = `HTTP ${resp.status}`;
     let retryable: boolean | undefined;
+    let requestId: string | undefined;
     try {
       const body = (await resp.json()) as ErrorBody;
       // Use || / ?? so the defensive defaults survive a partial error object ({"error":{}}).
@@ -44,9 +54,10 @@ export class ApiError extends Error {
       code = body.error.code || code;
       message = body.error.message || message;
       retryable = body.error.retryable ?? retryable;
+      requestId = body.error.request_id || requestId;
     } catch (e) {
       message = `HTTP ${resp.status} (invalid error body: ${e instanceof Error ? e.message : String(e)})`;
     }
-    return new ApiError(resp.status, code, message, retryable);
+    return new ApiError(resp.status, code, message, retryable, requestId);
   }
 }

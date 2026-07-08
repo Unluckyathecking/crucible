@@ -4,55 +4,71 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Client, ApiError } from "../src/index";
 
-function mockFetch(status: number, body: unknown): typeof globalThis.fetch {
-  return async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-}
-
 describe("Client.healthz", () => {
-  it("returns typed HealthzResponse on 200", async () => {
-    const c = new Client("http://gw.test", { fetch: mockFetch(200, {"status": "ok"}) });
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"status": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
     const got = await c.healthz();
+    assert.equal(String(capturedUrl), "http://gw.test/healthz");
+    assert.equal(capturedInit!.method, "GET");
     assert.equal(got.status, "ok");
   });
 });
 
 describe("Client.readyz", () => {
-  it("returns typed ReadyzResponse on 200", async () => {
-    const c = new Client("http://gw.test", { fetch: mockFetch(200, {"checks": {"db": "ok"}, "status": "ok"}) });
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"checks": {"db": "ok"}, "status": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
     const got = await c.readyz();
+    assert.equal(String(capturedUrl), "http://gw.test/readyz");
+    assert.equal(capturedInit!.method, "GET");
     assert.equal(got.status, "ok");
   });
 });
 
 describe("Client.invokeEcho", () => {
-  it("sends X-API-Key header and returns Record<string, unknown> on 200", async () => {
+  it("sends the expected request and handles the 200 response", async () => {
     let capturedInit: RequestInit | undefined;
-    const capFetch: typeof globalThis.fetch = async (_url, init) => {
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
       capturedInit = init;
-      return new Response(JSON.stringify({"result":"ok"}), {
+      return new Response(JSON.stringify({"result": "ok"}), {
         status: 200, headers: { "Content-Type": "application/json" },
       });
     };
     const c = new Client("http://gw.test", { fetch: capFetch });
     const got = await c.invokeEcho({}, "key");
-    assert.equal(got["result"], "ok");
-    assert.ok(capturedInit, "capFetch was not called");
-    const body = JSON.parse(capturedInit!.body as string);
-    assert.deepEqual(body, {});
+    assert.equal(String(capturedUrl), "http://gw.test/v1/echo");
+    assert.equal(capturedInit!.method, "POST");
     const hdrs = capturedInit!.headers as Record<string, string>;
     assert.equal(hdrs["X-API-Key"], "key");
+    const reqBody = JSON.parse(capturedInit!.body as string);
+    assert.deepEqual(reqBody, {});
+    assert.equal((got as Record<string, unknown>)["result"], "ok");
   });
 
   it("falls back to constructor apiKey when not provided", async () => {
     let capturedInit2: RequestInit | undefined;
     const capFetch2: typeof globalThis.fetch = async (_url, init) => {
       capturedInit2 = init;
-      return new Response(JSON.stringify({"result":"ok"}), {
+      return new Response(JSON.stringify({"result": "ok"}), {
         status: 200, headers: { "Content-Type": "application/json" },
       });
     };
@@ -60,6 +76,384 @@ describe("Client.invokeEcho", () => {
     await c2.invokeEcho({});
     const hdrs2 = capturedInit2!.headers as Record<string, string>;
     assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.listErrors", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"data": [], "has_more": true, "limit": 1, "page": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.listErrors(undefined, undefined, undefined, undefined, undefined, undefined, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/errors");
+    assert.equal(capturedInit!.method, "GET");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.ok(got);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"data": [], "has_more": true, "limit": 1, "page": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.listErrors(undefined, undefined, undefined, undefined, undefined, undefined);
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.listKeys", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"items": [], "total": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.listKeys(undefined, undefined, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/keys");
+    assert.equal(capturedInit!.method, "GET");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.ok(got);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"items": [], "total": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.listKeys(undefined, undefined);
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.revokeKey", () => {
+  it("sends the expected request and handles the 204 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(null, { status: 204 });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.revokeKey("test-id", "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/keys/test-id");
+    assert.equal(capturedInit!.method, "DELETE");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.equal(got, undefined);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(null, { status: 204 });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.revokeKey("test-id");
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.rotateKey", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"key": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.rotateKey("test-id", {}, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/keys/test-id/rotate");
+    assert.equal(capturedInit!.method, "POST");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    const reqBody = JSON.parse(capturedInit!.body as string);
+    assert.deepEqual(reqBody, {});
+    assert.equal(got.key, "ok");
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"key": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.rotateKey("test-id", {});
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.getUsage", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"breakdown": [], "cap": 1, "period_end": "ok", "period_start": "ok", "plan_id": "ok", "remaining": 1, "total_calls": 1, "total_units": 1, "used": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.getUsage("key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/usage");
+    assert.equal(capturedInit!.method, "GET");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.equal(got.period_end, "ok");
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"breakdown": [], "cap": 1, "period_end": "ok", "period_start": "ok", "plan_id": "ok", "remaining": 1, "total_calls": 1, "total_units": 1, "used": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.getUsage();
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.listWebhookEndpoints", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"items": [], "total": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.listWebhookEndpoints(undefined, undefined, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/endpoints");
+    assert.equal(capturedInit!.method, "GET");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.ok(got);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"items": [], "total": 1}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.listWebhookEndpoints(undefined, undefined);
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.createWebhookEndpoint", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"active": true, "created_at": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": [], "url": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.createWebhookEndpoint({}, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/endpoints");
+    assert.equal(capturedInit!.method, "POST");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    const reqBody = JSON.parse(capturedInit!.body as string);
+    assert.deepEqual(reqBody, {});
+    assert.equal(got.created_at, "ok");
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"active": true, "created_at": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": [], "url": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.createWebhookEndpoint({});
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.deleteWebhookEndpoint", () => {
+  it("sends the expected request and handles the 204 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(null, { status: 204 });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.deleteWebhookEndpoint("test-id", "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/endpoints/test-id");
+    assert.equal(capturedInit!.method, "DELETE");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.equal(got, undefined);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(null, { status: 204 });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.deleteWebhookEndpoint("test-id");
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.updateWebhookEndpointSubscription", () => {
+  it("sends the expected request and handles the 204 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(null, { status: 204 });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.updateWebhookEndpointSubscription("test-id", {}, "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/endpoints/test-id");
+    assert.equal(capturedInit!.method, "PATCH");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    const reqBody = JSON.parse(capturedInit!.body as string);
+    assert.deepEqual(reqBody, {});
+    assert.equal(got, undefined);
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(null, { status: 204 });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.updateWebhookEndpointSubscription("test-id", {});
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.rotateWebhookEndpointSecret", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"secret_hex": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.rotateWebhookEndpointSecret("test-id", "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/endpoints/test-id/rotate-secret");
+    assert.equal(capturedInit!.method, "POST");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.equal(got.secret_hex, "ok");
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"secret_hex": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.rotateWebhookEndpointSecret("test-id");
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
+describe("Client.listErrors query encoding", () => {
+  it("URL-encodes query parameters", async () => {
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (u) => {
+      capturedUrl = u;
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    await c.listErrors("v", "v", "v", "v", 2, 2, "key");
+    const url = new URL(String(capturedUrl));
+    assert.equal(url.searchParams.get("from"), "v");
+    assert.equal(url.searchParams.get("to"), "v");
+    assert.equal(url.searchParams.get("operation"), "v");
+    assert.equal(url.searchParams.get("code"), "v");
+    assert.equal(url.searchParams.get("page"), "2");
+    assert.equal(url.searchParams.get("limit"), "2");
+  });
+});
+
+describe("Client.rotateKey optional body", () => {
+  it("sends an empty JSON object when payload is not provided", async () => {
+    let capturedInit: RequestInit | undefined;
+    const capFetch: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit = init;
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    await c.rotateKey("test-id", undefined, "key");
+    assert.equal(capturedInit!.body, "{}");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["Content-Type"], "application/json");
   });
 });
 
@@ -120,3 +514,12 @@ describe("ApiError", () => {
     );
   });
 });
+
+function mockFetch(status: number, body: unknown): typeof globalThis.fetch {
+  return async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+}

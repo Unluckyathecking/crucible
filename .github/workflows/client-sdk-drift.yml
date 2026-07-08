@@ -8,6 +8,10 @@ on:
       - "clients/go/**"
       - "clients/typescript/**"
       - "scripts/gen-clients.sh"
+      - "gateway/cmd/spec-dump/**"
+      - "gateway/internal/openapi/**"
+      - "gateway/internal/server/routes.go"
+      - "gateway/internal/server/routes_table.go"
       - ".github/workflows/client-sdk-drift.yml"
   pull_request:
     paths:
@@ -15,6 +19,10 @@ on:
       - "clients/go/**"
       - "clients/typescript/**"
       - "scripts/gen-clients.sh"
+      - "gateway/cmd/spec-dump/**"
+      - "gateway/internal/openapi/**"
+      - "gateway/internal/server/routes.go"
+      - "gateway/internal/server/routes_table.go"
       - ".github/workflows/client-sdk-drift.yml"
 
 jobs:
@@ -26,14 +34,28 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-          cache-dependency-path: clients/go/go.mod
+          go-version: "1.25.11"
+          cache-dependency-path: |
+            gateway/go.sum
+            clients/go/go.mod
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: clients/typescript/package-lock.json
+
+      # gateway/cmd/spec-dump renders the gateway's real served OpenAPI
+      # document (openapi.Build + openapi.Handler, the same code path
+      # routes.go mounts at GET /openapi.json). Comparing its output to the
+      # committed clients/openapi.json is what actually catches drift between
+      # the framework's routes and the snapshot the SDK generator reads —
+      # the "Regenerate clients from snapshot" step below only proves the
+      # clients match the snapshot, not that the snapshot itself is current.
+      - name: Verify openapi.json matches the gateway's served document
+        run: |
+          go run ./gateway/cmd/spec-dump > /tmp/served-openapi.json
+          diff -u clients/openapi.json /tmp/served-openapi.json
 
       - name: Regenerate clients from snapshot
         run: bash scripts/gen-clients.sh

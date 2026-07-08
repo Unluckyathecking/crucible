@@ -126,6 +126,62 @@
         "responses": {
           "200": {
             "description": "Successful invocation",
+            "headers": {
+              "RateLimit-Limit": {
+                "description": "Per-minute request cap for the customer's plan",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "description": "Requests remaining in the current sliding window",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Reset": {
+                "description": "Unix timestamp when the sliding window fully resets",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Limit": {
+                "description": "Monthly billable-unit cap for the customer's plan",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Remaining": {
+                "description": "Billable units remaining in the current calendar month",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Reset": {
+                "description": "Unix timestamp when the monthly quota resets (UTC month-end)",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "Alias for RateLimit-Limit",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "Alias for RateLimit-Remaining",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "Alias for RateLimit-Reset",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -175,7 +231,63 @@
             }
           },
           "429": {
-            "description": "Rate limited",
+            "description": "Rate limited or quota exceeded. RateLimit-*/X-RateLimit-* headers are always present. X-Quota-* headers are present only on quota-triggered 429s.",
+            "headers": {
+              "RateLimit-Limit": {
+                "description": "Per-minute request cap for the customer's plan",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "description": "Requests remaining in the current sliding window",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Reset": {
+                "description": "Unix timestamp when the sliding window fully resets",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Limit": {
+                "description": "Monthly billable-unit cap for the customer's plan",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Remaining": {
+                "description": "Billable units remaining in the current calendar month",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Quota-Reset": {
+                "description": "Unix timestamp when the monthly quota resets (UTC month-end)",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "Alias for RateLimit-Limit",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "Alias for RateLimit-Remaining",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "Alias for RateLimit-Reset",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -207,6 +319,964 @@
         }
       }
     },
+    "/v1/errors": {
+      "get": {
+        "operationId": "list_errors",
+        "summary": "List the authenticated customer's own error-history events",
+        "tags": [
+          "errors"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to 30 days ago",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to today; range capped at 90 days",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Exact /v1/... path filter",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "description": "Exact error code filter, e.g. RATE_LIMITED",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; default 50, capped at 200",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own error-history events, newest-first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "description": "Matching error_events rows, newest-first",
+                      "properties": {
+                        "created_at": {
+                          "type": "string",
+                          "description": "RFC3339 creation timestamp"
+                        },
+                        "error_code": {
+                          "type": "string",
+                          "description": "Stable error code, e.g. RATE_LIMITED"
+                        },
+                        "http_status": {
+                          "type": "integer"
+                        },
+                        "id": {
+                          "type": "integer",
+                          "description": "error_events row id"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "operation": {
+                          "type": "string",
+                          "description": "The /v1 route pattern that produced the error"
+                        },
+                        "request_id": {
+                          "type": "string",
+                          "description": "X-Request-ID of the failed request"
+                        },
+                        "request_payload": {
+                          "type": "string",
+                          "description": "Captured request body, bounded UTF-8; null if capture was off or the row predates it"
+                        }
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean",
+                      "description": "True when more rows exist beyond this page"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "page": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more",
+                    "page",
+                    "limit"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — invalid date/operation/code filter or page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys": {
+      "get": {
+        "operationId": "list_keys",
+        "summary": "List the authenticated customer's active API keys",
+        "tags": [
+          "keys"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Page size; default 20, capped at 100",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's active API keys (hash and full key never included)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Paginated envelope of the caller's active API keys",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "description": "API key objects for this page",
+                      "properties": {
+                        "created_at": {
+                          "type": "string",
+                          "description": "RFC3339 creation timestamp"
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "description": "RFC3339 expiry set during a rotation grace window; null otherwise"
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "API key UUID"
+                        },
+                        "last_used_at": {
+                          "type": "string",
+                          "description": "RFC3339 timestamp of last successful auth; null if never used"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Customer-supplied label; null if unset"
+                        },
+                        "prefix": {
+                          "type": "string",
+                          "description": "Visible key prefix, e.g. \"cru_live_A3F9NK4M7QHGBVTP\""
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total active keys across all pages"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys/{id}": {
+      "delete": {
+        "operationId": "revoke_key",
+        "summary": "Revoke an API key owned by the authenticated customer",
+        "tags": [
+          "keys"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "API key UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Key revoked"
+          },
+          "400": {
+            "description": "Bad request — malformed key id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found (includes ids owned by another customer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys/{id}/rotate": {
+      "post": {
+        "operationId": "rotate_key",
+        "summary": "Rotate an API key owned by the authenticated customer",
+        "tags": [
+          "keys"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "API key UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "grace_secs": {
+                    "type": "integer",
+                    "description": "Seconds the old key stays valid after rotation; clamped to [0, 604800] (7 days); default 3600 (1 hour)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Key rotated; the new full key is present only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "description": "The new full API key. Returned exactly once — store it now, it cannot be retrieved again."
+                    }
+                  },
+                  "required": [
+                    "key"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — malformed key id or invalid json body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found (includes ids owned by another customer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "operationId": "get_usage",
+        "summary": "Get the authenticated customer's current billing-period usage against their plan quota",
+        "tags": [
+          "usage"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current-period usage — same signals the quota middleware enforces against",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "breakdown": {
+                      "type": "array",
+                      "description": "Per-operation usage, ordered by total_units descending"
+                    },
+                    "cap": {
+                      "type": "integer",
+                      "description": "Monthly billable-unit cap for the customer's plan (0 = unlimited)"
+                    },
+                    "period_end": {
+                      "type": "string",
+                      "description": "RFC3339 end of the current UTC billing period"
+                    },
+                    "period_start": {
+                      "type": "string",
+                      "description": "RFC3339 start of the current UTC billing period"
+                    },
+                    "plan_id": {
+                      "type": "string",
+                      "description": "The customer's current plan id"
+                    },
+                    "remaining": {
+                      "type": "integer",
+                      "description": "Billable units remaining this month (-1 = unlimited)"
+                    },
+                    "total_calls": {
+                      "type": "integer",
+                      "description": "Count of usage_events rows across all operations this period"
+                    },
+                    "total_units": {
+                      "type": "integer",
+                      "description": "Sum of billable_units across all operations this period"
+                    },
+                    "used": {
+                      "type": "integer",
+                      "description": "Billable units consumed so far this calendar month"
+                    }
+                  },
+                  "required": [
+                    "plan_id",
+                    "used",
+                    "cap",
+                    "remaining",
+                    "period_start",
+                    "period_end",
+                    "total_units",
+                    "total_calls",
+                    "breakdown"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/endpoints": {
+      "get": {
+        "operationId": "list_webhook_endpoints",
+        "summary": "List the authenticated customer's registered webhook endpoints",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Page size; default 20, capped at 100",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's registered endpoints (secrets never included)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Paginated envelope of registered webhook endpoints",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "description": "Webhook endpoint objects for this page"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total registered endpoints across all pages"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_webhook_endpoint",
+        "summary": "Register a new outbound webhook endpoint",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subscribed_events": {
+                    "type": "array",
+                    "description": "Optional subset of event types; omit or null to receive every event type"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "Must be https:// and must not resolve to a private/loopback/link-local address"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Endpoint registered; secret_hex is present only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "active": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "description": "RFC3339 creation timestamp"
+                    },
+                    "id": {
+                      "type": "string",
+                      "description": "Endpoint UUID"
+                    },
+                    "secret_hex": {
+                      "type": "string",
+                      "description": "Signing secret, hex-encoded. Returned exactly once — store it now, it cannot be retrieved again."
+                    },
+                    "subscribed_events": {
+                      "type": "array",
+                      "description": "Event types this endpoint receives; null means every event type"
+                    },
+                    "url": {
+                      "type": "string",
+                      "description": "The registered HTTPS delivery URL"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "url",
+                    "active",
+                    "created_at",
+                    "secret_hex"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — invalid url, or unknown subscribed_events entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/endpoints/{id}": {
+      "patch": {
+        "operationId": "update_webhook_endpoint_subscription",
+        "summary": "Replace the subscribed event types for a webhook endpoint owned by the authenticated customer",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subscribed_events": {
+                    "type": "array",
+                    "description": "Replaces the endpoint's subscribed event types; omit or null to resubscribe to every event type"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Subscription updated"
+          },
+          "400": {
+            "description": "Bad request — malformed endpoint id, invalid json body, or unknown subscribed_events entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Endpoint not found (includes ids owned by another customer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_webhook_endpoint",
+        "summary": "Deactivate a registered webhook endpoint owned by the authenticated customer",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Endpoint deactivated"
+          },
+          "400": {
+            "description": "Bad request — malformed endpoint id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Endpoint not found (includes ids owned by another customer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/endpoints/{id}/rotate-secret": {
+      "post": {
+        "operationId": "rotate_webhook_endpoint_secret",
+        "summary": "Rotate the signing secret for a webhook endpoint owned by the authenticated customer",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret rotated; secret_hex is present only in this response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "secret_hex": {
+                      "type": "string",
+                      "description": "The new signing secret, hex-encoded. Returned exactly once — store it now, it cannot be retrieved again. The previous secret stops verifying immediately."
+                    }
+                  },
+                  "required": [
+                    "secret_hex"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — malformed endpoint id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Endpoint not found (includes ids owned by another customer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/webhooks/stripe": {
       "post": {
         "operationId": "stripe_webhook",
@@ -217,6 +1287,213 @@
         "responses": {
           "200": {
             "description": "Webhook processed"
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "api_key.revoked": {
+      "post": {
+        "operationId": "webhook_api_key_revoked",
+        "summary": "Fired when a customer's API key is revoked.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Internal customer UUID"
+                  },
+                  "key_id": {
+                    "type": "string",
+                    "description": "The revoked key's id"
+                  }
+                },
+                "required": [
+                  "customer_id",
+                  "key_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "api_key.rotated": {
+      "post": {
+        "operationId": "webhook_api_key_rotated",
+        "summary": "Fired when a customer rotates an API key; the old key enters its grace-period expiry.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Internal customer UUID"
+                  },
+                  "new_key_id": {
+                    "type": "string",
+                    "description": "The newly issued key's id"
+                  },
+                  "old_key_id": {
+                    "type": "string",
+                    "description": "The rotated-out key's id"
+                  }
+                },
+                "required": [
+                  "customer_id",
+                  "old_key_id",
+                  "new_key_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "quota.exceeded": {
+      "post": {
+        "operationId": "webhook_quota_exceeded",
+        "summary": "Fired when a request is rejected because the customer's monthly billable-unit quota is exhausted.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cap": {
+                    "type": "integer",
+                    "description": "The plan's monthly billable-unit cap"
+                  },
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Internal customer UUID"
+                  },
+                  "plan": {
+                    "type": "string",
+                    "description": "The customer's plan id at the time of rejection"
+                  }
+                },
+                "required": [
+                  "customer_id",
+                  "plan",
+                  "cap"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "subscription.deleted": {
+      "post": {
+        "operationId": "webhook_subscription_deleted",
+        "summary": "Fired when a customer's Stripe subscription is canceled; plan_id reverts to free.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Internal customer UUID"
+                  },
+                  "plan_id": {
+                    "type": "string",
+                    "description": "Always \"free\" for this event"
+                  }
+                },
+                "required": [
+                  "customer_id",
+                  "plan_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "subscription.updated": {
+      "post": {
+        "operationId": "webhook_subscription_updated",
+        "summary": "Fired when a customer's Stripe subscription is created or updated (including plan changes).",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Internal customer UUID"
+                  },
+                  "plan_id": {
+                    "type": "string",
+                    "description": "The plan the customer is now on"
+                  }
+                },
+                "required": [
+                  "customer_id",
+                  "plan_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
           }
         }
       }
@@ -236,13 +1513,19 @@
               "message": {
                 "type": "string"
               },
+              "request_id": {
+                "type": "string",
+                "description": "X-Request-ID value echoed from the request; always present in error responses (value may be empty string if no request ID was generated). Use for support correlation."
+              },
               "retryable": {
                 "type": "boolean"
               }
             },
             "required": [
               "code",
-              "message"
+              "message",
+              "retryable",
+              "request_id"
             ]
           }
         },
