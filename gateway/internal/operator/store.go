@@ -1,6 +1,11 @@
 // Package operator provides the read-only operator/admin query layer for the Crucible gateway.
-// All Store methods are SELECT-only; no INSERT, UPDATE, or DELETE exists anywhere in this package.
-// Secret columns (api_keys.hash, etc.) are never selected.
+// Every Store method is SELECT-only: it never mutates customer, plan, API-key, or billing
+// state, and secret columns (api_keys.hash, etc.) are never selected.
+//
+// The one exception is the Enterprise Edition operator-token management path (tokens_ee.go):
+// TokenStore creates and revokes the operator's OWN admin credentials in the operator_tokens
+// table, gated at runtime by the deployment license. That path never touches customer/plan/
+// key/billing data, so the read-only guarantee over the tenant data model above still holds.
 package operator
 
 import (
