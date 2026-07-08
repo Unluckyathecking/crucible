@@ -38,6 +38,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
 	"github.com/Unluckyathecking/crucible/gateway/internal/ratelimit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
+	"github.com/Unluckyathecking/crucible/gateway/internal/selfaudit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selferrors"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selfusage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
@@ -249,6 +250,17 @@ func NewRouter(d *Deps) http.Handler {
 		// per-product block below is mounted under, without capturing
 		// POST/other methods at this path.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/errors", selferrors.Handler(d.DB))
+
+		// === Customer audit-export self-service route (Enterprise Edition;
+		// auth gated; active when DB is set; read-only) ===
+		// GET /v1/audit: the caller's own audit_log rows — actions the customer
+		// performed or actions performed against them — newest-first,
+		// action-filterable, paginated. Same middleware chain and registration
+		// idiom as GET /v1/errors above. The handler itself enforces the
+		// license.FeatureAuditExport gate (403 FEATURE_NOT_LICENSED when
+		// unlicensed) and derives the customer strictly from auth.FromContext, so
+		// it can only ever return the caller's own history.
+		r.With(auth.Middleware(d.Auth)).Get("/v1/audit", selfaudit.Handler(d.DB, d.License))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===
@@ -296,8 +308,21 @@ func NewRouter(d *Deps) http.Handler {
 	// additionally require d.DB (mirroring the d.DB-gated /v1/webhooks block above)
 	// since, unlike operator.Store, they talk to Postgres directly.
 	if d.OperatorStore != nil && d.OperatorToken != "" {
+		// Operator-token authentication. The static OPERATOR_TOKEN is the
+		// community path and always works. When the DB is wired, use the EE
+		// TokenMiddleware, which additionally accepts DB-backed operator_tokens
+		// — but only when the deployment license grants FeatureOperatorTokens
+		// (nil license = community = DB never consulted, behaviour identical to
+		// the static-only Middleware). Without a DB there is nowhere to store
+		// tokens, so the static-only Middleware is used.
+		adminAuth := operator.Middleware(d.OperatorToken)
+		var tokenStore *operator.TokenStore
+		if d.DB != nil {
+			tokenStore = operator.NewTokenStore(d.DB)
+			adminAuth = operator.TokenMiddleware(d.OperatorToken, tokenStore, d.Cfg.APIKeyHashSalt, d.License)
+		}
 		r.Route("/v1/admin", func(r chi.Router) {
-			r.Use(operator.Middleware(d.OperatorToken))
+			r.Use(adminAuth)
 			r.Get("/customers", operator.ListCustomersHandler(d.OperatorStore))
 			r.Get("/customers/{id}", operator.GetCustomerHandler(d.OperatorStore))
 			r.Get("/customers/{id}/usage", operator.GetCustomerUsageHandler(d.OperatorStore))
@@ -307,6 +332,15 @@ func NewRouter(d *Deps) http.Handler {
 				r.Get("/webhooks/deadletters", webhookout.ListDeadLettersHandler(d.DB))
 				r.Post("/webhooks/deadletters/{id}/replay", webhookout.ReplaySingleHandler(d.DB))
 				r.Post("/webhooks/deadletters/replay", webhookout.ReplayBulkHandler(d.DB))
+
+				// === Operator multi-token management (Enterprise Edition) ===
+				// DB-backed operator tokens with per-token names and revocation.
+				// Each handler enforces the license.FeatureOperatorTokens gate
+				// (403 FEATURE_NOT_LICENSED when unlicensed); the static
+				// OPERATOR_TOKEN bearer bootstraps access to mint the first one.
+				r.Post("/tokens", operator.CreateTokenHandler(tokenStore, d.DB, d.Cfg.APIKeyHashSalt, d.License))
+				r.Get("/tokens", operator.ListTokensHandler(tokenStore, d.License))
+				r.Delete("/tokens/{id}", operator.RevokeTokenHandler(tokenStore, d.DB, d.License))
 			}
 		})
 	}

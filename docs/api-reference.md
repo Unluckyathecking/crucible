@@ -193,6 +193,87 @@ Readiness probe. Checks Redis and Postgres connectivity. No authentication requi
 
 Status is `"degraded"` if any dependency is unreachable.
 
+## Enterprise Edition Endpoints
+
+The following endpoint groups are **Enterprise Edition — requires license**. They
+are present in every build but return `403 FEATURE_NOT_LICENSED` unless the
+deployment runs with a valid `CRUCIBLE_LICENSE_KEY` granting the corresponding
+feature. A community (unlicensed) deployment is unaffected; nothing else changes.
+
+### GET /v1/audit — customer audit export
+
+*Requires license feature `audit_export`.* API-key authenticated, read-only.
+Returns the calling customer's own `audit_log` rows — actions the customer
+performed, and administrative actions taken against the customer — newest-first.
+There is no customer identifier in the request; scope is derived strictly from the
+API key, so a customer can only ever see their own audit history.
+
+**Query parameters:**
+
+| Param | Default | Meaning |
+|---|---|---|
+| `action` | — | Exact-match filter on the audit action (e.g. `api_key.created`). |
+| `page` | 1 | 1-based page number. |
+| `limit` | 50 | Page size (max 200). |
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": 1024,
+      "actor_type": "customer",
+      "action": "api_key.created",
+      "target_type": "api_key",
+      "target_id": "…",
+      "details": {"name": "prod"},
+      "created_at": "2026-07-01T12:00:00Z"
+    }
+  ],
+  "has_more": false,
+  "page": 1,
+  "limit": 50
+}
+```
+
+`actor_id` is intentionally omitted so an administrative actor's internal identity
+is never surfaced to customers.
+
+**Errors:** `403 FEATURE_NOT_LICENSED` (unlicensed), `400 BAD_REQUEST` (malformed
+`action` filter or page too large), `401 UNAUTHORIZED` (missing/invalid key).
+
+### /v1/admin/tokens — operator token management
+
+*Requires license feature `operator_tokens`.* Operator authenticated (see
+operator token / `OPERATOR_TOKEN` gating on the `/v1/admin` group). DB-backed
+operator tokens are additive: the static `OPERATOR_TOKEN` continues to work in
+every edition, and licensed deployments may additionally mint named, revocable
+tokens. Present the token as `Authorization: Bearer <token>`.
+
+**POST /v1/admin/tokens** — mint a token. Body `{"name":"ci-runner"}`. The full
+token (prefix `opt_`) is returned exactly once and is never recoverable:
+
+```json
+{"id":"…","name":"ci-runner","created_at":"…","token":"opt_…"}
+```
+
+Returns `201 Created`.
+
+**GET /v1/admin/tokens** — list tokens. Never returns hashes or token material.
+Paginated (`page`, `per_page`) with the standard `{"items":[…],"total":N}`
+envelope; each item is `{id, name, created_at, revoked_at}`.
+
+**DELETE /v1/admin/tokens/{id}** — revoke a token. Returns `204 No Content`.
+Revocation takes effect on the very next request (no cache); revoking an unknown
+id returns `404 NOT_FOUND`.
+
+Token create and revoke both emit `audit_log` rows
+(`operator_token.created` / `operator_token.revoked`).
+
+**Errors:** `403 FEATURE_NOT_LICENSED` (unlicensed), `400 BAD_REQUEST` (missing
+name or bad id), `401 UNAUTHORIZED` (bad operator token).
+
 ## Error Reference
 
 All errors follow a consistent envelope:
@@ -215,6 +296,8 @@ The `retryable` field indicates whether the same request might succeed if retrie
 |---|---|---|
 | 400 | `BAD_REQUEST` | Invalid JSON in the request body. |
 | 401 | `UNAUTHORIZED` | Missing, malformed, or invalid API key. |
+| 403 | `FEATURE_NOT_LICENSED` | Endpoint is an Enterprise Edition feature; the deployment has no license granting it. |
+| 404 | `NOT_FOUND` | The addressed resource does not exist. |
 | 500 | `INTERNAL` | Auth lookup failed due to internal error (message: "auth lookup failed"). |
 | 429 | `RATE_LIMITED` | Per-minute rate limit exceeded for your plan. Retry after 60 seconds. |
 | 429 | `QUOTA_EXCEEDED` | Monthly billable-unit cap reached. Does not reset until the next billing cycle. |
