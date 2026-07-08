@@ -11,20 +11,20 @@ export interface ReadyzResponse {
   status: string;
 }
 export interface ListErrorsResponse {
-  data: unknown[];
+  data: unknown[] | null;
   has_more: boolean;
   limit: number;
   page: number;
 }
 export interface ListKeysResponse {
-  items: unknown[];
+  items: unknown[] | null;
   total: number;
 }
 export interface RotateKeyResponse {
   key: string;
 }
 export interface GetUsageResponse {
-  breakdown: unknown[];
+  breakdown: unknown[] | null;
   cap: number;
   period_end: string;
   period_start: string;
@@ -34,12 +34,8 @@ export interface GetUsageResponse {
   total_units: number;
   used: number;
 }
-export interface ListWebhookDeliveriesResponse {
-  items: unknown[];
-  total: number;
-}
 export interface ListWebhookEndpointsResponse {
-  items: unknown[];
+  items: unknown[] | null;
   total: number;
 }
 export interface CreateWebhookEndpointResponse {
@@ -47,7 +43,7 @@ export interface CreateWebhookEndpointResponse {
   created_at: string;
   id: string;
   secret_hex: string;
-  subscribed_events: unknown[];
+  subscribed_events: unknown[] | null;
   url: string;
 }
 export interface RotateWebhookEndpointSecretResponse {
@@ -152,7 +148,7 @@ export class Client {
    * POST /v1/keys/{id}/rotate — rotate key.
    * @param apiKey - Override the default API key for this call.
    */
-  async rotateKey(id: string, payload: Record<string, unknown>, apiKey?: string): Promise<RotateKeyResponse> {
+  async rotateKey(id: string, payload?: Record<string, unknown>, apiKey?: string): Promise<RotateKeyResponse> {
     return this.request<RotateKeyResponse>("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, payload, apiKey ?? this.defaultApiKey);
   }
 
@@ -162,19 +158,6 @@ export class Client {
    */
   async getUsage(apiKey?: string): Promise<GetUsageResponse> {
     return this.request<GetUsageResponse>("GET", "/v1/usage", undefined, apiKey ?? this.defaultApiKey);
-  }
-
-  /**
-   * GET /v1/webhooks/deliveries — list webhook deliveries.
-   * @param apiKey - Override the default API key for this call.
-   */
-  async listWebhookDeliveries(page?: number, perPage?: number, apiKey?: string): Promise<ListWebhookDeliveriesResponse> {
-    let path: string = "/v1/webhooks/deliveries";
-    const q = new URLSearchParams();
-    if (page !== undefined) q.set("page", String(page));
-    if (perPage !== undefined) q.set("per_page", String(perPage));
-    if ([...q].length > 0) path += "?" + q.toString();
-    return this.request<ListWebhookDeliveriesResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**
@@ -210,7 +193,7 @@ export class Client {
    * PATCH /v1/webhooks/endpoints/{id} — update webhook endpoint subscription.
    * @param apiKey - Override the default API key for this call.
    */
-  async updateWebhookEndpointSubscription(id: string, payload: Record<string, unknown>, apiKey?: string): Promise<void> {
+  async updateWebhookEndpointSubscription(id: string, payload?: Record<string, unknown>, apiKey?: string): Promise<void> {
     await this.requestVoid("PATCH", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, payload, apiKey ?? this.defaultApiKey);
   }
 

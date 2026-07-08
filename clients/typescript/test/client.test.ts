@@ -252,41 +252,6 @@ describe("Client.getUsage", () => {
   });
 });
 
-describe("Client.listWebhookDeliveries", () => {
-  it("sends the expected request and handles the 200 response", async () => {
-    let capturedInit: RequestInit | undefined;
-    let capturedUrl: string | URL | Request | undefined;
-    const capFetch: typeof globalThis.fetch = async (url, init) => {
-      capturedUrl = url;
-      capturedInit = init;
-      return new Response(JSON.stringify({"items": [], "total": 1}), {
-        status: 200, headers: { "Content-Type": "application/json" },
-      });
-    };
-    const c = new Client("http://gw.test", { fetch: capFetch });
-    const got = await c.listWebhookDeliveries(undefined, undefined, "key");
-    assert.equal(String(capturedUrl), "http://gw.test/v1/webhooks/deliveries");
-    assert.equal(capturedInit!.method, "GET");
-    const hdrs = capturedInit!.headers as Record<string, string>;
-    assert.equal(hdrs["X-API-Key"], "key");
-    assert.ok(got);
-  });
-
-  it("falls back to constructor apiKey when not provided", async () => {
-    let capturedInit2: RequestInit | undefined;
-    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
-      capturedInit2 = init;
-      return new Response(JSON.stringify({"items": [], "total": 1}), {
-        status: 200, headers: { "Content-Type": "application/json" },
-      });
-    };
-    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
-    await c2.listWebhookDeliveries(undefined, undefined);
-    const hdrs2 = capturedInit2!.headers as Record<string, string>;
-    assert.equal(hdrs2["X-API-Key"], "default-key");
-  });
-});
-
 describe("Client.listWebhookEndpoints", () => {
   it("sends the expected request and handles the 200 response", async () => {
     let capturedInit: RequestInit | undefined;
@@ -474,6 +439,21 @@ describe("Client.listErrors query encoding", () => {
     assert.equal(url.searchParams.get("code"), "v");
     assert.equal(url.searchParams.get("page"), "2");
     assert.equal(url.searchParams.get("limit"), "2");
+  });
+});
+
+describe("Client.rotateKey optional body", () => {
+  it("omits the request body entirely when payload is not provided", async () => {
+    let capturedInit: RequestInit | undefined;
+    const capFetch: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit = init;
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    await c.rotateKey("test-id", undefined, "key");
+    assert.equal(capturedInit!.body, undefined);
+    const hdrs = (capturedInit!.headers ?? {}) as Record<string, string>;
+    assert.equal(hdrs["Content-Type"], undefined);
   });
 });
 

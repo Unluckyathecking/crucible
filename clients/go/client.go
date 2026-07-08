@@ -87,12 +87,6 @@ type GetUsageResponse struct {
 	Used         int64  `json:"used"`
 }
 
-// ListWebhookDeliveriesResponse is returned by ListWebhookDeliveries.
-type ListWebhookDeliveriesResponse struct {
-	Items []any `json:"items"`
-	Total int64 `json:"total"`
-}
-
 // ListWebhookEndpointsResponse is returned by ListWebhookEndpoints.
 type ListWebhookEndpointsResponse struct {
 	Items []any `json:"items"`
@@ -261,9 +255,13 @@ func (c *Client) RevokeKey(ctx context.Context, apiKey string, id string) error 
 // RotateKey calls POST /v1/keys/{id}/rotate (rotate key).
 // apiKey is sent as the X-API-Key header.
 func (c *Client) RotateKey(ctx context.Context, apiKey string, id string, payload any) (*RotateKeyResponse, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("crucible: marshal payload: %w", err)
+	var body []byte
+	if payload != nil {
+		var err error
+		body, err = json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("crucible: marshal payload: %w", err)
+		}
 	}
 	path := fmt.Sprintf("/v1/keys/%s/rotate", url.PathEscape(id))
 	resp, err := c.do(ctx, http.MethodPost, path, apiKey, body)
@@ -293,35 +291,6 @@ func (c *Client) GetUsage(ctx context.Context, apiKey string) (*GetUsageResponse
 		return nil, err
 	}
 	var out GetUsageResponse
-	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
-		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
-	}
-	return &out, nil
-}
-
-// ListWebhookDeliveries calls GET /v1/webhooks/deliveries (list webhook deliveries).
-// apiKey is sent as the X-API-Key header.
-func (c *Client) ListWebhookDeliveries(ctx context.Context, apiKey string, page int64, perPage int64) (*ListWebhookDeliveriesResponse, error) {
-	q := url.Values{}
-	if page != 0 {
-		q.Set("page", strconv.FormatInt(page, 10))
-	}
-	if perPage != 0 {
-		q.Set("per_page", strconv.FormatInt(perPage, 10))
-	}
-	reqPath := "/v1/webhooks/deliveries"
-	if len(q) > 0 {
-		reqPath += "?" + q.Encode()
-	}
-	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if err := checkError(resp); err != nil {
-		return nil, err
-	}
-	var out ListWebhookDeliveriesResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}
@@ -397,9 +366,13 @@ func (c *Client) DeleteWebhookEndpoint(ctx context.Context, apiKey string, id st
 // UpdateWebhookEndpointSubscription calls PATCH /v1/webhooks/endpoints/{id} (update webhook endpoint subscription).
 // apiKey is sent as the X-API-Key header.
 func (c *Client) UpdateWebhookEndpointSubscription(ctx context.Context, apiKey string, id string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("crucible: marshal payload: %w", err)
+	var body []byte
+	if payload != nil {
+		var err error
+		body, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("crucible: marshal payload: %w", err)
+		}
 	}
 	path := fmt.Sprintf("/v1/webhooks/endpoints/%s", url.PathEscape(id))
 	resp, err := c.do(ctx, http.MethodPatch, path, apiKey, body)

@@ -91,8 +91,13 @@ class Op:
         self.op_id       = op["operationId"]
         self.tags        = op.get("tags", [])
         self.secure      = bool(op.get("security"))
-        self.has_body    = bool(op.get("requestBody"))
-        self.path_params = re.findall(r"\{(\w+)\}", path)
+        self.has_body      = bool(op.get("requestBody"))
+        # required defaults to false per the OpenAPI spec when requestBody is
+        # present but omits it; a caller may then legitimately send no body
+        # at all (e.g. POST /v1/keys/{id}/rotate falls back to a default
+        # grace period), so this must NOT collapse to has_body's true/false.
+        self.body_required = bool((op.get("requestBody") or {}).get("required"))
+        self.path_params   = re.findall(r"\{(\w+)\}", path)
         self.query_params = [
             (p["name"], (p.get("schema") or {}).get("type", "string"))
             for p in op.get("parameters", [])
@@ -136,6 +141,10 @@ if not first_auth_post:
 
 # First op with query parameters (used for a dedicated query-encoding test).
 first_query_op = next((op for op in ops if op.query_params), None)
+
+# First op with an optional (requestBody.required == false) body (used for a
+# dedicated test that omitting the payload sends no request body at all).
+first_optional_body_op = next((op for op in ops if op.has_body and not op.body_required), None)
 
 def write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -315,11 +324,25 @@ def go_method(op):
     if op.secure:
         lines.append(f"// apiKey is sent as the {api_key_header} header.")
     lines.append(f"func (c *Client) {fn}({param_str}) {ret_sig} {{")
-    if op.has_body:
+    if op.has_body and op.body_required:
         lines += [
             "\tbody, err := json.Marshal(payload)",
             "\tif err != nil {",
             f'\t\treturn {nil_ret}fmt.Errorf("crucible: marshal payload: %w", err)',
+            "\t}",
+        ]
+    elif op.has_body:
+        # requestBody is optional in the spec: payload == nil means "send no
+        # body" (e.g. POST /v1/keys/{id}/rotate falls back to a default grace
+        # period), not "send a JSON null body".
+        lines += [
+            "\tvar body []byte",
+            "\tif payload != nil {",
+            "\t\tvar err error",
+            "\t\tbody, err = json.Marshal(payload)",
+            "\t\tif err != nil {",
+            f'\t\t\treturn {nil_ret}fmt.Errorf("crucible: marshal payload: %w", err)',
+            "\t\t}",
             "\t}",
         ]
     lines += path_lines
@@ -664,6 +687,48 @@ if first_query_op:
         '}',
     ])
 
+# Optional-body regression test: omitting payload (nil) on a route whose
+# requestBody.required is false must send no body/Content-Type at all,
+# not a JSON "null" body.
+optional_body_test_go = ""
+if first_optional_body_op:
+    fn_ob = go_name(first_optional_body_op.op_id)
+    call_parts_ob = []
+    if first_optional_body_op.secure:
+        call_parts_ob.append('"test-key"')
+    for p in first_optional_body_op.path_params:
+        call_parts_ob.append(f'"test-{p}"')
+    call_parts_ob.append("nil")  # explicit nil payload — omit the body entirely
+    for name, ptype in first_optional_body_op.query_params:
+        call_parts_ob.append("0" if ptype == "integer" else '""')
+    call_ob = f"c.{fn_ob}(context.Background(), {', '.join(call_parts_ob)})"
+
+    rtype_ob = go_response_type(first_optional_body_op)
+    if rtype_ob is None:
+        resp_line_ob = "\t\tw.WriteHeader(http.StatusNoContent)"
+        call_assign_ob = f"\terr := {call_ob}"
+    else:
+        resp_line_ob = '\t\twriteJSON(w, map[string]any{})'
+        call_assign_ob = f"\t_, err := {call_ob}"
+
+    optional_body_test_go = "\n\n" + "\n".join([
+        f"func Test{fn_ob}_omitsOptionalBody(t *testing.T) {{",
+        '\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {',
+        '\t\tif ct := r.Header.Get("Content-Type"); ct != "" {',
+        '\t\t\tt.Errorf("Content-Type = %q, want none (no body sent)", ct)',
+        '\t\t}',
+        '\t\tif r.ContentLength > 0 {',
+        '\t\t\tt.Errorf("ContentLength = %d, want 0 (no body sent)", r.ContentLength)',
+        '\t\t}',
+        resp_line_ob,
+        '\t})',
+        call_assign_ob,
+        '\tif err != nil {',
+        '\t\tt.Fatal(err)',
+        '\t}',
+        '}',
+    ])
+
 # Error tests use the first authenticated POST operation (guaranteed non-None after sys.exit check).
 auth_go_fn = go_name(first_auth_post.op_id)
 if first_auth_post.has_body:
@@ -706,7 +771,7 @@ func writeJSON(w http.ResponseWriter, v any) {{
 \t}}
 }}
 
-{test_methods_go}{null_body_test_go}{query_encoding_test_go}
+{test_methods_go}{null_body_test_go}{query_encoding_test_go}{optional_body_test_go}
 
 func TestAPIError_typed(t *testing.T) {{
 \tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {{
@@ -862,7 +927,14 @@ def ts_response_interface(op):
         elif ftype == "integer" or ftype == "number":
             ts_type = "number"
         elif ftype == "array":
-            ts_type = "unknown[]"
+            # The Go structs backing these responses use a bare slice field
+            # with no `omitempty`, which encodes as JSON null when nil (e.g.
+            # a webhook endpoint created without subscribed_events); the
+            # OpenAPI schema has no way to mark that nullability, so this
+            # generator assumes it for every array field rather than
+            # promising callers a type array methods can be called on
+            # unconditionally.
+            ts_type = "unknown[] | null"
         elif ftype == "object" and add:
             inner    = add.get("type", "unknown")
             inner_ts = {"string": "string", "integer": "number", "number": "number", "boolean": "boolean"}.get(inner, "unknown")
@@ -889,8 +961,14 @@ def ts_method(op):
     param_parts = []
     for p in op.path_params:
         param_parts.append(f"{param_arg_name(p)}: string")
-    if op.has_body:
+    if op.has_body and op.body_required:
         param_parts.append("payload: Record<string, unknown>")
+    elif op.has_body:
+        # requestBody is optional in the spec: omitting payload means "send
+        # no body" (e.g. POST /v1/keys/{id}/rotate falls back to a default
+        # grace period) — request()/requestVoid() already treat body ===
+        # undefined as "omit the body entirely".
+        param_parts.append("payload?: Record<string, unknown>")
     for name, ptype in op.query_params:
         ts_type = "number" if ptype == "integer" else "string"
         param_parts.append(f"{param_arg_name(name)}?: {ts_type}")
@@ -1208,6 +1286,38 @@ if first_query_op:
         '});',
     ])
 
+# Optional-body regression test: omitting payload on a route whose
+# requestBody.required is false must send no body/Content-Type at all.
+optional_body_test_ts = ""
+if first_optional_body_op:
+    fn_ob = ts_name(first_optional_body_op.op_id)
+    call_args_ob = []
+    for p in first_optional_body_op.path_params:
+        call_args_ob.append(f'"test-{p}"')
+    call_args_ob.append("undefined")  # explicit: omit the body entirely
+    for name, ptype in first_optional_body_op.query_params:
+        call_args_ob.append("undefined")
+    if first_optional_body_op.secure:
+        call_args_ob.append('"key"')
+    call_ob = f'await c.{fn_ob}({", ".join(call_args_ob)})'
+
+    optional_body_test_ts = "\n\n" + "\n".join([
+        f'describe("Client.{fn_ob} optional body", () => {{',
+        '  it("omits the request body entirely when payload is not provided", async () => {',
+        '    let capturedInit: RequestInit | undefined;',
+        '    const capFetch: typeof globalThis.fetch = async (_url, init) => {',
+        '      capturedInit = init;',
+        '      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });',
+        '    };',
+        '    const c = new Client("http://gw.test", { fetch: capFetch });',
+        f'    {call_ob};',
+        '    assert.equal(capturedInit!.body, undefined);',
+        '    const hdrs = (capturedInit!.headers ?? {}) as Record<string, string>;',
+        '    assert.equal(hdrs["Content-Type"], undefined);',
+        '  });',
+        '});',
+    ])
+
 # Error test uses first authenticated POST operation (guaranteed non-None after sys.exit check).
 auth_ts_fn = ts_name(first_auth_post.op_id)
 if first_auth_post.has_body:
@@ -1221,7 +1331,7 @@ import {{ describe, it }} from "node:test";
 import assert from "node:assert/strict";
 import {{ Client, ApiError }} from "../src/index";
 
-{ts_test_methods}{query_encoding_test_ts}
+{ts_test_methods}{query_encoding_test_ts}{optional_body_test_ts}
 
 describe("ApiError", () => {{
   it("is an instance of Error", () => {{

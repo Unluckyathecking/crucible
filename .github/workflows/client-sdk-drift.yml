@@ -10,6 +10,7 @@ on:
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
+      - "gateway/internal/server/routes.go"
       - "gateway/internal/server/routes_table.go"
       - ".github/workflows/client-sdk-drift.yml"
   pull_request:
@@ -20,6 +21,7 @@ on:
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
+      - "gateway/internal/server/routes.go"
       - "gateway/internal/server/routes_table.go"
       - ".github/workflows/client-sdk-drift.yml"
 
