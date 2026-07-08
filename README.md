@@ -4,9 +4,9 @@
 [![new-tool-smoke](https://github.com/Unluckyathecking/crucible/actions/workflows/new-tool-smoke.yml/badge.svg)](https://github.com/Unluckyathecking/crucible/actions/workflows/new-tool-smoke.yml)
 [![go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
 [![next.js](https://img.shields.io/badge/next.js-15-000000?logo=next.js)](https://nextjs.org/)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT%20core%20%2B%20EE-blue.svg)](LICENSE)
 
-A clone-and-adapt framework for high-volume metered API products.
+An open-core, clone-and-adapt framework for high-volume metered API products.
 
 Crucible is one repo you copy to ship a new API. The framework — auth, rate limiting, Stripe metered billing, observability, OpenAPI/SDK generation, customer dashboard — is identical across every clone. Per-product logic lives in a single worker process that speaks one frozen contract. Workers can be written in any language that speaks HTTP/JSON.
 
@@ -47,6 +47,24 @@ curl -X POST localhost:8081/invoke \
   -d '{"operation":"echo","payload":{"x":"hi"},"metadata":{"units":"3"}}'
 # → {"payload":{"echo":{"x":"hi"},"operation":"echo"},"billable_units":3}
 ```
+
+## Editions & licensing
+
+Crucible is **open-core**:
+
+- **Community** — the entire framework core is [MIT-licensed](LICENSE), free, and
+  self-hostable. Auth, rate limiting, billing, quota, metering, observability,
+  OpenAPI/SDK generation, and the dashboard are all here. Fork it, adapt it, ship
+  products with it — no key required.
+- **Enterprise features** — a small set of add-ons (SSO, operator multi-token,
+  customer audit export) are **source-available** (not open source) under the
+  [Crucible Enterprise License](ee/LICENSE.md) and unlocked with a license key
+  via `CRUCIBLE_LICENSE_KEY`. Editions: Pro / Business / Enterprise. Without a
+  key these features cleanly disable themselves and Crucible runs as Community.
+
+EE files are marked with a per-file header; the boundary is per file, not per
+directory. See [`ee/README.md`](ee/README.md) and the customer FAQ at
+[`docs/licensing.md`](docs/licensing.md).
 
 ## Adapting Crucible to a new product
 
