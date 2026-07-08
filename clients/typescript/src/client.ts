@@ -10,6 +10,49 @@ export interface ReadyzResponse {
   checks: Record<string, string>;
   status: string;
 }
+export interface ListErrorsResponse {
+  data: unknown[];
+  has_more: boolean;
+  limit: number;
+  page: number;
+}
+export interface ListKeysResponse {
+  items: unknown[];
+  total: number;
+}
+export interface RotateKeyResponse {
+  key: string;
+}
+export interface GetUsageResponse {
+  breakdown: unknown[];
+  cap: number;
+  period_end: string;
+  period_start: string;
+  plan_id: string;
+  remaining: number;
+  total_calls: number;
+  total_units: number;
+  used: number;
+}
+export interface ListWebhookDeliveriesResponse {
+  items: unknown[];
+  total: number;
+}
+export interface ListWebhookEndpointsResponse {
+  items: unknown[];
+  total: number;
+}
+export interface CreateWebhookEndpointResponse {
+  active: boolean;
+  created_at: string;
+  id: string;
+  secret_hex: string;
+  subscribed_events: unknown[];
+  url: string;
+}
+export interface RotateWebhookEndpointSecretResponse {
+  secret_hex: string;
+}
 
 export interface ClientOptions {
   /** Override the global fetch implementation (useful in tests). Defaults to globalThis.fetch. */
@@ -45,14 +88,18 @@ export class Client {
     this.defaultApiKey = options.apiKey;
   }
 
-  /** GET /healthz — healthz. */
+  /**
+   * GET /healthz — healthz.
+   */
   async healthz(): Promise<HealthzResponse> {
-    return this.get<HealthzResponse>("/healthz");
+    return this.request<HealthzResponse>("GET", "/healthz", undefined, undefined);
   }
 
-  /** GET /readyz — readyz. */
+  /**
+   * GET /readyz — readyz.
+   */
   async readyz(): Promise<ReadyzResponse> {
-    return this.get<ReadyzResponse>("/readyz");
+    return this.request<ReadyzResponse>("GET", "/readyz", undefined, undefined);
   }
 
   /**
@@ -60,17 +107,137 @@ export class Client {
    * @param apiKey - Override the default API key for this call.
    */
   async invokeEcho(payload: Record<string, unknown>, apiKey?: string): Promise<Record<string, unknown>> {
-    return this.post<Record<string, unknown>>("/v1/echo", payload, apiKey ?? this.defaultApiKey);
+    return this.request<Record<string, unknown>>("POST", "/v1/echo", payload, apiKey ?? this.defaultApiKey);
   }
 
-  private async get<T>(path: string, apiKey?: string): Promise<T> {
+  /**
+   * GET /v1/errors — list errors.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listErrors(from?: string, to?: string, operation?: string, code?: string, page?: number, limit?: number, apiKey?: string): Promise<ListErrorsResponse> {
+    let path: string = "/v1/errors";
+    const q = new URLSearchParams();
+    if (from !== undefined) q.set("from", String(from));
+    if (to !== undefined) q.set("to", String(to));
+    if (operation !== undefined) q.set("operation", String(operation));
+    if (code !== undefined) q.set("code", String(code));
+    if (page !== undefined) q.set("page", String(page));
+    if (limit !== undefined) q.set("limit", String(limit));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListErrorsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/keys — list keys.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listKeys(page?: number, perPage?: number, apiKey?: string): Promise<ListKeysResponse> {
+    let path: string = "/v1/keys";
+    const q = new URLSearchParams();
+    if (page !== undefined) q.set("page", String(page));
+    if (perPage !== undefined) q.set("per_page", String(perPage));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListKeysResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * DELETE /v1/keys/{id} — revoke key.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async revokeKey(id: string, apiKey?: string): Promise<void> {
+    await this.requestVoid("DELETE", `/v1/keys/${encodeURIComponent(id)}`, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * POST /v1/keys/{id}/rotate — rotate key.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async rotateKey(id: string, payload: Record<string, unknown>, apiKey?: string): Promise<RotateKeyResponse> {
+    return this.request<RotateKeyResponse>("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, payload, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/usage — get usage.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async getUsage(apiKey?: string): Promise<GetUsageResponse> {
+    return this.request<GetUsageResponse>("GET", "/v1/usage", undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/webhooks/deliveries — list webhook deliveries.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listWebhookDeliveries(page?: number, perPage?: number, apiKey?: string): Promise<ListWebhookDeliveriesResponse> {
+    let path: string = "/v1/webhooks/deliveries";
+    const q = new URLSearchParams();
+    if (page !== undefined) q.set("page", String(page));
+    if (perPage !== undefined) q.set("per_page", String(perPage));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListWebhookDeliveriesResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/webhooks/endpoints — list webhook endpoints.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listWebhookEndpoints(page?: number, perPage?: number, apiKey?: string): Promise<ListWebhookEndpointsResponse> {
+    let path: string = "/v1/webhooks/endpoints";
+    const q = new URLSearchParams();
+    if (page !== undefined) q.set("page", String(page));
+    if (perPage !== undefined) q.set("per_page", String(perPage));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListWebhookEndpointsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * POST /v1/webhooks/endpoints — create webhook endpoint.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async createWebhookEndpoint(payload: Record<string, unknown>, apiKey?: string): Promise<CreateWebhookEndpointResponse> {
+    return this.request<CreateWebhookEndpointResponse>("POST", "/v1/webhooks/endpoints", payload, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * DELETE /v1/webhooks/endpoints/{id} — delete webhook endpoint.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async deleteWebhookEndpoint(id: string, apiKey?: string): Promise<void> {
+    await this.requestVoid("DELETE", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * PATCH /v1/webhooks/endpoints/{id} — update webhook endpoint subscription.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async updateWebhookEndpointSubscription(id: string, payload: Record<string, unknown>, apiKey?: string): Promise<void> {
+    await this.requestVoid("PATCH", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, payload, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * POST /v1/webhooks/endpoints/{id}/rotate-secret — rotate webhook endpoint secret.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async rotateWebhookEndpointSecret(id: string, apiKey?: string): Promise<RotateWebhookEndpointSecretResponse> {
+    return this.request<RotateWebhookEndpointSecretResponse>("POST", `/v1/webhooks/endpoints/${encodeURIComponent(id)}/rotate-secret`, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  // request performs a JSON-in/JSON-out call and decodes the response body.
+  // body === undefined means "no request body" (no Content-Type header, no
+  // fetch body); this covers both bodyless GETs and bodyless authenticated
+  // POSTs (e.g. a secret-rotation endpoint).
+  private async request<T>(method: string, path: string, body: unknown, apiKey?: string): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
     if (apiKey) {
       headers["X-API-Key"] = apiKey;
     }
     const resp = await this.fetchImpl(this.baseURL + path, {
-      method: "GET",
+      method,
       headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     if (!resp.ok) {
       throw await ApiError.fromResponse(resp);
@@ -82,26 +249,23 @@ export class Client {
     return resp.json() as Promise<T>;
   }
 
-  private async post<T>(path: string, body: unknown, apiKey?: string): Promise<T> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    };
+  // requestVoid is request's counterpart for no-content (204-style) responses:
+  // it never touches resp.json(), since there is no body to decode.
+  private async requestVoid(method: string, path: string, body: unknown, apiKey?: string): Promise<void> {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
     if (apiKey) {
       headers["X-API-Key"] = apiKey;
     }
     const resp = await this.fetchImpl(this.baseURL + path, {
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify(body),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     if (!resp.ok) {
       throw await ApiError.fromResponse(resp);
     }
-    const ct = resp.headers.get("content-type") ?? "";
-    if (!ct.includes("application/json")) {
-      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${ct}`);
-    }
-    return resp.json() as Promise<T>;
   }
 }

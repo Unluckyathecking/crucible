@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -51,7 +52,66 @@ type HealthzResponse struct {
 // ReadyzResponse is returned by Readyz.
 type ReadyzResponse struct {
 	Checks map[string]string `json:"checks"`
-	Status string `json:"status"`
+	Status string            `json:"status"`
+}
+
+// ListErrorsResponse is returned by ListErrors.
+type ListErrorsResponse struct {
+	Data     []any `json:"data"`
+	Has_more bool  `json:"has_more"`
+	Limit    int64 `json:"limit"`
+	Page     int64 `json:"page"`
+}
+
+// ListKeysResponse is returned by ListKeys.
+type ListKeysResponse struct {
+	Items []any `json:"items"`
+	Total int64 `json:"total"`
+}
+
+// RotateKeyResponse is returned by RotateKey.
+type RotateKeyResponse struct {
+	Key string `json:"key"`
+}
+
+// GetUsageResponse is returned by GetUsage.
+type GetUsageResponse struct {
+	Breakdown    []any  `json:"breakdown"`
+	Cap          int64  `json:"cap"`
+	Period_end   string `json:"period_end"`
+	Period_start string `json:"period_start"`
+	Plan_id      string `json:"plan_id"`
+	Remaining    int64  `json:"remaining"`
+	Total_calls  int64  `json:"total_calls"`
+	Total_units  int64  `json:"total_units"`
+	Used         int64  `json:"used"`
+}
+
+// ListWebhookDeliveriesResponse is returned by ListWebhookDeliveries.
+type ListWebhookDeliveriesResponse struct {
+	Items []any `json:"items"`
+	Total int64 `json:"total"`
+}
+
+// ListWebhookEndpointsResponse is returned by ListWebhookEndpoints.
+type ListWebhookEndpointsResponse struct {
+	Items []any `json:"items"`
+	Total int64 `json:"total"`
+}
+
+// CreateWebhookEndpointResponse is returned by CreateWebhookEndpoint.
+type CreateWebhookEndpointResponse struct {
+	Active            bool   `json:"active"`
+	Created_at        string `json:"created_at"`
+	Id                string `json:"id"`
+	Secret_hex        string `json:"secret_hex"`
+	Subscribed_events []any  `json:"subscribed_events"`
+	Url               string `json:"url"`
+}
+
+// RotateWebhookEndpointSecretResponse is returned by RotateWebhookEndpointSecret.
+type RotateWebhookEndpointSecretResponse struct {
+	Secret_hex string `json:"secret_hex"`
 }
 
 // Healthz calls GET /healthz (healthz).
@@ -111,6 +171,265 @@ func (c *Client) InvokeEcho(ctx context.Context, apiKey string, payload any) (ma
 		out = make(map[string]any)
 	}
 	return out, nil
+}
+
+// ListErrors calls GET /v1/errors (list errors).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListErrors(ctx context.Context, apiKey string, from string, to string, operation string, code string, page int64, limit int64) (*ListErrorsResponse, error) {
+	q := url.Values{}
+	if from != "" {
+		q.Set("from", from)
+	}
+	if to != "" {
+		q.Set("to", to)
+	}
+	if operation != "" {
+		q.Set("operation", operation)
+	}
+	if code != "" {
+		q.Set("code", code)
+	}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if limit != 0 {
+		q.Set("limit", strconv.FormatInt(limit, 10))
+	}
+	reqPath := "/v1/errors"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListErrorsResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListKeys calls GET /v1/keys (list keys).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListKeys(ctx context.Context, apiKey string, page int64, perPage int64) (*ListKeysResponse, error) {
+	q := url.Values{}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if perPage != 0 {
+		q.Set("per_page", strconv.FormatInt(perPage, 10))
+	}
+	reqPath := "/v1/keys"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListKeysResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// RevokeKey calls DELETE /v1/keys/{id} (revoke key).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) RevokeKey(ctx context.Context, apiKey string, id string) error {
+	path := fmt.Sprintf("/v1/keys/%s", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodDelete, path, apiKey, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RotateKey calls POST /v1/keys/{id}/rotate (rotate key).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) RotateKey(ctx context.Context, apiKey string, id string, payload any) (*RotateKeyResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("crucible: marshal payload: %w", err)
+	}
+	path := fmt.Sprintf("/v1/keys/%s/rotate", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodPost, path, apiKey, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out RotateKeyResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// GetUsage calls GET /v1/usage (get usage).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) GetUsage(ctx context.Context, apiKey string) (*GetUsageResponse, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/usage", apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out GetUsageResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListWebhookDeliveries calls GET /v1/webhooks/deliveries (list webhook deliveries).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListWebhookDeliveries(ctx context.Context, apiKey string, page int64, perPage int64) (*ListWebhookDeliveriesResponse, error) {
+	q := url.Values{}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if perPage != 0 {
+		q.Set("per_page", strconv.FormatInt(perPage, 10))
+	}
+	reqPath := "/v1/webhooks/deliveries"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListWebhookDeliveriesResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListWebhookEndpoints calls GET /v1/webhooks/endpoints (list webhook endpoints).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListWebhookEndpoints(ctx context.Context, apiKey string, page int64, perPage int64) (*ListWebhookEndpointsResponse, error) {
+	q := url.Values{}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if perPage != 0 {
+		q.Set("per_page", strconv.FormatInt(perPage, 10))
+	}
+	reqPath := "/v1/webhooks/endpoints"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListWebhookEndpointsResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// CreateWebhookEndpoint calls POST /v1/webhooks/endpoints (create webhook endpoint).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) CreateWebhookEndpoint(ctx context.Context, apiKey string, payload any) (*CreateWebhookEndpointResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("crucible: marshal payload: %w", err)
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/v1/webhooks/endpoints", apiKey, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out CreateWebhookEndpointResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// DeleteWebhookEndpoint calls DELETE /v1/webhooks/endpoints/{id} (delete webhook endpoint).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) DeleteWebhookEndpoint(ctx context.Context, apiKey string, id string) error {
+	path := fmt.Sprintf("/v1/webhooks/endpoints/%s", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodDelete, path, apiKey, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UpdateWebhookEndpointSubscription calls PATCH /v1/webhooks/endpoints/{id} (update webhook endpoint subscription).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) UpdateWebhookEndpointSubscription(ctx context.Context, apiKey string, id string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("crucible: marshal payload: %w", err)
+	}
+	path := fmt.Sprintf("/v1/webhooks/endpoints/%s", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodPatch, path, apiKey, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RotateWebhookEndpointSecret calls POST /v1/webhooks/endpoints/{id}/rotate-secret (rotate webhook endpoint secret).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) RotateWebhookEndpointSecret(ctx context.Context, apiKey string, id string) (*RotateWebhookEndpointSecretResponse, error) {
+	path := fmt.Sprintf("/v1/webhooks/endpoints/%s/rotate-secret", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodPost, path, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out RotateWebhookEndpointSecretResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, apiKey string, body []byte) (*http.Response, error) {

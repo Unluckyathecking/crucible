@@ -3,6 +3,17 @@
 # clients/openapi.json. Idempotent: a second run produces zero git diff.
 # Requirements: python3 (stdlib only), go 1.22+.
 #
+# clients/openapi.json is itself a generated artifact: `go run
+# ./gateway/cmd/spec-dump` renders the gateway's real served OpenAPI document
+# (openapi.Build + openapi.Handler); .github/workflows/client-sdk-drift.yml
+# fails the build if the committed snapshot differs from that command's
+# output, so this generator's input can never silently drift from the
+# gateway's actual /openapi.json.
+#
+# Supports GET/POST/DELETE/PATCH operations, {param} path segments, and
+# query parameters (typed as string or integer). Skips PUT/HEAD/OPTIONS/TRACE
+# and billing-tagged routes (see notes on stderr).
+#
 # Drift check (run locally or in CI to assert no hand-edits have diverged):
 #   bash scripts/gen-clients.sh && git diff --exit-code \
 #     clients/go/client.go clients/go/errors.go \
@@ -20,7 +31,7 @@ if [[ ! -f "${SPEC}" ]]; then
 fi
 
 python3 - "${SPEC}" "${REPO_ROOT}" <<'PYEOF'
-import json, os, sys
+import json, os, re, sys
 
 SPEC_PATH = sys.argv[1]
 REPO_ROOT  = sys.argv[2]
@@ -57,38 +68,6 @@ for scheme in spec.get("components", {}).get("securitySchemes", {}).values():
         api_key_header = scheme.get("name", api_key_header)
         break
 
-# ── Collect typed operations (skip billing/text-plain) ───────────────────────
-class Op:
-    def __init__(self, path, method, op):
-        self.path     = path
-        self.method   = method
-        self.op_id    = op["operationId"]
-        self.tags     = op.get("tags", [])
-        self.secure   = bool(op.get("security"))
-        self.has_body = bool(op.get("requestBody"))
-        resp200 = op.get("responses", {}).get("200", {})
-        self.resp200 = resp200
-        self.json_ok = "application/json" in resp200.get("content", {})
-
-ops = []
-_all_methods = ("get", "post", "put", "delete", "patch", "head", "options", "trace")
-_gen_methods  = ("get", "post")
-for path, item in sorted(paths.items()):
-    for method in _all_methods:
-        if method not in item:
-            continue
-        if method not in _gen_methods:
-            print(f"note: skipping {method.upper()} {path} (only GET/POST are generated; add support to gen-clients.sh to include this method)", file=sys.stderr)
-            continue
-        op = Op(path, method, item[method])
-        if "billing" in op.tags:
-            print(f"note: skipping {method.upper()} {path} (billing tag excluded)", file=sys.stderr)
-            continue
-        if not op.json_ok:
-            print(f"note: skipping {method.upper()} {path} (no application/json 200 response)", file=sys.stderr)
-            continue
-        ops.append(op)
-
 # ── operationId → Go TitleCase / TS camelCase ────────────────────────────────
 def go_name(op_id):
     return "".join(p.capitalize() for p in op_id.split("_"))
@@ -97,11 +76,66 @@ def ts_name(op_id):
     parts = op_id.split("_")
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
+# param_arg_name converts a snake_case path/query parameter name (e.g.
+# "per_page") to a camelCase local variable / argument name valid in both
+# Go and TypeScript ("perPage"). Single-word names (e.g. "id") pass through.
+def param_arg_name(name):
+    parts = name.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+# ── Collect typed operations (skip billing/text-plain/unsupported) ──────────
+class Op:
+    def __init__(self, path, method, op):
+        self.path        = path
+        self.method      = method
+        self.op_id       = op["operationId"]
+        self.tags        = op.get("tags", [])
+        self.secure      = bool(op.get("security"))
+        self.has_body    = bool(op.get("requestBody"))
+        self.path_params = re.findall(r"\{(\w+)\}", path)
+        self.query_params = [
+            (p["name"], (p.get("schema") or {}).get("type", "string"))
+            for p in op.get("parameters", [])
+            if p.get("in") == "query"
+        ]
+        responses = op.get("responses", {})
+        self.success_code = next((c for c in ("200", "201", "204") if c in responses), None)
+        resp = responses.get(self.success_code, {}) if self.success_code else {}
+        self.resp       = resp
+        # A 204 (or any success response with no content body) has no JSON to decode.
+        self.no_content = self.success_code == "204" or not resp.get("content")
+        self.json_ok    = "application/json" in resp.get("content", {})
+
+ops = []
+_all_methods = ("get", "post", "put", "delete", "patch", "head", "options", "trace")
+_gen_methods  = ("get", "post", "delete", "patch")
+for path, item in sorted(paths.items()):
+    for method in _all_methods:
+        if method not in item:
+            continue
+        if method not in _gen_methods:
+            print(f"note: skipping {method.upper()} {path} (only GET/POST/DELETE/PATCH are generated; add support to gen-clients.sh to include this method)", file=sys.stderr)
+            continue
+        op = Op(path, method, item[method])
+        if "billing" in op.tags:
+            print(f"note: skipping {method.upper()} {path} (billing tag excluded)", file=sys.stderr)
+            continue
+        if op.success_code is None:
+            print(f"note: skipping {method.upper()} {path} (no 2xx success response)", file=sys.stderr)
+            continue
+        if not op.no_content and not op.json_ok:
+            print(f"note: skipping {method.upper()} {path} (no application/json success response)", file=sys.stderr)
+            continue
+        ops.append(op)
+
 # Find first authenticated POST op (used in error test stubs).
 first_auth_post = next((op for op in ops if op.secure and op.method == "post"), None)
 if not first_auth_post:
     print("error: no authenticated POST operation found; cannot generate error tests", file=sys.stderr)
     sys.exit(1)
+
+# First op with query parameters (used for a dedicated query-encoding test).
+first_query_op = next((op for op in ops if op.query_params), None)
 
 def write(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -160,7 +194,9 @@ func (e *APIError) Error() string {{
 # ── Response types ────────────────────────────────────────────────────────────
 
 def go_response_type(op):
-    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    if op.no_content:
+        return None
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
     props  = schema.get("properties", {})
     if props and not schema.get("additionalProperties"):
         return go_name(op.op_id) + "Response"
@@ -170,9 +206,9 @@ def go_response_structs():
     parts = []
     for op in ops:
         rtype = go_response_type(op)
-        if rtype == "map[string]any":
+        if rtype in (None, "map[string]any"):
             continue
-        schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+        schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
         props   = schema.get("properties", {})
         fields  = []
         for fname, fschema in sorted(props.items()):
@@ -203,36 +239,79 @@ def go_response_structs():
         )
     return "\n\n".join(parts) + ("\n\n" if parts else "")
 
-def go_method(op):
-    fn     = go_name(op.op_id)
-    rtype  = go_response_type(op)
-    path   = op.path
-    method = "http.MethodGet" if op.method == "get" else "http.MethodPost"
+# Any integer query parameter across all ops needs strconv for formatting;
+# only import it when actually used so unused-import can never fail the build.
+_needs_strconv = any(ptype == "integer" for op in ops for _, ptype in op.query_params)
 
+def go_method_signature_params(op):
     params = ["ctx context.Context"]
     if op.secure:
         params.append("apiKey string")
+    for p in op.path_params:
+        params.append(f"{param_arg_name(p)} string")
     if op.has_body:
         params.append("payload any")
-    param_str = ", ".join(params)
+    for name, ptype in op.query_params:
+        go_type = "int64" if ptype == "integer" else "string"
+        params.append(f"{param_arg_name(name)} {go_type}")
+    return ", ".join(params)
 
-    nil_ret = "nil, "
-    if rtype == "map[string]any":
-        ret_sig  = "(map[string]any, error)"
-        out_decl = "\tout := make(map[string]any)"
-        # Return nil on decode error (consistent with struct-returning methods).
-        # Guard also handles JSON "null" body: Decode sets a pre-made map to nil.
-        out_ret  = "\tif decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {\n\t\treturn nil, fmt.Errorf(\"crucible: decode response: %w\", decErr)\n\t}\n\tif out == nil {\n\t\tout = make(map[string]any)\n\t}\n\treturn out, nil"
+def go_path_and_query_lines(op):
+    """Returns (lines, path_expr): lines build any local vars needed to resolve
+    the request path (path-param substitution and/or a query string), and
+    path_expr is the Go expression to pass as the request path."""
+    lines = []
+    path_var = None
+    if op.path_params:
+        fmt_path = re.sub(r"\{(\w+)\}", "%s", op.path)
+        args = ", ".join(f"url.PathEscape({param_arg_name(p)})" for p in op.path_params)
+        lines.append(f'\tpath := fmt.Sprintf("{fmt_path}", {args})')
+        path_var = "path"
+
+    if op.query_params:
+        lines.append("\tq := url.Values{}")
+        for name, ptype in op.query_params:
+            arg = param_arg_name(name)
+            if ptype == "integer":
+                lines.append(f"\tif {arg} != 0 {{")
+                lines.append(f'\t\tq.Set("{name}", strconv.FormatInt({arg}, 10))')
+                lines.append("\t}")
+            else:
+                lines.append(f'\tif {arg} != "" {{')
+                lines.append(f'\t\tq.Set("{name}", {arg})')
+                lines.append("\t}")
+        if path_var is None:
+            lines.append(f'\treqPath := "{op.path}"')
+            path_var = "reqPath"
+        lines.append("\tif len(q) > 0 {")
+        lines.append(f'\t\t{path_var} += "?" + q.Encode()')
+        lines.append("\t}")
+
+    path_expr = path_var if path_var is not None else f'"{op.path}"'
+    return lines, path_expr
+
+def go_method(op):
+    fn    = go_name(op.op_id)
+    rtype = go_response_type(op)
+    method_const = {
+        "get": "http.MethodGet", "post": "http.MethodPost",
+        "delete": "http.MethodDelete", "patch": "http.MethodPatch",
+    }[op.method]
+
+    param_str = go_method_signature_params(op)
+    path_lines, path_expr = go_path_and_query_lines(op)
+
+    if rtype is None:
+        ret_sig = "error"
+        nil_ret = ""
+    elif rtype == "map[string]any":
+        ret_sig = "(map[string]any, error)"
+        nil_ret = "nil, "
     else:
-        ret_sig  = f"(*{rtype}, error)"
-        out_decl = f"\tvar out {rtype}"
-        out_ret  = (
-            f"\tif decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {{\n"
-            f"\t\treturn nil, fmt.Errorf(\"crucible: decode response: %w\", decErr)\n"
-            f"\t}}\n"
-            f"\treturn &out, nil")
+        ret_sig = f"(*{rtype}, error)"
+        nil_ret = "nil, "
 
-    lines = [f"// {fn} calls {op.method.upper()} {path} ({op.op_id.replace('_', ' ')})."]
+    lines = [f"// {fn} calls {op.method.upper()} {op.path} ({op.op_id.replace('_', ' ')})."]
     if op.secure:
         lines.append(f"// apiKey is sent as the {api_key_header} header.")
     lines.append(f"func (c *Client) {fn}({param_str}) {ret_sig} {{")
@@ -240,13 +319,14 @@ def go_method(op):
         lines += [
             "\tbody, err := json.Marshal(payload)",
             "\tif err != nil {",
-            '\t\treturn nil, fmt.Errorf("crucible: marshal payload: %w", err)',
+            f'\t\treturn {nil_ret}fmt.Errorf("crucible: marshal payload: %w", err)',
             "\t}",
         ]
+    lines += path_lines
     api_key_arg = "apiKey" if op.secure else '""'
     body_arg    = "body"   if op.has_body else "nil"
     lines += [
-        f'\tresp, err := c.do(ctx, {method}, "{path}", {api_key_arg}, {body_arg})',
+        f'\tresp, err := c.do(ctx, {method_const}, {path_expr}, {api_key_arg}, {body_arg})',
         "\tif err != nil {",
         f"\t\treturn {nil_ret}err",
         "\t}",
@@ -254,14 +334,39 @@ def go_method(op):
         "\tif err := checkError(resp); err != nil {",
         f"\t\treturn {nil_ret}err",
         "\t}",
-        out_decl,
-        out_ret,
-        "}",
     ]
+    if rtype is None:
+        lines.append("\treturn nil")
+    elif rtype == "map[string]any":
+        lines += [
+            "\tout := make(map[string]any)",
+            "\tif decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {",
+            '\t\treturn nil, fmt.Errorf("crucible: decode response: %w", decErr)',
+            "\t}",
+            "\tif out == nil {",
+            "\t\tout = make(map[string]any)",
+            "\t}",
+            "\treturn out, nil",
+        ]
+    else:
+        lines += [
+            f"\tvar out {rtype}",
+            "\tif decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {",
+            '\t\treturn nil, fmt.Errorf("crucible: decode response: %w", decErr)',
+            "\t}",
+            "\treturn &out, nil",
+        ]
+    lines.append("}")
     return "\n".join(lines)
 
 structs_go = go_response_structs()
 methods_go = "\n\n".join(go_method(op) for op in ops)
+
+go_imports = ["bytes", "context", "encoding/json", "fmt", "io", "net/http", "net/url"]
+if _needs_strconv:
+    go_imports.append("strconv")
+go_imports.append("strings")
+go_imports_block = "\n".join(f'\t"{imp}"' for imp in go_imports)
 
 write(os.path.join(GO_DIR, "client.go"), f"""\
 {header}
@@ -270,14 +375,7 @@ write(os.path.join(GO_DIR, "client.go"), f"""\
 package crucible
 
 import (
-\t"bytes"
-\t"context"
-\t"encoding/json"
-\t"fmt"
-\t"io"
-\t"net/http"
-\t"net/url"
-\t"strings"
+{go_imports_block}
 )
 
 // Client calls the Crucible Gateway. Construct with New.
@@ -374,41 +472,63 @@ func checkError(resp *http.Response) error {{
 
 # ── client_test.go ────────────────────────────────────────────────────────────
 
+def go_test_call_args(op, with_key_literal=None):
+    """Builds the call-site argument list in the same order as
+    go_method_signature_params (minus ctx, which callers add explicitly)."""
+    args = []
+    if op.secure:
+        args.append(f'"{with_key_literal}"' if with_key_literal else '"test-key"')
+    for p in op.path_params:
+        args.append(f'"test-{p}"')
+    if op.has_body:
+        args.append("map[string]any{\"x\": 1}")
+    for name, ptype in op.query_params:
+        args.append("0" if ptype == "integer" else '""')
+    return args
+
 def go_test_method(op):
     fn    = go_name(op.op_id)
     rtype = go_response_type(op)
-    method_const = "http.MethodGet" if op.method == "get" else "http.MethodPost"
+    method_const = {
+        "get": "http.MethodGet", "post": "http.MethodPost",
+        "delete": "http.MethodDelete", "patch": "http.MethodPatch",
+    }[op.method]
 
-    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    test_path = op.path
+    for p in op.path_params:
+        test_path = test_path.replace("{" + p + "}", "test-" + p)
+
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {}) if not op.no_content else {}
     props  = schema.get("properties", {})
 
-    # Build response JSON for server stub.
-    if rtype == "map[string]any":
-        resp_json = 'map[string]any{"result": "ok"}'
+    if rtype is None:
+        resp_lines = ["\t\tw.WriteHeader(http.StatusNoContent)"]
+    elif rtype == "map[string]any":
+        resp_lines = ['\t\twriteJSON(w, map[string]any{"result": "ok"})']
     else:
         field_parts = []
         for fname in sorted(props.keys()):
             fschema = props[fname]
-            if fschema.get("type") == "string":
+            ftype = fschema.get("type")
+            if ftype == "string":
                 field_parts.append(f'"{fname}": "ok"')
-            elif fschema.get("type") == "object":
+            elif ftype == "object":
                 field_parts.append(f'"{fname}": map[string]any{{"db": "ok"}}')
+            elif ftype == "integer" or ftype == "number":
+                field_parts.append(f'"{fname}": 1')
+            elif ftype == "boolean":
+                field_parts.append(f'"{fname}": true')
+            elif ftype == "array":
+                field_parts.append(f'"{fname}": []any{{}}')
         resp_json = "map[string]any{" + ", ".join(field_parts) + "}"
+        resp_lines = [f"\t\twriteJSON(w, {resp_json})"]
 
-    # Build the client call.
-    if op.has_body and op.secure:
-        call = f'c.{fn}(context.Background(), "test-key", map[string]any{{"x": 1}})'
-    elif op.has_body:
-        call = f'c.{fn}(context.Background(), map[string]any{{"x": 1}})'
-    elif op.secure:
-        call = f'c.{fn}(context.Background(), "test-key")'
-    else:
-        call = f'c.{fn}(context.Background())'
+    call = f"c.{fn}(context.Background(), {', '.join(go_test_call_args(op))})" if go_test_call_args(op) else f"c.{fn}(context.Background())"
 
     lines = [
         f"func Test{fn}(t *testing.T) {{",
         f'\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {{',
-        f'\t\tif r.Method != {method_const} || r.URL.Path != "{op.path}" {{',
+        f'\t\tif r.Method != {method_const} || r.URL.Path != "{test_path}" {{',
         f'\t\t\tt.Errorf("unexpected request %s %s", r.Method, r.URL.Path)',
         "\t\t}",
     ]
@@ -428,11 +548,18 @@ def go_test_method(op):
             '\t\t\tt.Error("expected request body to contain key x")',
             "\t\t}",
         ]
-    lines += [
-        f"\t\twriteJSON(w, {resp_json})",
-        "\t})",
-    ]
-    if rtype == "map[string]any":
+    lines += resp_lines
+    lines += ["\t})"]
+
+    if rtype is None:
+        lines += [
+            f"\terr := {call}",
+            "\tif err != nil {",
+            "\t\tt.Fatal(err)",
+            "\t}",
+            "}",
+        ]
+    elif rtype == "map[string]any":
         lines += [
             f"\tgot, err := {call}",
             "\tif err != nil {",
@@ -480,14 +607,8 @@ first_map_op = next((op for op in ops if go_response_type(op) == "map[string]any
 null_body_test_go = ""
 if first_map_op:
     fn_nb = go_name(first_map_op.op_id)
-    if first_map_op.has_body and first_map_op.secure:
-        nb_call = f'c.{fn_nb}(context.Background(), "test-key", map[string]any{{"x": 1}})'
-    elif first_map_op.has_body:
-        nb_call = f'c.{fn_nb}(context.Background(), map[string]any{{"x": 1}})'
-    elif first_map_op.secure:
-        nb_call = f'c.{fn_nb}(context.Background(), "test-key")'
-    else:
-        nb_call = f'c.{fn_nb}(context.Background())'
+    nb_args = go_test_call_args(first_map_op)
+    nb_call = f"c.{fn_nb}(context.Background(), {', '.join(nb_args)})" if nb_args else f"c.{fn_nb}(context.Background())"
     null_body_test_go = "\n\n" + "\n".join([
         f"func Test{fn_nb}_nullBody(t *testing.T) {{",
         '\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {',
@@ -504,6 +625,42 @@ if first_map_op:
         '\tif len(got) != 0 {',
         '\t\tt.Errorf("expected empty map, got %v", got)',
         '\t}',
+        '}',
+    ])
+
+# Query-encoding regression test: verifies typed query args are URL-encoded correctly.
+query_encoding_test_go = ""
+if first_query_op:
+    fn_q = go_name(first_query_op.op_id)
+    call_parts = []
+    if first_query_op.secure:
+        call_parts.append('"test-key"')
+    for p in first_query_op.path_params:
+        call_parts.append(f'"test-{p}"')
+    if first_query_op.has_body:
+        call_parts.append('map[string]any{"x": 1}')
+    query_checks = []
+    for name, ptype in first_query_op.query_params:
+        if ptype == "integer":
+            call_parts.append("2")
+            query_checks.append((name, "2"))
+        else:
+            call_parts.append('"v"')
+            query_checks.append((name, "v"))
+    call_q = f"c.{fn_q}(context.Background(), {', '.join(call_parts)})"
+    check_lines = "\n".join(
+        f'\t\tif got := r.URL.Query().Get("{name}"); got != "{val}" {{\n'
+        f'\t\t\tt.Errorf("query {name} = %q, want %q", got, "{val}")\n'
+        f'\t\t}}'
+        for name, val in query_checks
+    )
+    query_encoding_test_go = "\n\n" + "\n".join([
+        f"func Test{fn_q}_queryEncoding(t *testing.T) {{",
+        '\tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {',
+        check_lines,
+        '\t\twriteJSON(w, map[string]any{})',
+        '\t})',
+        f'\t_, _ = {call_q}',
         '}',
     ])
 
@@ -549,7 +706,7 @@ func writeJSON(w http.ResponseWriter, v any) {{
 \t}}
 }}
 
-{test_methods_go}{null_body_test_go}
+{test_methods_go}{null_body_test_go}{query_encoding_test_go}
 
 func TestAPIError_typed(t *testing.T) {{
 \tc := newClient(t, func(w http.ResponseWriter, r *http.Request) {{
@@ -680,7 +837,9 @@ export class ApiError extends Error {
 # ── TypeScript response types ─────────────────────────────────────────────────
 
 def ts_response_type(op):
-    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    if op.no_content:
+        return "void"
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
     props  = schema.get("properties", {})
     if props and not schema.get("additionalProperties"):
         return go_name(op.op_id) + "Response"
@@ -688,9 +847,9 @@ def ts_response_type(op):
 
 def ts_response_interface(op):
     rtype = ts_response_type(op)
-    if rtype == "Record<string, unknown>":
+    if rtype in ("void", "Record<string, unknown>"):
         return ""
-    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {})
     props   = schema.get("properties", {})
     fields  = []
     for fname, fschema in sorted(props.items()):
@@ -715,48 +874,70 @@ def ts_response_interface(op):
 
 interfaces = "".join(iface for op in ops if (iface := ts_response_interface(op)))
 
+def path_expr_ts(op):
+    if not op.path_params:
+        return f'"{op.path}"'
+    tpl = op.path
+    for p in op.path_params:
+        tpl = tpl.replace("{" + p + "}", "${encodeURIComponent(" + param_arg_name(p) + ")}")
+    return f"`{tpl}`"
+
 def ts_method(op):
     fn    = ts_name(op.op_id)
     rtype = ts_response_type(op)
-    path  = op.path
 
     param_parts = []
-    if op.secure and op.has_body:
-        # payload first; apiKey is an optional override for the constructor default.
+    for p in op.path_params:
+        param_parts.append(f"{param_arg_name(p)}: string")
+    if op.has_body:
         param_parts.append("payload: Record<string, unknown>")
+    for name, ptype in op.query_params:
+        ts_type = "number" if ptype == "integer" else "string"
+        param_parts.append(f"{param_arg_name(name)}?: {ts_type}")
+    if op.secure:
         param_parts.append("apiKey?: string")
-    elif op.secure:
-        param_parts.append("apiKey?: string")
-    elif op.has_body:
-        param_parts.append("payload: Record<string, unknown>")
     params = ", ".join(param_parts)
 
-    if op.method == "get":
-        # Use ?? fallback so the constructor default key covers authenticated GETs too.
-        get_key_arg = ", apiKey ?? this.defaultApiKey" if op.secure else ""
-        return (
-            f"  /** {op.method.upper()} {path} — {op.op_id.replace('_', ' ')}. */\n"
-            f"  async {fn}({params}): Promise<{rtype}> {{\n"
-            f'    return this.get<{rtype}>("{path}"{get_key_arg});\n'
-            f"  }}"
-        )
+    base_path_expr = path_expr_ts(op)
+    body_lines = []
+    if op.query_params:
+        body_lines.append(f"    let path: string = {base_path_expr};")
+        body_lines.append("    const q = new URLSearchParams();")
+        for name, ptype in op.query_params:
+            arg = param_arg_name(name)
+            body_lines.append(f'    if ({arg} !== undefined) q.set("{name}", String({arg}));')
+        body_lines.append('    if ([...q].length > 0) path += "?" + q.toString();')
+        call_path_expr = "path"
     else:
-        api_key_expr = "apiKey ?? this.defaultApiKey" if op.secure else "undefined"
-        body_expr    = "payload" if op.has_body else "{}"
-        doc_lines    = [
-            f"  /**",
-            f"   * {op.method.upper()} {path} — {op.op_id.replace('_', ' ')}.",
-        ]
-        if op.secure:
-            doc_lines.append(f"   * @param apiKey - Override the default API key for this call.")
-        doc_lines.append("   */")
-        doc_block = "\n".join(doc_lines)
-        return (
-            f"{doc_block}\n"
-            f"  async {fn}({params}): Promise<{rtype}> {{\n"
-            f'    return this.post<{rtype}>("{path}", {body_expr}, {api_key_expr});\n'
-            f"  }}"
-        )
+        call_path_expr = base_path_expr
+
+    method_upper = op.method.upper()
+    body_arg     = "payload" if op.has_body else "undefined"
+    api_key_expr = "apiKey ?? this.defaultApiKey" if op.secure else "undefined"
+
+    doc_lines = [
+        "  /**",
+        f"   * {method_upper} {op.path} — {op.op_id.replace('_', ' ')}.",
+    ]
+    if op.secure:
+        doc_lines.append("   * @param apiKey - Override the default API key for this call.")
+    doc_lines.append("   */")
+    doc_block = "\n".join(doc_lines)
+
+    if rtype == "void":
+        ret_type = "Promise<void>"
+        call_line = f'    await this.requestVoid("{method_upper}", {call_path_expr}, {body_arg}, {api_key_expr});'
+    else:
+        ret_type = f"Promise<{rtype}>"
+        call_line = f'    return this.request<{rtype}>("{method_upper}", {call_path_expr}, {body_arg}, {api_key_expr});'
+
+    body_all = "\n".join(body_lines + [call_line])
+    return (
+        f"{doc_block}\n"
+        f"  async {fn}({params}): {ret_type} {{\n"
+        f"{body_all}\n"
+        f"  }}"
+    )
 
 methods_ts = "\n\n".join(ts_method(op) for op in ops)
 
@@ -800,14 +981,22 @@ export class Client {{
 
 {methods_ts}
 
-  private async get<T>(path: string, apiKey?: string): Promise<T> {{
+  // request performs a JSON-in/JSON-out call and decodes the response body.
+  // body === undefined means "no request body" (no Content-Type header, no
+  // fetch body); this covers both bodyless GETs and bodyless authenticated
+  // POSTs (e.g. a secret-rotation endpoint).
+  private async request<T>(method: string, path: string, body: unknown, apiKey?: string): Promise<T> {{
     const headers: Record<string, string> = {{ Accept: "application/json" }};
+    if (body !== undefined) {{
+      headers["Content-Type"] = "application/json";
+    }}
     if (apiKey) {{
       headers["{api_key_header}"] = apiKey;
     }}
     const resp = await this.fetchImpl(this.baseURL + path, {{
-      method: "GET",
+      method,
       headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     }});
     if (!resp.ok) {{
       throw await ApiError.fromResponse(resp);
@@ -819,27 +1008,24 @@ export class Client {{
     return resp.json() as Promise<T>;
   }}
 
-  private async post<T>(path: string, body: unknown, apiKey?: string): Promise<T> {{
-    const headers: Record<string, string> = {{
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    }};
+  // requestVoid is request's counterpart for no-content (204-style) responses:
+  // it never touches resp.json(), since there is no body to decode.
+  private async requestVoid(method: string, path: string, body: unknown, apiKey?: string): Promise<void> {{
+    const headers: Record<string, string> = {{}};
+    if (body !== undefined) {{
+      headers["Content-Type"] = "application/json";
+    }}
     if (apiKey) {{
       headers["{api_key_header}"] = apiKey;
     }}
     const resp = await this.fetchImpl(this.baseURL + path, {{
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify(body),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     }});
     if (!resp.ok) {{
       throw await ApiError.fromResponse(resp);
     }}
-    const ct = resp.headers.get("content-type") ?? "";
-    if (!ct.includes("application/json")) {{
-      throw new ApiError(resp.status, "UNKNOWN", `unexpected content-type: ${{ct}}`);
-    }}
-    return resp.json() as Promise<T>;
   }}
 }}
 """)
@@ -847,7 +1033,7 @@ export class Client {{
 # ── src/index.ts ──────────────────────────────────────────────────────────────
 type_exports = ", ".join(
     t for op in ops
-    if (t := ts_response_type(op)) != "Record<string, unknown>"
+    if (t := ts_response_type(op)) not in ("Record<string, unknown>", "void")
 )
 type_export_line = (
     f'export type {{ ClientOptions{", " + type_exports if type_exports else ""} }} from "./client";\n'
@@ -870,107 +1056,157 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + index_webhook_note + 
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────
 
+def ts_test_call_args(op, key_literal='"key"'):
+    args = []
+    for p in op.path_params:
+        args.append(f'"test-{p}"')
+    if op.has_body:
+        args.append("{}")
+    for name, ptype in op.query_params:
+        args.append("undefined")
+    if op.secure:
+        args.append(key_literal)
+    return args
+
 def ts_test_method(op):
     fn    = ts_name(op.op_id)
     rtype = ts_response_type(op)
 
-    schema = op.resp200.get("content", {}).get("application/json", {}).get("schema", {})
-    props  = schema.get("properties", {})
+    test_path = op.path
+    for p in op.path_params:
+        test_path = test_path.replace("{" + p + "}", "test-" + p)
 
-    # Build mock response body.
-    if rtype == "Record<string, unknown>":
-        mock_body = '{"result":"ok"}'
+    schema = op.resp.get("content", {}).get("application/json", {}).get("schema", {}) if not op.no_content else {}
+    props  = schema.get("properties", {}) if not op.no_content else {}
+
+    if op.no_content:
+        mock_status = 204
+        mock_body = None
     else:
+        mock_status = 200
         sample = {}
-        for p in sorted(props.keys()):
-            pschema = props[p]
-            if pschema.get("type") == "string":
-                sample[p] = "ok"
-            elif pschema.get("type") == "object":
-                sample[p] = {"db": "ok"}
+        for p_name in sorted(props.keys()):
+            pschema = props[p_name]
+            t = pschema.get("type")
+            if t == "string":
+                sample[p_name] = "ok"
+            elif t == "object":
+                sample[p_name] = {"db": "ok"}
+            elif t in ("integer", "number"):
+                sample[p_name] = 1
+            elif t == "boolean":
+                sample[p_name] = True
+            elif t == "array":
+                sample[p_name] = []
+        if not sample and rtype == "Record<string, unknown>":
+            sample = {"result": "ok"}
         mock_body = json.dumps(sample)
 
-    # Build client call (payload first, apiKey optional).
-    if op.has_body and op.secure:
-        call = f'await c.{fn}({{}}, "key")'
-    elif op.has_body:
-        call = f'await c.{fn}({{}})'
-    elif op.secure:
-        call = f'await c.{fn}("key")'
+    call_args = ts_test_call_args(op)
+    call = f'await c.{fn}({", ".join(call_args)})'
+
+    first_str_prop = next((p for p in sorted(props.keys()) if props[p].get("type") == "string"), None) if props else None
+
+    def mock_response_line(var_name):
+        if op.no_content:
+            return f'      return new Response(null, {{ status: {mock_status} }});'
+        return (
+            f'      return new Response(JSON.stringify({mock_body}), {{\n'
+            f'        status: {mock_status}, headers: {{ "Content-Type": "application/json" }},\n'
+            f'      }});'
+        )
+
+    lines = [
+        f'describe("Client.{fn}", () => {{',
+        f'  it("sends the expected request and handles the {mock_status} response", async () => {{',
+        '    let capturedInit: RequestInit | undefined;',
+        '    let capturedUrl: string | URL | Request | undefined;',
+        '    const capFetch: typeof globalThis.fetch = async (url, init) => {',
+        '      capturedUrl = url;',
+        '      capturedInit = init;',
+        mock_response_line("capturedInit"),
+        '    };',
+        '    const c = new Client("http://gw.test", { fetch: capFetch });',
+        f'    const got = {call};',
+        f'    assert.equal(String(capturedUrl), "http://gw.test{test_path}");',
+        f'    assert.equal(capturedInit!.method, "{op.method.upper()}");',
+    ]
+    if op.secure:
+        lines.append('    const hdrs = capturedInit!.headers as Record<string, string>;')
+        lines.append(f'    assert.equal(hdrs["{api_key_header}"], "key");')
+    if op.has_body:
+        lines.append('    const reqBody = JSON.parse(capturedInit!.body as string);')
+        lines.append('    assert.deepEqual(reqBody, {});')
+    if op.no_content:
+        lines.append('    assert.equal(got, undefined);')
+    elif first_str_prop:
+        lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
+    elif rtype == "Record<string, unknown>":
+        lines.append('    assert.equal((got as Record<string, unknown>)["result"], "ok");')
     else:
-        call = f'await c.{fn}()'
+        lines.append('    assert.ok(got);')
+    lines.append('  });')
 
-    # Build assertion: use first string-typed property for equality check.
-    first_str_prop = next(
-        (p for p in sorted(props.keys()) if props[p].get("type") == "string"),
-        None
-    ) if props else None
-
-    if op.method == "post" and op.secure:
-        lines = [
-            f'describe("Client.{fn}", () => {{',
-            f'  it("sends {api_key_header} header and returns {rtype} on 200", async () => {{',
-            f'    let capturedInit: RequestInit | undefined;',
-            f'    const capFetch: typeof globalThis.fetch = async (_url, init) => {{',
-            f'      capturedInit = init;',
-            f'      return new Response(JSON.stringify({mock_body}), {{',
-            f'        status: 200, headers: {{ "Content-Type": "application/json" }},',
-            f'      }});',
-            f'    }};',
-            f'    const c = new Client("http://gw.test", {{ fetch: capFetch }});',
-            f'    const got = {call};',
-        ]
-        if first_str_prop:
-            lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
-        elif rtype == "Record<string, unknown>":
-            lines.append(f'    assert.equal(got["result"], "ok");')
-        else:
-            lines.append(f'    assert.ok(got);')
-        # Build no-apiKey call for defaultApiKey fallback test.
-        if op.has_body:
-            call_no_key = f'await c.{fn}({{}})'
-        else:
-            call_no_key = f'await c.{fn}()'
+    if op.secure:
+        call_no_key_args = ts_test_call_args(op)[:-1]
+        call_no_key = f'await c2.{fn}({", ".join(call_no_key_args)})'
         lines += [
-            f'    assert.ok(capturedInit, "capFetch was not called");',
-            f'    const body = JSON.parse(capturedInit!.body as string);',
-            f'    assert.deepEqual(body, {{}});',
-            f'    const hdrs = capturedInit!.headers as Record<string, string>;',
-            f'    assert.equal(hdrs["{api_key_header}"], "key");',
-            f'  }});',
-            f'',
-            f'  it("falls back to constructor apiKey when not provided", async () => {{',
-            f'    let capturedInit2: RequestInit | undefined;',
-            f'    const capFetch2: typeof globalThis.fetch = async (_url, init) => {{',
-            f'      capturedInit2 = init;',
-            f'      return new Response(JSON.stringify({mock_body}), {{',
-            f'        status: 200, headers: {{ "Content-Type": "application/json" }},',
-            f'      }});',
-            f'    }};',
-            f'    const c2 = new Client("http://gw.test", {{ fetch: capFetch2, apiKey: "default-key" }});',
-            f'    {"await c2." + call_no_key.split("c.", 1)[1]};',
-            f'    const hdrs2 = capturedInit2!.headers as Record<string, string>;',
+            '',
+            '  it("falls back to constructor apiKey when not provided", async () => {',
+            '    let capturedInit2: RequestInit | undefined;',
+            '    const capFetch2: typeof globalThis.fetch = async (_url, init) => {',
+            '      capturedInit2 = init;',
+            mock_response_line("capturedInit2"),
+            '    };',
+            '    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });',
+            f'    {call_no_key};',
+            '    const hdrs2 = capturedInit2!.headers as Record<string, string>;',
             f'    assert.equal(hdrs2["{api_key_header}"], "default-key");',
-            f'  }});',
-            f'}});',
+            '  });',
         ]
-    else:
-        lines = [
-            f'describe("Client.{fn}", () => {{',
-            f'  it("returns typed {rtype} on 200", async () => {{',
-            f'    const c = new Client("http://gw.test", {{ fetch: mockFetch(200, {mock_body}) }});',
-            f'    const got = {call};',
-        ]
-        if first_str_prop:
-            lines.append(f'    assert.equal(got.{first_str_prop}, "ok");')
-        elif rtype == "Record<string, unknown>":
-            lines.append(f'    assert.equal(got["result"], "ok");')
-        else:
-            lines.append(f'    assert.ok(got);')
-        lines += ['  });', '});']
+    lines.append('});')
     return "\n".join(lines)
 
 ts_test_methods = "\n\n".join(ts_test_method(op) for op in ops)
+
+# Query-encoding regression test: verifies typed query args are URL-encoded correctly.
+query_encoding_test_ts = ""
+if first_query_op:
+    fn_q = ts_name(first_query_op.op_id)
+    call_args_q = []
+    for p in first_query_op.path_params:
+        call_args_q.append(f'"test-{p}"')
+    if first_query_op.has_body:
+        call_args_q.append("{}")
+    query_checks_ts = []
+    for name, ptype in first_query_op.query_params:
+        if ptype == "integer":
+            call_args_q.append("2")
+            query_checks_ts.append((name, "2"))
+        else:
+            call_args_q.append('"v"')
+            query_checks_ts.append((name, "v"))
+    if first_query_op.secure:
+        call_args_q.append('"key"')
+    call_q = f'await c.{fn_q}({", ".join(call_args_q)})'
+    assertions = "\n".join(
+        f'    assert.equal(url.searchParams.get("{name}"), "{val}");' for name, val in query_checks_ts
+    )
+    query_encoding_test_ts = "\n\n" + "\n".join([
+        f'describe("Client.{fn_q} query encoding", () => {{',
+        '  it("URL-encodes query parameters", async () => {',
+        '    let capturedUrl: string | URL | Request | undefined;',
+        '    const capFetch: typeof globalThis.fetch = async (u) => {',
+        '      capturedUrl = u;',
+        '      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });',
+        '    };',
+        '    const c = new Client("http://gw.test", { fetch: capFetch });',
+        f'    {call_q};',
+        '    const url = new URL(String(capturedUrl));',
+        assertions,
+        '  });',
+        '});',
+    ])
 
 # Error test uses first authenticated POST operation (guaranteed non-None after sys.exit check).
 auth_ts_fn = ts_name(first_auth_post.op_id)
@@ -985,16 +1221,7 @@ import {{ describe, it }} from "node:test";
 import assert from "node:assert/strict";
 import {{ Client, ApiError }} from "../src/index";
 
-function mockFetch(status: number, body: unknown): typeof globalThis.fetch {{
-  return async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {{
-    return new Response(JSON.stringify(body), {{
-      status,
-      headers: {{ "Content-Type": "application/json" }},
-    }});
-  }};
-}}
-
-{ts_test_methods}
+{ts_test_methods}{query_encoding_test_ts}
 
 describe("ApiError", () => {{
   it("is an instance of Error", () => {{
@@ -1053,9 +1280,30 @@ describe("ApiError", () => {{
     );
   }});
 }});
+
+function mockFetch(status: number, body: unknown): typeof globalThis.fetch {{
+  return async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {{
+    return new Response(JSON.stringify(body), {{
+      status,
+      headers: {{ "Content-Type": "application/json" }},
+    }});
+  }};
+}}
 """)
 
 print(f"Generated clients from {os.path.basename(SPEC_PATH)} ({title} {version})")
 print(f"  Go:         {GO_DIR}")
 print(f"  TypeScript: {TS_DIR}")
 PYEOF
+
+# Struct field alignment (json tag column widths) depends on the full set of
+# field names/types in a struct, which this generator emits without tracking
+# gofmt's alignment rules itself; gofmt is authoritative and already required
+# (go 1.22+, see header), so let it do the alignment instead of duplicating
+# its logic here. Scoped to exactly the files this generator writes — the
+# hand-maintained webhook.go/webhook_test.go/webhook_internal_test.go in the
+# same directory are untouched.
+gofmt -w \
+  "${REPO_ROOT}/clients/go/client.go" \
+  "${REPO_ROOT}/clients/go/client_test.go" \
+  "${REPO_ROOT}/clients/go/errors.go"
