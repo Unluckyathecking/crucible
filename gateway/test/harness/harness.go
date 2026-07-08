@@ -54,13 +54,13 @@ const (
 	defaultDBPoolSize      = 5
 
 	serverBootTimeout         = 30 * time.Second
-	cleanupTimeout            = 60 * time.Second      // budget for customer cleanup including retry loop
+	cleanupTimeout            = 60 * time.Second // budget for customer cleanup including retry loop
 	maxCleanupRetries         = 3
-	cleanupRetryTimeout       = 10 * time.Second      // timeout for each api_keys DELETE retry attempt
-	redisCleanupTimeout       = 10 * time.Second      // timeout for the Redis DEL in customer cleanup
+	cleanupRetryTimeout       = 10 * time.Second       // timeout for each api_keys DELETE retry attempt
+	redisCleanupTimeout       = 10 * time.Second       // timeout for the Redis DEL in customer cleanup
 	cleanupRetryBackoff       = 500 * time.Millisecond // delay between api_keys delete retries; allows async errorlog goroutine to finish
-	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
-	customerInsertTimeout     = 10 * time.Second      // customer + api_key INSERT in CreateCustomer
+	planExistenceCheckTimeout = 5 * time.Second        // plan lookup before customer insert
+	customerInsertTimeout     = 10 * time.Second       // customer + api_key INSERT in CreateCustomer
 
 	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
 	testPlanDisplayNamePrefix = "Test Plan "
@@ -176,7 +176,16 @@ type Options struct {
 	Routes []openapi.RouteDescriptor
 
 	// WorkerHandler handles POST /invoke calls forwarded by the gateway proxy.
+	// The harness wraps it in an in-process httptest.Server. Mutually exclusive
+	// with WorkerURL; exactly one of the two must be set.
 	WorkerHandler http.Handler
+
+	// WorkerURL points the gateway proxy at an already-running external worker
+	// process (e.g. a real product worker binary) instead of an in-process
+	// http.Handler. Mutually exclusive with WorkerHandler; exactly one of the
+	// two must be set. The caller owns the external process's lifecycle — the
+	// harness neither starts nor stops it.
+	WorkerURL string
 
 	// DSN is a real Postgres connection string.
 	DSN string
@@ -186,13 +195,21 @@ type Options struct {
 
 	// WorkerTimeoutMS caps the gateway→worker call. 0 means use the default (5000 ms).
 	WorkerTimeoutMS int
+
+	// WorkerSharedSecret, when non-empty, HMAC-signs outbound /invoke requests
+	// with proxy.Client.WithSecret — mirrors cfg.WorkerSharedSecret in
+	// gateway/cmd/gateway/main.go. Needed when WorkerURL points at a worker
+	// process that enforces channel-signature auth (WORKER_SHARED_SECRET, which
+	// the SDKs read automatically); empty is a no-op, so existing callers are unaffected.
+	WorkerSharedSecret string
 }
 
 // TestServer is a running gateway backed by real Postgres and Redis.
 type TestServer struct {
 	// Server is the gateway httptest.Server.
 	Server *httptest.Server
-	// Worker is the in-process worker httptest.Server.
+	// Worker is the in-process worker httptest.Server. Nil when the caller
+	// supplied Options.WorkerURL instead of Options.WorkerHandler.
 	Worker *httptest.Server
 	// DB gives direct Postgres access for assertion queries.
 	DB *pgxpool.Pool
@@ -204,8 +221,16 @@ type TestServer struct {
 // against real Postgres and Redis and returns the started test server.
 func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	t.Helper()
-	if opts.WorkerHandler == nil {
-		t.Fatal("harness: WorkerHandler is required")
+	if opts.WorkerHandler == nil && opts.WorkerURL == "" {
+		t.Fatal("harness: one of WorkerHandler or WorkerURL is required")
+	}
+	if opts.WorkerHandler != nil && opts.WorkerURL != "" {
+		t.Fatal("harness: WorkerHandler and WorkerURL are mutually exclusive")
+	}
+	if opts.WorkerURL != "" {
+		if u, err := url.Parse(opts.WorkerURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			t.Fatalf("harness: WorkerURL must be a valid http:// or https:// URL, got: %s", opts.WorkerURL)
+		}
 	}
 	if opts.DSN == "" {
 		t.Fatal("harness: DSN is required")
@@ -262,7 +287,15 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		}
 	})
 
-	workerSrv = httptest.NewServer(opts.WorkerHandler)
+	// workerURL is the address the gateway proxy dials. It is either an
+	// in-process httptest.Server wrapping opts.WorkerHandler (the default,
+	// existing path) or opts.WorkerURL, an already-running external worker
+	// process the harness does not own.
+	workerURL := opts.WorkerURL
+	if opts.WorkerHandler != nil {
+		workerSrv = httptest.NewServer(opts.WorkerHandler)
+		workerURL = workerSrv.URL
+	}
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), serverBootTimeout)
 	defer poolCancel()
@@ -297,10 +330,10 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 	// proxy.Client has no Close() method; its http.Transport closes idle connections
 	// automatically when workerSrv is shut down and the IdleConnTimeout (90 s) elapses.
 	workerClient := proxy.New(
-		workerSrv.URL,
+		workerURL,
 		time.Duration(opts.WorkerTimeoutMS)*time.Millisecond,
 		defaultProxyPoolSize,
-	)
+	).WithSecret(opts.WorkerSharedSecret)
 
 	bucket := ratelimit.New(rdb)
 	plans := billing.NewPlanCache(pool)
