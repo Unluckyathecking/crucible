@@ -3,13 +3,22 @@ import Nodemailer from "next-auth/providers/nodemailer";
 import PostgresAdapter from "@auth/pg-adapter";
 import { Pool } from "pg";
 import authConfig from "./auth.config";
+// SSO is an Enterprise Edition feature. ssoProvider() is server-only (it runs the
+// license check via Node crypto) and returns null unless a valid license grants
+// the `sso` feature AND the OIDC env vars are set — so importing it here, in the
+// Node-runtime full config, never touches the Edge middleware and is a no-op for
+// community deployments.
+import { ssoProvider } from "@/lib/sso";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const sso = ssoProvider();
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PostgresAdapter(pool),
   providers: [
+    ...(sso ? [sso] : []),
     Nodemailer({
       // server unused — sendVerificationRequest handles delivery directly.
       server: { host: "localhost", port: 25, auth: { user: "noop", pass: "noop" } },
