@@ -23,6 +23,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/license"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
@@ -43,6 +44,38 @@ func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err
 type pgPinger struct{ p *pgxpool.Pool }
 
 func (p *pgPinger) Ping(ctx context.Context) error { return p.p.Ping(ctx) }
+
+// resolveLicense verifies the configured deployment license and logs one
+// startup line describing the active edition. Any failure (bad public key,
+// unparseable/expired/forged license) falls back to community edition and
+// returns nil rather than aborting boot.
+func resolveLicense(cfg *config.Config) *license.License {
+	if cfg.LicenseKey == "" {
+		log.Info().Msg("license: community edition")
+		return nil
+	}
+	pub, err := license.ResolvePublicKey(cfg.LicensePubKey)
+	if err != nil {
+		log.Error().Err(err).Msg("license: bad public key — falling back to community edition")
+		return nil
+	}
+	lic, err := license.Parse(cfg.LicenseKey, pub)
+	if err != nil {
+		log.Error().Err(err).Msg("license: invalid license key — falling back to community edition")
+		return nil
+	}
+	evt := log.Info().
+		Str("edition", lic.Edition).
+		Strs("features", lic.Features).
+		Str("licensee", lic.Licensee).
+		Time("expires_at", lic.ExpiresAt)
+	if lic.InGrace() {
+		evt.Bool("in_grace", true)
+		log.Warn().Time("expired_at", lic.ExpiresAt).Msg("license: expired but within grace period — renew soon")
+	}
+	evt.Msg("license: active")
+	return lic
+}
 
 func main() {
 	// Best-effort .env load; absent .env is fine if env is set externally (CI, docker, prod).
@@ -76,6 +109,11 @@ func main() {
 	if lvl, err := zerolog.ParseLevel(cfg.LogLevel); err == nil {
 		zerolog.SetGlobalLevel(lvl)
 	}
+
+	// Resolve the deployment license. A missing key is community edition; a
+	// set-but-invalid key must NOT crash the gateway — log and fall back to
+	// community so a bad license can never take a paid deployment offline.
+	lic := resolveLicense(cfg)
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -134,6 +172,7 @@ func main() {
 			TracerProvider: components.TracerProvider,
 			OperatorStore:  operator.NewStore(pool),
 			OperatorToken:  cfg.OperatorToken,
+			License:        lic,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

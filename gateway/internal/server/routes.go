@@ -28,6 +28,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
+	"github.com/Unluckyathecking/crucible/gateway/internal/license"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -106,6 +107,10 @@ type Deps struct {
 	// The operator path is completely separate from the customer auth.Middleware path.
 	OperatorStore *operator.Store
 	OperatorToken string
+	// License is the verified deployment license, or nil for community edition.
+	// Wave-2 modules read it via License.Has(feature) to gate Pro/Business/
+	// Enterprise endpoints; this package registers no license-gated routes itself.
+	License *license.License
 }
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
@@ -696,4 +701,3 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
-
