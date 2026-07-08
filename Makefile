@@ -1,14 +1,15 @@
-.PHONY: help dev down logs worker gateway dashboard test tidy smoke-test-new-tool
+.PHONY: help dev down logs worker gateway dashboard test tidy smoke-test-new-tool acceptance
 
 help:
 	@echo "Crucible — local development targets:"
-	@echo "  make dev       Bring up postgres + redis + worker + gateway (docker compose)"
-	@echo "  make down      Tear down the docker stack (keeps volumes)"
-	@echo "  make logs      Tail logs from all services"
-	@echo "  make worker    Run the worker stub directly via go run on :8081"
-	@echo "  make gateway   Run the gateway directly via go run on :8080"
-	@echo "  make test      Run all Go tests"
-	@echo "  make tidy      go mod tidy across all modules"
+	@echo "  make dev         Bring up postgres + redis + worker + gateway (docker compose)"
+	@echo "  make down        Tear down the docker stack (keeps volumes)"
+	@echo "  make logs        Tail logs from all services"
+	@echo "  make worker      Run the worker stub directly via go run on :8081"
+	@echo "  make gateway     Run the gateway directly via go run on :8080"
+	@echo "  make test        Run all Go tests"
+	@echo "  make tidy        go mod tidy across all modules"
+	@echo "  make acceptance  Runtime acceptance: real workers/active worker through the real gateway"
 
 dev:
 	docker compose up -d --build
@@ -45,3 +46,6 @@ dashboard:
 
 smoke-test-new-tool: ## Run the same canonical script that CI runs on every PR
 	bash scripts/smoke-new-tool.sh
+
+acceptance: ## Requires POSTGRES_DSN and REDIS_URL pointing at real, reachable Postgres/Redis
+	bash scripts/acceptance-run.sh

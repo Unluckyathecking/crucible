@@ -20,3 +20,50 @@ jobs:
           toolchain: stable
       - name: smoke-new-tool
         run: bash scripts/smoke-new-tool.sh
+
+  # Compiling isn't enough: prove the demo clone actually runs the frozen HTTP/JSON
+  # contract, gateway -> real workers/active worker -> billing, end to end.
+  acceptance:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_PASSWORD: ci_test
+          POSTGRES_DB: crucible
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: clone demo tree
+        run: bash scripts/new-tool.sh demo-clone-acceptance "$RUNNER_TEMP/demo-clone-acceptance"
+      - name: go work sync
+        working-directory: ${{ runner.temp }}/demo-clone-acceptance
+        run: go work sync
+      - name: acceptance-run
+        working-directory: ${{ runner.temp }}/demo-clone-acceptance
+        env:
+          POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        run: bash scripts/acceptance-run.sh
