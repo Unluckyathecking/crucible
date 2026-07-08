@@ -35,6 +35,16 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
 - `dashboard/lib/audit.ts` — mirrors the Go emitter field-for-field. Same rule: extend `details`, never fork.
 - `workers/sdk-go/` (or other host-lang SDKs) — shared infrastructure.
 
+## Licensing carries over
+
+A clone inherits Crucible's open-core split unchanged: the framework core stays
+MIT, and the Enterprise Edition (EE) files keep their per-file header and remain
+governed by `ee/LICENSE.md`. Don't relicense EE files or strip their headers in a
+clone. Any EE feature your clone ships (SSO, operator multi-token, audit export)
+still requires the operator to supply a valid Crucible license key via
+`CRUCIBLE_LICENSE_KEY` — a clone does not grant its own license. Without a key,
+EE features stay disabled and the clone runs as Community. See `docs/licensing.md`.
+
 ## The contract
 
 Your worker receives:

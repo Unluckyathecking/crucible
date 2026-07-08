@@ -45,6 +45,16 @@ These exist for non-obvious reasons. If you think you need to change one of them
 
 9. **`workers/sdk-go/` is the shared SDK. `workers/active` is a symlink.** Don't fork the SDK per product; extend it. Don't move the active worker out of `workers/`; the Dockerfile build context expects it there.
 
+10. **Open-core licensing boundary is per-file, not per-directory.** Crucible's core is MIT; Enterprise Edition (EE) features are source-available under `ee/LICENSE.md`. Every EE source file carries this exact header verbatim:
+
+    ```
+    // Crucible Enterprise Edition (EE) file.
+    // Licensed under the Crucible Enterprise License — see ee/LICENSE.md.
+    // Not covered by the repository's MIT license.
+    ```
+
+    New EE features MUST be gated at runtime via `Deps.License.Has("<feature>")`, where the feature is one of `sso`, `operator_tokens`, `audit_export`. The license (env `CRUCIBLE_LICENSE_KEY`) is verified offline via Ed25519 by `gateway/internal/license/`; no key means the feature is cleanly disabled and Crucible runs as the free Community edition. **Never remove, disable, or circumvent a license check** — that re-opens the free-usage escape the open-core model depends on, and violates `ee/LICENSE.md`. Don't infer edition from a file's directory; the header is the authority. See `ee/README.md` and `docs/licensing.md`.
+
 ## What changes per product
 
 See `ADAPT.md`. The summary: `workers/active`, one line per endpoint in `gateway/internal/server/routes.go`, plan tier seeds in a new `gateway/migrations/0005_seed_plans.sql`, dashboard marketing copy, docs, Stripe product/prices. **Nothing else** should be touched per product. If you find yourself editing the gateway's `internal/auth`, `internal/billing`, `internal/ratelimit`, `internal/quota`, `internal/proxy`, or `internal/observability` per product — stop and explain why; you're probably solving the wrong problem.

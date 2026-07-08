@@ -1,3 +1,19 @@
+NOTE ON LICENSING (not part of the MIT license text below)
+
+Crucible is open-core. The MIT license below covers all files in this
+repository EXCEPT those that carry the Crucible Enterprise Edition (EE) file
+header:
+
+    // Crucible Enterprise Edition (EE) file.
+    // Licensed under the Crucible Enterprise License — see ee/LICENSE.md.
+    // Not covered by the repository's MIT license.
+
+Files carrying that header are source-available (not open source) and are
+governed by the Crucible Enterprise License in ee/LICENSE.md, not by the MIT
+license below. See ee/README.md and docs/licensing.md for details.
+
+================================================================================
+
 MIT License
 
 Copyright (c) 2026 Mohammed Ali Bhai
