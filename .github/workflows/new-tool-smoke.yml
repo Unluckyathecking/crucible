@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual re-runs after infra/env changes, without needing a dummy commit.
+  workflow_dispatch:
 
 # The framework's whole value rests on `scripts/new-tool.sh` working. If it silently
 # rots, every clone breaks and we won't find out until someone tries it. Smoke-test it.
@@ -12,11 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
+      - uses: ./.github/actions/setup-go
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: workers/sdk-rust
       - name: smoke-new-tool
         run: bash scripts/smoke-new-tool.sh

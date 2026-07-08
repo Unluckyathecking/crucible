@@ -1,0 +1,25 @@
+name: Set up Go (Crucible)
+# Single source of truth for the CI Go toolchain and module-cache key.
+# Before this action existed the version was hand-pinned per workflow and
+# had already drifted: "1.25.11" in ci.yml / client-sdk-drift.yml vs a
+# floating "1.25" in new-tool-smoke.yml / worker-conformance.yml — exactly
+# the toolchain-drift class ci.yml's Dockerfile drift check guards against,
+# one layer up. Bump the version here and every workflow follows.
+description: Pinned Go toolchain + shared module cache for all workflows
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25.11"
+        cache: true
+        # One shared cache key across all Go jobs. clients/go has no go.sum
+        # (the generated client is stdlib-only), so its go.mod stands in;
+        # replace it with clients/go/go.sum if that client ever gains a
+        # third-party dependency.
+        cache-dependency-path: |
+          gateway/go.sum
+          workers/sdk-go/go.sum
+          workers/stubs/go/go.sum
+          test/conformance/go.sum
+          clients/go/go.mod
