@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 )
 
@@ -73,20 +74,37 @@ type invocationResponse struct {
 	BillableUnits uint64          `json:"billable_units"`
 }
 
-// TestClonedTreeRuntimeAcceptance drives one authenticated, metered /v1/echo
-// request through the real gateway middleware chain into the real
+// workerSharedSecret returns the optional HMAC secret the started worker process
+// enforces on inbound /invoke requests (WORKER_SHARED_SECRET, read automatically
+// by the SDKs). Absent means channel-signature auth is disabled — the common
+// case — so an empty string (a no-op for harness.Options.WorkerSharedSecret) is fine.
+func workerSharedSecret() string {
+	return os.Getenv("WORKER_SHARED_SECRET")
+}
+
+// TestClonedTreeRuntimeAcceptance drives one authenticated, metered request
+// against the clone's own first configured /v1 route (server.V1Routes[0] —
+// whatever routes_table.go declares, not a hardcoded /echo, so this still
+// exercises the shipped operation after a product replaces the template
+// endpoint) through the real gateway middleware chain into the real
 // workers/active worker binary, and asserts the frozen contract holds:
 // HTTP 200, billable_units >= 1 (both in the response body and the
 // X-Billable-Units header the gateway sets from the worker's response), and
 // exactly one usage_events row recorded for the customer.
 func TestClonedTreeRuntimeAcceptance(t *testing.T) {
+	if len(server.V1Routes) == 0 {
+		t.Fatal("server.V1Routes is empty; routes_table.go must declare at least one /v1 endpoint")
+	}
+	route := server.V1Routes[0]
+
 	client := &http.Client{Timeout: testHTTPClientTimeout}
 	t.Cleanup(client.CloseIdleConnections)
 
 	ts := harness.NewGatewayTestServer(t, harness.Options{
-		WorkerURL: workerURL(t),
-		DSN:       postgresDSN(t),
-		RedisURL:  redisURL(t),
+		WorkerURL:          workerURL(t),
+		DSN:                postgresDSN(t),
+		RedisURL:           redisURL(t),
+		WorkerSharedSecret: workerSharedSecret(),
 	})
 	ts.CreatePlan(t, testPlanID, testRatePerMin, testMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "acceptance-"+uuid.New().String()+"@example.com", testPlanID)
@@ -94,8 +112,8 @@ func TestClonedTreeRuntimeAcceptance(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ts.Server.URL+"/v1/echo",
-		strings.NewReader(`{"x":"hi"}`),
+		ts.Server.URL+"/v1"+route.Path,
+		strings.NewReader(`{}`),
 	)
 	if err != nil {
 		t.Fatalf("build request: %v", err)

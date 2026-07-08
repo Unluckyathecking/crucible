@@ -54,13 +54,13 @@ const (
 	defaultDBPoolSize      = 5
 
 	serverBootTimeout         = 30 * time.Second
-	cleanupTimeout            = 60 * time.Second      // budget for customer cleanup including retry loop
+	cleanupTimeout            = 60 * time.Second // budget for customer cleanup including retry loop
 	maxCleanupRetries         = 3
-	cleanupRetryTimeout       = 10 * time.Second      // timeout for each api_keys DELETE retry attempt
-	redisCleanupTimeout       = 10 * time.Second      // timeout for the Redis DEL in customer cleanup
+	cleanupRetryTimeout       = 10 * time.Second       // timeout for each api_keys DELETE retry attempt
+	redisCleanupTimeout       = 10 * time.Second       // timeout for the Redis DEL in customer cleanup
 	cleanupRetryBackoff       = 500 * time.Millisecond // delay between api_keys delete retries; allows async errorlog goroutine to finish
-	planExistenceCheckTimeout = 5 * time.Second       // plan lookup before customer insert
-	customerInsertTimeout     = 10 * time.Second      // customer + api_key INSERT in CreateCustomer
+	planExistenceCheckTimeout = 5 * time.Second        // plan lookup before customer insert
+	customerInsertTimeout     = 10 * time.Second       // customer + api_key INSERT in CreateCustomer
 
 	// testPlanDisplayNamePrefix is prepended to the plan ID to form the display name in CreatePlan.
 	testPlanDisplayNamePrefix = "Test Plan "
@@ -195,6 +195,13 @@ type Options struct {
 
 	// WorkerTimeoutMS caps the gateway→worker call. 0 means use the default (5000 ms).
 	WorkerTimeoutMS int
+
+	// WorkerSharedSecret, when non-empty, HMAC-signs outbound /invoke requests
+	// with proxy.Client.WithSecret — mirrors cfg.WorkerSharedSecret in
+	// gateway/cmd/gateway/main.go. Needed when WorkerURL points at a worker
+	// process that enforces channel-signature auth (WORKER_SHARED_SECRET, which
+	// the SDKs read automatically); empty is a no-op, so existing callers are unaffected.
+	WorkerSharedSecret string
 }
 
 // TestServer is a running gateway backed by real Postgres and Redis.
@@ -326,7 +333,7 @@ func NewGatewayTestServer(t *testing.T, opts Options) *TestServer {
 		workerURL,
 		time.Duration(opts.WorkerTimeoutMS)*time.Millisecond,
 		defaultProxyPoolSize,
-	)
+	).WithSecret(opts.WorkerSharedSecret)
 
 	bucket := ratelimit.New(rdb)
 	plans := billing.NewPlanCache(pool)
