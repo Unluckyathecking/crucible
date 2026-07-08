@@ -57,6 +57,14 @@ type Config struct {
 	// Generate with: openssl rand -hex 32
 	OperatorToken string `envconfig:"OPERATOR_TOKEN" default:""`
 
+	// License — open-core deployment gating. Both optional. Empty LicenseKey means
+	// community edition (NOT an error). LicensePubKey (hex ed25519, 32 bytes)
+	// overrides the compiled-in license.DefaultPublicKeyHex; empty uses the constant.
+	// A set-but-invalid LicenseKey does not fail startup — main.go logs and falls
+	// back to community — so this package does no license validation.
+	LicenseKey    string `envconfig:"CRUCIBLE_LICENSE_KEY"    default:""`
+	LicensePubKey string `envconfig:"CRUCIBLE_LICENSE_PUBKEY" default:""`
+
 	// Worker channel authentication — opt-in HMAC-SHA256 /invoke request signing.
 	// Empty (the default) disables signing, preserving today's behaviour.
 	// When set, the gateway signs every /invoke request; the worker SDK verifies it.
@@ -82,8 +90,8 @@ type Config struct {
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
 
 	// Tracing (OTel) — disabled by default; zero-config dials no exporter.
-	OtelTracingEnabled   bool    `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
-	OtelExporterEndpoint string  `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
+	OtelTracingEnabled   bool   `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
+	OtelExporterEndpoint string `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
 	// OtelExporterInsecure disables TLS for the OTLP exporter. Default false (TLS on).
 	// Set to true for localhost/sidecar collectors that do not serve TLS.
 	OtelExporterInsecure bool    `envconfig:"OTEL_EXPORTER_INSECURE" default:"false"`
