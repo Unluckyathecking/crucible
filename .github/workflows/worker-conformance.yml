@@ -27,6 +27,7 @@ jobs:
           - id: go
           - id: rust
           - id: ts
+          - id: python
 
     name: fixture-conformance (${{ matrix.sdk.id }})
     steps:
@@ -73,6 +74,19 @@ jobs:
           npm ci
           npm run build
           node --test conformance/conformance.test.js
+
+      # ── Python ───────────────────────────────────────────────────────────
+
+      - name: Set up Python
+        if: matrix.sdk.id == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python fixture conformance
+        if: matrix.sdk.id == 'python'
+        working-directory: workers/sdk-python
+        run: python3 -m unittest conformance.test_fixture_conformance -v
 
   # ── Python stub (no SDK — use the external conformance-run.sh suite) ─────────
 
