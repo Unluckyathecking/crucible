@@ -119,6 +119,9 @@
             "application/json": {
               "schema": {
                 "type": "object"
+              },
+              "example": {
+                "input": "hello"
               }
             }
           }
