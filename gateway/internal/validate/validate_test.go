@@ -1204,6 +1204,74 @@ func TestCompileSchemaPatterns(t *testing.T) {
 	})
 }
 
+// TestValidateSampleRequests mirrors TestCompileSchemaPatterns' structure for
+// the SampleRequest ↔ RequestSchema startup cross-check (server.NewRouter
+// calls both, back to back).
+func TestValidateSampleRequests(t *testing.T) {
+	t.Run("valid sample returns nil", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{
+				Path: "/test", Operation: "test", Summary: "Test",
+				RequestSchema: &openapi.Schema{
+					Type:       "object",
+					Properties: map[string]*openapi.Schema{"input": {Type: "string"}},
+					Required:   []string{"input"},
+				},
+				SampleRequest: json.RawMessage(`{"input":"hello"}`),
+			},
+		}
+		if err := validate.ValidateSampleRequests(routes); err != nil {
+			t.Errorf("valid sample should return nil, got: %v", err)
+		}
+	})
+
+	t.Run("sample violating schema returns error", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{
+				Path: "/test", Operation: "test", Summary: "Test",
+				RequestSchema: &openapi.Schema{
+					Type:       "object",
+					Properties: map[string]*openapi.Schema{"input": {Type: "string"}},
+					Required:   []string{"input"},
+				},
+				// Missing the required "input" field.
+				SampleRequest: json.RawMessage(`{}`),
+			},
+		}
+		err := validate.ValidateSampleRequests(routes)
+		if err == nil {
+			t.Fatal("sample violating schema should return an error")
+		}
+		if !strings.Contains(err.Error(), "/test") {
+			t.Errorf("error should name the offending route path, got: %v", err)
+		}
+	})
+
+	t.Run("nil SampleRequest is skipped", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{
+				Path: "/test", Operation: "test", Summary: "Test",
+				RequestSchema: &openapi.Schema{
+					Type:     "object",
+					Required: []string{"input"},
+				},
+			},
+		}
+		if err := validate.ValidateSampleRequests(routes); err != nil {
+			t.Errorf("nil SampleRequest should be skipped, got: %v", err)
+		}
+	})
+
+	t.Run("nil RequestSchema is a pass-through regardless of SampleRequest", func(t *testing.T) {
+		routes := []openapi.RouteDescriptor{
+			{Path: "/test", Operation: "test", Summary: "Test", SampleRequest: json.RawMessage(`{"anything":true}`)},
+		}
+		if err := validate.ValidateSampleRequests(routes); err != nil {
+			t.Errorf("nil RequestSchema should pass through, got: %v", err)
+		}
+	})
+}
+
 // TestPatternInvalidRegexReturnsSchemaError verifies that an invalid RE2 pattern
 // in a schema returns a descriptive schema-authoring error rather than silently
 // skipping the constraint. CompileSchemaPatterns catches this at startup; if

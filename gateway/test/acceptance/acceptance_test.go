@@ -11,13 +11,13 @@
 package acceptance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +91,12 @@ func workerSharedSecret() string {
 // HTTP 200, billable_units >= 1 (both in the response body and the
 // X-Billable-Units header the gateway sets from the worker's response), and
 // exactly one usage_events row recorded for the customer.
+//
+// The request body is the route's own RouteDescriptor.SampleRequest when
+// declared, falling back to {} otherwise — so a clone whose worker requires
+// specific payload fields can be proven end-to-end simply by declaring a
+// sample in routes_table.go, rather than this test structurally only ever
+// being able to send an empty object.
 func TestClonedTreeRuntimeAcceptance(t *testing.T) {
 	if len(server.V1Routes) == 0 {
 		t.Fatal("server.V1Routes is empty; routes_table.go must declare at least one /v1 endpoint")
@@ -109,11 +115,20 @@ func TestClonedTreeRuntimeAcceptance(t *testing.T) {
 	ts.CreatePlan(t, testPlanID, testRatePerMin, testMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "acceptance-"+uuid.New().String()+"@example.com", testPlanID)
 
+	// Send the route's own declared sample payload when present — falling back
+	// to an empty object preserves prior behavior for routes without one — so
+	// this test can validate any product's required-field payload instead of
+	// structurally only ever proving the request body was `{}`.
+	sampleBody := route.SampleRequest
+	if sampleBody == nil {
+		sampleBody = json.RawMessage(`{}`)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.Server.URL+"/v1"+route.Path,
-		strings.NewReader(`{}`),
+		bytes.NewReader(sampleBody),
 	)
 	if err != nil {
 		t.Fatalf("build request: %v", err)

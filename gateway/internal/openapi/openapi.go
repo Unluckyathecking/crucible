@@ -20,6 +20,16 @@ type RouteDescriptor struct {
 	Operation     string  // opaque string forwarded to the worker
 	Summary       string  // human-readable; appears in the OpenAPI document
 	RequestSchema *Schema // optional; when set, gateway validates request body against this schema
+	// SampleRequest is an optional example request body (raw JSON) for this route.
+	// When set it drives three things from one declaration: the "example" value
+	// on the request body's MediaType in the served /openapi.json (see
+	// invokeOperation), the request payload gateway/test/acceptance sends instead
+	// of a hardcoded {}, and a startup cross-check (server.NewRouter, next to
+	// validate.CompileSchemaPatterns) that log.Fatals if the sample does not
+	// validate against RequestSchema — catching a drifted example before it ships
+	// in the OpenAPI document or silently no-ops the acceptance test. Nil means
+	// no example is declared; consumers fall back to an empty JSON object.
+	SampleRequest json.RawMessage
 }
 
 // --- structural types --------------------------------------------------------
@@ -151,6 +161,10 @@ type RequestBody struct {
 // MediaType pairs a schema with a MIME type.
 type MediaType struct {
 	Schema *Schema `json:"schema,omitempty"`
+	// Example is an optional literal example value for this media type,
+	// e.g. a route's RouteDescriptor.SampleRequest. json.RawMessage marshals
+	// verbatim so the example appears as real JSON, not a quoted string.
+	Example json.RawMessage `json:"example,omitempty"`
 }
 
 // Header describes a single response header.
@@ -219,8 +233,10 @@ func errResp(desc string) Response {
 
 // invokeOperation builds the standard Operation for a per-product /v1 invoke endpoint.
 // schema is the route's RequestSchema; when nil the request body is documented as a
-// generic object ({"type":"object"}) preserving backwards-compatibility.
-func invokeOperation(operationID, summary string, schema *Schema) *Operation {
+// generic object ({"type":"object"}) preserving backwards-compatibility. sampleRequest
+// is the route's RouteDescriptor.SampleRequest, if any; when non-nil it is emitted
+// as the request body's "example" value.
+func invokeOperation(operationID, summary string, schema *Schema, sampleRequest json.RawMessage) *Operation {
 	reqBodySchema := &Schema{Type: "object"}
 	if schema != nil {
 		reqBodySchema = schema
@@ -241,7 +257,7 @@ func invokeOperation(operationID, summary string, schema *Schema) *Operation {
 		RequestBody: &RequestBody{
 			Required: true,
 			Content: map[string]MediaType{
-				contentTypeJSON: {Schema: reqBodySchema},
+				contentTypeJSON: {Schema: reqBodySchema, Example: sampleRequest},
 			},
 		},
 		Responses: map[string]Response{
@@ -535,7 +551,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
 		}
 		seenOpIDs[opID] = key
-		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema)}
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema, rt.SampleRequest)}
 	}
 
 	return Document{

@@ -24,15 +24,17 @@
 # builds workers/stubs/<lang>, which is a different tree from workers/active
 # for any clone that adapted into its own directory.
 #
-# Known limitations (both owned by test/conformance, out of this script's
-# scope to fix): the conformance suite's fixtures always send
-# operation:"echo", so a worker that rejects unknown operations will fail
-# phase 1 even if it correctly implements its own product operation; and the
-# gateway acceptance test always sends an empty JSON object as the request
-# body, so a route whose worker requires specific payload fields will fail
-# phase 2 even if correctly implemented. Neither RouteDescriptor
-# (gateway/internal/openapi) nor test/conformance's fixtures currently carry
-# a per-route sample payload to drive a fully product-agnostic request.
+# Known limitation (owned by test/conformance, out of this script's scope to
+# fix): the conformance suite's fixtures always send operation:"echo", so a
+# worker that rejects unknown operations will fail phase 1 even if it
+# correctly implements its own product operation.
+#
+# Phase 2 is no longer limited to an empty JSON object: gateway/test/acceptance
+# sends server.V1Routes[0].SampleRequest when the clone has declared one
+# (RouteDescriptor.SampleRequest, gateway/internal/openapi), falling back to {}
+# only when the route has no sample — so a route whose worker requires
+# specific payload fields can be proven end-to-end by declaring a sample in
+# routes_table.go.
 #
 # Usage:
 #   POSTGRES_DSN=postgres://... REDIS_URL=redis://... bash scripts/acceptance-run.sh

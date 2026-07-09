@@ -528,6 +528,97 @@ func TestOpenAPI_ErrorsPathPreservesProductPOST(t *testing.T) {
 	}
 }
 
+// TestBuild_SampleRequestSurfacesAsExample verifies that a route's
+// RouteDescriptor.SampleRequest is emitted verbatim as the request body's
+// "example" value (MediaType.Example) for that route's operation.
+func TestBuild_SampleRequestSurfacesAsExample(t *testing.T) {
+	sample := json.RawMessage(`{"input":"hello"}`)
+	routes := []openapi.RouteDescriptor{
+		{
+			Path:      "/custom-op",
+			Operation: "custom-op",
+			Summary:   "Custom operation",
+			RequestSchema: &openapi.Schema{
+				Type:       "object",
+				Properties: map[string]*openapi.Schema{"input": {Type: "string"}},
+				Required:   []string{"input"},
+			},
+			SampleRequest: sample,
+		},
+	}
+	doc := openapi.Build(routes)
+	item, ok := doc.Paths["/v1/custom-op"]
+	if !ok || item.Post == nil {
+		t.Fatal("missing POST /v1/custom-op")
+	}
+	media, ok := item.Post.RequestBody.Content["application/json"]
+	if !ok {
+		t.Fatal("missing application/json request body content")
+	}
+	if string(media.Example) != string(sample) {
+		t.Errorf("example = %s, want %s", media.Example, sample)
+	}
+
+	// Round-trip through JSON to confirm the example marshals as a literal
+	// JSON value (not a quoted string) inside the served document.
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal doc: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal doc: %v", err)
+	}
+	var paths map[string]struct {
+		Post struct {
+			RequestBody struct {
+				Content struct {
+					ApplicationJSON struct {
+						Example json.RawMessage `json:"example"`
+					} `json:"application/json"`
+				} `json:"content"`
+			} `json:"requestBody"`
+		} `json:"post"`
+	}
+	if err := json.Unmarshal(raw["paths"], &paths); err != nil {
+		t.Fatalf("unmarshal paths: %v", err)
+	}
+	gotExample := paths["/v1/custom-op"].Post.RequestBody.Content.ApplicationJSON.Example
+	if string(gotExample) != string(sample) {
+		t.Errorf("served example = %s, want %s", gotExample, sample)
+	}
+}
+
+// TestBuild_NilSampleRequestOmitsExample verifies that a route with no
+// SampleRequest produces no "example" key at all (omitempty), rather than a
+// literal JSON null.
+func TestBuild_NilSampleRequestOmitsExample(t *testing.T) {
+	doc := openapi.Build(testRoutes) // testRoutes' /echo declares no SampleRequest
+	item, ok := doc.Paths["/v1/echo"]
+	if !ok || item.Post == nil {
+		t.Fatal("missing POST /v1/echo")
+	}
+	media, ok := item.Post.RequestBody.Content["application/json"]
+	if !ok {
+		t.Fatal("missing application/json request body content")
+	}
+	if media.Example != nil {
+		t.Errorf("example = %s, want nil (omitted)", media.Example)
+	}
+
+	b, err := json.Marshal(item.Post.RequestBody.Content["application/json"])
+	if err != nil {
+		t.Fatalf("marshal media type: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal media type: %v", err)
+	}
+	if _, present := raw["example"]; present {
+		t.Error("marshaled media type has an \"example\" key; want it omitted entirely")
+	}
+}
+
 // TestBuild_WebhookEventCatalogueLocked asserts the document's `webhooks` section
 // documents exactly the event types in events.AllEventTypes — no more, no fewer.
 // Build() itself panics on drift (see buildWebhooks), so an added/removed/renamed

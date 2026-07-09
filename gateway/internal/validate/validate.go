@@ -60,6 +60,27 @@ func CompileSchemaPatterns(routes []openapi.RouteDescriptor) error {
 	return nil
 }
 
+// ValidateSampleRequests validates every route's non-nil RouteDescriptor.SampleRequest
+// against that route's RequestSchema and returns an error describing the first
+// violation. Call this at gateway startup (see server.NewRouter, next to
+// CompileSchemaPatterns) so a SampleRequest that has drifted from its own
+// RequestSchema — the same class of authoring mistake CompileSchemaPatterns
+// catches for regex patterns — is caught during initialization instead of
+// silently shipping a broken /openapi.json example and a no-op acceptance-test
+// payload. Returns nil when every non-nil SampleRequest validates (or no route
+// declares one).
+func ValidateSampleRequests(routes []openapi.RouteDescriptor) error {
+	for _, rt := range routes {
+		if rt.SampleRequest == nil {
+			continue
+		}
+		if err := ValidateBytes(rt.RequestSchema, rt.SampleRequest); err != nil {
+			return fmt.Errorf("route %s: SampleRequest fails validation against RequestSchema: %w", rt.Path, err)
+		}
+	}
+	return nil
+}
+
 func compileSchemaPatterns(s *openapi.Schema) error {
 	if s == nil {
 		return nil
