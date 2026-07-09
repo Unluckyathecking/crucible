@@ -6,13 +6,17 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
 
 1. **`workers/active`** — repoint the symlink to the worker implementing your product. Reuse a language stub (`workers/stubs/<lang>/`) or create a new directory (`workers/<product>/`) implementing the SDK contract.
 
-2. **`gateway/internal/server/routes.go`** — one line per endpoint:
+2. **`gateway/internal/server/routes_table.go`** — one entry per endpoint in `V1Routes`:
    ```go
-   r.Post("/v1/validate-vat", h.Invoke("validate_vat"))
+   {Path: "/validate-vat", Operation: "validate_vat", Summary: "Validate a VAT number"},
+   ```
+   `NewRouter` mounts the route and `openapi.Build()` derives the `/v1/*` OpenAPI paths from this same slice — one declaration covers both. To cache identical requests, add a matching entry to `RespCacheTTLSeconds` (TTL in seconds):
+   ```go
+   var RespCacheTTLSeconds = map[string]int{"/validate-vat": 300}
    ```
    The `operation` string is forwarded opaquely to the worker. The framework never needs to know what your product does.
 
-3. **`gateway/migrations/0002_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id).
+3. **`gateway/migrations/0019_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). Name this file with the next free migration index (currently `0019`); migrations run in lexical order on every boot.
 
 4. **`dashboard/app/page.tsx`** — landing copy + pricing display.
 
