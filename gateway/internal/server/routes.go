@@ -327,6 +327,15 @@ func NewRouter(d *Deps) http.Handler {
 		log.Fatal().Err(err).Str("hint", "check RequestSchema.Pattern in V1Routes").Msg("invalid regex pattern in RequestSchema")
 	}
 
+	// Cross-check every declared SampleRequest against its own RequestSchema at
+	// startup. A drifted sample would otherwise ship silently: as a misleading
+	// example in /openapi.json and as a payload that makes
+	// gateway/test/acceptance pass without actually exercising the route's
+	// validation. Fail fast instead, mirroring CompileSchemaPatterns above.
+	if err := validate.ValidateSampleRequests(routes); err != nil {
+		log.Fatal().Err(err).Str("hint", "check SampleRequest in V1Routes").Msg("route SampleRequest fails validation against its RequestSchema")
+	}
+
 	idempStore := idempotency.NewStore(d.DB) // nil-safe: pass-through when d.DB is nil
 	// Snapshot config values used inside the /v1 subrouter before entering the closure.
 	capturePayloadEnabled := d.Cfg.ErrorPayloadCapture
