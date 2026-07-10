@@ -619,6 +619,119 @@ func TestBuild_NilSampleRequestOmitsExample(t *testing.T) {
 	}
 }
 
+// TestBuild_NilResponseSchemaProducesGenericObject verifies that a route with
+// no ResponseSchema (e.g. testRoutes' /echo) still documents its 200 body as
+// the pre-existing generic {"type":"object"} — ResponseSchema's nil zero
+// value is backward-compatible with every route declared before this field
+// existed.
+func TestBuild_NilResponseSchemaProducesGenericObject(t *testing.T) {
+	doc := openapi.Build(testRoutes)
+	echo, ok := doc.Paths["/v1/echo"]
+	if !ok || echo.Post == nil {
+		t.Fatal("missing POST /v1/echo")
+	}
+	media, ok := echo.Post.Responses["200"].Content["application/json"]
+	if !ok || media.Schema == nil {
+		t.Fatal("missing 200 application/json schema")
+	}
+	if media.Schema.Type != "object" {
+		t.Errorf("200 schema type = %q, want object", media.Schema.Type)
+	}
+	if len(media.Schema.Properties) != 0 {
+		t.Errorf("200 schema properties = %v, want none (undeclared ResponseSchema)", media.Schema.Properties)
+	}
+}
+
+// TestBuild_ResponseSchemaWrapsInvokeEnvelope verifies that when a route
+// declares a ResponseSchema, Build wraps it into the documented 200 body as
+// the frozen /v1 invoke success envelope (proxy.InvokeResponse): an object
+// whose properties are payload (the declared ResponseSchema), billable_units
+// (integer), and units_label (string) — matching proxy.InvokeResponse's json
+// tags exactly.
+func TestBuild_ResponseSchemaWrapsInvokeEnvelope(t *testing.T) {
+	responseSchema := &openapi.Schema{
+		Type:       "object",
+		Required:   []string{"words"},
+		Properties: map[string]*openapi.Schema{"words": {Type: "integer"}},
+	}
+	routes := []openapi.RouteDescriptor{
+		{
+			Path:           "/custom-op",
+			Operation:      "custom-op",
+			Summary:        "Custom operation",
+			ResponseSchema: responseSchema,
+		},
+	}
+	doc := openapi.Build(routes)
+	item, ok := doc.Paths["/v1/custom-op"]
+	if !ok || item.Post == nil {
+		t.Fatal("missing POST /v1/custom-op")
+	}
+	media, ok := item.Post.Responses["200"].Content["application/json"]
+	if !ok || media.Schema == nil {
+		t.Fatal("missing 200 application/json schema")
+	}
+
+	envelope := media.Schema
+	if envelope.Type != "object" {
+		t.Errorf("200 schema type = %q, want object", envelope.Type)
+	}
+	if payload := envelope.Properties["payload"]; payload != responseSchema {
+		t.Errorf("200 schema payload property = %v, want the route's ResponseSchema", payload)
+	}
+	if bu := envelope.Properties["billable_units"]; bu == nil || bu.Type != "integer" {
+		t.Errorf("200 schema billable_units property = %v, want {type:integer}", bu)
+	}
+	if ul := envelope.Properties["units_label"]; ul == nil || ul.Type != "string" {
+		t.Errorf("200 schema units_label property = %v, want {type:string}", ul)
+	}
+
+	// Round-trip through JSON to confirm the served document nests the
+	// declared payload schema (not a flattened or dropped structure).
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal doc: %v", err)
+	}
+	var raw struct {
+		Paths map[string]struct {
+			Post struct {
+				Responses map[string]struct {
+					Content struct {
+						ApplicationJSON struct {
+							Schema struct {
+								Properties struct {
+									Payload struct {
+										Properties map[string]json.RawMessage `json:"properties"`
+									} `json:"payload"`
+									BillableUnits struct {
+										Type string `json:"type"`
+									} `json:"billable_units"`
+									UnitsLabel struct {
+										Type string `json:"type"`
+									} `json:"units_label"`
+								} `json:"properties"`
+							} `json:"schema"`
+						} `json:"application/json"`
+					} `json:"content"`
+				} `json:"responses"`
+			} `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal doc: %v", err)
+	}
+	served := raw.Paths["/v1/custom-op"].Post.Responses["200"].Content.ApplicationJSON.Schema.Properties
+	if _, ok := served.Payload.Properties["words"]; !ok {
+		t.Errorf("served document's payload schema missing nested %q property", "words")
+	}
+	if served.BillableUnits.Type != "integer" {
+		t.Errorf("served document billable_units type = %q, want integer", served.BillableUnits.Type)
+	}
+	if served.UnitsLabel.Type != "string" {
+		t.Errorf("served document units_label type = %q, want string", served.UnitsLabel.Type)
+	}
+}
+
 // TestBuild_WebhookEventCatalogueLocked asserts the document's `webhooks` section
 // documents exactly the event types in events.AllEventTypes — no more, no fewer.
 // Build() itself panics on drift (see buildWebhooks), so an added/removed/renamed

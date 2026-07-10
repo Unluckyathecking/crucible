@@ -30,6 +30,16 @@ type RouteDescriptor struct {
 	// in the OpenAPI document or silently no-ops the acceptance test. Nil means
 	// no example is declared; consumers fall back to an empty JSON object.
 	SampleRequest json.RawMessage
+	// ResponseSchema is an optional schema for the worker's "payload" field
+	// within the frozen /v1 invoke success envelope (proxy.InvokeResponse:
+	// {payload, billable_units, units_label}). Symmetric complement to
+	// RequestSchema: when set, invokeOperation documents the 200 body as
+	// that envelope typed around this schema, which scripts/gen-clients.sh
+	// reads to emit a named *Response struct instead of its untyped
+	// map[string]any fallback. Nil means the 200 body stays the current
+	// generic {"type":"object"} — backward-compatible with routes declared
+	// before this field existed.
+	ResponseSchema *Schema
 }
 
 // --- structural types --------------------------------------------------------
@@ -231,15 +241,39 @@ func errResp(desc string) Response {
 	}
 }
 
+// invokeResponseEnvelope wraps a route's ResponseSchema into the documented
+// shape of the frozen /v1 invoke success envelope (proxy.InvokeResponse),
+// mirroring its json tags exactly: payload (the worker's typed result),
+// billable_units (always present on success — enforced at the trust boundary,
+// see server/routes.go), and units_label (optional, human-readable unit name).
+func invokeResponseEnvelope(responseSchema *Schema) *Schema {
+	return &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"payload":        responseSchema,
+			"billable_units": {Type: "integer"},
+			"units_label":    {Type: "string"},
+		},
+		Required: []string{"payload", "billable_units"},
+	}
+}
+
 // invokeOperation builds the standard Operation for a per-product /v1 invoke endpoint.
 // schema is the route's RequestSchema; when nil the request body is documented as a
 // generic object ({"type":"object"}) preserving backwards-compatibility. sampleRequest
 // is the route's RouteDescriptor.SampleRequest, if any; when non-nil it is emitted
-// as the request body's "example" value.
-func invokeOperation(operationID, summary string, schema *Schema, sampleRequest json.RawMessage) *Operation {
+// as the request body's "example" value. responseSchema is the route's ResponseSchema;
+// when nil the 200 body stays the generic {"type":"object"} preserving
+// backwards-compatibility, otherwise it's wrapped into the invoke success envelope by
+// invokeResponseEnvelope.
+func invokeOperation(operationID, summary string, schema *Schema, sampleRequest json.RawMessage, responseSchema *Schema) *Operation {
 	reqBodySchema := &Schema{Type: "object"}
 	if schema != nil {
 		reqBodySchema = schema
+	}
+	respBodySchema := &Schema{Type: "object"}
+	if responseSchema != nil {
+		respBodySchema = invokeResponseEnvelope(responseSchema)
 	}
 	return &Operation{
 		OperationID: operationID,
@@ -265,7 +299,7 @@ func invokeOperation(operationID, summary string, schema *Schema, sampleRequest 
 				Description: "Successful invocation",
 				Headers:     rateLimitAndQuotaHeaders(),
 				Content: map[string]MediaType{
-					contentTypeJSON: {Schema: &Schema{Type: "object"}},
+					contentTypeJSON: {Schema: respBodySchema},
 				},
 			},
 			"400": errResp("Bad request — invalid JSON body"),
@@ -551,7 +585,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
 		}
 		seenOpIDs[opID] = key
-		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema, rt.SampleRequest)}
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema, rt.SampleRequest, rt.ResponseSchema)}
 	}
 
 	return Document{
