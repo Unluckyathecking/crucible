@@ -41,6 +41,13 @@ var Routes = []openapi.RouteDescriptor{
 			},
 			AdditionalProperties: noAdditional(),
 		},
+		ResponseSchema: &openapi.Schema{
+			Type:     "object",
+			Required: []string{"words"},
+			Properties: map[string]*openapi.Schema{
+				"words": {Type: "integer", Description: "Word count of the input text"},
+			},
+		},
 	},
 	{
 		Path:          "/textkit/transform",
@@ -56,6 +63,13 @@ var Routes = []openapi.RouteDescriptor{
 			},
 			AdditionalProperties: noAdditional(),
 		},
+		ResponseSchema: &openapi.Schema{
+			Type:     "object",
+			Required: []string{"text"},
+			Properties: map[string]*openapi.Schema{
+				"text": {Type: "string", Description: "The input text after the requested case transform"},
+			},
+		},
 	},
 	{
 		Path:          "/textkit/slugify",
@@ -69,6 +83,13 @@ var Routes = []openapi.RouteDescriptor{
 				"text": {Type: "string", MinLength: &minLenOne},
 			},
 			AdditionalProperties: noAdditional(),
+		},
+		ResponseSchema: &openapi.Schema{
+			Type:     "object",
+			Required: []string{"slug"},
+			Properties: map[string]*openapi.Schema{
+				"slug": {Type: "string", Description: "URL-safe slug derived from the input text"},
+			},
 		},
 	},
 }

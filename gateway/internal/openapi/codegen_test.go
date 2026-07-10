@@ -132,6 +132,74 @@ func TestOpenAPI_QueryParamTypesAreCodegenSupported(t *testing.T) {
 	}
 }
 
+// TestOpenAPI_ResponseSchemaProducesTypedGoResponseStruct guards the other
+// half of scripts/gen-clients.sh's response-typing assumption: its
+// go_response_type function emits a named *Response struct only when the 200
+// schema has non-empty "properties" and no "additionalProperties"
+// (`if props and not schema.get("additionalProperties")`); otherwise it falls
+// back to the untyped map[string]any. Before ResponseSchema existed, every
+// route's 200 body was the bare {"type":"object"} — empty properties, so
+// every generated client method returned map[string]any. This test proves a
+// route declaring ResponseSchema flips that decision to a named struct while
+// a route that still declares none (the pre-ResponseSchema default) keeps
+// falling back, so the codegen behavior stays exactly as documented.
+func TestOpenAPI_ResponseSchemaProducesTypedGoResponseStruct(t *testing.T) {
+	routes := []openapi.RouteDescriptor{
+		{Path: "/no-response-schema", Operation: "no-response-schema", Summary: "No response schema"},
+		{
+			Path:      "/typed-response",
+			Operation: "typed-response",
+			Summary:   "Typed response",
+			ResponseSchema: &openapi.Schema{
+				Type:       "object",
+				Properties: map[string]*openapi.Schema{"words": {Type: "integer"}},
+				Required:   []string{"words"},
+			},
+		},
+	}
+
+	handler := openapi.Handler(routes)
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("openapi.Handler returned status %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Post struct {
+				Responses map[string]struct {
+					Content struct {
+						ApplicationJSON struct {
+							Schema struct {
+								Properties           map[string]json.RawMessage `json:"properties"`
+								AdditionalProperties json.RawMessage            `json:"additionalProperties"`
+							} `json:"schema"`
+						} `json:"application/json"`
+					} `json:"content"`
+				} `json:"responses"`
+			} `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode served document: %v", err)
+	}
+
+	// goResponseTypeIsTyped mirrors scripts/gen-clients.sh's go_response_type
+	// condition exactly: `if props and not schema.get("additionalProperties")`.
+	goResponseTypeIsTyped := func(path string) bool {
+		schema := doc.Paths[path].Post.Responses["200"].Content.ApplicationJSON.Schema
+		return len(schema.Properties) > 0 && len(schema.AdditionalProperties) == 0
+	}
+
+	if goResponseTypeIsTyped("/v1/no-response-schema") {
+		t.Error("route without ResponseSchema: go_response_type would produce a typed struct, want the map[string]any fallback (unchanged pre-ResponseSchema behavior)")
+	}
+	if !goResponseTypeIsTyped("/v1/typed-response") {
+		t.Error("route with ResponseSchema: go_response_type would fall back to map[string]any, want a named *Response struct")
+	}
+}
+
 // stubHealthChecker satisfies server.HealthChecker without a live dependency;
 // chi.Walk below only enumerates registered routes, it never dispatches a
 // request, so Ping is never actually called.

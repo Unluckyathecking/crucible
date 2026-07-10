@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 	"github.com/Unluckyathecking/crucible/workers/stubs/textkit/handler"
@@ -132,6 +133,66 @@ func postRoute(t *testing.T, client *http.Client, ts *harness.TestServer, apiKey
 		t.Fatalf("send request: %v", err)
 	}
 	return resp
+}
+
+// TestTextkitRoutesDeclareResponseSchema asserts each of textkit's three
+// routes declares a ResponseSchema, and that openapi.Build wraps it into the
+// documented 200 body's payload property exactly as invokeResponseEnvelope
+// does: {payload: <ResponseSchema>, billable_units: {type:"integer"},
+// units_label: {type:"string"}}, matching each operation's handler response
+// struct (workers/stubs/textkit/handler/handler.go). Pure/offline — unlike
+// the rest of this file it needs no Postgres/Redis, since openapi.Build has
+// no I/O.
+func TestTextkitRoutesDeclareResponseSchema(t *testing.T) {
+	wantPayloadProps := map[string][]string{
+		handler.OpCountWords: {"words"},
+		handler.OpTransform:  {"text"},
+		handler.OpSlugify:    {"slug"},
+	}
+
+	doc := openapi.Build(Routes)
+	for _, rt := range Routes {
+		wantProps, ok := wantPayloadProps[rt.Operation]
+		if !ok {
+			t.Fatalf("operation %s: no expected payload properties declared in this test", rt.Operation)
+		}
+		if rt.ResponseSchema == nil {
+			t.Fatalf("operation %s: RouteDescriptor.ResponseSchema is nil", rt.Operation)
+		}
+
+		item, ok := doc.Paths["/v1"+rt.Path]
+		if !ok || item.Post == nil {
+			t.Fatalf("operation %s: missing POST /v1%s in built document", rt.Operation, rt.Path)
+		}
+		media, ok := item.Post.Responses["200"].Content["application/json"]
+		if !ok || media.Schema == nil {
+			t.Fatalf("operation %s: missing 200 application/json schema", rt.Operation)
+		}
+
+		envelope := media.Schema
+		if envelope.Type != "object" {
+			t.Errorf("operation %s: 200 schema type = %q, want object", rt.Operation, envelope.Type)
+		}
+		if bu := envelope.Properties["billable_units"]; bu == nil || bu.Type != "integer" {
+			t.Errorf("operation %s: 200 schema billable_units = %v, want {type:integer}", rt.Operation, bu)
+		}
+		if ul := envelope.Properties["units_label"]; ul == nil || ul.Type != "string" {
+			t.Errorf("operation %s: 200 schema units_label = %v, want {type:string}", rt.Operation, ul)
+		}
+
+		payload := envelope.Properties["payload"]
+		if payload == nil {
+			t.Fatalf("operation %s: 200 schema missing payload property", rt.Operation)
+		}
+		if payload != rt.ResponseSchema {
+			t.Errorf("operation %s: 200 schema payload is not the route's ResponseSchema", rt.Operation)
+		}
+		for _, prop := range wantProps {
+			if _, ok := payload.Properties[prop]; !ok {
+				t.Errorf("operation %s: payload schema missing property %q", rt.Operation, prop)
+			}
+		}
+	}
 }
 
 // TestTextkitOperations drives every textkit route's declared SampleRequest
