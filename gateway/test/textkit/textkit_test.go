@@ -219,3 +219,26 @@ func TestTextkitInvalidPayloadRejectedBySchema(t *testing.T) {
 		t.Errorf("usage_events after schema rejection: got %d, want 0", n)
 	}
 }
+
+// TestTextkitCountWordsRejectsWhitespaceOnly proves whitespace-only text is
+// rejected by the count-words route's Pattern constraint rather than being
+// accepted and billed 1 unit for a response that reports words:0.
+func TestTextkitCountWordsRejectsWhitespaceOnly(t *testing.T) {
+	t.Parallel()
+	client := newTestHTTPClient(t)
+	ts := newTestServer(t)
+	ts.CreatePlan(t, "textkit-ws-plan", defaultTestRatePerMin, defaultTestMonthlyCap)
+	customerID, apiKey := ts.CreateCustomer(t, "textkit-ws-"+uuid.New().String()+"@example.com", "textkit-ws-plan")
+
+	resp := postRoute(t, client, ts, apiKey, "/textkit/count-words", `{"text":"   "}`)
+	body := drainBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", resp.StatusCode, body)
+	}
+	if code := errorCode(t, body); code != "BAD_REQUEST" {
+		t.Errorf("error.code: got %q, want BAD_REQUEST", code)
+	}
+	if n := ts.CountUsageEvents(t, customerID); n != 0 {
+		t.Errorf("usage_events after whitespace-only rejection: got %d, want 0", n)
+	}
+}

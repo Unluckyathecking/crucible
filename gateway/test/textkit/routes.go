@@ -34,7 +34,10 @@ var Routes = []openapi.RouteDescriptor{
 			Type:     "object",
 			Required: []string{"text"},
 			Properties: map[string]*openapi.Schema{
-				"text": {Type: "string", MinLength: &minLenOne},
+				// Pattern rejects whitespace-only text: strings.Fields would count
+				// zero words for it, which would otherwise bill 1 unit for a
+				// response reporting words:0.
+				"text": {Type: "string", MinLength: &minLenOne, Pattern: `\S`},
 			},
 			AdditionalProperties: noAdditional(),
 		},

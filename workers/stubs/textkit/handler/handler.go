@@ -73,16 +73,16 @@ func countWords(payload json.RawMessage) (crucible.Response, error) {
 		return crucible.Response{}, &crucible.Error{Code: "BAD_PAYLOAD", Message: err.Error()}
 	}
 	words := len(strings.Fields(req.Text))
-	units := uint64(words)
-	if units == 0 {
-		// crucible.Serve forces BillableUnits to 1 when zero anyway; setting it
-		// explicitly here keeps the returned payload's word count consistent
-		// with what was billed.
-		units = 1
+	if words == 0 {
+		// Reject rather than silently billing 1 unit for a payload that reports
+		// zero words: the gateway's RequestSchema (Pattern: \S) rejects this
+		// before the request reaches the worker, but this stays defensive
+		// against direct/out-of-band worker calls that bypass validation.
+		return crucible.Response{}, &crucible.Error{Code: "BAD_PAYLOAD", Message: "text must contain at least one word"}
 	}
 	return crucible.Response{
 		Payload:       countWordsResponse{Words: words},
-		BillableUnits: units,
+		BillableUnits: uint64(words),
 		UnitsLabel:    "words",
 	}, nil
 }

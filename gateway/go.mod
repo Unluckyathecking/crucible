@@ -4,6 +4,8 @@ go 1.25.0
 toolchain go1.25.11
 
 require (
+	github.com/Unluckyathecking/crucible/workers/sdk-go v0.0.0
+	github.com/Unluckyathecking/crucible/workers/stubs/textkit v0.0.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-chi/cors v1.2.2
 	github.com/go-chi/httprate v0.15.0
@@ -55,3 +57,7 @@ require (
 	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/Unluckyathecking/crucible/workers/sdk-go => ../workers/sdk-go
+
+replace github.com/Unluckyathecking/crucible/workers/stubs/textkit => ../workers/stubs/textkit
