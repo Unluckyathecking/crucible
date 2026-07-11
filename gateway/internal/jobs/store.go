@@ -234,9 +234,12 @@ func (s *Store) Fail(ctx context.Context, id uuid.UUID, code, message string) er
 }
 
 // Requeue returns a claimed job to 'queued' without recording an error.
-// Used when a job's worker invocation is interrupted by a graceful
-// shutdown (context cancellation), not a genuine worker failure — the job
-// is retried instead of permanently failing the customer's request.
+// Not called by Executor itself — see Run's doc comment for why a job
+// interrupted by shutdown is left 'running' for the crash-recovery sweep to
+// reclaim rather than requeued immediately (avoids a second, concurrent
+// execution of a job whose worker call may still genuinely be in flight).
+// Retained as a general primitive for callers that can positively confirm
+// a job is safe to retry immediately (e.g. future operator tooling).
 func (s *Store) Requeue(ctx context.Context, id uuid.UUID) error {
 	if s == nil {
 		return fmt.Errorf("jobs: store is nil")
@@ -253,10 +256,15 @@ func (s *Store) Requeue(ctx context.Context, id uuid.UUID) error {
 }
 
 // ReleaseClaimed returns every 'running' job still claimed by instanceID to
-// 'queued'. Called once by Executor.Run after its worker pool has drained,
-// as a final safety net for graceful shutdown — no lost work. Scoped to
-// instanceID so a multi-replica deployment never touches another gateway
-// process's in-flight jobs. Returns the number of rows released.
+// 'queued'. Not called by Executor.Run itself — see its doc comment for why
+// an eager release on graceful shutdown risks a second, concurrent
+// execution of a job whose worker call may still genuinely be running.
+// Retained as an operator-facing primitive (e.g. a manual "force-release
+// jobs claimed by a known-dead instance" action) for cases where an
+// operator can positively confirm the claiming process is gone and it's
+// safe to skip waiting out the normal crash-recovery sweep. Scoped to
+// instanceID so it can never touch another gateway process's in-flight
+// jobs. Returns the number of rows released.
 func (s *Store) ReleaseClaimed(ctx context.Context, instanceID uuid.UUID) (int64, error) {
 	if s == nil {
 		return 0, nil

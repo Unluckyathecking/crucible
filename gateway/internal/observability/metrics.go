@@ -24,7 +24,7 @@
 //	crucible_respcache_misses_total{operation}           — respcache lookups that missed (worker invoked)
 //	crucible_respcache_failopen_total{operation}         — requests admitted because Redis store errored
 //	crucible_jobs_enqueued_total{operation}              — async jobs enqueued (gateway/internal/jobs)
-//	crucible_jobs_completed_total{operation,outcome}     — async jobs finished; outcome=succeeded|failed|requeued
+//	crucible_jobs_completed_total{operation,outcome}     — async jobs finished; outcome=succeeded|failed
 //	crucible_job_execution_duration_seconds{operation}   — wall time from claim to terminal state (jobs.Executor)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
@@ -189,12 +189,11 @@ var (
 		Help: "Number of async jobs enqueued, by operation.",
 	}, []string{"operation"})
 
-	// JobsCompletedTotal counts async jobs that reached a terminal or
-	// shutdown-requeued state. outcome is a bounded enum: succeeded, failed,
-	// or requeued (interrupted by graceful shutdown, not a genuine failure).
+	// JobsCompletedTotal counts async jobs that reached a terminal state.
+	// outcome is a bounded enum: succeeded or failed.
 	JobsCompletedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "crucible_jobs_completed_total",
-		Help: "Number of async jobs finished, by operation and outcome (succeeded|failed|requeued).",
+		Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
 	}, []string{"operation", "outcome"})
 
 	// JobExecutionDuration observes wall time from claim to terminal state
@@ -333,7 +332,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		}, []string{"operation"}),
 		JobsCompletedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "crucible_jobs_completed_total",
-			Help: "Number of async jobs finished, by operation and outcome (succeeded|failed|requeued).",
+			Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
 		}, []string{"operation", "outcome"}),
 		JobExecutionDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "crucible_job_execution_duration_seconds",

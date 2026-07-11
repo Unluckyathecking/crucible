@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -20,6 +21,35 @@ import (
 )
 
 const asyncTestPlanID = "async-acceptance"
+
+// asyncTestPostgresDSN and asyncTestRedisURL deliberately do NOT reuse this
+// package's postgresDSN(t)/redisURL(t) helpers (acceptance_test.go), which
+// are fatal-if-unset by design: TestClonedTreeRuntimeAcceptance only ever
+// reaches them after workerURL(t) has already skipped the whole opt-in
+// acceptance flow when WORKER_URL is absent. These async tests use an
+// in-process worker (no WORKER_URL needed) and so, unlike that test, would
+// be the first to actually call the fatal helpers during an ordinary
+// `go test ./...` run with no services configured — breaking a plain local
+// or CI run instead of skipping it. Skip gracefully instead, mirroring the
+// newTestPostgres pattern used throughout gateway/internal (e.g.
+// webhookout, jobs, operator).
+func asyncTestPostgresDSN(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("POSTGRES_DSN"); v != "" {
+		return v
+	}
+	t.Skip("POSTGRES_DSN not set; skipping async acceptance test")
+	return ""
+}
+
+func asyncTestRedisURL(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("REDIS_URL"); v != "" {
+		return v
+	}
+	t.Skip("REDIS_URL not set; skipping async acceptance test")
+	return ""
+}
 
 // withAsyncEcho opts server.V1Routes[0] ("/echo") into AsyncRoutes for the
 // duration of the calling test, restoring the previous map on cleanup.
@@ -82,8 +112,8 @@ func TestAsyncInvoke_EndToEnd_SuccessAndPoll(t *testing.T) {
 
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler: asyncWorkerHandler(t),
-		DSN:           postgresDSN(t),
-		RedisURL:      redisURL(t),
+		DSN:           asyncTestPostgresDSN(t),
+		RedisURL:      asyncTestRedisURL(t),
 	})
 	ts.CreatePlan(t, asyncTestPlanID, testRatePerMin, testMonthlyCap)
 	customerID, apiKey := ts.CreateCustomer(t, "async-e2e-"+uuid.New().String()+"@example.com", asyncTestPlanID)
@@ -212,8 +242,8 @@ func TestAsyncInvoke_JobStatus_IDORSafe(t *testing.T) {
 
 	ts := harness.NewGatewayTestServer(t, harness.Options{
 		WorkerHandler: asyncWorkerHandler(t),
-		DSN:           postgresDSN(t),
-		RedisURL:      redisURL(t),
+		DSN:           asyncTestPostgresDSN(t),
+		RedisURL:      asyncTestRedisURL(t),
 	})
 	ts.CreatePlan(t, asyncTestPlanID, testRatePerMin, testMonthlyCap)
 	ownerID, apiKeyOwner := ts.CreateCustomer(t, "async-idor-owner-"+uuid.New().String()+"@example.com", asyncTestPlanID)

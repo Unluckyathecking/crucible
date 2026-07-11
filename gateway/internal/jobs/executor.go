@@ -14,9 +14,8 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
 
-// releaseTimeout bounds the final ReleaseClaimed safety-net write during
-// Executor.Run's shutdown, and the per-job background writes (Complete/Fail/
-// Requeue) that must still land even after the caller's context is cancelled.
+// releaseTimeout bounds the per-job background writes (Complete/Fail) that
+// must still land even after the caller's context is cancelled.
 const releaseTimeout = 10 * time.Second
 
 // ExecutorConfig bounds the async Executor's concurrency and timing.
@@ -58,8 +57,10 @@ func (c ExecutorConfig) withDefaults() ExecutorConfig {
 // Executor claims queued jobs and invokes the existing worker contract for
 // each — exactly as the synchronous /v1 path does via proxy.Client.Invoke —
 // then meters through the existing usage.Recorder. One Executor per gateway
-// process; instanceID scopes claimed_by so a graceful shutdown only ever
-// releases jobs this process claimed, never another replica's in-flight work.
+// process; instanceID scopes each claim's claimed_by column for
+// observability (which instance is holding a given row) — see Run's doc
+// comment for why claimed rows are never eagerly released back to a
+// customer-visible 'queued' state by this instance itself.
 type Executor struct {
 	store      *Store
 	proxy      *proxy.Client
@@ -91,10 +92,23 @@ func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg Ex
 
 // Run polls for queued jobs until ctx is cancelled, dispatching each claimed
 // job into a bounded worker pool (ExecutorConfig.PoolSize). On cancellation
-// it stops claiming new work, waits for in-flight jobs to observe the
-// cancelled context and exit, then releases (back to 'queued') any job still
-// claimed by this instance — no lost work. Run blocks until shutdown is
-// complete; start it in its own goroutine (mirrors usage.Flusher.Run).
+// it stops claiming new work and waits for in-flight process() calls to
+// return, then returns itself — it does NOT eagerly release or requeue
+// whatever it still has claimed. That is deliberate: the worker SDK only
+// hands product code the request context and cannot force it to stop, so a
+// job whose HTTP call was just abandoned client-side (context cancelled)
+// may still be genuinely executing server-side. Marking it 'queued'
+// immediately would let another claim (this instance after a restart, or
+// another replica) start a second, concurrent execution of the same job
+// while the first might still be running — double execution, and possibly
+// double billing once both finish. Every claimed row is instead left
+// exactly as Claim's crash-recovery sweep already treats an ungracefully
+// killed process: 'running', to be reset to 'queued' only once its own
+// timeout_seconds (or Store.DefaultJobTimeout) plus stuckJobGrace has
+// genuinely elapsed — by which point the original call has either finished
+// or is long past its own deadline. "No lost work" still holds; it just
+// isn't instant. Run blocks until shutdown is complete; start it in its own
+// goroutine (mirrors usage.Flusher.Run).
 func (e *Executor) Run(ctx context.Context) {
 	if e == nil || e.store == nil || e.proxy == nil {
 		return
@@ -110,7 +124,6 @@ func (e *Executor) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
-			e.releaseClaimed()
 			return
 		case <-ticker.C:
 			e.claimAndDispatch(ctx, sem, &wg)
@@ -136,19 +149,6 @@ func (e *Executor) claimAndDispatch(ctx context.Context, sem chan struct{}, wg *
 			defer func() { <-sem }()
 			e.process(ctx, job)
 		}(j)
-	}
-}
-
-func (e *Executor) releaseClaimed() {
-	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer cancel()
-	n, err := e.store.ReleaseClaimed(bg, e.instanceID)
-	if err != nil {
-		log.Warn().Err(err).Msg("jobs: release claimed on shutdown failed")
-		return
-	}
-	if n > 0 {
-		log.Info().Int64("count", n).Msg("jobs: released claimed jobs on shutdown")
 	}
 }
 
@@ -179,10 +179,12 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 	resp, err := e.proxy.Invoke(jobCtx, req)
 	if err != nil {
 		if runCtx.Err() != nil {
-			// Shutdown in progress, not a genuine worker failure: requeue so
-			// this job is retried instead of permanently failing the
-			// customer's request. No lost work.
-			e.requeue(job.ID, job.Operation)
+			// Shutdown in progress, not necessarily a genuine worker
+			// failure: leave the row 'running' and do nothing further. See
+			// Run's doc comment for why an immediate requeue here would
+			// risk a second, concurrent execution of a job whose worker
+			// call may still genuinely be in flight — the crash-recovery
+			// sweep in Claim is the safe path back to 'queued'.
 			return
 		}
 		log.Error().Err(err).Str("job_id", job.ID.String()).Str("operation", job.Operation).
@@ -217,6 +219,24 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		return
 	}
 
+	// Complete then Record are two separate writes, not one transaction —
+	// usage.Recorder.Record owns its own db.Exec and, per invariant #4, its
+	// signature can't change to accept a shared tx, so true atomicity would
+	// mean reimplementing its insert (and the quota.Add/MarkRecorded side
+	// effects it performs) here instead of reusing it, which is worse: a
+	// second, drift-prone copy of the billing write path. The ordering
+	// below is deliberate given that constraint: marking 'succeeded' first
+	// means a process kill between the two writes can only under-bill (the
+	// job shows as succeeded with no usage_events row — a bounded, rare
+	// revenue leak), never double-bill — a 'succeeded' row is terminal and
+	// is never reclaimed by Claim, so Record can't run twice for it. The
+	// reverse order would close the under-billing gap but reopen a
+	// double-billing one: if Record lands but the crash happens before
+	// Complete, the row is still 'running' and the crash-recovery sweep
+	// will eventually reclaim and re-execute it, calling Record a second
+	// time. Between a rare silent discount and a rare double charge, this
+	// keeps the fail-safe direction on the side that doesn't harm a
+	// customer.
 	bg, bgCancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer bgCancel()
 	if err := e.store.Complete(bg, job.ID, resp.Payload, resp.BillableUnits, resp.UnitsLabel); err != nil {
@@ -239,14 +259,4 @@ func (e *Executor) fail(id uuid.UUID, operation, code, message string) {
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(operation, "failed").Inc()
-}
-
-func (e *Executor) requeue(id uuid.UUID, operation string) {
-	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer cancel()
-	if err := e.store.Requeue(bg, id); err != nil {
-		log.Error().Err(err).Str("job_id", id.String()).Msg("jobs: requeue on shutdown failed")
-		return
-	}
-	observability.JobsCompletedTotal.WithLabelValues(operation, "requeued").Inc()
 }

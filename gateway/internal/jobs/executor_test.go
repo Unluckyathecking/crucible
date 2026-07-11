@@ -222,11 +222,16 @@ func TestExecutor_BillableUnitsBelowOne_RejectsAsTrustBoundaryViolation(t *testi
 	}
 }
 
-// TestExecutor_GracefulShutdown_RequeuesInFlightJob proves the "no lost
-// work" acceptance criterion: a job whose worker call is interrupted by
-// context cancellation (graceful shutdown) is returned to 'queued', not
-// permanently failed.
-func TestExecutor_GracefulShutdown_RequeuesInFlightJob(t *testing.T) {
+// TestExecutor_GracefulShutdown_LeavesInFlightJobRunning proves Run does NOT
+// eagerly requeue a job whose worker call was interrupted by shutdown: the
+// worker SDK can't force product code to stop on context cancellation, so
+// the original invocation may still genuinely be executing. Immediately
+// marking the row 'queued' would let another claim start a second,
+// concurrent execution of the same job. The row must stay 'running' —
+// Store.Claim's crash-recovery sweep (timeout_seconds/DefaultJobTimeout +
+// stuckJobGrace) is the only path back to 'queued', and only once enough
+// time has passed that the original call has genuinely finished or expired.
+func TestExecutor_GracefulShutdown_LeavesInFlightJobRunning(t *testing.T) {
 	pool := newTestPostgres(t)
 	store := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-exec-shutdown-"+uuid.New().String()+"@example.com")
@@ -268,13 +273,19 @@ func TestExecutor_GracefulShutdown_RequeuesInFlightJob(t *testing.T) {
 		t.Fatal("Executor.Run did not stop after context cancellation")
 	}
 
-	job := waitForStatus(t, store, id, custA, StatusQueued, 2*time.Second)
-	if job.ErrorCode != "" {
-		t.Errorf("requeued job has error_code = %q, want empty (not a permanent failure)", job.ErrorCode)
+	// Give any (incorrect) eager requeue a moment to land before asserting
+	// the row is untouched — a flaky pass here would hide a regression.
+	time.Sleep(100 * time.Millisecond)
+	job, ok, err := store.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusRunning {
+		t.Errorf("status = %q after shutdown, want %q (must not be eagerly requeued)", job.Status, StatusRunning)
 	}
 }
 
-func TestExecutor_ReleaseClaimed_NoLostWorkOnShutdown(t *testing.T) {
+func TestStore_ReleaseClaimed_UsableAsOperatorPrimitive(t *testing.T) {
 	pool := newTestPostgres(t)
 	store := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-exec-release-"+uuid.New().String()+"@example.com")
@@ -288,8 +299,12 @@ func TestExecutor_ReleaseClaimed_NoLostWorkOnShutdown(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 
-	e := &Executor{store: store, instanceID: instanceID}
-	e.releaseClaimed()
+	// Executor.Run never calls this itself (see its doc comment); it remains
+	// a directly usable Store primitive, e.g. for an operator who can
+	// positively confirm instanceID's process is gone.
+	if _, err := store.ReleaseClaimed(context.Background(), instanceID); err != nil {
+		t.Fatalf("ReleaseClaimed: %v", err)
+	}
 
 	waitForStatus(t, store, id, custA, StatusQueued, time.Second)
 }
