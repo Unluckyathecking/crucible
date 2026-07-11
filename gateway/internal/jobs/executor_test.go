@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -50,6 +51,35 @@ func waitForStatus(t *testing.T, s *Store, id, customerID uuid.UUID, want string
 				t.Fatalf("job %s status = %q after %s, want %q", id, job.Status, timeout, want)
 			}
 			t.Fatalf("job %s not found after %s", id, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForUsageEventCount polls usage_events for (customerID, requestID) until
+// it reaches want or timeout elapses. Complete (which waitForStatus observes)
+// and Record are two separate sequential writes within the same process()
+// call — see process's doc comment on why they can't share a transaction —
+// so a concurrent Get can observe 'succeeded' in the narrow window before
+// Record has run. Polling here, rather than asserting immediately after
+// waitForStatus, avoids that race without weakening what's actually proven:
+// Record always follows Complete in the same goroutine, so it lands within
+// the poll window every time the job legitimately succeeds.
+func waitForUsageEventCount(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, requestID string, want int64, timeout time.Duration) int64 {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var count int64
+	for {
+		if err := pool.QueryRow(context.Background(),
+			`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, customerID, requestID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count usage_events: %v", err)
+		}
+		if count == want {
+			return count
+		}
+		if time.Now().After(deadline) {
+			return count
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -96,13 +126,7 @@ func TestExecutor_Success_RecordsUsageAndCompletes(t *testing.T) {
 		t.Errorf("units_label = %q, want pages", job.UnitsLabel)
 	}
 
-	var count int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, custA, "req-exec-1",
-	).Scan(&count); err != nil {
-		t.Fatalf("count usage_events: %v", err)
-	}
-	if count != 1 {
+	if count := waitForUsageEventCount(t, pool, custA, "req-exec-1", 1, time.Second); count != 1 {
 		t.Errorf("usage_events rows = %d, want 1", count)
 	}
 
@@ -378,13 +402,7 @@ func TestExecutor_TransientFailure_RetriesThenSucceeds_RecordsUsageOnce(t *testi
 		t.Errorf("worker was called %d times, want 3 (2 transient failures + 1 success)", got)
 	}
 
-	var count int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, custA, "req-retry-succeed",
-	).Scan(&count); err != nil {
-		t.Fatalf("count usage_events: %v", err)
-	}
-	if count != 1 {
+	if count := waitForUsageEventCount(t, pool, custA, "req-retry-succeed", 1, time.Second); count != 1 {
 		t.Errorf("usage_events rows = %d, want 1 (billed exactly once despite 2 retries)", count)
 	}
 
