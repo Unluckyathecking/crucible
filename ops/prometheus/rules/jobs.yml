@@ -1,0 +1,85 @@
+# Async-job alerts — failure ratio, execution-duration saturation, and queued-backlog growth.
+#
+# Metric reference (gateway/internal/observability/metrics.go):
+#
+#   crucible_jobs_enqueued_total{operation}             — Counter; incremented each time a job
+#                                                         is accepted into the async queue via an
+#                                                         AsyncRoutes-opted endpoint.
+#
+#   crucible_jobs_completed_total{operation,outcome}    — Counter; incremented when a job reaches
+#                                                         a terminal state. outcome = succeeded | failed.
+#
+#   crucible_job_execution_duration_seconds{operation}  — Histogram; wall time from claim to terminal
+#                                                         state. Buckets: 0.1 s … 600 s.
+#
+# JOB_TIMEOUT_MS default: 300 000 ms (5 min). The duration-saturation alert threshold (240 s,
+# 80% of the default ceiling) must be adjusted if the product overrides JOB_TIMEOUT_MS.
+
+groups:
+  - name: crucible-async-jobs
+    interval: 1m
+    rules:
+      # Alert when more than 10% of completed async jobs are failures over a 5-minute window.
+      # The and clause mirrors BillingFlushErrorRateElevated: it prevents 0/0 from firing
+      # a false positive when no jobs have completed in the evaluation window.
+      - alert: AsyncJobFailureRateElevated
+        expr: 'sum(rate(crucible_jobs_completed_total{outcome="failed"}[5m])) / sum(rate(crucible_jobs_completed_total[5m])) > 0.1 and sum(rate(crucible_jobs_completed_total[5m])) > 0'
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Async-job failure rate elevated ({{ $value | humanizePercentage }} of completed jobs failing)"
+          description: >
+            More than 10% of crucible_jobs_completed_total events have outcome="failed"
+            over the last 5 minutes. Check gateway logs and crucible_worker_errors_total
+            for the error class driving failures. The and clause suppresses false positives
+            when the async queue is idle (no completed jobs in evaluation window).
+
+      # Alert when more than 25% of completed async jobs are failures — a rate indicating
+      # widespread worker degradation rather than isolated failures.
+      - alert: AsyncJobFailureRateCritical
+        expr: 'sum(rate(crucible_jobs_completed_total{outcome="failed"}[5m])) / sum(rate(crucible_jobs_completed_total[5m])) > 0.25 and sum(rate(crucible_jobs_completed_total[5m])) > 0'
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Async-job failure rate critical ({{ $value | humanizePercentage }} of completed jobs failing)"
+          description: >
+            More than 25% of crucible_jobs_completed_total events have outcome="failed"
+            over the last 5 minutes. A rate this high suggests systemic worker degradation
+            or a misconfiguration affecting all async operations. Check worker health and
+            crucible_worker_errors_total{code} for the dominant error class.
+
+      # Alert when p95 async-job execution duration exceeds 240 s (80% of the 300 s default
+      # JOB_TIMEOUT_MS). Jobs close to the ceiling risk being swept by the crash-recovery
+      # path and requeued as stuck, causing retries and potential double-execution.
+      # Adjust the threshold (240) if the product overrides JOB_TIMEOUT_MS.
+      - alert: AsyncJobDurationSaturation
+        expr: 'histogram_quantile(0.95, sum(rate(crucible_job_execution_duration_seconds_bucket[5m])) by (le)) > 240'
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Async-job p95 duration approaching timeout ceiling ({{ $value | humanizeDuration }})"
+          description: >
+            The p95 wall time for crucible_job_execution_duration_seconds has exceeded 240 s
+            (80% of the 300 s JOB_TIMEOUT_MS default) for 5 minutes. Jobs running this close
+            to the timeout ceiling risk being marked stuck by the crash-recovery sweep and
+            requeued. Check for slow worker operations or workloads that exceed the configured
+            timeout. Adjust the 240 s threshold in this rule if JOB_TIMEOUT_MS is overridden.
+
+      # Alert when the async-job queue is growing — more jobs are being enqueued than
+      # completed over a 10-minute window, sustained for 5 minutes. A persistent backlog
+      # means worker capacity cannot keep pace with the enqueue rate.
+      - alert: AsyncJobBacklogGrowing
+        expr: 'sum(increase(crucible_jobs_enqueued_total[10m])) - sum(increase(crucible_jobs_completed_total[10m])) > 20'
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Async-job backlog growing ({{ $value | humanize }} more jobs enqueued than completed in 10 min)"
+          description: >
+            crucible_jobs_enqueued_total is outpacing crucible_jobs_completed_total by more than
+            20 jobs per 10-minute window for at least 5 minutes. The async queue is accumulating
+            a growing backlog. Check worker pool size, job execution duration, and whether a
+            request burst has exceeded current worker capacity.

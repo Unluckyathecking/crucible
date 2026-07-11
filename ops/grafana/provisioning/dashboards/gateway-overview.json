@@ -146,6 +146,98 @@
       "targets": [
         { "expr": "crucible_billing_unbillable_units", "legendFormat": "unbillable units" }
       ]
+    },
+    {
+      "id": 11,
+      "title": "Async-job throughput (enqueued vs completed)",
+      "description": "Rate of jobs entering and leaving the async queue, split by operation and outcome. A divergence where enqueue rate exceeds completion rate signals a growing backlog (see AsyncJobBacklogGrowing alert).",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum(rate(crucible_jobs_enqueued_total[1m])) by (operation)", "legendFormat": "enqueued {{operation}}" },
+        { "expr": "sum(rate(crucible_jobs_completed_total[1m])) by (operation, outcome)", "legendFormat": "completed {{operation}} ({{outcome}})" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Async-job failure ratio",
+      "description": "Fraction of completed async jobs with outcome=failed over a 5-minute window. Exceeding 10% triggers AsyncJobFailureRateElevated; 25% triggers AsyncJobFailureRateCritical. No data when the queue is idle.",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.25 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(crucible_jobs_completed_total{outcome=\"failed\"}[5m])) / sum(rate(crucible_jobs_completed_total[5m]))",
+          "legendFormat": "failure ratio"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Async-job p95 execution duration",
+      "description": "p95 wall time from claim to terminal state, by operation. Exceeding 240 s (80% of the 300 s JOB_TIMEOUT_MS default) triggers AsyncJobDurationSaturation.",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 240 },
+              { "color": "red", "value": 270 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(crucible_job_execution_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "p95 {{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Async-job backlog depth (10 min)",
+      "description": "Estimated queue backlog: jobs enqueued minus jobs completed over the last 10 minutes. Should hover near zero in steady state. Values above 20 sustained for 5 minutes trigger AsyncJobBacklogGrowing.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(crucible_jobs_enqueued_total[10m])) - sum(increase(crucible_jobs_completed_total[10m]))",
+          "legendFormat": "backlog depth"
+        }
+      ]
     }
   ]
 }
