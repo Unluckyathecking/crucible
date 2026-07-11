@@ -134,20 +134,11 @@ func NewRouter(d *Deps) http.Handler {
 	if d.Auth != nil {
 		d.Auth.SetEmitter(emitter)
 	}
-	// Snapshot V1Routes once so both openapi.Handler and the registration loop
-	// see the same stable slice for the lifetime of this router.
-	routes := make([]openapi.RouteDescriptor, len(V1Routes))
-	copy(routes, V1Routes)
-	// Mark the snapshot's async-opted routes (routes_table.go's AsyncRoutes)
-	// BEFORE openapi.Handler(routes) below builds the served document, so
-	// /openapi.json documents the actual 202 {job_id} contract for those
-	// paths instead of the stale synchronous 200 envelope. Mutates only this
-	// local snapshot, never the shared V1Routes package var.
-	for i := range routes {
-		if _, async := AsyncRoutes[routes[i].Path]; async {
-			routes[i].Async = true
-		}
-	}
+	// Snapshot V1Routes with Async flags applied via AnnotatedRoutes so both
+	// openapi.Handler and the registration loop see the same stable slice.
+	// AnnotatedRoutes is also what spec-dump uses — a single source of truth
+	// ensures /openapi.json and clients/openapi.json can never diverge.
+	routes := AnnotatedRoutes()
 
 	r := chi.NewRouter()
 

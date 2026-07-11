@@ -104,7 +104,7 @@ class Op:
             if p.get("in") == "query"
         ]
         responses = op.get("responses", {})
-        self.success_code = next((c for c in ("200", "201", "204") if c in responses), None)
+        self.success_code = next((c for c in ("200", "201", "202", "204") if c in responses), None)
         resp = responses.get(self.success_code, {}) if self.success_code else {}
         self.resp       = resp
         # A 204 (or any success response with no content body) has no JSON to decode.
