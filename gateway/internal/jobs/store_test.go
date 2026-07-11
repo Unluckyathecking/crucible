@@ -427,6 +427,20 @@ func TestStore_Fail(t *testing.T) {
 	if job.ErrorCode != "WORKER_BAD_RESPONSE" || job.ErrorMessage != "worker contract violation" {
 		t.Errorf("error fields mismatch: code=%q message=%q", job.ErrorCode, job.ErrorMessage)
 	}
+
+	// Fail is the deterministic-failure path (a worker structured business
+	// error, or a billable_units<1 contract violation) — neither is retried,
+	// so attempts must stay exactly as it was, unlike DeadLetter which
+	// records the exhausted retry count.
+	var attempts int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT attempts FROM async_jobs WHERE id = $1`, id,
+	).Scan(&attempts); err != nil {
+		t.Fatalf("query attempts: %v", err)
+	}
+	if attempts != 0 {
+		t.Errorf("attempts = %d, want 0 (Fail must not touch attempts)", attempts)
+	}
 }
 
 func TestStore_ReleaseClaimed_ScopedToInstance(t *testing.T) {
@@ -508,5 +522,137 @@ func TestStore_Requeue(t *testing.T) {
 	}
 	if job.Status != StatusQueued {
 		t.Errorf("status = %q, want %q", job.Status, StatusQueued)
+	}
+}
+
+func TestStore_RequeueRetry_SetsAttemptsAndNextAttemptAt(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-requeue-retry-"+uuid.New().String()+"@example.com")
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	nextAt := time.Now().Add(time.Hour)
+	if err := s.RequeueRetry(context.Background(), id, 2, nextAt); err != nil {
+		t.Fatalf("RequeueRetry: %v", err)
+	}
+
+	job, ok, err := s.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusQueued {
+		t.Errorf("status = %q, want %q", job.Status, StatusQueued)
+	}
+
+	// Attempts isn't in Get's SELECT list (only Claim's — see Job.Attempts's
+	// doc comment), so assert the persisted value directly.
+	var attempts int
+	var storedNextAt time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT attempts, next_attempt_at FROM async_jobs WHERE id = $1`, id,
+	).Scan(&attempts, &storedNextAt); err != nil {
+		t.Fatalf("query attempts/next_attempt_at: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+	if storedNextAt.Sub(nextAt).Abs() > time.Second {
+		t.Errorf("next_attempt_at = %s, want ~%s", storedNextAt, nextAt)
+	}
+}
+
+// TestStore_Claim_SkipsFutureNextAttemptAt proves a row scheduled for retry
+// is not claimable again before its backoff delay elapses, while a genuinely
+// eligible queued row is claimed in the same call — oldest-eligible-first
+// ordering (by created_at) among the eligible rows.
+func TestStore_Claim_SkipsFutureNextAttemptAt(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-claim-future-"+uuid.New().String()+"@example.com")
+
+	scheduled, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-scheduled", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (scheduled): %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE async_jobs SET next_attempt_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, scheduled,
+	); err != nil {
+		t.Fatalf("seed future next_attempt_at: %v", err)
+	}
+
+	eligible, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-eligible", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (eligible): %v", err)
+	}
+
+	claimed, err := s.Claim(context.Background(), 10, uuid.New())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	var gotScheduled, gotEligible bool
+	for _, j := range claimed {
+		if j.ID == scheduled {
+			gotScheduled = true
+		}
+		if j.ID == eligible {
+			gotEligible = true
+		}
+	}
+	if gotScheduled {
+		t.Error("Claim returned a row whose next_attempt_at is in the future")
+	}
+	if !gotEligible {
+		t.Error("Claim did not return the eligible row")
+	}
+
+	job, ok, err := s.Get(context.Background(), scheduled, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get(scheduled): ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusQueued {
+		t.Errorf("scheduled job status = %q, want %q (must remain queued, not claimed)", job.Status, StatusQueued)
+	}
+}
+
+func TestStore_DeadLetter_SetsAttemptsAndTerminal(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-deadletter-"+uuid.New().String()+"@example.com")
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if err := s.DeadLetter(context.Background(), id, 3, "WORKER_UNREACHABLE", "worker unavailable"); err != nil {
+		t.Fatalf("DeadLetter: %v", err)
+	}
+
+	job, ok, err := s.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusFailed {
+		t.Errorf("status = %q, want %q", job.Status, StatusFailed)
+	}
+	if job.ErrorCode != "WORKER_UNREACHABLE" || job.ErrorMessage != "worker unavailable" {
+		t.Errorf("error fields mismatch: code=%q message=%q", job.ErrorCode, job.ErrorMessage)
+	}
+	var attempts int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT attempts FROM async_jobs WHERE id = $1`, id,
+	).Scan(&attempts); err != nil {
+		t.Fatalf("query attempts: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
 	}
 }

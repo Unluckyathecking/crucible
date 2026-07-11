@@ -5,14 +5,35 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 )
+
+// hijackAndClose aborts the HTTP response by hijacking the connection and
+// closing it without writing anything — the client sees a transport error
+// (EOF), exactly the WORKER_UNREACHABLE class Executor is meant to retry,
+// as opposed to a worker-returned structured error envelope (HTTP 200 body).
+func hijackAndClose(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("ResponseWriter does not support hijacking")
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	conn.Close()
+}
 
 func waitForStatus(t *testing.T, s *Store, id, customerID uuid.UUID, want string, timeout time.Duration) Job {
 	t.Helper()
@@ -30,6 +51,35 @@ func waitForStatus(t *testing.T, s *Store, id, customerID uuid.UUID, want string
 				t.Fatalf("job %s status = %q after %s, want %q", id, job.Status, timeout, want)
 			}
 			t.Fatalf("job %s not found after %s", id, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForUsageEventCount polls usage_events for (customerID, requestID) until
+// it reaches want or timeout elapses. Complete (which waitForStatus observes)
+// and Record are two separate sequential writes within the same process()
+// call — see process's doc comment on why they can't share a transaction —
+// so a concurrent Get can observe 'succeeded' in the narrow window before
+// Record has run. Polling here, rather than asserting immediately after
+// waitForStatus, avoids that race without weakening what's actually proven:
+// Record always follows Complete in the same goroutine, so it lands within
+// the poll window every time the job legitimately succeeds.
+func waitForUsageEventCount(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, requestID string, want int64, timeout time.Duration) int64 {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var count int64
+	for {
+		if err := pool.QueryRow(context.Background(),
+			`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, customerID, requestID,
+		).Scan(&count); err != nil {
+			t.Fatalf("count usage_events: %v", err)
+		}
+		if count == want {
+			return count
+		}
+		if time.Now().After(deadline) {
+			return count
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -76,13 +126,7 @@ func TestExecutor_Success_RecordsUsageAndCompletes(t *testing.T) {
 		t.Errorf("units_label = %q, want pages", job.UnitsLabel)
 	}
 
-	var count int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, custA, "req-exec-1",
-	).Scan(&count); err != nil {
-		t.Fatalf("count usage_events: %v", err)
-	}
-	if count != 1 {
+	if count := waitForUsageEventCount(t, pool, custA, "req-exec-1", 1, time.Second); count != 1 {
 		t.Errorf("usage_events rows = %d, want 1", count)
 	}
 
@@ -307,4 +351,126 @@ func TestStore_ReleaseClaimed_UsableAsOperatorPrimitive(t *testing.T) {
 	}
 
 	waitForStatus(t, store, id, custA, StatusQueued, time.Second)
+}
+
+// TestExecutor_TransientFailure_RetriesThenSucceeds_RecordsUsageOnce proves
+// the acceptance scenario at the heart of this module: a job whose worker
+// call fails transiently (WORKER_UNREACHABLE / transport error, simulated
+// here by hijacking and closing the connection before any HTTP response) is
+// retried with backoff rather than failed on the first error, and once the
+// worker recovers the job succeeds and usage is recorded exactly once —
+// never once per attempt, and never zero times because an earlier attempt
+// failed.
+func TestExecutor_TransientFailure_RetriesThenSucceeds_RecordsUsageOnce(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-retry-succeed-"+uuid.New().String()+"@example.com")
+
+	var calls int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			hijackAndClose(t, w)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":2,"units_label":"pages"}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 2*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{
+		PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second,
+		MaxAttempts: 5, RetryBackoff: 50 * time.Millisecond,
+	})
+
+	retriedBefore := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo"))
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-retry-succeed", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.Run(ctx) }()
+
+	job := waitForStatus(t, store, id, custA, StatusSucceeded, 5*time.Second)
+	if job.BillableUnits != 2 {
+		t.Errorf("billable_units = %d, want 2", job.BillableUnits)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("worker was called %d times, want 3 (2 transient failures + 1 success)", got)
+	}
+
+	if count := waitForUsageEventCount(t, pool, custA, "req-retry-succeed", 1, time.Second); count != 1 {
+		t.Errorf("usage_events rows = %d, want 1 (billed exactly once despite 2 retries)", count)
+	}
+
+	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 2 {
+		t.Errorf("crucible_jobs_retried_total delta = %v, want 2", retried)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Executor.Run did not stop after context cancellation")
+	}
+}
+
+// TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters proves a
+// sustained transient failure (the worker never recovers) still terminates:
+// once attempts reaches MaxAttempts the job dead-letters to terminal
+// 'failed' — the same customer-visible shape as an immediate deterministic
+// failure (GET /v1/jobs/{id} gains no new status) — and is never billed.
+func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-retry-exhaust-"+uuid.New().String()+"@example.com")
+
+	var calls int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		hijackAndClose(t, w)
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 2*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{
+		PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second,
+		MaxAttempts: 2, RetryBackoff: 20 * time.Millisecond,
+	})
+
+	retriedBefore := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo"))
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-retry-exhaust", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	job := waitForStatus(t, store, id, custA, StatusFailed, 5*time.Second)
+	if job.ErrorCode != "WORKER_UNREACHABLE" {
+		t.Errorf("error_code = %q, want WORKER_UNREACHABLE", job.ErrorCode)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("worker was called %d times, want 2 (MaxAttempts)", got)
+	}
+
+	var count int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM usage_events WHERE customer_id = $1 AND request_id = $2`, custA, "req-retry-exhaust",
+	).Scan(&count); err != nil {
+		t.Fatalf("count usage_events: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("usage_events rows = %d, want 0 — a dead-lettered job must never bill", count)
+	}
+
+	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
+		t.Errorf("crucible_jobs_retried_total delta = %v, want 1 (one retry before exhausting MaxAttempts=2)", retried)
+	}
 }

@@ -25,6 +25,7 @@
 //	crucible_respcache_failopen_total{operation}         — requests admitted because Redis store errored
 //	crucible_jobs_enqueued_total{operation}              — async jobs enqueued (gateway/internal/jobs)
 //	crucible_jobs_completed_total{operation,outcome}     — async jobs finished; outcome=succeeded|failed
+//	crucible_jobs_retried_total{operation}               — async jobs requeued after a transient worker failure (jobs.Executor)
 //	crucible_job_execution_duration_seconds{operation}   — wall time from claim to terminal state (jobs.Executor)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
@@ -196,6 +197,15 @@ var (
 		Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
 	}, []string{"operation", "outcome"})
 
+	// JobsRetriedTotal counts async jobs requeued with backoff after a
+	// retryable (WORKER_UNREACHABLE / transport) failure — never incremented
+	// for a deterministic worker structured error or a billable_units<1
+	// contract violation, both of which fail immediately without a retry.
+	JobsRetriedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_jobs_retried_total",
+		Help: "Number of async jobs requeued with backoff after a transient worker failure, by operation.",
+	}, []string{"operation"})
+
 	// JobExecutionDuration observes wall time from claim to terminal state
 	// (or shutdown-requeue) for a single async job.
 	JobExecutionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -232,6 +242,7 @@ type Metrics struct {
 	RespCacheFailOpenTotal         *prometheus.CounterVec
 	JobsEnqueuedTotal              *prometheus.CounterVec
 	JobsCompletedTotal             *prometheus.CounterVec
+	JobsRetriedTotal               *prometheus.CounterVec
 	JobExecutionDuration           *prometheus.HistogramVec
 }
 
@@ -334,6 +345,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_jobs_completed_total",
 			Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
 		}, []string{"operation", "outcome"}),
+		JobsRetriedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_jobs_retried_total",
+			Help: "Number of async jobs requeued with backoff after a transient worker failure, by operation.",
+		}, []string{"operation"}),
 		JobExecutionDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "crucible_job_execution_duration_seconds",
 			Help:    "Wall time from claim to terminal state for an async job, by operation.",
@@ -364,6 +379,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RespCacheFailOpenTotal,
 		m.JobsEnqueuedTotal,
 		m.JobsCompletedTotal,
+		m.JobsRetriedTotal,
 		m.JobExecutionDuration,
 	)
 	return m
