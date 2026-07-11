@@ -138,6 +138,16 @@ func NewRouter(d *Deps) http.Handler {
 	// see the same stable slice for the lifetime of this router.
 	routes := make([]openapi.RouteDescriptor, len(V1Routes))
 	copy(routes, V1Routes)
+	// Mark the snapshot's async-opted routes (routes_table.go's AsyncRoutes)
+	// BEFORE openapi.Handler(routes) below builds the served document, so
+	// /openapi.json documents the actual 202 {job_id} contract for those
+	// paths instead of the stale synchronous 200 envelope. Mutates only this
+	// local snapshot, never the shared V1Routes package var.
+	for i := range routes {
+		if _, async := AsyncRoutes[routes[i].Path]; async {
+			routes[i].Async = true
+		}
+	}
 
 	r := chi.NewRouter()
 
@@ -470,15 +480,14 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// contract must not change regardless of what the worker sends.
 			// Full mode passes the worker's error verbatim; guard empty Code so
 			// customers never receive "code":"" (an empty code is not correlatable).
-			errCode, errMsg, errRetryable := apierror.WORKER_UNREACHABLE, "worker unavailable", true
+			// jobs.SanitizeWorkerError is the single definition of this policy — the
+			// async Executor applies it identically before persisting a failed job's
+			// error_code/error_message, so GET /v1/jobs/{id} can't leak what this
+			// path hides.
+			errCode, errMsg := jobs.SanitizeWorkerError(errorExposure, resp.Error.Code, resp.Error.Message)
+			errRetryable := true
 			if errorExposure == "full" {
-				errCode = resp.Error.Code
-				if errCode == "" {
-					// UNKNOWN is reserved for Prometheus metric labels; WORKER_BAD_RESPONSE
-					// is the correct customer-facing fallback for a worker that omits the code.
-					errCode = apierror.WORKER_BAD_RESPONSE
-				}
-				errMsg, errRetryable = resp.Error.Message, resp.Error.Retryable
+				errRetryable = resp.Error.Retryable
 			}
 			apierror.Write(w, rid, http.StatusBadGateway, errCode, errMsg, errRetryable)
 			return
@@ -566,6 +575,20 @@ func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.
 			return
 		}
 		observability.JobsEnqueuedTotal.WithLabelValues(operation).Inc()
+		// quota.Middleware already reserved +1 up front and will refund it the
+		// instant this handler returns unless the signal is flipped — a plain
+		// enqueue-and-return-202 would let a capped-plan customer enqueue an
+		// unbounded number of jobs (each reserve is refunded before the next
+		// request's Reserve ever sees it), bypassing the admission check this
+		// route is supposed to inherit. Marking recorded makes the +1 reserve
+		// stick per enqueued job — mirroring the sync path's own "1 (reserve) +
+		// units (recorder)" per-call overhead (see quota.Tracker.Reserve's doc
+		// comment) — and the real billable_units still land on top of it when
+		// the job completes (usage.Recorder.Record, called from the executor).
+		// A job that later fails still consumes this 1 unit; that's a
+		// deliberate fail-closed tradeoff over silently exempting async
+		// enqueues from the cap entirely.
+		quota.MarkRecorded(r.Context())
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")

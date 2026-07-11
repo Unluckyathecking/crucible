@@ -27,8 +27,19 @@ type ExecutorConfig struct {
 	// PollInterval is the delay between claim attempts. <= 0 defaults to 1s.
 	PollInterval time.Duration
 	// JobTimeout ceilings a single job's worker invocation. <= 0 defaults
-	// to 5 minutes.
+	// to 5 minutes. NewExecutor also uses this as Store.DefaultJobTimeout's
+	// value, so the executor's own budget and the store's stuck-job
+	// recovery sweep can never disagree about how long a legitimately
+	// running job is allowed to take.
 	JobTimeout time.Duration
+	// ErrorExposure mirrors config.Config.ErrorExposure ("sanitized" or
+	// "full"). Any value other than "full" sanitizes worker-reported
+	// structured errors before they're persisted to a failed job's
+	// error_code/error_message — the same policy the synchronous /v1
+	// invoke handler applies (server/routes.go) — so GET /v1/jobs/{id}
+	// can't leak internal worker details an operator configured the
+	// gateway to hide. Empty defaults to sanitized.
+	ErrorExposure string
 }
 
 func (c ExecutorConfig) withDefaults() ExecutorConfig {
@@ -61,11 +72,19 @@ type Executor struct {
 // (nil-safe, matching the framework's optional-Deps pattern) — this lets
 // cmd/gateway/main.go construct the Executor unconditionally.
 func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg ExecutorConfig) *Executor {
+	cfg = cfg.withDefaults()
+	// Keep the store's stuck-job recovery threshold in sync with this
+	// executor's own configured job timeout — see Store.DefaultJobTimeout's
+	// doc comment for why a mismatch here is a duplicate-claim/double-bill
+	// bug, not just a cosmetic inconsistency.
+	if store != nil {
+		store.DefaultJobTimeout = cfg.JobTimeout
+	}
 	return &Executor{
 		store:      store,
 		proxy:      p,
 		recorder:   recorder,
-		cfg:        cfg.withDefaults(),
+		cfg:        cfg,
 		instanceID: uuid.New(),
 	}
 }
@@ -174,12 +193,17 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 	}
 
 	if resp.Error != nil {
-		code := resp.Error.Code
-		if code == "" {
-			code = apierror.UNKNOWN
+		metricCode := resp.Error.Code
+		if metricCode == "" {
+			metricCode = apierror.UNKNOWN
 		}
-		observability.WorkerErrorsTotal.WithLabelValues(code).Inc()
-		e.fail(job.ID, job.Operation, resp.Error.Code, resp.Error.Message)
+		observability.WorkerErrorsTotal.WithLabelValues(metricCode).Inc()
+		// Persist the sanitized (code, message), never the worker's raw
+		// values verbatim — GET /v1/jobs/{id} returns these to the customer,
+		// and must honor WORKER_ERROR_EXPOSURE exactly like the synchronous
+		// /v1 invoke handler does.
+		sanitizedCode, sanitizedMsg := SanitizeWorkerError(e.cfg.ErrorExposure, resp.Error.Code, resp.Error.Message)
+		e.fail(job.ID, job.Operation, sanitizedCode, sanitizedMsg)
 		return
 	}
 

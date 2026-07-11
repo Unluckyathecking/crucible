@@ -114,10 +114,30 @@ func main() {
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
 	respCacheStore := respcache.NewStore(redisClient)
 	jobStore := jobs.NewStore(pool)
-	jobExecutor := jobs.NewExecutor(jobStore, workerClient, recorder, jobs.ExecutorConfig{
-		PoolSize:     cfg.JobWorkerPoolSize,
-		PollInterval: cfg.JobPollInterval(),
-		JobTimeout:   cfg.JobTimeout(),
+	// jobProxyClient is deliberately separate from workerClient: proxy.New's
+	// timeout argument becomes http.Client.Timeout, a hard ceiling that
+	// governs independently of (and can fire before) any shorter context
+	// deadline — it is NOT extended by a longer context.WithTimeout. Reusing
+	// workerClient (built above with WORKER_TIMEOUT_MS, the fast synchronous
+	// path's budget) would silently cap every async worker call at that
+	// ceiling regardless of JOB_TIMEOUT_MS or a longer per-route AsyncRoutes
+	// override, defeating the entire point of the async path for exactly the
+	// long-running products it exists to serve. Sized to the largest
+	// possible per-job deadline so the job's own context timeout — not this
+	// client's — is always what actually governs.
+	jobHTTPTimeout := cfg.JobTimeout()
+	for _, secs := range server.AsyncRoutes {
+		if d := time.Duration(secs) * time.Second; d > jobHTTPTimeout {
+			jobHTTPTimeout = d
+		}
+	}
+	jobProxyClient := proxy.New(cfg.WorkerURL, jobHTTPTimeout, cfg.WorkerMaxConns, components.Policy).
+		WithSecret(cfg.WorkerSharedSecret)
+	jobExecutor := jobs.NewExecutor(jobStore, jobProxyClient, recorder, jobs.ExecutorConfig{
+		PoolSize:      cfg.JobWorkerPoolSize,
+		PollInterval:  cfg.JobPollInterval(),
+		JobTimeout:    cfg.JobTimeout(),
+		ErrorExposure: cfg.ErrorExposure,
 	})
 
 	// Async: flush usage to Stripe.

@@ -11,16 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// stuckJobAge is the threshold past which a 'running' row is considered
-// abandoned by a process that crashed without a graceful shutdown, and is
-// reset to 'queued' by the crash-recovery sweep in Claim. Mirrors
-// webhookout.stuckDeliveryAge. Must comfortably exceed a realistic job
-// duration plus poll interval.
-const stuckJobAge = 2 * time.Minute
+// defaultStuckJobTimeout is Store's built-in fallback for the crash-recovery
+// sweep's per-row threshold (see DefaultJobTimeout) when the caller never
+// overrides it. Matches config.Config's JOB_TIMEOUT_MS default (300000ms).
+const defaultStuckJobTimeout = 5 * time.Minute
+
+// stuckJobGrace is added on top of a row's own timeout (DefaultJobTimeout,
+// or its timeout_seconds override) before the crash-recovery sweep
+// considers it abandoned — slack for claim/dispatch/DB-write overhead
+// around the worker call itself, so a job that finishes right at its
+// deadline isn't racing the sweep.
+const stuckJobGrace = 60 * time.Second
 
 // Store is the durable Postgres-backed async job queue.
 type Store struct {
 	db *pgxpool.Pool
+	// DefaultJobTimeout is the crash-recovery sweep's fallback threshold
+	// (see Claim) for rows with timeout_seconds = 0 (no per-route
+	// AsyncRoutes override) — i.e. the "how long can a legitimately running
+	// job take" question, mirrored from jobs.ExecutorConfig.JobTimeout.
+	//
+	// A fixed threshold here (the original design) was a real bug: any row
+	// still running past that fixed age — even though it's well within its
+	// own configured budget — gets swept back to 'queued' and can be
+	// claimed and executed a second time while the first attempt is still
+	// in flight, racing their unscoped Complete/Fail updates and risking
+	// duplicate work or double billing. Tying the threshold to each row's
+	// own timeout (or this default) instead of a constant closes that gap.
+	//
+	// jobs.NewExecutor sets this to its own ExecutorConfig.JobTimeout so
+	// the two stay in sync by construction; defaults to
+	// defaultStuckJobTimeout for callers that construct a Store directly.
+	DefaultJobTimeout time.Duration
 }
 
 // NewStore returns nil when db is nil, matching the optional-Deps nil-safe
@@ -30,7 +52,7 @@ func NewStore(db *pgxpool.Pool) *Store {
 	if db == nil {
 		return nil
 	}
-	return &Store{db: db}
+	return &Store{db: db, DefaultJobTimeout: defaultStuckJobTimeout}
 }
 
 // Enqueue inserts a queued job row and returns its generated id.
@@ -98,14 +120,25 @@ func (s *Store) Claim(ctx context.Context, limit int, instanceID uuid.UUID) ([]J
 	}
 
 	// Crash-recovery sweep runs outside any transaction, same as
-	// webhookout.processDue's stuck-delivery reset.
+	// webhookout.processDue's stuck-delivery reset. The threshold is
+	// per-row: a job's own timeout_seconds override when set, else
+	// DefaultJobTimeout, plus stuckJobGrace slack — never a single fixed
+	// constant, which would sweep back to 'queued' (and risk a duplicate
+	// claim/double-bill) any job still legitimately running within its own
+	// configured budget.
+	defaultSeconds := s.DefaultJobTimeout.Seconds()
+	if defaultSeconds <= 0 {
+		defaultSeconds = defaultStuckJobTimeout.Seconds()
+	}
 	if _, err := s.db.Exec(ctx, `
 		UPDATE async_jobs
 		SET status = 'queued', claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
 		WHERE status = 'running'
 		  AND claimed_at IS NOT NULL
-		  AND claimed_at < NOW() - ($1 * INTERVAL '1 second')
-	`, stuckJobAge.Seconds()); err != nil {
+		  AND claimed_at < NOW() - (
+		        (CASE WHEN timeout_seconds > 0 THEN timeout_seconds ELSE $1 END) + $2
+		      ) * INTERVAL '1 second'
+	`, defaultSeconds, stuckJobGrace.Seconds()); err != nil {
 		return nil, fmt.Errorf("jobs: stuck-job sweep: %w", err)
 	}
 

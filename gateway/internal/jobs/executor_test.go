@@ -106,7 +106,11 @@ func TestExecutor_WorkerError_MarksFailed_NoUsageRecorded(t *testing.T) {
 	t.Cleanup(worker.Close)
 	p := proxy.New(worker.URL, 5*time.Second, 0)
 	recorder := usage.NewRecorder(pool, nil)
-	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+	// ErrorExposure: "full" — this test asserts the worker's own error
+	// reaches the job row verbatim; see
+	// TestExecutor_WorkerError_SanitizedByDefault for the opposite (and
+	// operationally default) case.
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second, ErrorExposure: "full"})
 
 	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-2", "free", json.RawMessage(`{}`), 0)
 	if err != nil {
@@ -130,6 +134,48 @@ func TestExecutor_WorkerError_MarksFailed_NoUsageRecorded(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("usage_events rows = %d, want 0 (a failed job must never bill)", count)
+	}
+}
+
+// TestExecutor_WorkerError_SanitizedByDefault proves GET /v1/jobs/{id} can't
+// leak a worker's internal error details when WORKER_ERROR_EXPOSURE is left
+// at its sanitized default (ExecutorConfig.ErrorExposure zero value) — the
+// same policy the synchronous /v1 invoke handler enforces (server/routes.go)
+// applied identically to the async path via the shared SanitizeWorkerError.
+func TestExecutor_WorkerError_SanitizedByDefault(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-sanitized-"+uuid.New().String()+"@example.com")
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"INTERNAL_STACK_TRACE_LEAK","message":"panic at db.go:42","retryable":false},"billable_units":0}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	// ErrorExposure intentionally left unset (zero value) — proves the
+	// sanitized default, not an explicitly-configured "sanitized" string.
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-sanitized", "free", json.RawMessage(`{}`), 0)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	job := waitForStatus(t, store, id, custA, StatusFailed, 2*time.Second)
+	if job.ErrorCode != "WORKER_UNREACHABLE" {
+		t.Errorf("error_code = %q, want WORKER_UNREACHABLE (sanitized)", job.ErrorCode)
+	}
+	if job.ErrorMessage != "worker unavailable" {
+		t.Errorf("error_message = %q, want %q (sanitized)", job.ErrorMessage, "worker unavailable")
+	}
+	if job.ErrorCode == "INTERNAL_STACK_TRACE_LEAK" || job.ErrorMessage == "panic at db.go:42" {
+		t.Fatal("sanitized mode leaked worker internals")
 	}
 }
 

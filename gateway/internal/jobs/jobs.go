@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 )
 
 // Status values for an async_jobs row.
@@ -50,4 +52,25 @@ type Job struct {
 // predicate so the rule is defined exactly once, not duplicated.
 func ValidBillableUnits(units uint64) bool {
 	return units >= 1
+}
+
+// SanitizeWorkerError applies the gateway's WORKER_ERROR_EXPOSURE policy to a
+// worker-reported structured error, mirroring the synchronous /v1 invoke
+// handler's behavior (server/routes.go) exactly — both call this single
+// function so the sanitization rule is defined once, not duplicated. Any
+// exposure value other than "full" (the "sanitized" default, "", or an
+// unrecognized value) always returns (apierror.WORKER_UNREACHABLE, "worker
+// unavailable") regardless of what the worker reported, hiding internal
+// details per operator configuration. In "full" mode the worker's own
+// code/message pass through, with an empty code mapped to
+// WORKER_BAD_RESPONSE (apierror.UNKNOWN is reserved for Prometheus metric
+// labels, never a customer-facing code).
+func SanitizeWorkerError(exposure, code, message string) (string, string) {
+	if exposure != "full" {
+		return apierror.WORKER_UNREACHABLE, "worker unavailable"
+	}
+	if code == "" {
+		code = apierror.WORKER_BAD_RESPONSE
+	}
+	return code, message
 }
