@@ -2,7 +2,7 @@
   "title": "Crucible — Gateway Overview",
   "uid": "crucible-gateway",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -145,6 +145,68 @@
       },
       "targets": [
         { "expr": "crucible_billing_unbillable_units", "legendFormat": "unbillable units" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Async job completions (by outcome, 1h)",
+      "description": "Count of async jobs that reached a terminal state in the last hour, broken down by outcome (succeeded or failed). Zero when AsyncRoutes is empty.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 0, "y": 28, "w": 8, "h": 6 },
+      "targets": [
+        { "expr": "sum by (outcome) (increase(crucible_jobs_completed_total[1h]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Async job p95 execution duration",
+      "description": "p95 wall time from claim to terminal state over the last 10 minutes. Exceeding 240 s (80% of the default JOB_TIMEOUT_MS of 300 s) triggers AsyncJobDurationSaturationHigh.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 8, "y": 28, "w": 8, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 240 },
+              { "color": "red", "value": 270 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(crucible_job_execution_duration_seconds_bucket[10m])))", "legendFormat": "{{operation}} p95" }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Async job failure ratio (5m)",
+      "description": "Fraction of async job completions with outcome=failed over the last 5 minutes. Exceeding 10% triggers AsyncJobFailureRateElevated. Zero (or no data) when AsyncRoutes is empty.",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "x": 16, "y": 28, "w": 8, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.25 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum by (operation) (rate(crucible_jobs_completed_total{outcome=\"failed\"}[5m])) or sum by (operation) (rate(crucible_jobs_completed_total[5m])) * 0) / sum by (operation) (rate(crucible_jobs_completed_total[5m]))",
+          "legendFormat": "{{operation}}"
+        }
       ]
     }
   ]
