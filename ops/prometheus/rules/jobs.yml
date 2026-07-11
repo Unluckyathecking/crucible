@@ -78,25 +78,33 @@ groups:
 
       # Alert when async jobs are enqueued significantly faster than they complete for
       # a sustained period, indicating a growing queued backlog.
-      # The "or vector(0)" fallback ensures the alert fires even when no job has ever completed
-      # (crucible_jobs_completed_total has no series yet), rather than silently producing no result.
+      # Aggregates by (operation) so a busy healthy route cannot mask a saturated one:
+      # e.g. ocr enqueuing 3/s with 0 completions is not hidden by echo completing 3/s.
+      # Zero-fills the completion term per operation using the enqueue series (× 0) so
+      # operations that have never produced a crucible_jobs_completed_total series are
+      # evaluated at 0 completion rate rather than silently dropping from the result.
+      # Idle deployments where neither metric has any series emit no alert naturally.
       # The 2 job/s excess absorbs normal burst enqueue; sustained excess means the executor pool
       # is falling behind and new jobs will wait increasingly long before being claimed.
       - alert: AsyncJobQueueBacklogGrowing
         expr: >
-          sum(rate(crucible_jobs_enqueued_total[5m])) -
-          (sum(rate(crucible_jobs_completed_total[5m])) or vector(0)) > 2
+          sum by (operation) (rate(crucible_jobs_enqueued_total[5m]))
+          - (
+            sum by (operation) (rate(crucible_jobs_completed_total[5m]))
+            or
+            sum by (operation) (rate(crucible_jobs_enqueued_total[5m])) * 0
+          ) > 2
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Async job queue backlog growing: enqueue rate exceeds completion rate by {{ $value | humanize }} job/s"
+          summary: "Async job queue backlog growing for {{ $labels.operation }}: enqueue rate exceeds completion rate by {{ $value | humanize }} job/s"
           description: >
-            The async job enqueue rate has exceeded the completion rate by more than 2 job/s
-            for 5 minutes. The queued backlog is growing: new jobs arrive faster than the
-            executor can finish them. Check JOB_WORKER_POOL_SIZE and worker processing time.
-            A growing backlog increases per-job wait time and can contribute to
-            AsyncJobDurationSaturationHigh firing as jobs spend longer queued before execution.
-            Note: crucible_jobs_enqueued_total increments on every enqueue call including
-            idempotent re-enqueues (same Idempotency-Key); client retry storms against a
+            The async job enqueue rate for operation="{{ $labels.operation }}" has exceeded the
+            completion rate by more than 2 job/s for 5 minutes. The queued backlog is growing:
+            new jobs arrive faster than the executor can finish them. Check JOB_WORKER_POOL_SIZE
+            and worker processing time. A growing backlog increases per-job wait time and can
+            contribute to AsyncJobDurationSaturationHigh firing as jobs spend longer queued before
+            execution. Note: crucible_jobs_enqueued_total increments on every enqueue call
+            including idempotent re-enqueues (same Idempotency-Key); client retry storms against a
             pending job may transiently elevate the enqueue rate without a real queue growth.

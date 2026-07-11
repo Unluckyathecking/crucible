@@ -179,7 +179,7 @@
         }
       },
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum(rate(crucible_job_execution_duration_seconds_bucket[10m])) by (le))", "legendFormat": "p95" }
+        { "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(crucible_job_execution_duration_seconds_bucket[10m])))", "legendFormat": "{{operation}} p95" }
       ]
     },
     {
@@ -204,8 +204,8 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(crucible_jobs_completed_total{outcome=\"failed\"}[5m])) / sum(rate(crucible_jobs_completed_total[5m]))",
-          "legendFormat": "failure ratio"
+          "expr": "(sum by (operation) (rate(crucible_jobs_completed_total{outcome=\"failed\"}[5m])) or sum by (operation) (rate(crucible_jobs_completed_total[5m])) * 0) / sum by (operation) (rate(crucible_jobs_completed_total[5m]))",
+          "legendFormat": "{{operation}}"
         }
       ]
     }
