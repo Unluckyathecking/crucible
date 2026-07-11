@@ -23,6 +23,9 @@
 //	crucible_respcache_hits_total{operation}             — requests served from respcache (worker skipped)
 //	crucible_respcache_misses_total{operation}           — respcache lookups that missed (worker invoked)
 //	crucible_respcache_failopen_total{operation}         — requests admitted because Redis store errored
+//	crucible_jobs_enqueued_total{operation}              — async jobs enqueued (gateway/internal/jobs)
+//	crucible_jobs_completed_total{operation,outcome}     — async jobs finished; outcome=succeeded|failed
+//	crucible_job_execution_duration_seconds{operation}   — wall time from claim to terminal state (jobs.Executor)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -178,6 +181,28 @@ var (
 		Name: "crucible_respcache_failopen_total",
 		Help: "Number of requests admitted because the respcache store (Redis) returned an error, by operation.",
 	}, []string{"operation"})
+
+	// JobsEnqueuedTotal counts async jobs enqueued via a route opted into
+	// AsyncRoutes. operation is bounded (fixed V1Routes set).
+	JobsEnqueuedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_jobs_enqueued_total",
+		Help: "Number of async jobs enqueued, by operation.",
+	}, []string{"operation"})
+
+	// JobsCompletedTotal counts async jobs that reached a terminal state.
+	// outcome is a bounded enum: succeeded or failed.
+	JobsCompletedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_jobs_completed_total",
+		Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
+	}, []string{"operation", "outcome"})
+
+	// JobExecutionDuration observes wall time from claim to terminal state
+	// (or shutdown-requeue) for a single async job.
+	JobExecutionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "crucible_job_execution_duration_seconds",
+		Help:    "Wall time from claim to terminal state for an async job, by operation.",
+		Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600},
+	}, []string{"operation"})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -205,6 +230,9 @@ type Metrics struct {
 	RespCacheHitsTotal             *prometheus.CounterVec
 	RespCacheMissesTotal           *prometheus.CounterVec
 	RespCacheFailOpenTotal         *prometheus.CounterVec
+	JobsEnqueuedTotal              *prometheus.CounterVec
+	JobsCompletedTotal             *prometheus.CounterVec
+	JobExecutionDuration           *prometheus.HistogramVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -298,6 +326,19 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_respcache_failopen_total",
 			Help: "Number of requests admitted because the respcache store (Redis) returned an error, by operation.",
 		}, []string{"operation"}),
+		JobsEnqueuedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_jobs_enqueued_total",
+			Help: "Number of async jobs enqueued, by operation.",
+		}, []string{"operation"}),
+		JobsCompletedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_jobs_completed_total",
+			Help: "Number of async jobs finished, by operation and outcome (succeeded|failed).",
+		}, []string{"operation", "outcome"}),
+		JobExecutionDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "crucible_job_execution_duration_seconds",
+			Help:    "Wall time from claim to terminal state for an async job, by operation.",
+			Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600},
+		}, []string{"operation"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -321,6 +362,9 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.RespCacheHitsTotal,
 		m.RespCacheMissesTotal,
 		m.RespCacheFailOpenTotal,
+		m.JobsEnqueuedTotal,
+		m.JobsCompletedTotal,
+		m.JobExecutionDuration,
 	)
 	return m
 }

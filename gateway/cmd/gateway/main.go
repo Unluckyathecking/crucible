@@ -23,6 +23,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
@@ -102,7 +103,36 @@ func main() {
 	}
 
 	authStore := auth.NewStore(pool, redisClient, cfg.APIKeyHashSalt)
-	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns, components.Policy).
+	// Split GATEWAY_WORKER_MAX_CONNS between the synchronous and async
+	// worker clients so their combined connection ceiling to the worker
+	// never exceeds what the operator configured — each gets its own
+	// http.Transport (proxy.New's timeout argument means the two clients
+	// can't safely share one, see jobProxyClient below), and naively
+	// giving both the full WorkerMaxConns would let a single gateway
+	// process open up to 2x the configured cap. The async share is sized
+	// to JobWorkerPoolSize, the executor's own concurrency cap — it can
+	// never actually use more connections than that at once regardless of
+	// a larger allowance — leaving the remainder for synchronous traffic.
+	// Config.Load already guarantees WorkerMaxConns >= 1.
+	asyncMaxConns := cfg.JobWorkerPoolSize
+	if asyncMaxConns < 1 {
+		asyncMaxConns = 1
+	}
+	if asyncMaxConns > cfg.WorkerMaxConns-1 {
+		asyncMaxConns = cfg.WorkerMaxConns - 1
+	}
+	if asyncMaxConns < 1 {
+		// WorkerMaxConns is pathologically small (<= 1): fall back to 1
+		// rather than passing 0 to proxy.New, which treats <= 0 as "use its
+		// own 64-connection default" — silently blowing the budget far
+		// worse than the narrow overrun accepted here.
+		asyncMaxConns = 1
+	}
+	syncMaxConns := cfg.WorkerMaxConns - asyncMaxConns
+	if syncMaxConns < 1 {
+		syncMaxConns = 1
+	}
+	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, syncMaxConns, components.Policy).
 		WithSecret(cfg.WorkerSharedSecret)
 	bucket := ratelimit.New(redisClient)
 	plans := billing.NewPlanCache(pool)
@@ -112,9 +142,45 @@ func main() {
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
 	respCacheStore := respcache.NewStore(redisClient)
+	jobStore := jobs.NewStore(pool)
+	// jobProxyClient is deliberately separate from workerClient: proxy.New's
+	// timeout argument becomes http.Client.Timeout, a hard ceiling that
+	// governs independently of (and can fire before) any shorter context
+	// deadline — it is NOT extended by a longer context.WithTimeout. Reusing
+	// workerClient (built above with WORKER_TIMEOUT_MS, the fast synchronous
+	// path's budget) would silently cap every async worker call at that
+	// ceiling regardless of JOB_TIMEOUT_MS or a longer per-route AsyncRoutes
+	// override, defeating the entire point of the async path for exactly the
+	// long-running products it exists to serve. Sized to the largest
+	// possible per-job deadline so the job's own context timeout — not this
+	// client's — is always what actually governs.
+	jobHTTPTimeout := cfg.JobTimeout()
+	for _, secs := range server.AsyncRoutes {
+		if d := time.Duration(secs) * time.Second; d > jobHTTPTimeout {
+			jobHTTPTimeout = d
+		}
+	}
+	jobProxyClient := proxy.New(cfg.WorkerURL, jobHTTPTimeout, asyncMaxConns, components.Policy).
+		WithSecret(cfg.WorkerSharedSecret)
+	jobExecutor := jobs.NewExecutor(jobStore, jobProxyClient, recorder, jobs.ExecutorConfig{
+		PoolSize:      cfg.JobWorkerPoolSize,
+		PollInterval:  cfg.JobPollInterval(),
+		JobTimeout:    cfg.JobTimeout(),
+		ErrorExposure: cfg.ErrorExposure,
+	})
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
+
+	// Async: execute durable jobs opted into routes_table.go's AsyncRoutes.
+	// jobsDone closes once jobExecutor.Run has released any jobs it still
+	// held claimed and returned — the shutdown sequence below waits on it
+	// so a process exit never races the release ("no lost work").
+	jobsDone := make(chan struct{})
+	go func() {
+		defer close(jobsDone)
+		jobExecutor.Run(rootCtx)
+	}()
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
@@ -174,6 +240,15 @@ func main() {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	// rootCtx is already cancelled (signal.NotifyContext, above), so
+	// jobExecutor.Run is already draining in-flight jobs and releasing any it
+	// still holds claimed back to 'queued'. Wait for it within the shutdown
+	// budget so process exit cannot race that release.
+	select {
+	case <-jobsDone:
+	case <-shutdownCtx.Done():
+		log.Warn().Msg("job executor did not stop within shutdown budget")
+	}
 	if err := components.Shutdown(shutdownCtx); err != nil {
 		log.Warn().Err(err).Msg("runtime shutdown failed")
 	}

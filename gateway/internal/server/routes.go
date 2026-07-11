@@ -28,6 +28,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
+	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -119,6 +120,11 @@ func NewRouter(d *Deps) http.Handler {
 	// process exit (SIGTERM/SIGKILL) stops the goroutine. The worker's per-delivery
 	// timeout (10 s) bounds how long an individual POST can hold a DB connection.
 	emitter := webhookout.NewEmitter(context.Background(), d.DB)
+	// jobStore is nil-safe (jobs.NewStore returns nil when d.DB is nil), matching
+	// the framework's optional-Deps pattern — every exported Store method
+	// nil-checks its receiver. Used both by the async-opted-in branch of the
+	// per-product loop below and by GET /v1/jobs/{id}.
+	jobStore := jobs.NewStore(d.DB)
 	// Wire the emitter into the framework components whose Emit call-sites live
 	// outside this package. Both are nil-safe if unset (e.g. in tests that build
 	// a partial Deps and never call NewRouter's webhook-serving paths).
@@ -132,6 +138,16 @@ func NewRouter(d *Deps) http.Handler {
 	// see the same stable slice for the lifetime of this router.
 	routes := make([]openapi.RouteDescriptor, len(V1Routes))
 	copy(routes, V1Routes)
+	// Mark the snapshot's async-opted routes (routes_table.go's AsyncRoutes)
+	// BEFORE openapi.Handler(routes) below builds the served document, so
+	// /openapi.json documents the actual 202 {job_id} contract for those
+	// paths instead of the stale synchronous 200 envelope. Mutates only this
+	// local snapshot, never the shared V1Routes package var.
+	for i := range routes {
+		if _, async := AsyncRoutes[routes[i].Path]; async {
+			routes[i].Async = true
+		}
+	}
 
 	r := chi.NewRouter()
 
@@ -244,6 +260,18 @@ func NewRouter(d *Deps) http.Handler {
 		// per-product block below is mounted under, without capturing
 		// POST/other methods at this path.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/errors", selferrors.Handler(d.DB))
+
+		// === Async job status polling (auth gated; active when DB is set; read-only) ===
+		// GET /v1/jobs/{id}: the result of a job enqueued by a POST /v1/<op>
+		// route opted into AsyncRoutes (routes_table.go). Framework infra, not
+		// a per-product invoke route — kept out of the r.Route("/v1", ...)
+		// per-product block below (same reason as GET /v1/errors above: that
+		// block's POST-only invariant is asserted by TestV1RoutesDriftGuard),
+		// registered here as a direct, method-specific r.With(...).Get so it
+		// coexists with any per-product POST at another /v1/... path. Scoped
+		// strictly to the caller's own jobs — see jobs.Store.Get's SQL-level
+		// customer_id scoping.
+		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs/{id}", jobsGetHandler(jobStore))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===
@@ -351,6 +379,17 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(validate.Middleware(routes))
 		r.Use(quota.Middleware(d.Quota, d.Plans, emitter))
 		for _, rt := range routes {
+			// A route present in AsyncRoutes (routes_table.go) enqueues a durable
+			// job and returns 202 {job_id} instead of invoking the worker inline;
+			// one table drives both branches. Registered inside this same loop
+			// (not a separate subrouter) so it inherits the identical
+			// auth/error-capture/ratelimit/idempotency/validate/quota middleware
+			// chain as every synchronous /v1 route — including the quota.Reserve
+			// admission check on every request.
+			if timeoutSeconds, async := AsyncRoutes[rt.Path]; async {
+				r.Post(rt.Path, enqueueAsync(jobStore, rt.Operation, timeoutSeconds))
+				continue
+			}
 			ttl := d.Cfg.ClampRespCacheTTL(RespCacheTTLSeconds[rt.Path])
 			cacheMW := respcache.Middleware(d.RespCache, d.Recorder, rt.Operation, ttl, nil)
 			r.With(cacheMW).Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
@@ -441,15 +480,14 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 			// contract must not change regardless of what the worker sends.
 			// Full mode passes the worker's error verbatim; guard empty Code so
 			// customers never receive "code":"" (an empty code is not correlatable).
-			errCode, errMsg, errRetryable := apierror.WORKER_UNREACHABLE, "worker unavailable", true
+			// jobs.SanitizeWorkerError is the single definition of this policy — the
+			// async Executor applies it identically before persisting a failed job's
+			// error_code/error_message, so GET /v1/jobs/{id} can't leak what this
+			// path hides.
+			errCode, errMsg := jobs.SanitizeWorkerError(errorExposure, resp.Error.Code, resp.Error.Message)
+			errRetryable := true
 			if errorExposure == "full" {
-				errCode = resp.Error.Code
-				if errCode == "" {
-					// UNKNOWN is reserved for Prometheus metric labels; WORKER_BAD_RESPONSE
-					// is the correct customer-facing fallback for a worker that omits the code.
-					errCode = apierror.WORKER_BAD_RESPONSE
-				}
-				errMsg, errRetryable = resp.Error.Message, resp.Error.Retryable
+				errRetryable = resp.Error.Retryable
 			}
 			apierror.Write(w, rid, http.StatusBadGateway, errCode, errMsg, errRetryable)
 			return
@@ -484,6 +522,140 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		if resp.UnitsLabel != "" {
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
 		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// asyncJobResponse is the JSON shape GET /v1/jobs/{id} returns.
+type asyncJobResponse struct {
+	JobID         string          `json:"job_id"`
+	Status        string          `json:"status"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Error         *asyncJobError  `json:"error,omitempty"`
+	BillableUnits uint64          `json:"billable_units,omitempty"`
+	UnitsLabel    string          `json:"units_label,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type asyncJobError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// enqueueAsync handles POST /v1/<op> for a route opted into AsyncRoutes: it
+// decodes the request body exactly like invoke does, then persists a queued
+// job row instead of calling the worker inline, and returns 202 {job_id}.
+// The worker invocation, billable_units contract check, and usage.Recorder
+// call happen later, out of band, in jobs.Executor.process — the caller
+// polls GET /v1/jobs/{id} for the eventual result.
+func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		var payload json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
+			return
+		}
+
+		// Passing the Idempotency-Key header through to Store.Enqueue (not
+		// consuming/stripping it — idempotency.Middleware still owns the
+		// response-replay behavior above this handler) closes a narrower
+		// race: if that middleware's own finalize step fails after this
+		// insert already committed, it releases the key so a client retry
+		// reaches this handler again; Enqueue returns the existing job's id
+		// instead of inserting a duplicate for the retry.
+		idempotencyKey := r.Header.Get("Idempotency-Key")
+		id, err := store.Enqueue(r.Context(), key.Customer.ID, key.ID, operation, rid, key.Customer.Plan, payload, timeoutSeconds, idempotencyKey)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Str("operation", operation).Msg("jobs: enqueue failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "enqueue failed", false)
+			return
+		}
+		observability.JobsEnqueuedTotal.WithLabelValues(operation).Inc()
+		// quota.Middleware already reserved +1 up front and will refund it the
+		// instant this handler returns unless the signal is flipped — a plain
+		// enqueue-and-return-202 would let a capped-plan customer enqueue an
+		// unbounded number of jobs (each reserve is refunded before the next
+		// request's Reserve ever sees it), bypassing the admission check this
+		// route is supposed to inherit. Marking recorded makes the +1 reserve
+		// stick per enqueued job — mirroring the sync path's own "1 (reserve) +
+		// units (recorder)" per-call overhead (see quota.Tracker.Reserve's doc
+		// comment) — and the real billable_units still land on top of it when
+		// the job completes (usage.Recorder.Record, called from the executor).
+		// A job that later fails still consumes this 1 unit; that's a
+		// deliberate fail-closed tradeoff over silently exempting async
+		// enqueues from the cap entirely.
+		quota.MarkRecorded(r.Context())
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": id.String()})
+	}
+}
+
+// jobsGetHandler handles GET /v1/jobs/{id}: the caller's own job status and
+// result, scoped at the SQL level by jobs.Store.Get (IDOR-safe — a job id
+// owned by another customer returns 404, indistinguishable from a
+// nonexistent id).
+func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid job id", false)
+			return
+		}
+
+		job, ok, err := store.Get(r.Context(), id, key.Customer.ID)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("jobs: get failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
+			return
+		}
+		if !ok {
+			apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
+			return
+		}
+
+		resp := asyncJobResponse{
+			JobID:      job.ID.String(),
+			Status:     job.Status,
+			Result:     job.Result,
+			UnitsLabel: job.UnitsLabel,
+			CreatedAt:  job.CreatedAt,
+			UpdatedAt:  job.UpdatedAt,
+		}
+		if job.Status == jobs.StatusSucceeded {
+			resp.BillableUnits = job.BillableUnits
+		}
+		if job.Status == jobs.StatusFailed {
+			resp.Error = &asyncJobError{Code: job.ErrorCode, Message: job.ErrorMessage}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
@@ -705,4 +877,3 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
-

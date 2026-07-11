@@ -40,16 +40,26 @@ type RouteDescriptor struct {
 	// generic {"type":"object"} — backward-compatible with routes declared
 	// before this field existed.
 	ResponseSchema *Schema
+	// Async documents that this route has been opted into
+	// routes_table.go's AsyncRoutes: the runtime contract for POST
+	// /v1/<path> is 202 {job_id} (poll GET /v1/jobs/{id} for the result),
+	// not the synchronous invoke envelope. server.NewRouter sets this on
+	// its route snapshot (never on the shared V1Routes slice) before
+	// building the served document, so SDKs/clients generated from
+	// /openapi.json describe the actual response shape instead of a stale
+	// synchronous one. False (the default) is the existing synchronous
+	// documentation — zero-config-safe for routes that never opt in.
+	Async bool
 }
 
 // --- structural types --------------------------------------------------------
 
 // Document is the root OpenAPI 3.1 object.
 type Document struct {
-	OpenAPI    string              `json:"openapi"`
-	Info       Info                `json:"info"`
-	Servers    []Server            `json:"servers,omitempty"`
-	Paths      map[string]PathItem `json:"paths"`
+	OpenAPI string              `json:"openapi"`
+	Info    Info                `json:"info"`
+	Servers []Server            `json:"servers,omitempty"`
+	Paths   map[string]PathItem `json:"paths"`
 	// Webhooks documents the outbound-webhook event catalogue (OpenAPI 3.1's
 	// top-level `webhooks` field): one entry per gateway/internal/events event
 	// type, describing the payload the gateway POSTs to a registered endpoint.
@@ -81,9 +91,9 @@ type Components struct {
 // Use Type="http", Scheme="bearer" for RFC 6750 Bearer token auth.
 type SecurityScheme struct {
 	Type        string `json:"type"`
-	Scheme      string `json:"scheme,omitempty"`  // for http type
-	In          string `json:"in,omitempty"`       // for apiKey type
-	Name        string `json:"name,omitempty"`     // for apiKey type
+	Scheme      string `json:"scheme,omitempty"` // for http type
+	In          string `json:"in,omitempty"`     // for apiKey type
+	Name        string `json:"name,omitempty"`   // for apiKey type
 	Description string `json:"description,omitempty"`
 }
 
@@ -265,16 +275,62 @@ func invokeResponseEnvelope(responseSchema *Schema) *Schema {
 // as the request body's "example" value. responseSchema is the route's ResponseSchema;
 // when nil the 200 body stays the generic {"type":"object"} preserving
 // backwards-compatibility, otherwise it's wrapped into the invoke success envelope by
-// invokeResponseEnvelope.
-func invokeOperation(operationID, summary string, schema *Schema, sampleRequest json.RawMessage, responseSchema *Schema) *Operation {
+// invokeResponseEnvelope. async is the route's RouteDescriptor.Async: when true the
+// documented success response is 202 {job_id} (durable async execution, see
+// gateway/internal/jobs) instead of the synchronous 200 invoke envelope, and 502
+// (which can only happen on the inline synchronous worker call) is omitted — an
+// async POST never calls the worker itself, so it can't fail that way.
+func invokeOperation(operationID, summary string, schema *Schema, sampleRequest json.RawMessage, responseSchema *Schema, async bool) *Operation {
 	reqBodySchema := &Schema{Type: "object"}
 	if schema != nil {
 		reqBodySchema = schema
 	}
-	respBodySchema := &Schema{Type: "object"}
-	if responseSchema != nil {
-		respBodySchema = invokeResponseEnvelope(responseSchema)
+
+	responses := map[string]Response{
+		"400": errResp("Bad request — invalid JSON body"),
+		"401": errResp("Unauthorized — missing or invalid API key"),
+		"409": errResp("Idempotency conflict — concurrent request with same key"),
+		"422": errResp("Idempotency key reused with a different request body"),
+		"429": {
+			Description: "Rate limited or quota exceeded. " +
+				"RateLimit-*/X-RateLimit-* headers are always present. " +
+				"X-Quota-* headers are present only on quota-triggered 429s.",
+			Headers: rateLimitAndQuotaHeaders(),
+			Content: map[string]MediaType{
+				contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
+			},
+		},
+		"500": errResp("Internal server error"),
 	}
+	if async {
+		responses["202"] = Response{
+			Description: "Job accepted for durable async execution. Poll GET /v1/jobs/{job_id} for status and result; quota/rate-limit admission for this request already ran here — the job's real billable_units are metered separately when it completes.",
+			Headers:     rateLimitAndQuotaHeaders(),
+			Content: map[string]MediaType{
+				contentTypeJSON: {Schema: &Schema{
+					Type: "object",
+					Properties: map[string]*Schema{
+						"job_id": {Type: "string", Description: "Pass to GET /v1/jobs/{job_id} to poll for status and result"},
+					},
+					Required: []string{"job_id"},
+				}},
+			},
+		}
+	} else {
+		respBodySchema := &Schema{Type: "object"}
+		if responseSchema != nil {
+			respBodySchema = invokeResponseEnvelope(responseSchema)
+		}
+		responses["200"] = Response{
+			Description: "Successful invocation",
+			Headers:     rateLimitAndQuotaHeaders(),
+			Content: map[string]MediaType{
+				contentTypeJSON: {Schema: respBodySchema},
+			},
+		}
+		responses["502"] = errResp("Worker unavailable")
+	}
+
 	return &Operation{
 		OperationID: operationID,
 		Summary:     summary,
@@ -294,30 +350,7 @@ func invokeOperation(operationID, summary string, schema *Schema, sampleRequest 
 				contentTypeJSON: {Schema: reqBodySchema, Example: sampleRequest},
 			},
 		},
-		Responses: map[string]Response{
-			"200": {
-				Description: "Successful invocation",
-				Headers:     rateLimitAndQuotaHeaders(),
-				Content: map[string]MediaType{
-					contentTypeJSON: {Schema: respBodySchema},
-				},
-			},
-			"400": errResp("Bad request — invalid JSON body"),
-			"401": errResp("Unauthorized — missing or invalid API key"),
-			"409": errResp("Idempotency conflict — concurrent request with same key"),
-			"422": errResp("Idempotency key reused with a different request body"),
-			"429": {
-				Description: "Rate limited or quota exceeded. " +
-					"RateLimit-*/X-RateLimit-* headers are always present. " +
-					"X-Quota-* headers are present only on quota-triggered 429s.",
-				Headers: rateLimitAndQuotaHeaders(),
-				Content: map[string]MediaType{
-					contentTypeJSON: {Schema: &Schema{Ref: errorSchemaRef}},
-				},
-			},
-			"500": errResp("Internal server error"),
-			"502": errResp("Worker unavailable"),
-		},
+		Responses: responses,
 	}
 }
 
@@ -585,7 +618,7 @@ func Build(invokeRoutes []RouteDescriptor) Document {
 			panic("openapi: paths " + firstPath + " and " + key + " produce duplicate operationId " + opID + " — rename one path")
 		}
 		seenOpIDs[opID] = key
-		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema, rt.SampleRequest, rt.ResponseSchema)}
+		paths[key] = PathItem{Post: invokeOperation(opID, rt.Summary, rt.RequestSchema, rt.SampleRequest, rt.ResponseSchema, rt.Async)}
 	}
 
 	return Document{
@@ -706,6 +739,28 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// Layer the customer error-history self-service route on for the same
 	// reason as usagePathItem/keysPathItems above.
 	for path, item := range errorsPathItems() {
+		existing := doc.Paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		doc.Paths[path] = existing
+	}
+
+	// Layer the async job status-polling route on for the same reason as
+	// usagePathItem/keysPathItems/errorsPathItems above: framework infra
+	// (gateway/internal/jobs), not a per-product invoke route — kept out of
+	// Build()'s invoke-route-only paths (see server.TestV1RoutesDriftGuard)
+	// but still documented in the actual served /openapi.json.
+	for path, item := range jobsPathItems() {
 		existing := doc.Paths[path]
 		if item.Get != nil {
 			existing.Get = item.Get
@@ -1089,6 +1144,53 @@ func errorsPathItems() map[string]PathItem {
 					},
 					"400": errResp("Bad request — invalid date/operation/code filter or page"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+	}
+}
+
+// jobsPathItems documents GET /v1/jobs/{id}: the status and eventual result
+// of a durable async job enqueued by a POST /v1/<op> route opted into
+// routes_table.go's AsyncRoutes (see gateway/internal/jobs). Framework
+// infra, not a per-product invoke route — kept out of Build()'s invoke-route
+// paths for the same reason as usagePathItem/keysPathItems/errorsPathItems;
+// see Handler.
+func jobsPathItems() map[string]PathItem {
+	responseSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"job_id":         {Type: "string", Description: "Job UUID, returned by the enqueuing POST /v1/<op> call"},
+			"status":         {Type: "string", Description: "queued | running | succeeded | failed"},
+			"result":         {Type: "object", Description: "The worker's payload; present only when status is succeeded"},
+			"error":          {Type: "object", Description: "Structured error {code, message}; present only when status is failed"},
+			"billable_units": {Type: "integer", Description: "Present only when status is succeeded; always >= 1 (invariant #2)"},
+			"units_label":    {Type: "string"},
+			"created_at":     {Type: "string", Description: "RFC3339 enqueue timestamp"},
+			"updated_at":     {Type: "string", Description: "RFC3339 timestamp of the last status change"},
+		},
+		Required: []string{"job_id", "status", "created_at", "updated_at"},
+	}
+
+	return map[string]PathItem{
+		"/v1/jobs/{id}": {
+			Get: &Operation{
+				OperationID: "get_job",
+				Summary:     "Get the status and result of an async job owned by the authenticated customer",
+				Tags:        []string{"jobs"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Job UUID", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Current job status; result/error/billable_units populate once the job reaches a terminal state",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: responseSchema}},
+					},
+					"400": errResp("Bad request — malformed job id"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Job not found (includes ids owned by another customer)"),
 					"500": errResp("Internal server error"),
 				},
 			},

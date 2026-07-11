@@ -26,6 +26,16 @@ export interface ListErrorsResponse {
   limit: number;
   page: number;
 }
+export interface GetJobResponse {
+  billable_units: number;
+  created_at: string;
+  error: unknown;
+  job_id: string;
+  result: unknown;
+  status: string;
+  units_label: string;
+  updated_at: string;
+}
 export interface ListKeysResponseItemsItem {
   created_at: string;
   expires_at: string | null;
@@ -139,6 +149,14 @@ export class Client {
     if (limit !== undefined) q.set("limit", String(limit));
     if ([...q].length > 0) path += "?" + q.toString();
     return this.request<ListErrorsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/jobs/{id} — get job.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async getJob(id: string, apiKey?: string): Promise<GetJobResponse> {
+    return this.request<GetJobResponse>("GET", `/v1/jobs/${encodeURIComponent(id)}`, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**
