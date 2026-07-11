@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,23 +59,50 @@ func NewStore(db *pgxpool.Pool) *Store {
 // Enqueue inserts a queued job row and returns its generated id.
 // timeoutSeconds is the per-route override from routes_table.go's
 // AsyncRoutes; <= 0 means "use the executor's configured default".
-func (s *Store) Enqueue(ctx context.Context, customerID, apiKeyID uuid.UUID, operation, requestID, plan string, payload json.RawMessage, timeoutSeconds int) (uuid.UUID, error) {
+// idempotencyKey is the caller's Idempotency-Key header value, or "" if
+// absent. When non-empty and a job already exists for
+// (customerID, idempotencyKey) — because idempotency.Middleware's finalize
+// step failed after a prior call to Enqueue already committed, and a client
+// retry reached this handler again — Enqueue returns that existing job's id
+// instead of inserting a duplicate, so the retry can't cause the worker to
+// run (and bill) a second time for what the client intended as one request.
+func (s *Store) Enqueue(ctx context.Context, customerID, apiKeyID uuid.UUID, operation, requestID, plan string, payload json.RawMessage, timeoutSeconds int, idempotencyKey string) (uuid.UUID, error) {
 	if s == nil {
 		return uuid.Nil, fmt.Errorf("jobs: store is nil")
 	}
 	if timeoutSeconds < 0 {
 		timeoutSeconds = 0
 	}
+	// NULL, not '', when absent: the unique index is partial on
+	// "idempotency_key IS NOT NULL", so every key-less request must store
+	// NULL or they'd all collide with each other as if they shared one
+	// empty key.
+	var idemKeyParam *string
+	if idempotencyKey != "" {
+		idemKeyParam = &idempotencyKey
+	}
+
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO async_jobs (customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued')
+		INSERT INTO async_jobs (customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds, idempotency_key, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+		ON CONFLICT (customer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING id
-	`, customerID, apiKeyID, operation, requestID, plan, []byte(payload), timeoutSeconds).Scan(&id)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("jobs: enqueue: %w", err)
+	`, customerID, apiKeyID, operation, requestID, plan, []byte(payload), timeoutSeconds, idemKeyParam).Scan(&id)
+	if err == nil {
+		return id, nil
 	}
-	return id, nil
+	if idemKeyParam != nil && errors.Is(err, pgx.ErrNoRows) {
+		// ON CONFLICT DO NOTHING found an existing row and inserted
+		// nothing, so RETURNING produced no row — look the existing job up.
+		if lookupErr := s.db.QueryRow(ctx, `
+			SELECT id FROM async_jobs WHERE customer_id = $1 AND idempotency_key = $2
+		`, customerID, idempotencyKey).Scan(&id); lookupErr != nil {
+			return uuid.Nil, fmt.Errorf("jobs: enqueue: lookup existing idempotent job: %w", lookupErr)
+		}
+		return id, nil
+	}
+	return uuid.Nil, fmt.Errorf("jobs: enqueue: %w", err)
 }
 
 // Get returns the job scoped to customerID. Scoping is enforced in the SQL

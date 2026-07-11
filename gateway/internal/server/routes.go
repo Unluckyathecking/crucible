@@ -568,7 +568,15 @@ func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.
 			return
 		}
 
-		id, err := store.Enqueue(r.Context(), key.Customer.ID, key.ID, operation, rid, key.Customer.Plan, payload, timeoutSeconds)
+		// Passing the Idempotency-Key header through to Store.Enqueue (not
+		// consuming/stripping it — idempotency.Middleware still owns the
+		// response-replay behavior above this handler) closes a narrower
+		// race: if that middleware's own finalize step fails after this
+		// insert already committed, it releases the key so a client retry
+		// reaches this handler again; Enqueue returns the existing job's id
+		// instead of inserting a duplicate for the retry.
+		idempotencyKey := r.Header.Get("Idempotency-Key")
+		id, err := store.Enqueue(r.Context(), key.Customer.ID, key.ID, operation, rid, key.Customer.Plan, payload, timeoutSeconds, idempotencyKey)
 		if err != nil {
 			log.Error().Err(err).Str("request_id", rid).Str("operation", operation).Msg("jobs: enqueue failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "enqueue failed", false)

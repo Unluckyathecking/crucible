@@ -59,7 +59,7 @@ func TestExecutor_Success_RecordsUsageAndCompletes(t *testing.T) {
 	recorder := usage.NewRecorder(pool, nil)
 	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
 
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-1", "free", json.RawMessage(`{"in":1}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-1", "free", json.RawMessage(`{"in":1}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestExecutor_WorkerError_MarksFailed_NoUsageRecorded(t *testing.T) {
 	// operationally default) case.
 	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second, ErrorExposure: "full"})
 
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-2", "free", json.RawMessage(`{}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-2", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestExecutor_WorkerError_SanitizedByDefault(t *testing.T) {
 	// sanitized default, not an explicitly-configured "sanitized" string.
 	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
 
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-sanitized", "free", json.RawMessage(`{}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-sanitized", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestExecutor_BillableUnitsBelowOne_RejectsAsTrustBoundaryViolation(t *testi
 	recorder := usage.NewRecorder(pool, nil)
 	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
 
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-3", "free", json.RawMessage(`{}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-3", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestExecutor_GracefulShutdown_LeavesInFlightJobRunning(t *testing.T) {
 	p := proxy.New(worker.URL, 30*time.Second, 0)
 	e := NewExecutor(store, p, nil, ExecutorConfig{PoolSize: 1, PollInterval: 20 * time.Millisecond, JobTimeout: 30 * time.Second})
 
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-4", "free", json.RawMessage(`{}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-exec-4", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestStore_ReleaseClaimed_UsableAsOperatorPrimitive(t *testing.T) {
 	custA, keyA := seedCustomer(t, pool, "jobs-exec-release-"+uuid.New().String()+"@example.com")
 
 	instanceID := uuid.New()
-	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

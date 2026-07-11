@@ -75,7 +75,16 @@ func seedCustomer(t *testing.T, pool *pgxpool.Pool, email string) (uuid.UUID, uu
 		t.Fatalf("seedCustomer: insert api_key: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM customers WHERE id = $1`, custID)
+		// async_jobs.customer_id/api_key_id reference customers/api_keys
+		// without ON DELETE CASCADE, so deleting the customer first would
+		// silently fail (error discarded below) and leave queued/running
+		// rows behind. Store.Claim claims globally, not scoped to a test's
+		// customer, so a stale queued row from an earlier test run's failed
+		// cleanup could be claimed by a later run and break its
+		// distinct-claim-count assertions. Delete async_jobs first.
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM async_jobs WHERE customer_id = $1`, custID)
+		_, _ = pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, custID)
 	})
 	return custID, keyID
 }
@@ -97,7 +106,7 @@ func TestStore_NilReceiver_SafeNoop(t *testing.T) {
 	if n, err := s.ReleaseClaimed(context.Background(), uuid.New()); n != 0 || err != nil {
 		t.Errorf("nil Store.ReleaseClaimed: got (%d, %v), want (0, nil)", n, err)
 	}
-	if _, err := s.Enqueue(context.Background(), uuid.New(), uuid.New(), "op", "rid", "free", json.RawMessage(`{}`), 0); err == nil {
+	if _, err := s.Enqueue(context.Background(), uuid.New(), uuid.New(), "op", "rid", "free", json.RawMessage(`{}`), 0, ""); err == nil {
 		t.Error("nil Store.Enqueue: want error")
 	}
 }
@@ -108,7 +117,7 @@ func TestStore_EnqueueGet_CustomerScoped(t *testing.T) {
 	custA, keyA := seedCustomer(t, pool, "jobs-store-a-"+uuid.New().String()+"@example.com")
 	custB, _ := seedCustomer(t, pool, "jobs-store-b-"+uuid.New().String()+"@example.com")
 
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-1", "free", json.RawMessage(`{"in":1}`), 0)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-1", "free", json.RawMessage(`{"in":1}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -137,12 +146,76 @@ func TestStore_EnqueueGet_CustomerScoped(t *testing.T) {
 	}
 }
 
+// TestStore_Enqueue_IdempotencyKey_ReturnsExistingJob proves the scenario
+// idempotency.Middleware's finalize failure can trigger: a client retry
+// with the same Idempotency-Key reaching enqueueAsync a second time must
+// get back the FIRST job's id, not create a second job (which would let
+// the worker run — and bill — twice for what the client intended as one
+// request).
+func TestStore_Enqueue_IdempotencyKey_ReturnsExistingJob(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-idem-"+uuid.New().String()+"@example.com")
+
+	id1, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-1", "free", json.RawMessage(`{"in":1}`), 0, "idem-key-1")
+	if err != nil {
+		t.Fatalf("Enqueue (1st): %v", err)
+	}
+
+	// Simulate a client retry with the same Idempotency-Key: request_id and
+	// payload may differ slightly (a real retry re-sends the same logical
+	// request, but Enqueue must dedupe on (customer, key) regardless).
+	id2, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-2", "free", json.RawMessage(`{"in":1}`), 0, "idem-key-1")
+	if err != nil {
+		t.Fatalf("Enqueue (retry): %v", err)
+	}
+	if id2 != id1 {
+		t.Fatalf("Enqueue retry with same idempotency key returned a different job: %s != %s", id2, id1)
+	}
+
+	var count int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM async_jobs WHERE customer_id = $1 AND operation = 'echo'`, custA,
+	).Scan(&count); err != nil {
+		t.Fatalf("count async_jobs: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("async_jobs rows for customer = %d, want 1 (retry must not create a second job)", count)
+	}
+
+	// A different customer using the SAME key string must NOT collide —
+	// the unique index is scoped to (customer_id, idempotency_key).
+	custB, keyB := seedCustomer(t, pool, "jobs-idem-b-"+uuid.New().String()+"@example.com")
+	id3, err := s.Enqueue(context.Background(), custB, keyB, "echo", "req-3", "free", json.RawMessage(`{}`), 0, "idem-key-1")
+	if err != nil {
+		t.Fatalf("Enqueue (other customer, same key): %v", err)
+	}
+	if id3 == id1 {
+		t.Fatal("Enqueue with the same idempotency key but a different customer returned the same job")
+	}
+
+	// Multiple enqueues with NO idempotency key must never collide with
+	// each other (they'd all store NULL, which the partial unique index
+	// deliberately excludes).
+	idNoKeyA, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-4", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (no key, 1st): %v", err)
+	}
+	idNoKeyB, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-5", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (no key, 2nd): %v", err)
+	}
+	if idNoKeyA == idNoKeyB {
+		t.Fatal("two key-less enqueues collided with each other")
+	}
+}
+
 func TestStore_Claim_MarksRunningAndScansFields(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-claim-"+uuid.New().String()+"@example.com")
 
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-1", "free", json.RawMessage(`{"in":1}`), 30)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-1", "free", json.RawMessage(`{"in":1}`), 30, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -205,7 +278,7 @@ func TestStore_Claim_SkipLocked_NoDoubleClaim(t *testing.T) {
 	ids := make(map[uuid.UUID]bool, numJobs)
 	var idsMu sync.Mutex
 	for i := 0; i < numJobs; i++ {
-		id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+		id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 		if err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
@@ -263,7 +336,7 @@ func TestStore_Claim_StuckJobRecovery(t *testing.T) {
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-stuck-"+uuid.New().String()+"@example.com")
 
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -297,7 +370,7 @@ func TestStore_Complete(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-complete-"+uuid.New().String()+"@example.com")
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -335,7 +408,7 @@ func TestStore_Fail(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-fail-"+uuid.New().String()+"@example.com")
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -361,11 +434,11 @@ func TestStore_ReleaseClaimed_ScopedToInstance(t *testing.T) {
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-release-"+uuid.New().String()+"@example.com")
 
-	idA, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	idA, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	idB, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	idB, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -417,7 +490,7 @@ func TestStore_Requeue(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)
 	custA, keyA := seedCustomer(t, pool, "jobs-requeue-"+uuid.New().String()+"@example.com")
-	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

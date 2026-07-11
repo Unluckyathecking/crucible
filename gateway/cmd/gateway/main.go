@@ -103,7 +103,36 @@ func main() {
 	}
 
 	authStore := auth.NewStore(pool, redisClient, cfg.APIKeyHashSalt)
-	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, cfg.WorkerMaxConns, components.Policy).
+	// Split GATEWAY_WORKER_MAX_CONNS between the synchronous and async
+	// worker clients so their combined connection ceiling to the worker
+	// never exceeds what the operator configured — each gets its own
+	// http.Transport (proxy.New's timeout argument means the two clients
+	// can't safely share one, see jobProxyClient below), and naively
+	// giving both the full WorkerMaxConns would let a single gateway
+	// process open up to 2x the configured cap. The async share is sized
+	// to JobWorkerPoolSize, the executor's own concurrency cap — it can
+	// never actually use more connections than that at once regardless of
+	// a larger allowance — leaving the remainder for synchronous traffic.
+	// Config.Load already guarantees WorkerMaxConns >= 1.
+	asyncMaxConns := cfg.JobWorkerPoolSize
+	if asyncMaxConns < 1 {
+		asyncMaxConns = 1
+	}
+	if asyncMaxConns > cfg.WorkerMaxConns-1 {
+		asyncMaxConns = cfg.WorkerMaxConns - 1
+	}
+	if asyncMaxConns < 1 {
+		// WorkerMaxConns is pathologically small (<= 1): fall back to 1
+		// rather than passing 0 to proxy.New, which treats <= 0 as "use its
+		// own 64-connection default" — silently blowing the budget far
+		// worse than the narrow overrun accepted here.
+		asyncMaxConns = 1
+	}
+	syncMaxConns := cfg.WorkerMaxConns - asyncMaxConns
+	if syncMaxConns < 1 {
+		syncMaxConns = 1
+	}
+	workerClient := proxy.New(cfg.WorkerURL, time.Duration(cfg.WorkerTimeoutMS)*time.Millisecond, syncMaxConns, components.Policy).
 		WithSecret(cfg.WorkerSharedSecret)
 	bucket := ratelimit.New(redisClient)
 	plans := billing.NewPlanCache(pool)
@@ -131,7 +160,7 @@ func main() {
 			jobHTTPTimeout = d
 		}
 	}
-	jobProxyClient := proxy.New(cfg.WorkerURL, jobHTTPTimeout, cfg.WorkerMaxConns, components.Policy).
+	jobProxyClient := proxy.New(cfg.WorkerURL, jobHTTPTimeout, asyncMaxConns, components.Policy).
 		WithSecret(cfg.WorkerSharedSecret)
 	jobExecutor := jobs.NewExecutor(jobStore, jobProxyClient, recorder, jobs.ExecutorConfig{
 		PoolSize:      cfg.JobWorkerPoolSize,

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -17,6 +18,23 @@ import (
 // releaseTimeout bounds the per-job background writes (Complete/Fail) that
 // must still land even after the caller's context is cancelled.
 const releaseTimeout = 10 * time.Second
+
+// completeMaxAttempts/completeRetryBackoff bound the retry of Store.Complete
+// after a successful worker call. A worker success followed by a failed
+// Complete write is worse than an ordinary write failure: the row stays
+// 'running' with the result otherwise lost, and Claim's crash-recovery
+// sweep will eventually re-execute the SAME job — a non-idempotent
+// operation runs (and bills) twice. Retrying absorbs the common case (a
+// transient Postgres blip); a sustained outage across all attempts still
+// falls back to that same re-execution path, which this can't fully close
+// without either a shared transaction (Record's signature can't change,
+// see the comment on process's completion block) or a separate durable
+// pending-finalization state — out of proportion for the failure window
+// these retries already cover.
+const (
+	completeMaxAttempts  = 4
+	completeRetryBackoff = 250 * time.Millisecond
+)
 
 // ExecutorConfig bounds the async Executor's concurrency and timing.
 type ExecutorConfig struct {
@@ -239,8 +257,9 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 	// customer.
 	bg, bgCancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer bgCancel()
-	if err := e.store.Complete(bg, job.ID, resp.Payload, resp.BillableUnits, resp.UnitsLabel); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: mark complete failed")
+	if err := e.complete(job.ID, resp.Payload, resp.BillableUnits, resp.UnitsLabel); err != nil {
+		log.Error().Err(err).Str("job_id", job.ID.String()).
+			Msg("jobs: mark complete failed after retries — job remains 'running' and the worker's result is lost; the crash-recovery sweep will re-execute it")
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "succeeded").Inc()
@@ -249,6 +268,29 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 			log.Warn().Err(err).Str("job_id", job.ID.String()).Msg("jobs: usage record failed")
 		}
 	}
+}
+
+// complete retries Store.Complete up to completeMaxAttempts times with a
+// fixed backoff between attempts. See completeMaxAttempts's doc comment for
+// why a worker success followed by a failed Complete write deserves more
+// resilience than an ordinary background write.
+func (e *Executor) complete(id uuid.UUID, payload json.RawMessage, billableUnits uint64, unitsLabel string) error {
+	var lastErr error
+	for attempt := 0; attempt < completeMaxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(completeRetryBackoff)
+		}
+		bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+		err := e.store.Complete(bg, id, payload, billableUnits, unitsLabel)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		log.Warn().Err(err).Str("job_id", id.String()).Int("attempt", attempt+1).
+			Msg("jobs: mark complete failed, retrying")
+	}
+	return lastErr
 }
 
 func (e *Executor) fail(id uuid.UUID, operation, code, message string) {
