@@ -75,6 +75,18 @@ type ListErrorsResponse struct {
 	Page     int64                        `json:"page"`
 }
 
+// GetJobResponse is returned by GetJob.
+type GetJobResponse struct {
+	Billable_units int64  `json:"billable_units"`
+	Created_at     string `json:"created_at"`
+	Error          any    `json:"error"`
+	Job_id         string `json:"job_id"`
+	Result         any    `json:"result"`
+	Status         string `json:"status"`
+	Units_label    string `json:"units_label"`
+	Updated_at     string `json:"updated_at"`
+}
+
 // ListKeysResponseItemsItem is one row of ListKeys's "items" list.
 type ListKeysResponseItemsItem struct {
 	Created_at   string `json:"created_at"`
@@ -224,6 +236,25 @@ func (c *Client) ListErrors(ctx context.Context, apiKey string, from string, to 
 		return nil, err
 	}
 	var out ListErrorsResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// GetJob calls GET /v1/jobs/{id} (get job).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) GetJob(ctx context.Context, apiKey string, id string) (*GetJobResponse, error) {
+	path := fmt.Sprintf("/v1/jobs/%s", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodGet, path, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out GetJobResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}
