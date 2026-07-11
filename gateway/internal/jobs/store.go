@@ -142,6 +142,10 @@ func (s *Store) Get(ctx context.Context, id, customerID uuid.UUID) (Job, bool, e
 // locked by another instance's claim rather than blocking. Claimed rows are
 // marked 'running' with claimed_by=instanceID and claimed_at=NOW() inside the
 // same transaction. Mirrors webhookout.Emitter.processDue.
+//
+// A row scheduled for retry (next_attempt_at in the future, set by
+// RequeueRetry after a transient failure) is skipped until that time
+// arrives; the scan otherwise keeps its original oldest-created-first order.
 func (s *Store) Claim(ctx context.Context, limit int, instanceID uuid.UUID) ([]Job, error) {
 	if s == nil || limit <= 0 {
 		return nil, nil
@@ -177,9 +181,9 @@ func (s *Store) Claim(ctx context.Context, limit int, instanceID uuid.UUID) ([]J
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds
+		SELECT id, customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds, attempts
 		FROM async_jobs
-		WHERE status = 'queued'
+		WHERE status = 'queued' AND next_attempt_at <= NOW()
 		ORDER BY created_at ASC
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED
@@ -191,7 +195,7 @@ func (s *Store) Claim(ctx context.Context, limit int, instanceID uuid.UUID) ([]J
 	var claimed []Job
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(&j.ID, &j.CustomerID, &j.APIKeyID, &j.Operation, &j.RequestID, &j.Plan, &j.Payload, &j.TimeoutSeconds); err != nil {
+		if err := rows.Scan(&j.ID, &j.CustomerID, &j.APIKeyID, &j.Operation, &j.RequestID, &j.Plan, &j.Payload, &j.TimeoutSeconds, &j.Attempts); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("jobs: claim scan: %w", err)
 		}
@@ -257,6 +261,52 @@ func (s *Store) Fail(ctx context.Context, id uuid.UUID, code, message string) er
 	`, id, code, message)
 	if err != nil {
 		return fmt.Errorf("jobs: fail: %w", err)
+	}
+	return nil
+}
+
+// RequeueRetry returns a claimed job to 'queued' after a retryable
+// (WORKER_UNREACHABLE / transport) failure, recording the new attempt count
+// and the earliest time it may be claimed again — bounded exponential
+// backoff, computed by the caller (jobs.Executor). Unlike Requeue (an
+// immediate, error-free return to the queue), this is the retry path
+// Executor.process calls between a transient failure and dead-lettering via
+// DeadLetter once attempts is exhausted.
+func (s *Store) RequeueRetry(ctx context.Context, id uuid.UUID, attempts int, nextAttemptAt time.Time) error {
+	if s == nil {
+		return fmt.Errorf("jobs: store is nil")
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE async_jobs
+		SET status = 'queued', attempts = $2, next_attempt_at = $3,
+		    claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
+		WHERE id = $1
+	`, id, attempts, nextAttemptAt)
+	if err != nil {
+		return fmt.Errorf("jobs: requeue retry: %w", err)
+	}
+	return nil
+}
+
+// DeadLetter marks a claimed job permanently failed after its retry budget
+// (ExecutorConfig.MaxAttempts) is exhausted, recording the final attempt
+// count alongside the structured error — mirrors webhookout's
+// markDeadLetter. Distinct from Fail, which is used for deterministic
+// failures (a worker structured business error, or a billable_units<1
+// contract violation) that must never be retried and must leave attempts
+// unchanged.
+func (s *Store) DeadLetter(ctx context.Context, id uuid.UUID, attempts int, code, message string) error {
+	if s == nil {
+		return fmt.Errorf("jobs: store is nil")
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE async_jobs
+		SET status = 'failed', attempts = $2, error_code = $3, error_message = $4,
+		    claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
+		WHERE id = $1
+	`, id, attempts, code, message)
+	if err != nil {
+		return fmt.Errorf("jobs: dead letter: %w", err)
 	}
 	return nil
 }

@@ -83,6 +83,19 @@ type Config struct {
 	JobWorkerPoolSize int `envconfig:"JOB_WORKER_POOL_SIZE" default:"4"`
 	JobPollIntervalMS int `envconfig:"JOB_POLL_INTERVAL_MS" default:"1000"`
 	JobTimeoutMS      int `envconfig:"JOB_TIMEOUT_MS"       default:"300000"`
+	// JobMaxAttempts bounds retries of a retryable (WORKER_UNREACHABLE /
+	// transport) async job failure before it dead-letters to terminal
+	// 'failed'; a deterministic worker error or a billable_units<1
+	// violation is never retried regardless of this value. Conservative
+	// default: matches jobs.ExecutorConfig's own zero-value fallback, so
+	// the async path retries transient failures even before this value is
+	// wired through to jobs.NewExecutor.
+	JobMaxAttempts int `envconfig:"JOB_MAX_ATTEMPTS" default:"3"`
+	// JobRetryBackoffMS is the base delay before an async job's first
+	// retry; each subsequent retry doubles it, bounded (see
+	// jobs.ExecutorConfig.RetryBackoff). Matches jobs.ExecutorConfig's own
+	// zero-value fallback.
+	JobRetryBackoffMS int `envconfig:"JOB_RETRY_BACKOFF_MS" default:"2000"`
 
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
@@ -201,6 +214,18 @@ func Load() (*Config, error) {
 	if c.JobTimeoutMS <= 0 {
 		return nil, fmt.Errorf("JOB_TIMEOUT_MS must be > 0 (got %d)", c.JobTimeoutMS)
 	}
+	if c.JobMaxAttempts <= 0 {
+		return nil, fmt.Errorf("JOB_MAX_ATTEMPTS must be > 0 (got %d)", c.JobMaxAttempts)
+	}
+	if c.JobMaxAttempts > 20 {
+		return nil, fmt.Errorf("JOB_MAX_ATTEMPTS must be <= 20 (got %d)", c.JobMaxAttempts)
+	}
+	if c.JobRetryBackoffMS <= 0 {
+		return nil, fmt.Errorf("JOB_RETRY_BACKOFF_MS must be > 0 (got %d)", c.JobRetryBackoffMS)
+	}
+	if c.JobRetryBackoffMS > 60000 {
+		return nil, fmt.Errorf("JOB_RETRY_BACKOFF_MS must be <= 60000 (1 minute) (got %d)", c.JobRetryBackoffMS)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
@@ -259,6 +284,11 @@ func (c *Config) JobPollInterval() time.Duration {
 // JobTimeout converts JobTimeoutMS to time.Duration.
 func (c *Config) JobTimeout() time.Duration {
 	return time.Duration(c.JobTimeoutMS) * time.Millisecond
+}
+
+// JobRetryBackoff converts JobRetryBackoffMS to time.Duration.
+func (c *Config) JobRetryBackoff() time.Duration {
+	return time.Duration(c.JobRetryBackoffMS) * time.Millisecond
 }
 
 // ClampRespCacheTTL normalizes a route's requested respcache TTL (seconds)

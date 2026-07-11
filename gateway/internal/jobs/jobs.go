@@ -41,8 +41,11 @@ type Job struct {
 	BillableUnits  uint64
 	ErrorCode      string
 	ErrorMessage   string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Attempts is the number of worker-invocation attempts made so far,
+	// populated by Claim for use by Executor's retry-vs-dead-letter decision.
+	Attempts  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // ValidBillableUnits reports whether units satisfies the gateway's

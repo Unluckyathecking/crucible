@@ -57,7 +57,32 @@ type ExecutorConfig struct {
 	// can't leak internal worker details an operator configured the
 	// gateway to hide. Empty defaults to sanitized.
 	ErrorExposure string
+	// MaxAttempts bounds retries of a retryable (WORKER_UNREACHABLE /
+	// transport) failure before the job dead-letters to terminal 'failed'.
+	// <= 0 defaults to 3. Mirrors config.Config.JobMaxAttempts
+	// (JOB_MAX_ATTEMPTS); a worker structured business error or a
+	// billable_units<1 contract violation is never retried regardless of
+	// this value — see process's classification of the two failure kinds.
+	MaxAttempts int
+	// RetryBackoff is the base delay before the first retry; each
+	// subsequent retry doubles it, capped at maxRetryBackoff (bounded
+	// exponential backoff — see retryBackoffDelay). <= 0 defaults to 2s.
+	// Mirrors config.Config.JobRetryBackoffMS (JOB_RETRY_BACKOFF_MS).
+	RetryBackoff time.Duration
 }
+
+// defaultMaxAttempts/defaultRetryBackoff are ExecutorConfig's zero-value
+// fallbacks, matching config.Config's JOB_MAX_ATTEMPTS/JOB_RETRY_BACKOFF_MS
+// defaults so the async path retries transient failures out of the box even
+// before an operator wires the env-configured values through.
+const (
+	defaultMaxAttempts  = 3
+	defaultRetryBackoff = 2 * time.Second
+	// maxRetryBackoff bounds the exponential growth of retryBackoffDelay so a
+	// job with a generous MaxAttempts can't end up waiting an unreasonable
+	// span between attempts.
+	maxRetryBackoff = 5 * time.Minute
+)
 
 func (c ExecutorConfig) withDefaults() ExecutorConfig {
 	if c.PoolSize <= 0 {
@@ -69,7 +94,34 @@ func (c ExecutorConfig) withDefaults() ExecutorConfig {
 	if c.JobTimeout <= 0 {
 		c.JobTimeout = 5 * time.Minute
 	}
+	if c.MaxAttempts <= 0 {
+		c.MaxAttempts = defaultMaxAttempts
+	}
+	if c.RetryBackoff <= 0 {
+		c.RetryBackoff = defaultRetryBackoff
+	}
 	return c
+}
+
+// retryBackoffDelay returns the delay before attempt's retry: base doubled
+// for each attempt past the first, capped at maxRetryBackoff. attempt is
+// 1-based (the count of attempts made so far, i.e. the attempt that just
+// failed) so the first retry (attempt=1) waits exactly base.
+func retryBackoffDelay(base time.Duration, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	// Cap the shift so 1<<uint(attempt-1) can't overflow into a negative or
+	// wrapped duration for a pathologically large MaxAttempts.
+	shift := attempt - 1
+	if shift > 20 {
+		shift = 20
+	}
+	d := base * time.Duration(int64(1)<<uint(shift))
+	if d <= 0 || d > maxRetryBackoff {
+		d = maxRetryBackoff
+	}
+	return d
 }
 
 // Executor claims queued jobs and invokes the existing worker contract for
@@ -208,7 +260,11 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		log.Error().Err(err).Str("job_id", job.ID.String()).Str("operation", job.Operation).
 			Msg("jobs: worker invocation failed")
 		observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_UNREACHABLE).Inc()
-		e.fail(job.ID, job.Operation, apierror.WORKER_UNREACHABLE, "worker unavailable")
+		// Retryable: a transport/WORKER_UNREACHABLE failure is exactly the
+		// class of error that clears on its own once a restarted worker or a
+		// network blip recovers — see retryOrDeadLetter's doc comment for why
+		// this is the only failure kind Executor ever retries.
+		e.retryOrDeadLetter(job, apierror.WORKER_UNREACHABLE, "worker unavailable")
 		return
 	}
 
@@ -221,7 +277,9 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		// Persist the sanitized (code, message), never the worker's raw
 		// values verbatim — GET /v1/jobs/{id} returns these to the customer,
 		// and must honor WORKER_ERROR_EXPOSURE exactly like the synchronous
-		// /v1 invoke handler does.
+		// /v1 invoke handler does. Deterministic: the worker itself reported
+		// a structured business error, so retrying would just waste another
+		// call for the same outcome — fail immediately, attempts untouched.
 		sanitizedCode, sanitizedMsg := SanitizeWorkerError(e.cfg.ErrorExposure, resp.Error.Code, resp.Error.Message)
 		e.fail(job.ID, job.Operation, sanitizedCode, sanitizedMsg)
 		return
@@ -229,6 +287,10 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 
 	// Contract check: reuses the exact predicate the synchronous /v1 invoke
 	// handler uses (server/routes.go), not a second copy of the rule.
+	// Deterministic: the worker will report the same violation on any retry
+	// (invariant #2's trust boundary, not a transient blip) — fail
+	// immediately, attempts untouched, exactly like a structured business
+	// error above.
 	if !ValidBillableUnits(resp.BillableUnits) {
 		log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 			Msg("jobs: worker returned success with billable_units<1 — rejecting")
@@ -301,4 +363,47 @@ func (e *Executor) fail(id uuid.UUID, operation, code, message string) {
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(operation, "failed").Inc()
+}
+
+// retryOrDeadLetter handles the ONLY failure kind Executor ever retries: a
+// WORKER_UNREACHABLE / transport error, where the worker itself never ran
+// (so nothing was billed and nothing needs undoing) and the failure is
+// plausibly transient — a worker mid-restart, a brief network blip — unlike
+// a worker's own structured business error or a billable_units<1 contract
+// violation, both of which are deterministic and handled by fail() directly
+// at their call sites in process().
+//
+// job.Attempts is the count already made (from Claim's SELECT); if
+// incrementing it is still below cfg.MaxAttempts the job returns to
+// 'queued' via Store.RequeueRetry with its next_attempt_at pushed out by
+// retryBackoffDelay, to be claimed again once eligible. Once exhausted it
+// dead-letters to terminal 'failed' via Store.DeadLetter — the same
+// customer-visible shape process()'s other failure paths already produce
+// (GET /v1/jobs/{id} never gains a new status).
+func (e *Executor) retryOrDeadLetter(job Job, code, message string) {
+	newAttempts := job.Attempts + 1
+	if newAttempts < e.cfg.MaxAttempts {
+		delay := retryBackoffDelay(e.cfg.RetryBackoff, newAttempts)
+		bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+		defer cancel()
+		if err := e.store.RequeueRetry(bg, job.ID, newAttempts, time.Now().Add(delay)); err != nil {
+			log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: requeue retry failed")
+			return
+		}
+		observability.JobsRetriedTotal.WithLabelValues(job.Operation).Inc()
+		log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
+			Int("attempt", newAttempts).Dur("delay", delay).
+			Msg("jobs: transient worker failure, scheduled retry")
+		return
+	}
+
+	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	if err := e.store.DeadLetter(bg, job.ID, newAttempts, code, message); err != nil {
+		log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: dead letter failed")
+		return
+	}
+	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
+	log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
+		Int("attempts", newAttempts).Msg("jobs: retries exhausted, dead-lettered")
 }
