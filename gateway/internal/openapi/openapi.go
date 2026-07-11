@@ -46,10 +46,10 @@ type RouteDescriptor struct {
 
 // Document is the root OpenAPI 3.1 object.
 type Document struct {
-	OpenAPI    string              `json:"openapi"`
-	Info       Info                `json:"info"`
-	Servers    []Server            `json:"servers,omitempty"`
-	Paths      map[string]PathItem `json:"paths"`
+	OpenAPI string              `json:"openapi"`
+	Info    Info                `json:"info"`
+	Servers []Server            `json:"servers,omitempty"`
+	Paths   map[string]PathItem `json:"paths"`
 	// Webhooks documents the outbound-webhook event catalogue (OpenAPI 3.1's
 	// top-level `webhooks` field): one entry per gateway/internal/events event
 	// type, describing the payload the gateway POSTs to a registered endpoint.
@@ -81,9 +81,9 @@ type Components struct {
 // Use Type="http", Scheme="bearer" for RFC 6750 Bearer token auth.
 type SecurityScheme struct {
 	Type        string `json:"type"`
-	Scheme      string `json:"scheme,omitempty"`  // for http type
-	In          string `json:"in,omitempty"`       // for apiKey type
-	Name        string `json:"name,omitempty"`     // for apiKey type
+	Scheme      string `json:"scheme,omitempty"` // for http type
+	In          string `json:"in,omitempty"`     // for apiKey type
+	Name        string `json:"name,omitempty"`   // for apiKey type
 	Description string `json:"description,omitempty"`
 }
 
@@ -722,6 +722,28 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		doc.Paths[path] = existing
 	}
 
+	// Layer the async job status-polling route on for the same reason as
+	// usagePathItem/keysPathItems/errorsPathItems above: framework infra
+	// (gateway/internal/jobs), not a per-product invoke route — kept out of
+	// Build()'s invoke-route-only paths (see server.TestV1RoutesDriftGuard)
+	// but still documented in the actual served /openapi.json.
+	for path, item := range jobsPathItems() {
+		existing := doc.Paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		doc.Paths[path] = existing
+	}
+
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
@@ -1089,6 +1111,53 @@ func errorsPathItems() map[string]PathItem {
 					},
 					"400": errResp("Bad request — invalid date/operation/code filter or page"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+	}
+}
+
+// jobsPathItems documents GET /v1/jobs/{id}: the status and eventual result
+// of a durable async job enqueued by a POST /v1/<op> route opted into
+// routes_table.go's AsyncRoutes (see gateway/internal/jobs). Framework
+// infra, not a per-product invoke route — kept out of Build()'s invoke-route
+// paths for the same reason as usagePathItem/keysPathItems/errorsPathItems;
+// see Handler.
+func jobsPathItems() map[string]PathItem {
+	responseSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"job_id":         {Type: "string", Description: "Job UUID, returned by the enqueuing POST /v1/<op> call"},
+			"status":         {Type: "string", Description: "queued | running | succeeded | failed"},
+			"result":         {Type: "object", Description: "The worker's payload; present only when status is succeeded"},
+			"error":          {Type: "object", Description: "Structured error {code, message}; present only when status is failed"},
+			"billable_units": {Type: "integer", Description: "Present only when status is succeeded; always >= 1 (invariant #2)"},
+			"units_label":    {Type: "string"},
+			"created_at":     {Type: "string", Description: "RFC3339 enqueue timestamp"},
+			"updated_at":     {Type: "string", Description: "RFC3339 timestamp of the last status change"},
+		},
+		Required: []string{"job_id", "status", "created_at", "updated_at"},
+	}
+
+	return map[string]PathItem{
+		"/v1/jobs/{id}": {
+			Get: &Operation{
+				OperationID: "get_job",
+				Summary:     "Get the status and result of an async job owned by the authenticated customer",
+				Tags:        []string{"jobs"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Job UUID", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "Current job status; result/error/billable_units populate once the job reaches a terminal state",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: responseSchema}},
+					},
+					"400": errResp("Bad request — malformed job id"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Job not found (includes ids owned by another customer)"),
 					"500": errResp("Internal server error"),
 				},
 			},

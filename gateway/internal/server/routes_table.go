@@ -32,3 +32,20 @@ var V1Routes = []openapi.RouteDescriptor{
 //		"/lookup": 300,
 //	}
 var RespCacheTTLSeconds = map[string]int{}
+
+// AsyncRoutes opts a /v1 route (by its RouteDescriptor.Path) into durable
+// async execution (gateway/internal/jobs): POST /v1/<path> enqueues a
+// Postgres-backed job and returns 202 {job_id} instead of invoking the
+// worker inline; the caller polls GET /v1/jobs/{id} for the result. Absent
+// means the route stays synchronous — this is the framework default, so
+// existing clones are byte-unaffected until they opt a route in. The value
+// is an optional per-route job timeout in seconds; 0 or negative means "use
+// the gateway's default JOB_TIMEOUT_MS". Use this for products whose worker
+// calls exceed WORKER_TIMEOUT_MS's synchronous budget (OCR, transcription,
+// PDF/render pipelines, scraping, LLM/inference). One line per async
+// endpoint, e.g.:
+//
+//	var AsyncRoutes = map[string]int{
+//		"/transcribe": 0,
+//	}
+var AsyncRoutes = map[string]int{}

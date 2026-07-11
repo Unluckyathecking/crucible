@@ -77,13 +77,20 @@ type Config struct {
 	// unreasonably long lifetime.
 	RespCacheMaxTTLSeconds int `envconfig:"RESP_CACHE_MAX_TTL_SECONDS" default:"3600"`
 
+	// Async job execution (see internal/jobs) — opt-in per route via
+	// routes_table.go's AsyncRoutes. Zero-config-safe: AsyncRoutes defaults
+	// empty, so these values are inert until a product clone opts a route in.
+	JobWorkerPoolSize int `envconfig:"JOB_WORKER_POOL_SIZE" default:"4"`
+	JobPollIntervalMS int `envconfig:"JOB_POLL_INTERVAL_MS" default:"1000"`
+	JobTimeoutMS      int `envconfig:"JOB_TIMEOUT_MS"       default:"300000"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
 
 	// Tracing (OTel) — disabled by default; zero-config dials no exporter.
-	OtelTracingEnabled   bool    `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
-	OtelExporterEndpoint string  `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
+	OtelTracingEnabled   bool   `envconfig:"OTEL_TRACING_ENABLED"   default:"false"`
+	OtelExporterEndpoint string `envconfig:"OTEL_EXPORTER_ENDPOINT" default:""`
 	// OtelExporterInsecure disables TLS for the OTLP exporter. Default false (TLS on).
 	// Set to true for localhost/sidecar collectors that do not serve TLS.
 	OtelExporterInsecure bool    `envconfig:"OTEL_EXPORTER_INSECURE" default:"false"`
@@ -182,6 +189,18 @@ func Load() (*Config, error) {
 	if c.RespCacheMaxTTLSeconds > maxRespCacheMaxTTLSeconds {
 		return nil, fmt.Errorf("RESP_CACHE_MAX_TTL_SECONDS must be <= %d (7 days) (got %d)", maxRespCacheMaxTTLSeconds, c.RespCacheMaxTTLSeconds)
 	}
+	if c.JobWorkerPoolSize <= 0 {
+		return nil, fmt.Errorf("JOB_WORKER_POOL_SIZE must be > 0 (got %d)", c.JobWorkerPoolSize)
+	}
+	if c.JobWorkerPoolSize > 256 {
+		return nil, fmt.Errorf("JOB_WORKER_POOL_SIZE must be <= 256 (got %d)", c.JobWorkerPoolSize)
+	}
+	if c.JobPollIntervalMS <= 0 {
+		return nil, fmt.Errorf("JOB_POLL_INTERVAL_MS must be > 0 (got %d)", c.JobPollIntervalMS)
+	}
+	if c.JobTimeoutMS <= 0 {
+		return nil, fmt.Errorf("JOB_TIMEOUT_MS must be > 0 (got %d)", c.JobTimeoutMS)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
@@ -230,6 +249,16 @@ func (c *Config) RetryBaseBackoff() time.Duration {
 // Use this when constructing a resilience.BreakerConfig to avoid unit mismatch.
 func (c *Config) BreakerCooldown() time.Duration {
 	return time.Duration(c.WorkerBreakerCooldownMS) * time.Millisecond
+}
+
+// JobPollInterval converts JobPollIntervalMS to time.Duration.
+func (c *Config) JobPollInterval() time.Duration {
+	return time.Duration(c.JobPollIntervalMS) * time.Millisecond
+}
+
+// JobTimeout converts JobTimeoutMS to time.Duration.
+func (c *Config) JobTimeout() time.Duration {
+	return time.Duration(c.JobTimeoutMS) * time.Millisecond
 }
 
 // ClampRespCacheTTL normalizes a route's requested respcache TTL (seconds)

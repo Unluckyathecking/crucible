@@ -23,6 +23,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
@@ -112,9 +113,25 @@ func main() {
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
 	respCacheStore := respcache.NewStore(redisClient)
+	jobStore := jobs.NewStore(pool)
+	jobExecutor := jobs.NewExecutor(jobStore, workerClient, recorder, jobs.ExecutorConfig{
+		PoolSize:     cfg.JobWorkerPoolSize,
+		PollInterval: cfg.JobPollInterval(),
+		JobTimeout:   cfg.JobTimeout(),
+	})
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
+
+	// Async: execute durable jobs opted into routes_table.go's AsyncRoutes.
+	// jobsDone closes once jobExecutor.Run has released any jobs it still
+	// held claimed and returned — the shutdown sequence below waits on it
+	// so a process exit never races the release ("no lost work").
+	jobsDone := make(chan struct{})
+	go func() {
+		defer close(jobsDone)
+		jobExecutor.Run(rootCtx)
+	}()
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
@@ -174,6 +191,15 @@ func main() {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	// rootCtx is already cancelled (signal.NotifyContext, above), so
+	// jobExecutor.Run is already draining in-flight jobs and releasing any it
+	// still holds claimed back to 'queued'. Wait for it within the shutdown
+	// budget so process exit cannot race that release.
+	select {
+	case <-jobsDone:
+	case <-shutdownCtx.Done():
+		log.Warn().Msg("job executor did not stop within shutdown budget")
+	}
 	if err := components.Shutdown(shutdownCtx); err != nil {
 		log.Warn().Err(err).Msg("runtime shutdown failed")
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
+	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
@@ -119,6 +120,11 @@ func NewRouter(d *Deps) http.Handler {
 	// process exit (SIGTERM/SIGKILL) stops the goroutine. The worker's per-delivery
 	// timeout (10 s) bounds how long an individual POST can hold a DB connection.
 	emitter := webhookout.NewEmitter(context.Background(), d.DB)
+	// jobStore is nil-safe (jobs.NewStore returns nil when d.DB is nil), matching
+	// the framework's optional-Deps pattern — every exported Store method
+	// nil-checks its receiver. Used both by the async-opted-in branch of the
+	// per-product loop below and by GET /v1/jobs/{id}.
+	jobStore := jobs.NewStore(d.DB)
 	// Wire the emitter into the framework components whose Emit call-sites live
 	// outside this package. Both are nil-safe if unset (e.g. in tests that build
 	// a partial Deps and never call NewRouter's webhook-serving paths).
@@ -244,6 +250,18 @@ func NewRouter(d *Deps) http.Handler {
 		// per-product block below is mounted under, without capturing
 		// POST/other methods at this path.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/errors", selferrors.Handler(d.DB))
+
+		// === Async job status polling (auth gated; active when DB is set; read-only) ===
+		// GET /v1/jobs/{id}: the result of a job enqueued by a POST /v1/<op>
+		// route opted into AsyncRoutes (routes_table.go). Framework infra, not
+		// a per-product invoke route — kept out of the r.Route("/v1", ...)
+		// per-product block below (same reason as GET /v1/errors above: that
+		// block's POST-only invariant is asserted by TestV1RoutesDriftGuard),
+		// registered here as a direct, method-specific r.With(...).Get so it
+		// coexists with any per-product POST at another /v1/... path. Scoped
+		// strictly to the caller's own jobs — see jobs.Store.Get's SQL-level
+		// customer_id scoping.
+		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs/{id}", jobsGetHandler(jobStore))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===
@@ -351,6 +369,17 @@ func NewRouter(d *Deps) http.Handler {
 		r.Use(validate.Middleware(routes))
 		r.Use(quota.Middleware(d.Quota, d.Plans, emitter))
 		for _, rt := range routes {
+			// A route present in AsyncRoutes (routes_table.go) enqueues a durable
+			// job and returns 202 {job_id} instead of invoking the worker inline;
+			// one table drives both branches. Registered inside this same loop
+			// (not a separate subrouter) so it inherits the identical
+			// auth/error-capture/ratelimit/idempotency/validate/quota middleware
+			// chain as every synchronous /v1 route — including the quota.Reserve
+			// admission check on every request.
+			if timeoutSeconds, async := AsyncRoutes[rt.Path]; async {
+				r.Post(rt.Path, enqueueAsync(jobStore, rt.Operation, timeoutSeconds))
+				continue
+			}
 			ttl := d.Cfg.ClampRespCacheTTL(RespCacheTTLSeconds[rt.Path])
 			cacheMW := respcache.Middleware(d.RespCache, d.Recorder, rt.Operation, ttl, nil)
 			r.With(cacheMW).Post(rt.Path, invoke(d.Proxy, d.Recorder, errorExposure, rt.Operation))
@@ -484,6 +513,118 @@ func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, ope
 		if resp.UnitsLabel != "" {
 			w.Header().Set("X-Units-Label", resp.UnitsLabel)
 		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// asyncJobResponse is the JSON shape GET /v1/jobs/{id} returns.
+type asyncJobResponse struct {
+	JobID         string          `json:"job_id"`
+	Status        string          `json:"status"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Error         *asyncJobError  `json:"error,omitempty"`
+	BillableUnits uint64          `json:"billable_units,omitempty"`
+	UnitsLabel    string          `json:"units_label,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type asyncJobError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// enqueueAsync handles POST /v1/<op> for a route opted into AsyncRoutes: it
+// decodes the request body exactly like invoke does, then persists a queued
+// job row instead of calling the worker inline, and returns 202 {job_id}.
+// The worker invocation, billable_units contract check, and usage.Recorder
+// call happen later, out of band, in jobs.Executor.process — the caller
+// polls GET /v1/jobs/{id} for the eventual result.
+func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		var payload json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid json body", false)
+			return
+		}
+
+		id, err := store.Enqueue(r.Context(), key.Customer.ID, key.ID, operation, rid, key.Customer.Plan, payload, timeoutSeconds)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Str("operation", operation).Msg("jobs: enqueue failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "enqueue failed", false)
+			return
+		}
+		observability.JobsEnqueuedTotal.WithLabelValues(operation).Inc()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": id.String()})
+	}
+}
+
+// jobsGetHandler handles GET /v1/jobs/{id}: the caller's own job status and
+// result, scoped at the SQL level by jobs.Store.Get (IDOR-safe — a job id
+// owned by another customer returns 404, indistinguishable from a
+// nonexistent id).
+func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid job id", false)
+			return
+		}
+
+		job, ok, err := store.Get(r.Context(), id, key.Customer.ID)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("jobs: get failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
+			return
+		}
+		if !ok {
+			apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
+			return
+		}
+
+		resp := asyncJobResponse{
+			JobID:      job.ID.String(),
+			Status:     job.Status,
+			Result:     job.Result,
+			UnitsLabel: job.UnitsLabel,
+			CreatedAt:  job.CreatedAt,
+			UpdatedAt:  job.UpdatedAt,
+		}
+		if job.Status == jobs.StatusSucceeded {
+			resp.BillableUnits = job.BillableUnits
+		}
+		if job.Status == jobs.StatusFailed {
+			resp.Error = &asyncJobError{Code: job.ErrorCode, Message: job.ErrorMessage}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
@@ -705,4 +846,3 @@ func billingPortalHandler(d *Deps) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": redirectURL})
 	}
 }
-
