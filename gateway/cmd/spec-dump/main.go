@@ -56,10 +56,7 @@ func run(w *os.File) error {
 // servedDocument renders the same JSON bytes routes.go's
 // `r.Get("/openapi.json", openapi.Handler(routes))` serves in production.
 func servedDocument() ([]byte, error) {
-	routes := make([]openapi.RouteDescriptor, len(server.V1Routes))
-	copy(routes, server.V1Routes)
-
-	handler := openapi.Handler(routes)
+	handler := openapi.Handler(server.AnnotatedRoutes())
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	handler(rec, req)
