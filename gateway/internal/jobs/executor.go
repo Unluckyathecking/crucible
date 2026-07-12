@@ -344,7 +344,15 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 			log.Warn().Err(err).Str("job_id", job.ID.String()).Msg("jobs: usage record failed")
 		}
 	}
-	notifySucceeded(bg, e.emitter, job)
+	// A fresh timeout, not bg: bg's clock started before e.complete's retry
+	// loop (up to completeMaxAttempts attempts) and recorder.Record, both of
+	// which can consume most or all of releaseTimeout before this point —
+	// notifySucceeded would then run against an already-expired context,
+	// silently dropping the webhook (Emit only logs on error) even though
+	// the job itself completed successfully.
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer notifyCancel()
+	notifySucceeded(notifyCtx, e.emitter, job)
 }
 
 // complete retries Store.Complete up to completeMaxAttempts times with a

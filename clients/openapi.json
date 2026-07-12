@@ -1495,6 +1495,99 @@
         }
       }
     },
+    "job.failed": {
+      "post": {
+        "operationId": "webhook_job_failed",
+        "summary": "Fired when a durable async job reaches the terminal failed state (structured worker error, billable_units\u003c1 contract violation, or retry-exhausted dead-letter).",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "error_code": {
+                    "type": "string",
+                    "description": "The sanitized (or full, per WORKER_ERROR_EXPOSURE) error code"
+                  },
+                  "job_id": {
+                    "type": "string",
+                    "description": "The async job's id; fetch details via GET /v1/jobs/{id}"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "description": "The operation string the job was enqueued with"
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Always \"failed\" for this event"
+                  }
+                },
+                "required": [
+                  "job_id",
+                  "operation",
+                  "status",
+                  "error_code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "job.succeeded": {
+      "post": {
+        "operationId": "webhook_job_succeeded",
+        "summary": "Fired when a durable async job reaches the terminal succeeded state.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "job_id": {
+                    "type": "string",
+                    "description": "The async job's id; fetch the result via GET /v1/jobs/{id}"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "description": "The operation string the job was enqueued with"
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Always \"succeeded\" for this event"
+                  }
+                },
+                "required": [
+                  "job_id",
+                  "operation",
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
     "quota.exceeded": {
       "post": {
         "operationId": "webhook_quota_exceeded",
