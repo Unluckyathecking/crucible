@@ -486,6 +486,33 @@ var webhookEventDescriptors = []struct {
 			Required: []string{"customer_id", "key_id"},
 		},
 	},
+	{
+		eventType: events.JobSucceeded,
+		summary:   "Fired when a durable async job reaches the terminal succeeded state.",
+		schema: &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"job_id":    {Type: "string", Description: "The async job's id; fetch the result via GET /v1/jobs/{id}"},
+				"operation": {Type: "string", Description: "The operation string the job was enqueued with"},
+				"status":    {Type: "string", Description: "Always \"succeeded\" for this event"},
+			},
+			Required: []string{"job_id", "operation", "status"},
+		},
+	},
+	{
+		eventType: events.JobFailed,
+		summary:   "Fired when a durable async job reaches the terminal failed state (structured worker error, billable_units<1 contract violation, or retry-exhausted dead-letter).",
+		schema: &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"job_id":     {Type: "string", Description: "The async job's id; fetch details via GET /v1/jobs/{id}"},
+				"operation":  {Type: "string", Description: "The operation string the job was enqueued with"},
+				"status":     {Type: "string", Description: "Always \"failed\" for this event"},
+				"error_code": {Type: "string", Description: "The sanitized (or full, per WORKER_ERROR_EXPOSURE) error code"},
+			},
+			Required: []string{"job_id", "operation", "status", "error_code"},
+		},
+	},
 }
 
 // buildWebhooks constructs the `webhooks` document section from webhookEventDescriptors.

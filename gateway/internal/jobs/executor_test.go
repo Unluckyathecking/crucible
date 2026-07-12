@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // hijackAndClose aborts the HTTP response by hijacking the connection and
@@ -80,6 +82,61 @@ func waitForUsageEventCount(t *testing.T, pool *pgxpool.Pool, customerID uuid.UU
 		}
 		if time.Now().After(deadline) {
 			return count
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// seedWebhookEndpoint inserts one active webhook_endpoints row for customerID
+// subscribed to every event type (subscribed_events left NULL), so the
+// emitter's Emit fans job.succeeded/job.failed out to it exactly like any
+// other event type.
+func seedWebhookEndpoint(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID) {
+	t.Helper()
+	secret, err := webhookout.GenerateSecret()
+	if err != nil {
+		t.Fatalf("generate secret: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO webhook_endpoints (customer_id, url, secret, active) VALUES ($1, 'https://example.com/hook', $2, TRUE)`,
+		customerID, secret,
+	); err != nil {
+		t.Fatalf("insert webhook endpoint: %v", err)
+	}
+}
+
+// waitForWebhookDeliveryCount polls webhook_deliveries for (customerID,
+// eventType) until it reaches want or timeout elapses, returning the last
+// observed count and the most recently seen payload (if any row exists).
+func waitForWebhookDeliveryCount(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, eventType string, want int, timeout time.Duration) (int, json.RawMessage) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var count int
+	var payload json.RawMessage
+	for {
+		rows, err := pool.Query(context.Background(), `
+			SELECT d.payload
+			FROM webhook_deliveries d
+			JOIN webhook_endpoints we ON we.id = d.endpoint_id
+			WHERE we.customer_id = $1 AND d.event_type = $2
+		`, customerID, eventType)
+		if err != nil {
+			t.Fatalf("query webhook_deliveries: %v", err)
+		}
+		count = 0
+		for rows.Next() {
+			if err := rows.Scan(&payload); err != nil {
+				rows.Close()
+				t.Fatalf("scan webhook_deliveries: %v", err)
+			}
+			count++
+		}
+		rows.Close()
+		if count == want {
+			return count, payload
+		}
+		if time.Now().After(deadline) {
+			return count, payload
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -472,5 +529,204 @@ func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
 
 	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
 		t.Errorf("crucible_jobs_retried_total delta = %v, want 1 (one retry before exhausting MaxAttempts=2)", retried)
+	}
+}
+
+// TestExecutor_Success_EmitsJobSucceededWebhook proves a job that reaches the
+// terminal 'succeeded' state fires exactly one job.succeeded webhook, with a
+// payload carrying job_id/operation/status — never the worker's raw result
+// body.
+func TestExecutor_Success_EmitsJobSucceededWebhook(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-emit-success-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+	e.SetEmitter(emitter)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-emit-success", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusSucceeded, 2*time.Second)
+
+	count, payload := waitForWebhookDeliveryCount(t, pool, custA, events.JobSucceeded, 1, 2*time.Second)
+	if count != 1 {
+		t.Fatalf("job.succeeded webhook_deliveries rows = %d, want 1", count)
+	}
+	var decoded events.JobSucceededPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload is not valid JobSucceededPayload JSON: %v", err)
+	}
+	if decoded.JobID != id.String() {
+		t.Errorf("payload.job_id = %q, want %q", decoded.JobID, id.String())
+	}
+	if decoded.Operation != "echo" {
+		t.Errorf("payload.operation = %q, want echo", decoded.Operation)
+	}
+	if decoded.Status != StatusSucceeded {
+		t.Errorf("payload.status = %q, want %q", decoded.Status, StatusSucceeded)
+	}
+
+	// The failure-side event type must never fire for a successful job.
+	if failCount, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 0, 100*time.Millisecond); failCount != 0 {
+		t.Errorf("job.failed webhook_deliveries rows = %d, want 0", failCount)
+	}
+}
+
+// TestExecutor_WorkerError_EmitsJobFailedWebhook proves a worker-reported
+// structured error (a deterministic terminal failure, never retried) fires
+// exactly one job.failed webhook carrying the sanitized error_code.
+func TestExecutor_WorkerError_EmitsJobFailedWebhook(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-emit-workererr-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"BAD_INPUT","message":"nope","retryable":false},"billable_units":0}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second, ErrorExposure: "full"})
+	e.SetEmitter(emitter)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-emit-workererr", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusFailed, 2*time.Second)
+
+	count, payload := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second)
+	if count != 1 {
+		t.Fatalf("job.failed webhook_deliveries rows = %d, want 1", count)
+	}
+	var decoded events.JobFailedPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload is not valid JobFailedPayload JSON: %v", err)
+	}
+	if decoded.ErrorCode != "BAD_INPUT" {
+		t.Errorf("payload.error_code = %q, want BAD_INPUT", decoded.ErrorCode)
+	}
+	if decoded.Status != StatusFailed {
+		t.Errorf("payload.status = %q, want %q", decoded.Status, StatusFailed)
+	}
+}
+
+// TestExecutor_BillableUnitsBelowOne_EmitsJobFailedWebhook proves the
+// billable_units<1 trust-boundary rejection (invariant #2) — the second
+// deterministic terminal-failure kind — also fires exactly one job.failed
+// webhook.
+func TestExecutor_BillableUnitsBelowOne_EmitsJobFailedWebhook(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-emit-badunits-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":0}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+	e.SetEmitter(emitter)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-emit-badunits", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusFailed, 2*time.Second)
+
+	count, payload := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second)
+	if count != 1 {
+		t.Fatalf("job.failed webhook_deliveries rows = %d, want 1", count)
+	}
+	var decoded events.JobFailedPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload is not valid JobFailedPayload JSON: %v", err)
+	}
+	if decoded.ErrorCode != "WORKER_BAD_RESPONSE" {
+		t.Errorf("payload.error_code = %q, want WORKER_BAD_RESPONSE", decoded.ErrorCode)
+	}
+}
+
+// TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne
+// proves the third terminal-failure kind (retry-exhausted dead-letter) fires
+// exactly one job.failed webhook, and — critically — that the non-terminal
+// retry attempt in between fires none: if retryOrDeadLetter's requeue branch
+// incorrectly notified on every attempt, this job (MaxAttempts=2, so one
+// retry before dead-lettering) would show two job.failed rows instead of one.
+func TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-emit-deadletter-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	var calls int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		hijackAndClose(t, w)
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 2*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{
+		PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second,
+		MaxAttempts: 2, RetryBackoff: 20 * time.Millisecond,
+	})
+	e.SetEmitter(emitter)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-emit-deadletter", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusFailed, 5*time.Second)
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("worker was called %d times, want 2 (MaxAttempts)", got)
+	}
+
+	count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second)
+	if count != 1 {
+		t.Fatalf("job.failed webhook_deliveries rows = %d, want exactly 1 (never one per retry attempt)", count)
 	}
 }

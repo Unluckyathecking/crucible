@@ -33,6 +33,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/runtime"
 	"github.com/Unluckyathecking/crucible/gateway/internal/server"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // redisPinger adapts *redis.Client to server.HealthChecker.
@@ -142,6 +143,12 @@ func main() {
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
 	respCacheStore := respcache.NewStore(redisClient)
+	// Constructed once here and injected into BOTH server.Deps (below) and
+	// jobs.NewExecutor: a single shared Emitter/delivery-worker instance, not
+	// one per consumer. context.Background() keeps the delivery worker alive
+	// for the process lifetime; process exit (SIGTERM/SIGKILL) stops the
+	// goroutine, same as every other long-lived background component here.
+	emitter := webhookout.NewEmitter(context.Background(), pool)
 	jobStore := jobs.NewStore(pool)
 	// jobProxyClient is deliberately separate from workerClient: proxy.New's
 	// timeout argument becomes http.Client.Timeout, a hard ceiling that
@@ -168,6 +175,9 @@ func main() {
 		JobTimeout:    cfg.JobTimeout(),
 		ErrorExposure: cfg.ErrorExposure,
 	})
+	// Same Emitter instance injected into server.Deps below — one shared
+	// delivery worker, not a second Emitter.
+	jobExecutor.SetEmitter(emitter)
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
@@ -195,6 +205,7 @@ func main() {
 			Quota:          quotaTracker,
 			Redis:          &redisPinger{redisClient},
 			DB:             pool,
+			Emitter:        emitter,
 			RespCache:      respCacheStore,
 			PG:             &pgPinger{pool},
 			TracerProvider: components.TracerProvider,

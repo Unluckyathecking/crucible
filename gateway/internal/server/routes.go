@@ -85,6 +85,15 @@ type Deps struct {
 	// DB is optional. When set, the idempotency middleware is active on /v1 routes.
 	// When nil (default when main.go is unmodified), the middleware is a pass-through.
 	DB *pgxpool.Pool
+	// Emitter is the shared outbound webhook emitter. When set (main.go's
+	// production wiring), NewRouter reuses this single instance instead of
+	// constructing its own — the same instance cmd/gateway/main.go also injects
+	// into jobs.NewExecutor, so job.succeeded/job.failed webhooks share one
+	// delivery worker with every other outbound event rather than a second,
+	// independent Emitter. When nil (e.g. a test harness that only sets DB),
+	// NewRouter falls back to constructing one from d.DB itself, preserving the
+	// previous default behavior.
+	Emitter *webhookout.Emitter
 	// RespCache is optional. When set, /v1 routes that declare a positive TTL in
 	// RespCacheTTLSeconds (routes_table.go) are served from the gateway's
 	// content-addressed result cache on a hit. When nil (default when main.go is
@@ -111,15 +120,21 @@ type Deps struct {
 
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
 //
-// The outbound webhook emitter is constructed here from d.DB (nil-safe: no worker
-// is started and no routes are registered when d.DB is nil). This keeps cmd/gateway/main.go
-// byte-disjoint with PR #48 while still starting the worker as part of server setup.
+// The outbound webhook emitter is normally supplied via d.Emitter (main.go
+// constructs the single shared instance and also injects it into
+// jobs.NewExecutor). When d.Emitter is nil, NewRouter falls back to
+// constructing one from d.DB itself (nil-safe: no worker is started and no
+// routes are registered when d.DB is nil) — this keeps callers that only set
+// DB (test harnesses) working unmodified.
 func NewRouter(d *Deps) http.Handler {
-	// Construct the outbound webhook emitter from the DB dep.
-	// context.Background() keeps the delivery worker alive for the process lifetime;
-	// process exit (SIGTERM/SIGKILL) stops the goroutine. The worker's per-delivery
-	// timeout (10 s) bounds how long an individual POST can hold a DB connection.
-	emitter := webhookout.NewEmitter(context.Background(), d.DB)
+	emitter := d.Emitter
+	if emitter == nil {
+		// context.Background() keeps the delivery worker alive for the process
+		// lifetime; process exit (SIGTERM/SIGKILL) stops the goroutine. The
+		// worker's per-delivery timeout (10 s) bounds how long an individual
+		// POST can hold a DB connection.
+		emitter = webhookout.NewEmitter(context.Background(), d.DB)
+	}
 	// jobStore is nil-safe (jobs.NewStore returns nil when d.DB is nil), matching
 	// the framework's optional-Deps pattern — every exported Store method
 	// nil-checks its receiver. Used both by the async-opted-in branch of the
