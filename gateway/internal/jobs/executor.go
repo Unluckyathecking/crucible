@@ -13,6 +13,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // releaseTimeout bounds the per-job background writes (Complete/Fail) that
@@ -135,13 +136,15 @@ type Executor struct {
 	store      *Store
 	proxy      *proxy.Client
 	recorder   *usage.Recorder
+	emitter    *webhookout.Emitter
 	cfg        ExecutorConfig
 	instanceID uuid.UUID
 }
 
 // NewExecutor constructs an Executor. store or p being nil makes Run a no-op
 // (nil-safe, matching the framework's optional-Deps pattern) — this lets
-// cmd/gateway/main.go construct the Executor unconditionally.
+// cmd/gateway/main.go construct the Executor unconditionally. The emitter
+// starts nil (safe no-op for Emit); wire one in via SetEmitter.
 func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg ExecutorConfig) *Executor {
 	cfg = cfg.withDefaults()
 	// Keep the store's stuck-job recovery threshold in sync with this
@@ -158,6 +161,17 @@ func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg Ex
 		cfg:        cfg,
 		instanceID: uuid.New(),
 	}
+}
+
+// SetEmitter wires the outbound webhook emitter used to notify customers of
+// job.succeeded/job.failed terminal transitions, mirroring
+// auth.Store.SetEmitter and billing.Webhook.SetEmitter. cmd/gateway/main.go
+// calls this with the SAME *webhookout.Emitter instance it injects into the
+// router's Deps — one shared delivery worker, not a second Emitter. Passing
+// nil (or never calling SetEmitter) is a safe no-op: Emitter.Emit nil-checks
+// its own receiver.
+func (e *Executor) SetEmitter(emitter *webhookout.Emitter) {
+	e.emitter = emitter
 }
 
 // Run polls for queued jobs until ctx is cancelled, dispatching each claimed
@@ -281,7 +295,7 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		// a structured business error, so retrying would just waste another
 		// call for the same outcome — fail immediately, attempts untouched.
 		sanitizedCode, sanitizedMsg := SanitizeWorkerError(e.cfg.ErrorExposure, resp.Error.Code, resp.Error.Message)
-		e.fail(job.ID, job.Operation, sanitizedCode, sanitizedMsg)
+		e.fail(job, sanitizedCode, sanitizedMsg)
 		return
 	}
 
@@ -295,7 +309,7 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 			Msg("jobs: worker returned success with billable_units<1 — rejecting")
 		observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_BAD_RESPONSE).Inc()
-		e.fail(job.ID, job.Operation, apierror.WORKER_BAD_RESPONSE, "worker contract violation")
+		e.fail(job, apierror.WORKER_BAD_RESPONSE, "worker contract violation")
 		return
 	}
 
@@ -330,6 +344,7 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 			log.Warn().Err(err).Str("job_id", job.ID.String()).Msg("jobs: usage record failed")
 		}
 	}
+	notifySucceeded(bg, e.emitter, job)
 }
 
 // complete retries Store.Complete up to completeMaxAttempts times with a
@@ -355,14 +370,15 @@ func (e *Executor) complete(id uuid.UUID, payload json.RawMessage, billableUnits
 	return lastErr
 }
 
-func (e *Executor) fail(id uuid.UUID, operation, code, message string) {
+func (e *Executor) fail(job Job, code, message string) {
 	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer cancel()
-	if err := e.store.Fail(bg, id, code, message); err != nil {
-		log.Error().Err(err).Str("job_id", id.String()).Msg("jobs: mark failed failed")
+	if err := e.store.Fail(bg, job.ID, code, message); err != nil {
+		log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: mark failed failed")
 		return
 	}
-	observability.JobsCompletedTotal.WithLabelValues(operation, "failed").Inc()
+	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
+	notifyFailed(bg, e.emitter, job, code)
 }
 
 // retryOrDeadLetter handles the ONLY failure kind Executor ever retries: a
@@ -406,4 +422,5 @@ func (e *Executor) retryOrDeadLetter(job Job, code, message string) {
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
 	log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 		Int("attempts", newAttempts).Msg("jobs: retries exhausted, dead-lettered")
+	notifyFailed(bg, e.emitter, job, code)
 }

@@ -19,6 +19,13 @@ const (
 	APIKeyRotated = "api_key.rotated"
 	// APIKeyRevoked fires when Store.Revoke marks an API key revoked.
 	APIKeyRevoked = "api_key.revoked"
+	// JobSucceeded fires when a durable async job (gateway/internal/jobs)
+	// reaches the terminal 'succeeded' state.
+	JobSucceeded = "job.succeeded"
+	// JobFailed fires when a durable async job reaches the terminal 'failed'
+	// state, whether via a worker-reported structured error, a
+	// billable_units<1 contract violation, or retry-exhausted dead-letter.
+	JobFailed = "job.failed"
 )
 
 // AllEventTypes is the single source of truth for the full event-type set.
@@ -30,6 +37,8 @@ var AllEventTypes = []string{
 	QuotaExceeded,
 	APIKeyRotated,
 	APIKeyRevoked,
+	JobSucceeded,
+	JobFailed,
 }
 
 // IsValidEventType reports whether eventType is a member of AllEventTypes.
@@ -71,4 +80,23 @@ type APIKeyRotatedPayload struct {
 type APIKeyRevokedPayload struct {
 	CustomerID string `json:"customer_id"`
 	KeyID      string `json:"key_id"`
+}
+
+// JobSucceededPayload is the payload for JobSucceeded. The customer polls
+// GET /v1/jobs/{id} for the actual result; this payload is only a completion
+// signal, never the worker's result body.
+type JobSucceededPayload struct {
+	JobID     string `json:"job_id"`
+	Operation string `json:"operation"`
+	Status    string `json:"status"`
+}
+
+// JobFailedPayload is the payload for JobFailed. ErrorCode is always the
+// gateway's already-sanitized (or full, per WORKER_ERROR_EXPOSURE) code —
+// never the worker's raw result body.
+type JobFailedPayload struct {
+	JobID     string `json:"job_id"`
+	Operation string `json:"operation"`
+	Status    string `json:"status"`
+	ErrorCode string `json:"error_code"`
 }

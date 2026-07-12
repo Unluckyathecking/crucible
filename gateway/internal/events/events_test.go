@@ -16,6 +16,8 @@ func TestEventTypeConstants(t *testing.T) {
 		{"QuotaExceeded", QuotaExceeded, "quota.exceeded"},
 		{"APIKeyRotated", APIKeyRotated, "api_key.rotated"},
 		{"APIKeyRevoked", APIKeyRevoked, "api_key.revoked"},
+		{"JobSucceeded", JobSucceeded, "job.succeeded"},
+		{"JobFailed", JobFailed, "job.failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -33,6 +35,8 @@ func TestAllEventTypesMatchesConstants(t *testing.T) {
 		QuotaExceeded:       true,
 		APIKeyRotated:       true,
 		APIKeyRevoked:       true,
+		JobSucceeded:        true,
+		JobFailed:           true,
 	}
 	if len(AllEventTypes) != len(want) {
 		t.Fatalf("AllEventTypes has %d entries, want %d", len(AllEventTypes), len(want))
