@@ -386,7 +386,12 @@ func (e *Executor) fail(job Job, code, message string) {
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
-	notifyFailed(bg, e.emitter, job, code)
+	// A fresh timeout, not bg: see notifySucceeded's call site in process for
+	// why reusing a context whose clock started before the terminal DB write
+	// risks handing notifyFailed an already-(near-)expired context.
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer notifyCancel()
+	notifyFailed(notifyCtx, e.emitter, job, code)
 }
 
 // retryOrDeadLetter handles the ONLY failure kind Executor ever retries: a
@@ -430,5 +435,8 @@ func (e *Executor) retryOrDeadLetter(job Job, code, message string) {
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
 	log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 		Int("attempts", newAttempts).Msg("jobs: retries exhausted, dead-lettered")
-	notifyFailed(bg, e.emitter, job, code)
+	// A fresh timeout — see fail's call site for why.
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer notifyCancel()
+	notifyFailed(notifyCtx, e.emitter, job, code)
 }
