@@ -136,6 +136,69 @@ func (s *Store) Get(ctx context.Context, id, customerID uuid.UUID) (Job, bool, e
 	return j, true, nil
 }
 
+// List returns a page of customerID's own jobs — SQL-scoped by customer_id,
+// mirroring Get's IDOR-safe pattern — newest-first, optionally narrowed by an
+// exact status and/or operation match, plus the total matching row count
+// across all pages. status/operation nil means "no filter" for that field.
+// Served via idx_async_jobs_customer (customer_id, created_at DESC),
+// migration 0019's index reserved for exactly this endpoint.
+//
+// Deliberately omits the payload/result JSONB columns from the SELECT (the
+// returned Job.Payload/Job.Result are always nil): jobsListHandler's
+// jobListItem never reads them, and a page of up to 100 rows would otherwise
+// force Postgres to read — and pgx to allocate — however large those blobs
+// happen to be, on every list call. Get still selects them since the
+// single-job response is exactly where a caller wants that payload.
+func (s *Store) List(ctx context.Context, customerID uuid.UUID, status, operation *string, limit, offset int) ([]Job, int64, error) {
+	if s == nil {
+		return nil, 0, nil
+	}
+
+	var total int64
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM async_jobs
+		WHERE customer_id = $1
+		  AND ($2::text IS NULL OR status = $2)
+		  AND ($3::text IS NULL OR operation = $3)
+	`, customerID, status, operation).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("jobs: list count: %w", err)
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT id, customer_id, api_key_id, operation, request_id, plan,
+		       status, units_label, billable_units, error_code, error_message,
+		       timeout_seconds, created_at, updated_at
+		FROM async_jobs
+		WHERE customer_id = $1
+		  AND ($2::text IS NULL OR status = $2)
+		  AND ($3::text IS NULL OR operation = $3)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4 OFFSET $5
+	`, customerID, status, operation, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("jobs: list query: %w", err)
+	}
+	defer rows.Close()
+
+	jobs := []Job{}
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(
+			&j.ID, &j.CustomerID, &j.APIKeyID, &j.Operation, &j.RequestID, &j.Plan,
+			&j.Status, &j.UnitsLabel, &j.BillableUnits, &j.ErrorCode, &j.ErrorMessage,
+			&j.TimeoutSeconds, &j.CreatedAt, &j.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("jobs: list scan: %w", err)
+		}
+		jobs = append(jobs, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("jobs: list rows: %w", err)
+	}
+	return jobs, total, nil
+}
+
 // Claim recovers any 'running' rows abandoned by a crashed process (no
 // graceful shutdown), then atomically claims up to limit queued rows via
 // SELECT ... FOR UPDATE SKIP LOCKED — concurrent gateway replicas skip rows

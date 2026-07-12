@@ -26,6 +26,20 @@ export interface ListErrorsResponse {
   limit: number;
   page: number;
 }
+export interface ListJobsResponseItemsItem {
+  billable_units: number;
+  created_at: string;
+  error: unknown;
+  job_id: string;
+  operation: string;
+  status: string;
+  units_label: string;
+  updated_at: string;
+}
+export interface ListJobsResponse {
+  items: ListJobsResponseItemsItem[] | null;
+  total: number;
+}
 export interface GetJobResponse {
   billable_units: number;
   created_at: string;
@@ -149,6 +163,21 @@ export class Client {
     if (limit !== undefined) q.set("limit", String(limit));
     if ([...q].length > 0) path += "?" + q.toString();
     return this.request<ListErrorsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/jobs — list jobs.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listJobs(page?: number, perPage?: number, status?: string, operation?: string, apiKey?: string): Promise<ListJobsResponse> {
+    let path: string = "/v1/jobs";
+    const q = new URLSearchParams();
+    if (page !== undefined) q.set("page", String(page));
+    if (perPage !== undefined) q.set("per_page", String(perPage));
+    if (status !== undefined) q.set("status", String(status));
+    if (operation !== undefined) q.set("operation", String(operation));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListJobsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**

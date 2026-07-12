@@ -109,6 +109,22 @@ func TestListErrors(t *testing.T) {
 	}
 }
 
+func TestListJobs(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/jobs" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"items": []any{}, "total": 1})
+	})
+	_, err := c.ListJobs(context.Background(), "test-key", 0, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGetJob(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/jobs/test-id" {

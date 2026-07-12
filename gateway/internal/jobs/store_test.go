@@ -210,6 +210,129 @@ func TestStore_Enqueue_IdempotencyKey_ReturnsExistingJob(t *testing.T) {
 	}
 }
 
+func TestStore_List_CustomerScopedAndOrdered(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-list-a-"+uuid.New().String()+"@example.com")
+	custB, keyB := seedCustomer(t, pool, "jobs-list-b-"+uuid.New().String()+"@example.com")
+
+	idOld, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-old", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (old): %v", err)
+	}
+	idNew, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-new", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (new): %v", err)
+	}
+	// Back-date the first row so ordering isn't dependent on same-timestamp ties.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE async_jobs SET created_at = created_at - INTERVAL '1 hour' WHERE id = $1`, idOld,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// Another customer's job must never appear in custA's list — IDOR scope,
+	// matching Get's SQL-level customer_id filter.
+	if _, err := s.Enqueue(context.Background(), custB, keyB, "echo", "req-other", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+		t.Fatalf("Enqueue (other customer): %v", err)
+	}
+
+	jobsList, total, err := s.List(context.Background(), custA, nil, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	if len(jobsList) != 2 {
+		t.Fatalf("len(jobsList) = %d, want 2", len(jobsList))
+	}
+	if jobsList[0].ID != idNew || jobsList[1].ID != idOld {
+		t.Errorf("List order = [%s, %s], want newest-first [%s, %s]", jobsList[0].ID, jobsList[1].ID, idNew, idOld)
+	}
+	for _, j := range jobsList {
+		if j.CustomerID != custA {
+			t.Errorf("List(custA) returned a job owned by %s", j.CustomerID)
+		}
+	}
+}
+
+func TestStore_List_StatusFilter(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-list-status-"+uuid.New().String()+"@example.com")
+
+	queuedID, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-queued", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (queued): %v", err)
+	}
+	failedID, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-failed", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (failed): %v", err)
+	}
+	if err := s.Fail(context.Background(), failedID, "WORKER_BAD_RESPONSE", "worker contract violation"); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+
+	failedStatus := StatusFailed
+	jobsList, total, err := s.List(context.Background(), custA, &failedStatus, nil, 50, 0)
+	if err != nil {
+		t.Fatalf("List(status=failed): %v", err)
+	}
+	if total != 1 || len(jobsList) != 1 {
+		t.Fatalf("List(status=failed) = %d rows (total=%d), want 1", len(jobsList), total)
+	}
+	if jobsList[0].ID != failedID {
+		t.Errorf("List(status=failed) returned job %s, want %s", jobsList[0].ID, failedID)
+	}
+	if jobsList[0].ID == queuedID {
+		t.Error("List(status=failed) returned the still-queued job")
+	}
+}
+
+func TestStore_List_Pagination(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-list-page-"+uuid.New().String()+"@example.com")
+
+	const numJobs = 5
+	for i := 0; i < numJobs; i++ {
+		if _, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	}
+
+	page1, total, err := s.List(context.Background(), custA, nil, nil, 2, 0)
+	if err != nil {
+		t.Fatalf("List(page1): %v", err)
+	}
+	if total != numJobs {
+		t.Fatalf("total = %d, want %d", total, numJobs)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("len(page1) = %d, want 2", len(page1))
+	}
+
+	page2, _, err := s.List(context.Background(), custA, nil, nil, 2, 2)
+	if err != nil {
+		t.Fatalf("List(page2): %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("len(page2) = %d, want 2", len(page2))
+	}
+	if page1[0].ID == page2[0].ID || page1[1].ID == page2[0].ID {
+		t.Error("List pages overlap: same job returned on page1 and page2")
+	}
+}
+
+func TestStore_List_NilReceiver(t *testing.T) {
+	var s *Store
+	jobsList, total, err := s.List(context.Background(), uuid.New(), nil, nil, 10, 0)
+	if jobsList != nil || total != 0 || err != nil {
+		t.Errorf("nil Store.List: got (%v, %d, %v), want (nil, 0, nil)", jobsList, total, err)
+	}
+}
+
 func TestStore_Claim_MarksRunningAndScansFields(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)

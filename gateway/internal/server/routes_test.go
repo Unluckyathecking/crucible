@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,15 +16,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/auth"
 	"github.com/Unluckyathecking/crucible/gateway/internal/billing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
+	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	mw "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
 )
 
@@ -1218,6 +1223,210 @@ func TestInvokeNon2xx_WorkerBodyAbsentFromCustomerResponse(t *testing.T) {
 	}
 	if errObj["message"] != "worker unavailable" {
 		t.Errorf("customer error message = %q, want %q", errObj["message"], "worker unavailable")
+	}
+}
+
+// --- GET /v1/jobs (jobsListHandler) tests ---
+//
+// jobsListHandler is called directly (bypassing NewRouter/auth.Middleware),
+// the same pattern TestBillingCheckout_WithKey uses above: auth.WithKey
+// injects the request context jobsListHandler reads via auth.FromContext,
+// so no auth.Store/Redis is needed. jobs.Store itself needs a real
+// customer_id/api_key_id foreign key target, hence the local Postgres
+// helpers below, mirroring gateway/internal/jobs/store_test.go's
+// newTestPostgres/seedCustomer.
+
+// jobsListTestPostgres mirrors jobs/store_test.go's newTestPostgres: skip
+// when Postgres is unreachable, unless the DSN was explicitly requested (CI),
+// in which case failure is fatal. Applies migrations (idempotent —
+// invariant #8) so the suite is self-contained.
+func jobsListTestPostgres(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	explicit := dsn != ""
+	if !explicit {
+		if v := os.Getenv("POSTGRES_DSN"); v != "" {
+			dsn = v
+			explicit = true
+		} else {
+			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		if explicit {
+			t.Fatalf("TEST_DATABASE_URL set but postgres unavailable: %v", err)
+		}
+		t.Skipf("postgres unavailable, skipping: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		if explicit {
+			t.Fatalf("TEST_DATABASE_URL set but postgres ping failed: %v", err)
+		}
+		t.Skipf("postgres ping failed, skipping: %v", err)
+	}
+	if err := db.Apply(ctx, pool); err != nil {
+		pool.Close()
+		t.Fatalf("apply migrations: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// seedJobsListCustomer inserts a minimal customers + api_keys row pair and
+// registers cleanup (async_jobs first, matching jobs/store_test.go's
+// seedCustomer — async_jobs has no ON DELETE CASCADE from customers).
+// Returns an *auth.Key usable as jobsListHandler's auth.FromContext value.
+func seedJobsListCustomer(t *testing.T, pool *pgxpool.Pool, email string) *auth.Key {
+	t.Helper()
+	ctx := context.Background()
+	var custID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO customers (email, plan_id) VALUES ($1, 'free') RETURNING id`, email,
+	).Scan(&custID); err != nil {
+		t.Fatalf("seedJobsListCustomer: %v", err)
+	}
+	var keyID uuid.UUID
+	prefix := "cru_test_" + uuid.New().String()[:8]
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (customer_id, prefix, hash) VALUES ($1, $2, '\x00') RETURNING id`, custID, prefix,
+	).Scan(&keyID); err != nil {
+		t.Fatalf("seedJobsListCustomer: insert api_key: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM async_jobs WHERE customer_id = $1`, custID)
+		_, _ = pool.Exec(ctx, `DELETE FROM customers WHERE id = $1`, custID)
+	})
+	return &auth.Key{ID: keyID, Customer: auth.Customer{ID: custID, Email: email, Plan: "free"}}
+}
+
+func TestJobsListHandler_CustomerScopedShapeAndHeader(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	keyA := seedJobsListCustomer(t, pool, "jobs-list-route-a-"+uuid.New().String()+"@example.com")
+	keyB := seedJobsListCustomer(t, pool, "jobs-list-route-b-"+uuid.New().String()+"@example.com")
+
+	if _, err := store.Enqueue(context.Background(), keyA.Customer.ID, keyA.ID, "echo", "req-a", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+		t.Fatalf("Enqueue (A): %v", err)
+	}
+	if _, err := store.Enqueue(context.Background(), keyB.Customer.ID, keyB.ID, "echo", "req-b", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+		t.Fatalf("Enqueue (B): %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), keyA))
+	w := httptest.NewRecorder()
+	jobsListHandler(store)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", got, "no-store")
+	}
+
+	var body paging.Page[jobListItem]
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+	}
+	if body.Total != 1 || len(body.Items) != 1 {
+		t.Fatalf("items/total = %d/%d, want 1/1 (must contain only the caller's own jobs)", len(body.Items), body.Total)
+	}
+	if body.Items[0].Operation != "echo" {
+		t.Errorf("items[0].Operation = %q, want %q", body.Items[0].Operation, "echo")
+	}
+}
+
+func TestJobsListHandler_StatusFilter(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-list-route-status-"+uuid.New().String()+"@example.com")
+
+	if _, err := store.Enqueue(context.Background(), key.Customer.ID, key.ID, "echo", "req-queued", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+		t.Fatalf("Enqueue (queued): %v", err)
+	}
+	failedID, err := store.Enqueue(context.Background(), key.Customer.ID, key.ID, "echo", "req-failed", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue (failed): %v", err)
+	}
+	if err := store.Fail(context.Background(), failedID, "WORKER_BAD_RESPONSE", "worker contract violation"); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?status=failed", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), key))
+	w := httptest.NewRecorder()
+	jobsListHandler(store)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var body paging.Page[jobListItem]
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+	}
+	if body.Total != 1 || len(body.Items) != 1 {
+		t.Fatalf("?status=failed items/total = %d/%d, want 1/1", len(body.Items), body.Total)
+	}
+	if body.Items[0].JobID != failedID.String() {
+		t.Errorf("?status=failed returned job %q, want %q", body.Items[0].JobID, failedID)
+	}
+	if body.Items[0].Error == nil || body.Items[0].Error.Code != "WORKER_BAD_RESPONSE" {
+		t.Errorf("?status=failed item error = %+v, want code WORKER_BAD_RESPONSE", body.Items[0].Error)
+	}
+}
+
+func TestJobsListHandler_UnknownStatus400(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-list-route-badstatus-"+uuid.New().String()+"@example.com")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?status=not-a-real-status", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), key))
+	w := httptest.NewRecorder()
+	jobsListHandler(store)(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", body["error"])
+	}
+	if errObj["code"] != apierror.BAD_REQUEST {
+		t.Errorf("error.code = %v, want %q", errObj["code"], apierror.BAD_REQUEST)
+	}
+}
+
+func TestJobsListHandler_NotConfigured(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	w := httptest.NewRecorder()
+	jobsListHandler(nil)(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobsListHandler_Unauthorized(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	w := httptest.NewRecorder()
+	jobsListHandler(store)(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", w.Code, w.Body.String())
 	}
 }
 

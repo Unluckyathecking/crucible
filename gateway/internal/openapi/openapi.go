@@ -110,7 +110,15 @@ type Schema struct {
 	Description          string             `json:"description,omitempty"`
 	Properties           map[string]*Schema `json:"properties,omitempty"`
 	Required             []string           `json:"required,omitempty"`
-	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
+	// Items describes the element schema of a Type:"array" node — the
+	// standards-correct way to type a list's rows (as opposed to the older
+	// idiom elsewhere in this file of attaching Properties directly to the
+	// array schema itself, which off-the-shelf OpenAPI tooling doesn't
+	// recognize as describing the array's elements).
+	// scripts/gen-clients.sh's array_item_properties reads either shape, so
+	// using Items here doesn't change the generated Go/TS client output.
+	Items                *Schema `json:"items,omitempty"`
+	AdditionalProperties *Schema `json:"additionalProperties,omitempty"`
 	// BoolFalse causes MarshalJSON to emit the JSON boolean false.
 	// Used only as AdditionalProperties: &Schema{BoolFalse: true}.
 	BoolFalse bool `json:"-"`
@@ -1200,6 +1208,30 @@ func jobsPathItems() map[string]PathItem {
 		Required: []string{"job_id", "status", "created_at", "updated_at"},
 	}
 
+	listItemProps := map[string]*Schema{
+		"job_id":         {Type: "string", Description: "Job UUID, returned by the enqueuing POST /v1/<op> call"},
+		"operation":      {Type: "string", Description: "The opaque operation string of the POST /v1/<op> route that enqueued this job"},
+		"status":         {Type: "string", Description: "queued | running | succeeded | failed"},
+		"error":          {Type: "object", Description: "Structured error {code, message}; present only when status is failed"},
+		"billable_units": {Type: "integer", Description: "Present only when status is succeeded; always >= 1 (invariant #2)"},
+		"units_label":    {Type: "string"},
+		"created_at":     {Type: "string", Description: "RFC3339 enqueue timestamp"},
+		"updated_at":     {Type: "string", Description: "RFC3339 timestamp of the last status change"},
+	}
+	listResponseSchema := &Schema{
+		Type:        "object",
+		Description: "Paginated envelope of the caller's own async jobs",
+		Properties: map[string]*Schema{
+			"items": {
+				Type:        "array",
+				Description: "Matching async_jobs rows, newest-first",
+				Items:       &Schema{Type: "object", Properties: listItemProps, Required: []string{"job_id", "operation", "status", "created_at", "updated_at"}},
+			},
+			"total": {Type: "integer", Description: "Total matching jobs across all pages"},
+		},
+		Required: []string{"items", "total"},
+	}
+
 	return map[string]PathItem{
 		"/v1/jobs/{id}": {
 			Get: &Operation{
@@ -1218,6 +1250,29 @@ func jobsPathItems() map[string]PathItem {
 					"400": errResp("Bad request — malformed job id"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
 					"404": errResp("Job not found (includes ids owned by another customer)"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+		"/v1/jobs": {
+			Get: &Operation{
+				OperationID: "list_jobs",
+				Summary:     "List the authenticated customer's own async jobs",
+				Tags:        []string{"jobs"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
+					{Name: "per_page", In: "query", Description: "Page size; default 20, capped at 100", Schema: &Schema{Type: "integer"}},
+					{Name: "status", In: "query", Description: "Filter to exactly one status: queued | running | succeeded | failed", Schema: &Schema{Type: "string"}},
+					{Name: "operation", In: "query", Description: "Filter to jobs enqueued with this exact operation string", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "The caller's own async jobs matching the given filters, newest-first",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: listResponseSchema}},
+					},
+					"400": errResp("Bad request — unknown status filter, or page too large"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
 					"500": errResp("Internal server error"),
 				},
 			},
