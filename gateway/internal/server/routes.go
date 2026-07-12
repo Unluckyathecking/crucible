@@ -278,6 +278,15 @@ func NewRouter(d *Deps) http.Handler {
 		// strictly to the caller's own jobs — see jobs.Store.Get's SQL-level
 		// customer_id scoping.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs/{id}", jobsGetHandler(jobStore))
+
+		// === Async job history listing (auth gated; active when DB is set; read-only) ===
+		// GET /v1/jobs: a paginated history of the caller's own enqueued jobs,
+		// the enumerate-many counterpart to GET /v1/jobs/{id} above. Same
+		// registration rationale (framework infra, direct method-specific
+		// r.With(...).Get rather than r.Route, kept out of the per-product
+		// block). Scoped strictly to the caller's own jobs — see
+		// jobs.Store.List's SQL-level customer_id scoping.
+		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs", jobsListHandler(jobStore))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===
@@ -663,6 +672,111 @@ func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// validJobStatuses is the set of accepted ?status= filter values for
+// jobsListHandler, mirrored from jobs.Status* so an unrecognized value can be
+// rejected as 400 rather than silently matching zero rows.
+var validJobStatuses = map[string]bool{
+	jobs.StatusQueued:    true,
+	jobs.StatusRunning:   true,
+	jobs.StatusSucceeded: true,
+	jobs.StatusFailed:    true,
+}
+
+const (
+	jobsListDefaultPageSize = 20
+	jobsListMaxPageSize     = 100
+)
+
+// jobListItem is one row of GET /v1/jobs's "items" list. Mirrors
+// asyncJobResponse's status-conditional fields (billable_units only once
+// succeeded, error only once failed) plus operation, so a caller can tell
+// which POST /v1/<op> route enqueued each job without a second round trip;
+// omits result/payload to keep the list response bounded regardless of how
+// large an individual job's worker output is.
+type jobListItem struct {
+	JobID         string         `json:"job_id"`
+	Operation     string         `json:"operation"`
+	Status        string         `json:"status"`
+	BillableUnits uint64         `json:"billable_units,omitempty"`
+	UnitsLabel    string         `json:"units_label,omitempty"`
+	Error         *asyncJobError `json:"error,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+// jobsListHandler handles GET /v1/jobs: a paginated history of the caller's
+// own async jobs, scoped at the SQL level by jobs.Store.List (IDOR-safe,
+// mirroring jobsGetHandler), optionally narrowed by ?status= (validated
+// against jobs.Status*) and/or ?operation= (opaque, unvalidated — matches an
+// exact enqueued operation string). Paginated via the shared paging package,
+// same page/per_page contract as webhookDeliveriesHandler.
+func jobsListHandler(store *jobs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		q := r.URL.Query()
+		var status *string
+		if v := q.Get("status"); v != "" {
+			if !validJobStatuses[v] {
+				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "unknown status filter", false)
+				return
+			}
+			status = &v
+		}
+		var operation *string
+		if v := q.Get("operation"); v != "" {
+			operation = &v
+		}
+
+		pp := paging.ParseQuery(q, "per_page")
+		page, perPage := paging.Clamp(pp.Page, pp.PerPage, jobsListDefaultPageSize, jobsListMaxPageSize)
+		offset, err := paging.Offset(page, perPage)
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "page too large", false)
+			return
+		}
+
+		jobRows, total, err := store.List(r.Context(), key.Customer.ID, status, operation, perPage, offset)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("jobs: list failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "list failed", false)
+			return
+		}
+
+		items := make([]jobListItem, 0, len(jobRows))
+		for _, j := range jobRows {
+			it := jobListItem{
+				JobID:      j.ID.String(),
+				Operation:  j.Operation,
+				Status:     j.Status,
+				UnitsLabel: j.UnitsLabel,
+				CreatedAt:  j.CreatedAt,
+				UpdatedAt:  j.UpdatedAt,
+			}
+			if j.Status == jobs.StatusSucceeded {
+				it.BillableUnits = j.BillableUnits
+			}
+			if j.Status == jobs.StatusFailed {
+				it.Error = &asyncJobError{Code: j.ErrorCode, Message: j.ErrorMessage}
+			}
+			items = append(items, it)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(paging.Page[jobListItem]{Items: items, Total: total})
 	}
 }
 

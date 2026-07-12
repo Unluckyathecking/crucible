@@ -75,6 +75,24 @@ type ListErrorsResponse struct {
 	Page     int64                        `json:"page"`
 }
 
+// ListJobsResponseItemsItem is one row of ListJobs's "items" list.
+type ListJobsResponseItemsItem struct {
+	Billable_units int64  `json:"billable_units"`
+	Created_at     string `json:"created_at"`
+	Error          any    `json:"error"`
+	Job_id         string `json:"job_id"`
+	Operation      string `json:"operation"`
+	Status         string `json:"status"`
+	Units_label    string `json:"units_label"`
+	Updated_at     string `json:"updated_at"`
+}
+
+// ListJobsResponse is returned by ListJobs.
+type ListJobsResponse struct {
+	Items []ListJobsResponseItemsItem `json:"items"`
+	Total int64                       `json:"total"`
+}
+
 // GetJobResponse is returned by GetJob.
 type GetJobResponse struct {
 	Billable_units int64  `json:"billable_units"`
@@ -236,6 +254,41 @@ func (c *Client) ListErrors(ctx context.Context, apiKey string, from string, to 
 		return nil, err
 	}
 	var out ListErrorsResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListJobs calls GET /v1/jobs (list jobs).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListJobs(ctx context.Context, apiKey string, page int64, perPage int64, status string, operation string) (*ListJobsResponse, error) {
+	q := url.Values{}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if perPage != 0 {
+		q.Set("per_page", strconv.FormatInt(perPage, 10))
+	}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if operation != "" {
+		q.Set("operation", operation)
+	}
+	reqPath := "/v1/jobs"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListJobsResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}

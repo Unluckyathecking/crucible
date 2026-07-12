@@ -482,6 +482,144 @@
         }
       }
     },
+    "/v1/jobs": {
+      "get": {
+        "operationId": "list_jobs",
+        "summary": "List the authenticated customer's own async jobs",
+        "tags": [
+          "jobs"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Page size; default 20, capped at 100",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter to exactly one status: queued | running | succeeded | failed",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Filter to jobs enqueued with this exact operation string",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own async jobs matching the given filters, newest-first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Paginated envelope of the caller's own async jobs",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "description": "Matching async_jobs rows, newest-first",
+                      "properties": {
+                        "billable_units": {
+                          "type": "integer",
+                          "description": "Present only when status is succeeded; always \u003e= 1 (invariant #2)"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "description": "RFC3339 enqueue timestamp"
+                        },
+                        "error": {
+                          "type": "object",
+                          "description": "Structured error {code, message}; present only when status is failed"
+                        },
+                        "job_id": {
+                          "type": "string",
+                          "description": "Job UUID, returned by the enqueuing POST /v1/\u003cop\u003e call"
+                        },
+                        "operation": {
+                          "type": "string",
+                          "description": "The opaque operation string of the POST /v1/\u003cop\u003e route that enqueued this job"
+                        },
+                        "status": {
+                          "type": "string",
+                          "description": "queued | running | succeeded | failed"
+                        },
+                        "units_label": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "description": "RFC3339 timestamp of the last status change"
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total matching jobs across all pages"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — unknown status filter, or page too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/jobs/{id}": {
       "get": {
         "operationId": "get_job",
