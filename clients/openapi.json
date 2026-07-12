@@ -540,38 +540,48 @@
                     "items": {
                       "type": "array",
                       "description": "Matching async_jobs rows, newest-first",
-                      "properties": {
-                        "billable_units": {
-                          "type": "integer",
-                          "description": "Present only when status is succeeded; always \u003e= 1 (invariant #2)"
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "billable_units": {
+                            "type": "integer",
+                            "description": "Present only when status is succeeded; always \u003e= 1 (invariant #2)"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "description": "RFC3339 enqueue timestamp"
+                          },
+                          "error": {
+                            "type": "object",
+                            "description": "Structured error {code, message}; present only when status is failed"
+                          },
+                          "job_id": {
+                            "type": "string",
+                            "description": "Job UUID, returned by the enqueuing POST /v1/\u003cop\u003e call"
+                          },
+                          "operation": {
+                            "type": "string",
+                            "description": "The opaque operation string of the POST /v1/\u003cop\u003e route that enqueued this job"
+                          },
+                          "status": {
+                            "type": "string",
+                            "description": "queued | running | succeeded | failed"
+                          },
+                          "units_label": {
+                            "type": "string"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "description": "RFC3339 timestamp of the last status change"
+                          }
                         },
-                        "created_at": {
-                          "type": "string",
-                          "description": "RFC3339 enqueue timestamp"
-                        },
-                        "error": {
-                          "type": "object",
-                          "description": "Structured error {code, message}; present only when status is failed"
-                        },
-                        "job_id": {
-                          "type": "string",
-                          "description": "Job UUID, returned by the enqueuing POST /v1/\u003cop\u003e call"
-                        },
-                        "operation": {
-                          "type": "string",
-                          "description": "The opaque operation string of the POST /v1/\u003cop\u003e route that enqueued this job"
-                        },
-                        "status": {
-                          "type": "string",
-                          "description": "queued | running | succeeded | failed"
-                        },
-                        "units_label": {
-                          "type": "string"
-                        },
-                        "updated_at": {
-                          "type": "string",
-                          "description": "RFC3339 timestamp of the last status change"
-                        }
+                        "required": [
+                          "job_id",
+                          "operation",
+                          "status",
+                          "created_at",
+                          "updated_at"
+                        ]
                       }
                     },
                     "total": {

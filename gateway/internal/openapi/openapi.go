@@ -110,7 +110,15 @@ type Schema struct {
 	Description          string             `json:"description,omitempty"`
 	Properties           map[string]*Schema `json:"properties,omitempty"`
 	Required             []string           `json:"required,omitempty"`
-	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
+	// Items describes the element schema of a Type:"array" node — the
+	// standards-correct way to type a list's rows (as opposed to the older
+	// idiom elsewhere in this file of attaching Properties directly to the
+	// array schema itself, which off-the-shelf OpenAPI tooling doesn't
+	// recognize as describing the array's elements).
+	// scripts/gen-clients.sh's array_item_properties reads either shape, so
+	// using Items here doesn't change the generated Go/TS client output.
+	Items                *Schema `json:"items,omitempty"`
+	AdditionalProperties *Schema `json:"additionalProperties,omitempty"`
 	// BoolFalse causes MarshalJSON to emit the JSON boolean false.
 	// Used only as AdditionalProperties: &Schema{BoolFalse: true}.
 	BoolFalse bool `json:"-"`
@@ -1214,7 +1222,11 @@ func jobsPathItems() map[string]PathItem {
 		Type:        "object",
 		Description: "Paginated envelope of the caller's own async jobs",
 		Properties: map[string]*Schema{
-			"items": {Type: "array", Description: "Matching async_jobs rows, newest-first", Properties: listItemProps},
+			"items": {
+				Type:        "array",
+				Description: "Matching async_jobs rows, newest-first",
+				Items:       &Schema{Type: "object", Properties: listItemProps, Required: []string{"job_id", "operation", "status", "created_at", "updated_at"}},
+			},
 			"total": {Type: "integer", Description: "Total matching jobs across all pages"},
 		},
 		Required: []string{"items", "total"},
