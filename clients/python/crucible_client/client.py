@@ -423,4 +423,10 @@ class Client:
             # subclass, so both need their own except clause.
             raise ApiError("UNKNOWN", f"request timed out: {e}", True, "", 0) from None
         except urllib.error.URLError as e:
-            raise ApiError("UNKNOWN", f"connection error: {e.reason}", False, "", 0) from None
+            # A connect-phase timeout surfaces here as URLError(reason=TimeoutError(...)),
+            # not through the bare "except TimeoutError" above — treat it as
+            # retryable too, consistent with the read-phase timeout branch,
+            # instead of lumping it in with genuine connection failures.
+            timed_out = isinstance(e.reason, TimeoutError)
+            message = f"request timed out: {e.reason}" if timed_out else f"connection error: {e.reason}"
+            raise ApiError("UNKNOWN", message, timed_out, "", 0) from None

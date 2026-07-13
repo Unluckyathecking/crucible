@@ -8,8 +8,10 @@ import http.server
 import json
 import threading
 import time
+import urllib.error
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from crucible_client import ApiError, Client
@@ -452,6 +454,20 @@ def test_healthz_respects_timeout():
             assert False, "expected a timeout error"
         except ApiError as e:
             assert e.code == "UNKNOWN"
+
+
+def test_healthz_wrapped_connect_timeout_is_retryable():
+    def raise_wrapped_timeout(*args, **kwargs):
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    with patch("urllib.request.urlopen", side_effect=raise_wrapped_timeout):
+        c = Client("http://example.invalid")
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+            assert e.retryable is True
 
 
 def test_client_normalizes_base_url():
