@@ -1217,8 +1217,8 @@ func errorsPathItems() map[string]PathItem {
 // usagePathItem/keysPathItems/errorsPathItems; see Handler.
 func usageEventsPathItems() map[string]PathItem {
 	eventProps := map[string]*Schema{
-		"id":             {Type: "integer", Description: "usage_events row id"},
-		"operation":      {Type: "string", Description: "The /v1 route pattern that produced this usage row"},
+		"id":             {Type: "string", Description: "usage_events row id (BIGSERIAL, encoded as a decimal string to avoid precision loss past Number.MAX_SAFE_INTEGER in JS clients)"},
+		"operation":      {Type: "string", Description: "The opaque worker operation string this usage row was recorded under (RouteDescriptor.Operation, e.g. \"echo\") — not a /v1/... path"},
 		"billable_units": {Type: "integer", Description: "Billable units metered for this call (always >= 1, invariant #2)"},
 		"created_at":     {Type: "string", Description: "RFC3339 creation timestamp"},
 	}
@@ -1238,15 +1238,23 @@ func usageEventsPathItems() map[string]PathItem {
 			Get: &Operation{
 				OperationID: "list_usage_events",
 				Summary:     "Export the authenticated customer's own per-event metered usage rows",
+				// The RFC-4180 CSV representation (?format=csv or Accept: text/csv,
+				// see gateway/internal/selfusagedetail) is deliberately NOT declared as
+				// a "format" query Parameter below: scripts/gen-clients.sh generates one
+				// SDK method per operationId that always JSON-decodes its response, so a
+				// typed "format" parameter would let a caller pass format="csv" through
+				// the generated client and get back a body it can't parse. The endpoint
+				// still honors ?format=csv/Accept: text/csv for direct HTTP callers —
+				// it's just not exposed as a generated client parameter.
+				Description: "Returns a JSON envelope by default. Direct HTTP callers (not the generated SDKs) may pass ?format=csv or an Accept: text/csv header for an RFC-4180 CSV export instead.",
 				Tags:        []string{"usage"},
 				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
 				Parameters: []Parameter{
 					{Name: "from", In: "query", Description: "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to 30 days ago", Schema: &Schema{Type: "string"}},
 					{Name: "to", In: "query", Description: "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to today; range capped at 90 days", Schema: &Schema{Type: "string"}},
-					{Name: "operation", In: "query", Description: "Exact /v1/... path filter", Schema: &Schema{Type: "string"}},
+					{Name: "operation", In: "query", Description: "Exact match against the opaque worker operation string (e.g. \"echo\"); max 128 characters", Schema: &Schema{Type: "string"}},
 					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
 					{Name: "limit", In: "query", Description: "Page size; default 50, capped at 200", Schema: &Schema{Type: "integer"}},
-					{Name: "format", In: "query", Description: "Set to \"csv\" for an RFC-4180 CSV export instead of the JSON envelope; Accept: text/csv is equivalent", Schema: &Schema{Type: "string"}},
 				},
 				Responses: map[string]Response{
 					"200": {

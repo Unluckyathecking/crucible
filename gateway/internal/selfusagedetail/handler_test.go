@@ -202,11 +202,15 @@ func TestHandler_FutureDateRejected(t *testing.T) {
 	}
 }
 
-// TestHandler_InvalidOperationFilter asserts a malformed operation filter
-// (not shaped like /v1/...) is rejected with 400 before any DB query.
+// TestHandler_InvalidOperationFilter asserts an operation filter exceeding
+// the 128-character bound is rejected with 400 before any DB query.
+// usage_events.operation is an opaque worker operation string (e.g. "echo"),
+// not a /v1/... path — so unlike selferrors' operation filter, there is no
+// shape to validate here, only a length bound.
 func TestHandler_InvalidOperationFilter(t *testing.T) {
 	r := newRouter(nil)
-	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events?operation=not+valid%21", nil).WithContext(testKeyContext(uuid.New()))
+	tooLong := strings.Repeat("a", 129)
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events?operation="+tooLong, nil).WithContext(testKeyContext(uuid.New()))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -216,17 +220,22 @@ func TestHandler_InvalidOperationFilter(t *testing.T) {
 }
 
 // TestHandler_OperationFilter asserts a valid operation filter narrows the
-// result set end to end through the HTTP handler.
+// result set end to end through the HTTP handler. Uses bare opaque operation
+// strings ("echo", "count-words") rather than /v1/... paths, matching how
+// usage_events.operation is actually populated (server.invoke passes
+// RouteDescriptor.Operation, not the request path) — a regression check for
+// the selferrors-style path-shape validation this handler deliberately does
+// not reuse.
 func TestHandler_OperationFilter(t *testing.T) {
 	pool := newTestPostgres(t)
 	cust := seedCustomer(t, pool)
 	key := seedAPIKey(t, pool, cust)
 	now := time.Now().UTC()
-	seedUsageEvent(t, pool, cust, key, "/v1/echo", 1, now.Add(-time.Minute))
-	seedUsageEvent(t, pool, cust, key, "/v1/other", 1, now)
+	seedUsageEvent(t, pool, cust, key, "echo", 1, now.Add(-time.Minute))
+	seedUsageEvent(t, pool, cust, key, "count-words", 1, now)
 
 	r := newRouter(pool)
-	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events?operation=/v1/echo", nil).WithContext(testKeyContext(cust))
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events?operation=echo", nil).WithContext(testKeyContext(cust))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -234,7 +243,7 @@ func TestHandler_OperationFilter(t *testing.T) {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
 	resp := decodeResponse(t, rec)
-	if len(resp.Data) != 1 || resp.Data[0].Operation != "/v1/echo" {
+	if len(resp.Data) != 1 || resp.Data[0].Operation != "echo" {
 		t.Fatalf("unexpected filtered response: %+v", resp.Data)
 	}
 }

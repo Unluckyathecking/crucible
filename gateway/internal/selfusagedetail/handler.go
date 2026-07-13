@@ -28,14 +28,17 @@ const (
 	maxFilterLength  = 128
 )
 
-// operationFilterRE and isoDateRE mirror selferrors' identically-named
-// regexes (in turn mirroring the dashboard's OPERATION_FILTER_RE) so every
-// self-service date/operation-filtered surface accepts and rejects the same
-// inputs.
-var (
-	operationFilterRE = regexp.MustCompile(`^/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+$`)
-	isoDateRE         = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$`)
-)
+// isoDateRE mirrors selferrors' identically-named regex so every self-service
+// date-filtered surface accepts and rejects the same date inputs.
+//
+// Unlike selferrors' operation filter (which matches error_events.operation —
+// a chi route pattern like "/v1/echo"), usage_events.operation stores the
+// opaque RouteDescriptor.Operation string passed to usage.Recorder.Record
+// (e.g. "echo", see server.invoke and routes_table.go) — it is never
+// path-shaped, so it is validated the same way the dashboard's usage export
+// validates it (dashboard/lib/db.ts's validateUsageQueryParams): trimmed,
+// non-empty, bounded by length only.
+var isoDateRE = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$`)
 
 // csvHeader is the fixed column order for the CSV export, per the module spec.
 var csvHeader = []string{"id", "operation", "billable_units", "created_at"}
@@ -114,9 +117,12 @@ func Handler(db *pgxpool.Pool) http.HandlerFunc {
 
 		var operation *string
 		if v := strings.TrimSpace(q.Get("operation")); v != "" {
-			if len(v) > maxFilterLength || !operationFilterRE.MatchString(v) {
+			// Length-only bound: usage_events.operation is an opaque worker
+			// operation string (e.g. "echo"), not a /v1/... path — see the
+			// isoDateRE doc comment above for why this differs from selferrors.
+			if len([]rune(v)) > maxFilterLength {
 				apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST,
-					fmt.Sprintf("invalid 'operation' filter: must be a /v1/... path (max %d chars)", maxFilterLength), false)
+					fmt.Sprintf("invalid 'operation' filter: max %d characters", maxFilterLength), false)
 				return
 			}
 			operation = &v
@@ -178,7 +184,7 @@ func writeCSV(w http.ResponseWriter, events []Event) {
 	_ = cw.Write(csvHeader)
 	for _, e := range events {
 		_ = cw.Write([]string{
-			strconv.FormatInt(e.ID, 10),
+			e.ID,
 			e.Operation,
 			strconv.FormatInt(e.BillableUnits, 10),
 			e.CreatedAt.Format(time.RFC3339),

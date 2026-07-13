@@ -20,7 +20,11 @@ import (
 
 // Event is one usage_events row scoped to a single customer.
 type Event struct {
-	ID            int64     `json:"id"`
+	// ID is usage_events.id (BIGSERIAL) cast to text in SQL, mirroring
+	// dashboard/lib/db.ts's listUsageEvents id::text cast: a JSON number would
+	// silently lose precision past Number.MAX_SAFE_INTEGER in JS clients doing
+	// invoice reconciliation, so this field is always a decimal string.
+	ID            string    `json:"id"`
 	Operation     string    `json:"operation"`
 	BillableUnits int64     `json:"billable_units"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -50,14 +54,19 @@ func (s *Store) Query(
 	operation *string,
 	limit, offset int,
 ) ([]Event, bool, error) {
+	// ORDER BY created_at DESC, id DESC: created_at defaults to NOW() and rows can
+	// share a timestamp, so created_at alone is not a total order — without the id
+	// tiebreaker, customers paging through more than one page at the same
+	// timestamp could see duplicate or skipped rows across offset pages. id is
+	// BIGSERIAL (monotonic), making (created_at, id) a stable total order.
 	rows, err := s.db.Query(ctx, `
-		SELECT id, operation, billable_units, created_at
+		SELECT id::text, operation, billable_units, created_at
 		FROM usage_events
 		WHERE customer_id = $1
 		  AND created_at >= $2
 		  AND created_at < $3
 		  AND ($4::text IS NULL OR operation = $4)
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT $5 OFFSET $6
 	`, customerID, from, toExclusive, operation, limit+1, offset)
 	if err != nil {

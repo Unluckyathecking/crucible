@@ -187,6 +187,57 @@ func TestStore_Query_FiltersAndOrdering(t *testing.T) {
 	}
 }
 
+// TestStore_Query_StableOrderingOnTimestampTie asserts that rows sharing the
+// exact same created_at value still come back in a single, stable total
+// order — the id DESC tiebreaker — rather than an order Postgres is free to
+// vary across otherwise-identical paged queries. Without it, a customer
+// paging through more than one page of same-timestamp rows could see
+// duplicate or skipped rows across offset pages.
+func TestStore_Query_StableOrderingOnTimestampTie(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := selfusagedetail.NewStore(pool)
+	cust := seedCustomer(t, pool)
+	key := seedAPIKey(t, pool, cust)
+
+	tied := time.Now().UTC()
+	seedUsageEvent(t, pool, cust, key, "op-1", 1, tied)
+	seedUsageEvent(t, pool, cust, key, "op-2", 2, tied)
+	seedUsageEvent(t, pool, cust, key, "op-3", 3, tied)
+
+	from := tied.Add(-time.Hour)
+	to := tied.Add(time.Hour)
+
+	page1, hasMore, err := store.Query(context.Background(), cust, from, to, nil, 2, 0)
+	if err != nil {
+		t.Fatalf("query page 1: %v", err)
+	}
+	if !hasMore {
+		t.Fatal("hasMore = false, want true (3 rows, limit 2)")
+	}
+	if len(page1) != 2 {
+		t.Fatalf("len(page1) = %d, want 2", len(page1))
+	}
+
+	page2, _, err := store.Query(context.Background(), cust, from, to, nil, 2, 2)
+	if err != nil {
+		t.Fatalf("query page 2: %v", err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("len(page2) = %d, want 1", len(page2))
+	}
+
+	seen := map[string]bool{}
+	for _, e := range append(page1, page2...) {
+		if seen[e.ID] {
+			t.Errorf("row id %s appeared on more than one page: page1=%+v page2=%+v", e.ID, page1, page2)
+		}
+		seen[e.ID] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("expected 3 distinct rows across both pages, got %d: page1=%+v page2=%+v", len(seen), page1, page2)
+	}
+}
+
 // TestStore_Query_HasMoreAndBillableUnits asserts the limit+1 probe correctly
 // reports has_more and billable_units round-trips accurately.
 func TestStore_Query_HasMoreAndBillableUnits(t *testing.T) {

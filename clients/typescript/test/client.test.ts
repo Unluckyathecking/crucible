@@ -334,7 +334,7 @@ describe("Client.listUsageEvents", () => {
       });
     };
     const c = new Client("http://gw.test", { fetch: capFetch });
-    const got = await c.listUsageEvents(undefined, undefined, undefined, undefined, undefined, undefined, "key");
+    const got = await c.listUsageEvents(undefined, undefined, undefined, undefined, undefined, "key");
     assert.equal(String(capturedUrl), "http://gw.test/v1/usage/events");
     assert.equal(capturedInit!.method, "GET");
     const hdrs = capturedInit!.headers as Record<string, string>;
@@ -351,7 +351,7 @@ describe("Client.listUsageEvents", () => {
       });
     };
     const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
-    await c2.listUsageEvents(undefined, undefined, undefined, undefined, undefined, undefined);
+    await c2.listUsageEvents(undefined, undefined, undefined, undefined, undefined);
     const hdrs2 = capturedInit2!.headers as Record<string, string>;
     assert.equal(hdrs2["X-API-Key"], "default-key");
   });

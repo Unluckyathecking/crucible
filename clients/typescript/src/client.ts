@@ -79,7 +79,7 @@ export interface GetUsageResponse {
 export interface ListUsageEventsResponseDataItem {
   billable_units: number;
   created_at: string;
-  id: number;
+  id: string;
   operation: string;
 }
 export interface ListUsageEventsResponse {
@@ -241,7 +241,7 @@ export class Client {
    * GET /v1/usage/events — list usage events.
    * @param apiKey - Override the default API key for this call.
    */
-  async listUsageEvents(from?: string, to?: string, operation?: string, page?: number, limit?: number, format?: string, apiKey?: string): Promise<ListUsageEventsResponse> {
+  async listUsageEvents(from?: string, to?: string, operation?: string, page?: number, limit?: number, apiKey?: string): Promise<ListUsageEventsResponse> {
     let path: string = "/v1/usage/events";
     const q = new URLSearchParams();
     if (from !== undefined) q.set("from", String(from));
@@ -249,7 +249,6 @@ export class Client {
     if (operation !== undefined) q.set("operation", String(operation));
     if (page !== undefined) q.set("page", String(page));
     if (limit !== undefined) q.set("limit", String(limit));
-    if (format !== undefined) q.set("format", String(format));
     if ([...q].length > 0) path += "?" + q.toString();
     return this.request<ListUsageEventsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
   }

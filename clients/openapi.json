@@ -1121,6 +1121,7 @@
       "get": {
         "operationId": "list_usage_events",
         "summary": "Export the authenticated customer's own per-event metered usage rows",
+        "description": "Returns a JSON envelope by default. Direct HTTP callers (not the generated SDKs) may pass ?format=csv or an Accept: text/csv header for an RFC-4180 CSV export instead.",
         "tags": [
           "usage"
         ],
@@ -1149,7 +1150,7 @@
           {
             "name": "operation",
             "in": "query",
-            "description": "Exact /v1/... path filter",
+            "description": "Exact match against the opaque worker operation string (e.g. \"echo\"); max 128 characters",
             "schema": {
               "type": "string"
             }
@@ -1168,14 +1169,6 @@
             "description": "Page size; default 50, capped at 200",
             "schema": {
               "type": "integer"
-            }
-          },
-          {
-            "name": "format",
-            "in": "query",
-            "description": "Set to \"csv\" for an RFC-4180 CSV export instead of the JSON envelope; Accept: text/csv is equivalent",
-            "schema": {
-              "type": "string"
             }
           }
         ],
@@ -1200,12 +1193,12 @@
                           "description": "RFC3339 creation timestamp"
                         },
                         "id": {
-                          "type": "integer",
-                          "description": "usage_events row id"
+                          "type": "string",
+                          "description": "usage_events row id (BIGSERIAL, encoded as a decimal string to avoid precision loss past Number.MAX_SAFE_INTEGER in JS clients)"
                         },
                         "operation": {
                           "type": "string",
-                          "description": "The /v1 route pattern that produced this usage row"
+                          "description": "The opaque worker operation string this usage row was recorded under (RouteDescriptor.Operation, e.g. \"echo\") — not a /v1/... path"
                         }
                       }
                     },

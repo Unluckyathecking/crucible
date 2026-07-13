@@ -231,7 +231,7 @@ func TestListUsageEvents(t *testing.T) {
 		}
 		writeJSON(w, map[string]any{"data": []any{}, "has_more": true, "limit": 1, "page": 1})
 	})
-	_, err := c.ListUsageEvents(context.Background(), "test-key", "", "", "", 0, 0, "")
+	_, err := c.ListUsageEvents(context.Background(), "test-key", "", "", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

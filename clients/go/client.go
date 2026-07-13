@@ -143,7 +143,7 @@ type GetUsageResponse struct {
 type ListUsageEventsResponseDataItem struct {
 	Billable_units int64  `json:"billable_units"`
 	Created_at     string `json:"created_at"`
-	Id             int64  `json:"id"`
+	Id             string `json:"id"`
 	Operation      string `json:"operation"`
 }
 
@@ -420,7 +420,7 @@ func (c *Client) GetUsage(ctx context.Context, apiKey string) (*GetUsageResponse
 
 // ListUsageEvents calls GET /v1/usage/events (list usage events).
 // apiKey is sent as the X-API-Key header.
-func (c *Client) ListUsageEvents(ctx context.Context, apiKey string, from string, to string, operation string, page int64, limit int64, format string) (*ListUsageEventsResponse, error) {
+func (c *Client) ListUsageEvents(ctx context.Context, apiKey string, from string, to string, operation string, page int64, limit int64) (*ListUsageEventsResponse, error) {
 	q := url.Values{}
 	if from != "" {
 		q.Set("from", from)
@@ -436,9 +436,6 @@ func (c *Client) ListUsageEvents(ctx context.Context, apiKey string, from string
 	}
 	if limit != 0 {
 		q.Set("limit", strconv.FormatInt(limit, 10))
-	}
-	if format != "" {
-		q.Set("format", format)
 	}
 	reqPath := "/v1/usage/events"
 	if len(q) > 0 {
