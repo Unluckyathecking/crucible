@@ -44,6 +44,11 @@ _SECRET_HEX_CONTENT_RE = re.compile(r"[0-9a-fA-F]+")
 # Arabic-Indic) by default — those pass int() too but then fail
 # timestamp.encode("ascii") below with a raw UnicodeEncodeError instead of the
 # typed WebhookVerificationError, so this must reject them at the regex stage.
+# Matched with fullmatch(), not match(): Python's $ can match just before a
+# single trailing newline even without re.MULTILINE, and int() also strips
+# it, so match() would accept "<ts>\n" — Go's strconv.ParseInt and the TS
+# digit regex both reject it, so this must too for the same cross-language
+# semantics the secret_hex validation above already enforces.
 _TIMESTAMP_RE = re.compile(r"^[0-9]{1,15}$")
 
 #: Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window.
@@ -125,7 +130,7 @@ def verify_webhook(
 
     timestamp, sigs = _parse_signature_header(sig_header)
 
-    if not _TIMESTAMP_RE.match(timestamp):
+    if not _TIMESTAMP_RE.fullmatch(timestamp):
         raise WebhookVerificationError("bad timestamp in signature header")
     # Reject leading zeros on multi-digit timestamps (e.g. "01234"): valid Unix
     # timestamps never round-trip through str() with a leading zero, so this

@@ -291,6 +291,10 @@ def test_malformed_header_no_signature():
         ("+1234567890", "bad timestamp"),
         ("-1", "bad timestamp"),
         ("1000000000000000", "bad timestamp"),  # 16 digits, exceeds the 15-char bound
+        ("1700000000\n", "bad timestamp"),  # trailing LF: match()+$ let this
+        # through even without re.MULTILINE, and int() strips it too — Go's
+        # strconv.ParseInt and the TS digit regex both reject it, so this
+        # must too (fullmatch(), not match()).
     ],
 )
 def test_malformed_timestamp(bad_ts, want_msg):

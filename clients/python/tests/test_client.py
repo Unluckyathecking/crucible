@@ -462,6 +462,69 @@ def test_healthz_closes_http_error_response():
     assert closed == [True]
 
 
+def test_healthz_error_body_connection_reset_is_retryable():
+    class _ResettingBody:
+        def read(self, *args, **kwargs):
+            raise ConnectionResetError("reset by peer")
+
+        def close(self):
+            pass
+
+    def raise_http_error(*args, **kwargs):
+        raise urllib.error.HTTPError("http://example.invalid", 500, "err", {}, _ResettingBody())
+
+    with patch("urllib.request.urlopen", side_effect=raise_http_error):
+        c = Client("http://example.invalid")
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+            assert e.retryable is True
+
+
+def test_healthz_success_body_connection_reset_is_retryable():
+    class _ResettingResponse:
+        status = 200
+
+        def read(self, *args, **kwargs):
+            raise ConnectionResetError("reset by peer")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def raise_reset(*args, **kwargs):
+        return _ResettingResponse()
+
+    with patch("urllib.request.urlopen", side_effect=raise_reset):
+        c = Client("http://example.invalid")
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+            assert e.retryable is True
+
+
+def test_healthz_oversized_error_body_not_parsed():
+    def handler(req):
+        real_envelope = b'{"error":{"code":"REAL","message":"m","retryable":true}}'
+        padding = b" " * (66 * 1024)
+        return StubResponse(status=500, body=real_envelope + padding, content_type="application/json")
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+            assert "REAL" not in e.message
+
+
 def test_invoke_echo_rejects_non_finite_payload():
     def handler(req):
         return json_response(200, {})

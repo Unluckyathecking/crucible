@@ -50,13 +50,13 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
     try:
         try:
             raw = e.read(_MAX_ERROR_BODY + 1)
-        except TimeoutError as read_err:
-            # The server sent non-2xx status/headers, then stalled before
-            # finishing the error body — reading it can time out just like a
-            # success body can (see the request timeout handling in
-            # _request); this must not leak a raw TimeoutError past this
-            # typed-error path.
-            return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+        except OSError as read_err:
+            # Covers both a stalled read (TimeoutError) and a reset/aborted
+            # connection (ConnectionResetError, BrokenPipeError, etc. — all
+            # OSError subclasses) while reading a non-2xx body; either way
+            # this must not leak a raw socket exception past this typed-
+            # error path.
+            return ApiError("UNKNOWN", f"error reading response body: {read_err}", True, "", e.code)
     finally:
         # HTTPError is itself the response object (a file-like/addinfourl);
         # raise ... from None only suppresses traceback display, it does not
@@ -65,7 +65,13 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
         # this closes it explicitly rather than relying on GC timing.
         e.close()
     if len(raw) > _MAX_ERROR_BODY:
-        raw = raw[:_MAX_ERROR_BODY]
+        # Mirrors the Go client's checkError exactly: an oversized body is
+        # reported as its own error, not truncated-then-parsed — a truncated
+        # prefix can still happen to be syntactically valid JSON (e.g. the
+        # real envelope followed by padding), which would let an oversized,
+        # malformed response control `code`/`retryable` instead of being
+        # rejected outright.
+        return ApiError("UNKNOWN", f"HTTP {e.code} (error body >{_MAX_ERROR_BODY} bytes)", False, "", e.code)
     return _parse_error_envelope(e.code, raw)
 
 class HealthzResponse(TypedDict):
@@ -436,17 +442,18 @@ class Client:
                 return resp.read()
         except urllib.error.HTTPError as e:
             raise _api_error_from_http_error(e) from None
-        except TimeoutError as e:
-            # A connect-phase timeout is wrapped by urllib as URLError(reason=TimeoutError(...)),
-            # but a read-phase timeout (the socket stalls mid-response, inside
-            # resp.read() above) raises this bare — neither is a URLError
-            # subclass, so both need their own except clause.
-            raise ApiError("UNKNOWN", f"request timed out: {e}", True, "", 0) from None
         except urllib.error.URLError as e:
-            # A connect-phase timeout surfaces here as URLError(reason=TimeoutError(...)),
-            # not through the bare "except TimeoutError" above — treat it as
-            # retryable too, consistent with the read-phase timeout branch,
-            # instead of lumping it in with genuine connection failures.
+            # A connect-phase timeout surfaces here as URLError(reason=TimeoutError(...)) —
+            # treat it as retryable, consistent with the bare-OSError branch
+            # below, instead of lumping it in with genuine connection failures.
+            # URLError is itself an OSError subclass, so this must be caught
+            # before the generic "except OSError" below, not after.
             timed_out = isinstance(e.reason, TimeoutError)
             message = f"request timed out: {e.reason}" if timed_out else f"connection error: {e.reason}"
             raise ApiError("UNKNOWN", message, timed_out, "", 0) from None
+        except OSError as e:
+            # A read-phase timeout (TimeoutError) or a reset/aborted connection
+            # (ConnectionResetError, BrokenPipeError, etc.) raised bare from
+            # resp.read() above — this happens after urlopen() already
+            # succeeded, so it is not a URLError, but is equally transient.
+            raise ApiError("UNKNOWN", f"error reading response body: {e}", True, "", 0) from None

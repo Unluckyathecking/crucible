@@ -1837,13 +1837,13 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
     try:
         try:
             raw = e.read(_MAX_ERROR_BODY + 1)
-        except TimeoutError as read_err:
-            # The server sent non-2xx status/headers, then stalled before
-            # finishing the error body — reading it can time out just like a
-            # success body can (see the request timeout handling in
-            # _request); this must not leak a raw TimeoutError past this
-            # typed-error path.
-            return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+        except OSError as read_err:
+            # Covers both a stalled read (TimeoutError) and a reset/aborted
+            # connection (ConnectionResetError, BrokenPipeError, etc. — all
+            # OSError subclasses) while reading a non-2xx body; either way
+            # this must not leak a raw socket exception past this typed-
+            # error path.
+            return ApiError("UNKNOWN", f"error reading response body: {read_err}", True, "", e.code)
     finally:
         # HTTPError is itself the response object (a file-like/addinfourl);
         # raise ... from None only suppresses traceback display, it does not
@@ -1852,7 +1852,13 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
         # this closes it explicitly rather than relying on GC timing.
         e.close()
     if len(raw) > _MAX_ERROR_BODY:
-        raw = raw[:_MAX_ERROR_BODY]
+        # Mirrors the Go client's checkError exactly: an oversized body is
+        # reported as its own error, not truncated-then-parsed — a truncated
+        # prefix can still happen to be syntactically valid JSON (e.g. the
+        # real envelope followed by padding), which would let an oversized,
+        # malformed response control `code`/`retryable` instead of being
+        # rejected outright.
+        return ApiError("UNKNOWN", f"HTTP {e.code} (error body >{_MAX_ERROR_BODY} bytes)", False, "", e.code)
     return _parse_error_envelope(e.code, raw)
 
 """
@@ -1913,20 +1919,21 @@ py_client_request_helper = '''
                 return resp.read()
         except urllib.error.HTTPError as e:
             raise _api_error_from_http_error(e) from None
-        except TimeoutError as e:
-            # A connect-phase timeout is wrapped by urllib as URLError(reason=TimeoutError(...)),
-            # but a read-phase timeout (the socket stalls mid-response, inside
-            # resp.read() above) raises this bare — neither is a URLError
-            # subclass, so both need their own except clause.
-            raise ApiError("UNKNOWN", f"request timed out: {e}", True, "", 0) from None
         except urllib.error.URLError as e:
-            # A connect-phase timeout surfaces here as URLError(reason=TimeoutError(...)),
-            # not through the bare "except TimeoutError" above — treat it as
-            # retryable too, consistent with the read-phase timeout branch,
-            # instead of lumping it in with genuine connection failures.
+            # A connect-phase timeout surfaces here as URLError(reason=TimeoutError(...)) —
+            # treat it as retryable, consistent with the bare-OSError branch
+            # below, instead of lumping it in with genuine connection failures.
+            # URLError is itself an OSError subclass, so this must be caught
+            # before the generic "except OSError" below, not after.
             timed_out = isinstance(e.reason, TimeoutError)
             message = f"request timed out: {e.reason}" if timed_out else f"connection error: {e.reason}"
             raise ApiError("UNKNOWN", message, timed_out, "", 0) from None
+        except OSError as e:
+            # A read-phase timeout (TimeoutError) or a reset/aborted connection
+            # (ConnectionResetError, BrokenPipeError, etc.) raised bare from
+            # resp.read() above — this happens after urlopen() already
+            # succeeded, so it is not a URLError, but is equally transient.
+            raise ApiError("UNKNOWN", f"error reading response body: {e}", True, "", 0) from None
 '''
 
 client_py_parts = [py_header, py_client_imports, py_api_key_header_const, py_error_helpers]
@@ -2270,6 +2277,92 @@ if first_typed_op:
         "    assert closed == [True]",
     ])
 
+# Reset-connection error-body regression test: a bare OSError subclass
+# (ConnectionResetError, not TimeoutError) raised while reading a non-2xx
+# body is a distinct path from the timeout case above and must also map to
+# a retryable ApiError instead of leaking a raw socket exception.
+connection_reset_error_body_test_py = ""
+if first_typed_op:
+    call_conn_reset = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    connection_reset_error_body_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_error_body_connection_reset_is_retryable():",
+        "    class _ResettingBody:",
+        "        def read(self, *args, **kwargs):",
+        '            raise ConnectionResetError("reset by peer")',
+        "",
+        "        def close(self):",
+        "            pass",
+        "",
+        "    def raise_http_error(*args, **kwargs):",
+        '        raise urllib.error.HTTPError("http://example.invalid", 500, "err", {}, _ResettingBody())',
+        "",
+        '    with patch("urllib.request.urlopen", side_effect=raise_http_error):',
+        '        c = Client("http://example.invalid")',
+        "        try:",
+        f"            {call_conn_reset}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+        "            assert e.retryable is True",
+    ])
+
+# Success-path reset-connection regression test: same OSError class raised
+# from resp.read() on the 2xx path (a different call site than the error-body
+# case above) must also map to a retryable ApiError.
+success_connection_reset_test_py = ""
+if first_typed_op:
+    call_success_reset = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    success_connection_reset_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_success_body_connection_reset_is_retryable():",
+        "    class _ResettingResponse:",
+        "        status = 200",
+        "",
+        "        def read(self, *args, **kwargs):",
+        '            raise ConnectionResetError("reset by peer")',
+        "",
+        "        def __enter__(self):",
+        "            return self",
+        "",
+        "        def __exit__(self, *args):",
+        "            return False",
+        "",
+        "    def raise_reset(*args, **kwargs):",
+        "        return _ResettingResponse()",
+        "",
+        '    with patch("urllib.request.urlopen", side_effect=raise_reset):',
+        '        c = Client("http://example.invalid")',
+        "        try:",
+        f"            {call_success_reset}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+        "            assert e.retryable is True",
+    ])
+
+# Oversized-error-body regression test: mirrors the Go client's checkError —
+# an oversized body must be reported as its own error, not truncated and
+# still parsed (a truncated prefix can happen to be syntactically valid
+# JSON, letting a malformed/oversized response control code/retryable).
+oversized_error_body_test_py = ""
+if first_typed_op:
+    call_oversized_body = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    oversized_error_body_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_oversized_error_body_not_parsed():",
+        "    def handler(req):",
+        '        real_envelope = b\'{"error":{"code":"REAL","message":"m","retryable":true}}\'',
+        '        padding = b" " * (66 * 1024)',
+        "        return StubResponse(status=500, body=real_envelope + padding, content_type=\"application/json\")",
+        "",
+        "    with serve(handler) as (base_url, _captured):",
+        "        c = Client(base_url)",
+        "        try:",
+        f"            {call_oversized_body}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+        '            assert "REAL" not in e.message',
+    ])
+
 # Non-finite-float regression test: json.dumps(allow_nan=False) must reject
 # NaN/Infinity payloads locally rather than sending non-standard JSON tokens
 # the Go gateway's strict decoder would reject anyway.
@@ -2486,7 +2579,9 @@ write(os.path.join(PY_DIR, "tests", "test_client.py"), (
     py_test_harness + "\n\n" + test_methods_py + null_body_test_py
     + query_encoding_test_py + optional_body_test_py + api_error_tests_py
     + unexpected_204_test_py + non_utf8_error_test_py + oversized_json_int_test_py
-    + http_error_close_test_py + non_finite_payload_test_py
+    + http_error_close_test_py + connection_reset_error_body_test_py
+    + success_connection_reset_test_py + oversized_error_body_test_py
+    + non_finite_payload_test_py
     + timeout_test_py + connect_timeout_test_py + error_body_timeout_test_py
     + base_url_normalization_test_py + "\n"
 ))
