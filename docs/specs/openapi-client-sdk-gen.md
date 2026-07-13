@@ -7,9 +7,10 @@
 | Artifact | Path | Purpose |
 |---|---|---|
 | OpenAPI snapshot | `clients/openapi.json` | Canonical source-of-truth for generation; exact output of `gateway/internal/openapi.Build()` |
-| Generator script | `scripts/gen-clients.sh` | Reads the snapshot; uses embedded Python 3 (stdlib only) to regenerate both SDKs deterministically |
+| Generator script | `scripts/gen-clients.sh` | Reads the snapshot; uses embedded Python 3 (stdlib only) to regenerate all three SDKs deterministically |
 | Go client | `clients/go/` | Standalone `go.mod` module; typed `Client`, typed `APIError`, zero external deps |
 | TypeScript client | `clients/typescript/` | Strict-TS npm package; typed `Client`, typed `ApiError`, no runtime deps beyond `fetch` |
+| Python client | `clients/python/` | Pip-installable `crucible` package; typed `Client` (TypedDict responses), typed `ApiError`, zero runtime deps beyond `urllib`/`json` (stdlib) |
 | Drift CI | `.github/workflows/client-sdk-drift.yml` | Runs generator then `git diff --exit-code clients/`; fails if committed clients are stale |
 
 ## Design decisions
@@ -60,14 +61,17 @@ cd clients/go && go build ./... && go test -race ./...
 
 # Test TypeScript client (first time — installs devDependencies):
 cd clients/typescript && npm ci && npm run build && npm test
+
+# Test Python client (first time — installs the package + pytest):
+cd clients/python && pip install -e ".[dev]" && pytest -q
 ```
 
 ## Adding a new endpoint
 
 1. Add the route in `gateway/internal/server/routes.go` (per-product edit point).
 2. Rebuild the OpenAPI snapshot: run `gateway/internal/openapi.Build()` and capture its JSON output to `clients/openapi.json`.
-3. Run `bash scripts/gen-clients.sh` — new typed methods appear in both SDKs.
-4. Commit `clients/openapi.json`, `clients/go/`, `clients/typescript/`.
+3. Run `bash scripts/gen-clients.sh` — new typed methods appear in all three SDKs.
+4. Commit `clients/openapi.json`, `clients/go/`, `clients/typescript/`, `clients/python/`.
 
 The CI drift job enforces this: if you push a changed spec without regenerating the clients, the `git diff --exit-code clients/` step fails.
 

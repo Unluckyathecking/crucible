@@ -7,6 +7,7 @@ on:
       - "clients/openapi.json"
       - "clients/go/**"
       - "clients/typescript/**"
+      - "clients/python/**"
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
@@ -18,6 +19,7 @@ on:
       - "clients/openapi.json"
       - "clients/go/**"
       - "clients/typescript/**"
+      - "clients/python/**"
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
@@ -45,6 +47,10 @@ jobs:
           cache: "npm"
           cache-dependency-path: clients/typescript/package-lock.json
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       # gateway/cmd/spec-dump renders the gateway's real served OpenAPI
       # document (openapi.Build + openapi.Handler, the same code path
       # routes.go mounts at GET /openapi.json). Comparing its output to the
@@ -70,3 +76,9 @@ jobs:
       - name: TypeScript client — install, build, and test
         working-directory: clients/typescript
         run: npm ci && npm run build && npm test
+
+      - name: Python client — install and test
+        working-directory: clients/python
+        run: |
+          pip install -e ".[dev]"
+          pytest -q

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crucible-client"
+version = "0.1.0"
+description = "Type-safe client SDK for the Crucible Gateway API"
+requires-python = ">=3.9"
+# Zero runtime dependencies — mirrors the Go/TS clients' zero-external-dep
+# stance. Only urllib, json, hmac, hashlib, and other stdlib modules are used.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["crucible*"]
+
+[tool.setuptools.package-data]
+crucible = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
