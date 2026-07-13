@@ -1808,11 +1808,15 @@ _MAX_ERROR_BODY = 64 * 1024
 def _parse_error_envelope(status: int, raw: bytes) -> ApiError:
     try:
         envelope = json.loads(raw) if raw else None
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # json.loads decodes bytes itself (RFC 8259 UTF-8/16/32 sniffing); a
-        # non-UTF-8 error body raises UnicodeDecodeError before it ever gets
-        # to raise JSONDecodeError, so both must land here as "invalid JSON"
-        # rather than surfacing a raw codec exception to the caller.
+    except ValueError:
+        # Catches json.JSONDecodeError (malformed JSON), UnicodeDecodeError
+        # (json.loads decodes bytes itself per RFC 8259 UTF-8/16/32 sniffing,
+        # so a non-UTF-8 body raises this before JSONDecodeError), and the
+        # bare ValueError CPython's int/str conversion limit raises for a
+        # pathologically long integer literal (int string conversion length
+        # limit, tightened for CVE-2020-10735) — all three are ValueError
+        # subclasses, so catching it directly covers every "not valid JSON"
+        # shape without surfacing a raw codec/parsing exception to the caller.
         return ApiError("UNKNOWN", f"HTTP {status} (invalid JSON)", False, "", status)
     error = envelope.get("error") if isinstance(envelope, dict) else None
     if not isinstance(error, dict) or not error.get("code"):
@@ -1831,13 +1835,22 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
     # body be detected explicitly instead of silently truncated, mirroring
     # the Go client's checkError bound.
     try:
-        raw = e.read(_MAX_ERROR_BODY + 1)
-    except TimeoutError as read_err:
-        # The server sent non-2xx status/headers, then stalled before
-        # finishing the error body — reading it can time out just like a
-        # success body can (see the request timeout handling in _request);
-        # this must not leak a raw TimeoutError past this typed-error path.
-        return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+        try:
+            raw = e.read(_MAX_ERROR_BODY + 1)
+        except TimeoutError as read_err:
+            # The server sent non-2xx status/headers, then stalled before
+            # finishing the error body — reading it can time out just like a
+            # success body can (see the request timeout handling in
+            # _request); this must not leak a raw TimeoutError past this
+            # typed-error path.
+            return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+    finally:
+        # HTTPError is itself the response object (a file-like/addinfourl);
+        # raise ... from None only suppresses traceback display, it does not
+        # drop the reference — ApiError.__context__ keeps this alive (and
+        # with it the underlying socket) for as long as the ApiError is, so
+        # this closes it explicitly rather than relying on GC timing.
+        e.close()
     if len(raw) > _MAX_ERROR_BODY:
         raw = raw[:_MAX_ERROR_BODY]
     return _parse_error_envelope(e.code, raw)
@@ -2203,6 +2216,60 @@ if first_typed_op:
         '            assert e.code == "UNKNOWN"',
     ])
 
+# Oversized-JSON-integer regression test: CPython's int/str conversion length
+# limit (CVE-2020-10735 mitigation) makes json.loads raise a bare ValueError
+# for a pathologically long integer literal — must still surface as a typed
+# ApiError, not a raw ValueError, on a non-2xx error body.
+oversized_json_int_test_py = ""
+if first_typed_op:
+    call_oversized_int = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    oversized_json_int_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_oversized_json_integer_error_body():",
+        "    def handler(req):",
+        '        huge_int = b"9" * 5000',
+        '        body = b\'{"error":{"code":"X","message":"m","retryable":false,"n":\' + huge_int + b"}}"',
+        "        return StubResponse(status=500, body=body, content_type=\"application/json\")",
+        "",
+        "    with serve(handler) as (base_url, _captured):",
+        "        c = Client(base_url)",
+        "        try:",
+        f"            {call_oversized_int}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+    ])
+
+# HTTPError-close regression test: _api_error_from_http_error must close the
+# HTTPError response object it reads from, even on the timeout path — it is
+# otherwise kept alive (and with it the underlying socket) via ApiError's
+# implicit exception __context__ chain for as long as the ApiError is.
+http_error_close_test_py = ""
+if first_typed_op:
+    call_close_check = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    http_error_close_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_closes_http_error_response():",
+        "    closed = []",
+        "",
+        "    class _FakeHTTPErrorBody:",
+        "        def read(self, *args, **kwargs):",
+        '            return b\'{"error":{"code":"X","message":"m","retryable":false}}\'',
+        "",
+        "        def close(self):",
+        "            closed.append(True)",
+        "",
+        "    def raise_http_error(*args, **kwargs):",
+        '        raise urllib.error.HTTPError("http://example.invalid", 500, "err", {}, _FakeHTTPErrorBody())',
+        "",
+        '    with patch("urllib.request.urlopen", side_effect=raise_http_error):',
+        '        c = Client("http://example.invalid")',
+        "        try:",
+        f"            {call_close_check}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError:",
+        "            pass",
+        "    assert closed == [True]",
+    ])
+
 # Non-finite-float regression test: json.dumps(allow_nan=False) must reject
 # NaN/Infinity payloads locally rather than sending non-standard JSON tokens
 # the Go gateway's strict decoder would reject anyway.
@@ -2418,7 +2485,8 @@ def query_params(path: str) -> Dict[str, list]:
 write(os.path.join(PY_DIR, "tests", "test_client.py"), (
     py_test_harness + "\n\n" + test_methods_py + null_body_test_py
     + query_encoding_test_py + optional_body_test_py + api_error_tests_py
-    + unexpected_204_test_py + non_utf8_error_test_py + non_finite_payload_test_py
+    + unexpected_204_test_py + non_utf8_error_test_py + oversized_json_int_test_py
+    + http_error_close_test_py + non_finite_payload_test_py
     + timeout_test_py + connect_timeout_test_py + error_body_timeout_test_py
     + base_url_normalization_test_py + "\n"
 ))

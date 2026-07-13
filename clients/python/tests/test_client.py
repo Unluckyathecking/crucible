@@ -424,6 +424,44 @@ def test_healthz_non_utf8_error_body():
             assert e.code == "UNKNOWN"
 
 
+def test_healthz_oversized_json_integer_error_body():
+    def handler(req):
+        huge_int = b"9" * 5000
+        body = b'{"error":{"code":"X","message":"m","retryable":false,"n":' + huge_int + b"}}"
+        return StubResponse(status=500, body=body, content_type="application/json")
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+
+
+def test_healthz_closes_http_error_response():
+    closed = []
+
+    class _FakeHTTPErrorBody:
+        def read(self, *args, **kwargs):
+            return b'{"error":{"code":"X","message":"m","retryable":false}}'
+
+        def close(self):
+            closed.append(True)
+
+    def raise_http_error(*args, **kwargs):
+        raise urllib.error.HTTPError("http://example.invalid", 500, "err", {}, _FakeHTTPErrorBody())
+
+    with patch("urllib.request.urlopen", side_effect=raise_http_error):
+        c = Client("http://example.invalid")
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError:
+            pass
+    assert closed == [True]
+
+
 def test_invoke_echo_rejects_non_finite_payload():
     def handler(req):
         return json_response(200, {})

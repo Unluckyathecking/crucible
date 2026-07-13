@@ -200,6 +200,9 @@ def test_invalid_secret_hex(secret, want_msg):
     [
         "  ",  # all whitespace, even length
         "aa  bb" + "cc" * 13,  # embedded double-space, even length overall
+        "a\n",  # trailing newline, even total length — match() + $ lets this
+        # through even without re.MULTILINE (Python's $ matches just before a
+        # trailing newline); fullmatch() is required to reject it.
     ],
 )
 def test_secret_hex_rejects_whitespace(secret):

@@ -21,11 +21,15 @@ _MAX_ERROR_BODY = 64 * 1024
 def _parse_error_envelope(status: int, raw: bytes) -> ApiError:
     try:
         envelope = json.loads(raw) if raw else None
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # json.loads decodes bytes itself (RFC 8259 UTF-8/16/32 sniffing); a
-        # non-UTF-8 error body raises UnicodeDecodeError before it ever gets
-        # to raise JSONDecodeError, so both must land here as "invalid JSON"
-        # rather than surfacing a raw codec exception to the caller.
+    except ValueError:
+        # Catches json.JSONDecodeError (malformed JSON), UnicodeDecodeError
+        # (json.loads decodes bytes itself per RFC 8259 UTF-8/16/32 sniffing,
+        # so a non-UTF-8 body raises this before JSONDecodeError), and the
+        # bare ValueError CPython's int/str conversion limit raises for a
+        # pathologically long integer literal (int string conversion length
+        # limit, tightened for CVE-2020-10735) — all three are ValueError
+        # subclasses, so catching it directly covers every "not valid JSON"
+        # shape without surfacing a raw codec/parsing exception to the caller.
         return ApiError("UNKNOWN", f"HTTP {status} (invalid JSON)", False, "", status)
     error = envelope.get("error") if isinstance(envelope, dict) else None
     if not isinstance(error, dict) or not error.get("code"):
@@ -44,13 +48,22 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
     # body be detected explicitly instead of silently truncated, mirroring
     # the Go client's checkError bound.
     try:
-        raw = e.read(_MAX_ERROR_BODY + 1)
-    except TimeoutError as read_err:
-        # The server sent non-2xx status/headers, then stalled before
-        # finishing the error body — reading it can time out just like a
-        # success body can (see the request timeout handling in _request);
-        # this must not leak a raw TimeoutError past this typed-error path.
-        return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+        try:
+            raw = e.read(_MAX_ERROR_BODY + 1)
+        except TimeoutError as read_err:
+            # The server sent non-2xx status/headers, then stalled before
+            # finishing the error body — reading it can time out just like a
+            # success body can (see the request timeout handling in
+            # _request); this must not leak a raw TimeoutError past this
+            # typed-error path.
+            return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
+    finally:
+        # HTTPError is itself the response object (a file-like/addinfourl);
+        # raise ... from None only suppresses traceback display, it does not
+        # drop the reference — ApiError.__context__ keeps this alive (and
+        # with it the underlying socket) for as long as the ApiError is, so
+        # this closes it explicitly rather than relying on GC timing.
+        e.close()
     if len(raw) > _MAX_ERROR_BODY:
         raw = raw[:_MAX_ERROR_BODY]
     return _parse_error_envelope(e.code, raw)

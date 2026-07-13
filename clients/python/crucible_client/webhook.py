@@ -31,7 +31,12 @@ _SHA256_HEX_LEN = _SHA256_BYTE_LEN * 2
 
 # Rejects any character bytes.fromhex() wouldn't reject on its own, notably
 # ASCII whitespace — see the comment at its call site in verify_webhook.
-_SECRET_HEX_CONTENT_RE = re.compile(r"^[0-9a-fA-F]+$")
+# Matched with fullmatch(), not match(): Python's $ can match just before a
+# single trailing newline even without re.MULTILINE, so match() would let
+# "aa\n" through (bytes.fromhex then silently drops the trailing "\n" too),
+# verifying as if the operator had configured "aa". fullmatch() has no such
+# carve-out — it requires consuming the entire string.
+_SECRET_HEX_CONTENT_RE = re.compile(r"[0-9a-fA-F]+")
 
 # 15 digits comfortably covers every real Unix timestamp while bounding the
 # string int() has to parse. Uses [0-9], not \d: unlike JavaScript's \d (always
@@ -107,7 +112,7 @@ def verify_webhook(
     # gated TS path shares) — a secret_hex that's all or partly whitespace
     # would otherwise decode to a shorter, degenerate key instead of failing,
     # so hex-content is validated explicitly before decoding.
-    if not _SECRET_HEX_CONTENT_RE.match(secret_hex):
+    if not _SECRET_HEX_CONTENT_RE.fullmatch(secret_hex):
         raise WebhookVerificationError(
             "invalid secret_hex: contains non-hex characters"
         )
