@@ -1225,7 +1225,13 @@ func usageEventsPathItems() map[string]PathItem {
 	responseSchema := &Schema{
 		Type: "object",
 		Properties: map[string]*Schema{
-			"data":     {Type: "array", Description: "Matching usage_events rows, newest-first", Properties: eventProps},
+			// Items (not Properties directly on the array schema) is the
+			// standards-correct way to type a list's rows — see Schema.Items'
+			// doc comment and jobsPathItems' listResponseSchema, which this
+			// mirrors. Off-the-shelf OpenAPI/JSON Schema tooling ignores
+			// "properties" on a type:"array" node, so a reconciliation caller
+			// using such tooling would otherwise see an untyped array here.
+			"data":     {Type: "array", Description: "Matching usage_events rows, newest-first", Items: &Schema{Type: "object", Properties: eventProps, Required: []string{"id", "operation", "billable_units", "created_at"}}},
 			"has_more": {Type: "boolean", Description: "True when more rows exist beyond this page"},
 			"page":     {Type: "integer"},
 			"limit":    {Type: "integer"},

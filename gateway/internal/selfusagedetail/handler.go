@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,25 +159,73 @@ func Handler(db *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-// wantsCSV reports whether the caller asked for the CSV representation, via
-// ?format=csv or an Accept: text/csv header (checked as the caller's sole or
-// first preference, ignoring quality-value suffixes).
+// wantsCSV reports whether the caller asked for the CSV representation: an
+// explicit ?format=csv always wins outright, otherwise the Accept header is
+// negotiated per RFC 7231 §5.3.2 — CSV is only chosen when it strictly
+// outranks application/json's q-value, so "text/csv;q=0" (explicitly
+// rejected) or "application/json, text/csv" (equal, unspecified preference —
+// list order carries no meaning under the RFC) both fall back to JSON.
 func wantsCSV(r *http.Request) bool {
 	if strings.EqualFold(r.URL.Query().Get("format"), "csv") {
 		return true
 	}
-	for _, part := range strings.Split(r.Header.Get("Accept"), ",") {
-		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
-		if strings.EqualFold(mediaType, "text/csv") {
-			return true
-		}
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return false
 	}
-	return false
+	csvQ := acceptQuality(accept, "text/csv")
+	jsonQ := acceptQuality(accept, "application/json")
+	return csvQ > 0 && csvQ > jsonQ
+}
+
+// acceptQuality returns the q-value (default 1.0) an RFC 7231 Accept header
+// assigns to mediaType, matching the exact type, its type wildcard
+// ("text/*"), or "*/*" — an exact match outranks a type wildcard, which
+// outranks "*/*". Returns 0 if nothing in the header matches, meaning
+// mediaType is unacceptable to (or simply unmentioned by) this caller.
+func acceptQuality(accept, mediaType string) float64 {
+	typ, _, _ := strings.Cut(mediaType, "/")
+	bestQ := 0.0
+	bestRank := -1
+	for _, entry := range strings.Split(accept, ",") {
+		fields := strings.Split(entry, ";")
+		candidate := strings.TrimSpace(fields[0])
+
+		rank := -1
+		switch {
+		case strings.EqualFold(candidate, mediaType):
+			rank = 2
+		case strings.EqualFold(candidate, typ+"/*"):
+			rank = 1
+		case candidate == "*/*":
+			rank = 0
+		default:
+			continue
+		}
+		if rank <= bestRank {
+			continue
+		}
+
+		q := 1.0
+		for _, param := range fields[1:] {
+			if name, value, ok := strings.Cut(strings.TrimSpace(param), "="); ok && strings.EqualFold(name, "q") {
+				if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+					q = parsed
+				}
+			}
+		}
+		bestRank, bestQ = rank, q
+	}
+	return bestQ
 }
 
 // writeCSV renders events as RFC-4180 CSV with a fixed header row
 // (id,operation,billable_units,created_at). encoding/csv handles quoting of
-// fields containing commas, quotes, or newlines.
+// fields containing commas, quotes, or newlines. created_at uses
+// RFC3339Nano (not RFC3339) to preserve the same sub-second precision the
+// JSON path already carries via time.Time's default marshaling — RFC3339
+// alone would silently truncate rows that share a whole second, which
+// matters for a CSV meant for invoice reconciliation.
 func writeCSV(w http.ResponseWriter, events []Event) {
 	w.Header().Set("Content-Type", "text/csv")
 	cw := csv.NewWriter(w)
@@ -186,7 +235,7 @@ func writeCSV(w http.ResponseWriter, events []Event) {
 			e.ID,
 			e.Operation,
 			e.BillableUnits,
-			e.CreatedAt.Format(time.RFC3339),
+			e.CreatedAt.Format(time.RFC3339Nano),
 		})
 	}
 	cw.Flush()

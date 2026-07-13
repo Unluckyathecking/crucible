@@ -366,6 +366,76 @@ func TestHandler_CSVAcceptHeader(t *testing.T) {
 	}
 }
 
+// TestHandler_AcceptTieFallsBackToJSON asserts that an Accept header listing
+// both representations with no distinguishing q-value ("application/json,
+// text/csv") falls back to JSON: per RFC 7231 §5.3.2, list order carries no
+// preference meaning, so this is not a signal to switch away from the
+// default representation.
+func TestHandler_AcceptTieFallsBackToJSON(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool)
+	key := seedAPIKey(t, pool, cust)
+	seedUsageEvent(t, pool, cust, key, "/v1/echo", 1, time.Now().UTC())
+
+	r := newRouter(pool)
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events", nil).WithContext(testKeyContext(cust))
+	req.Header.Set("Accept", "application/json, text/csv")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
+// TestHandler_AcceptCSVExplicitlyRejected asserts "text/csv;q=0" (explicitly
+// unacceptable per RFC 7231) never triggers the CSV representation, even
+// though the literal string "text/csv" appears in the header.
+func TestHandler_AcceptCSVExplicitlyRejected(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool)
+	key := seedAPIKey(t, pool, cust)
+	seedUsageEvent(t, pool, cust, key, "/v1/echo", 1, time.Now().UTC())
+
+	r := newRouter(pool)
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events", nil).WithContext(testKeyContext(cust))
+	req.Header.Set("Accept", "text/csv;q=0, application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
+// TestHandler_AcceptCSVPreferredByQValue asserts a genuine q-value preference
+// for text/csv over application/json does select the CSV representation.
+func TestHandler_AcceptCSVPreferredByQValue(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool)
+	key := seedAPIKey(t, pool, cust)
+	seedUsageEvent(t, pool, cust, key, "/v1/echo", 1, time.Now().UTC())
+
+	r := newRouter(pool)
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events", nil).WithContext(testKeyContext(cust))
+	req.Header.Set("Accept", "text/csv;q=0.9, application/json;q=0.1")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/csv" {
+		t.Errorf("Content-Type = %q, want text/csv", got)
+	}
+}
+
 // TestHandler_CSVFieldEscaping asserts an operation value containing a comma
 // is RFC-4180-escaped (quoted) in the CSV output rather than corrupting the
 // column count.
@@ -386,5 +456,35 @@ func TestHandler_CSVFieldEscaping(t *testing.T) {
 	}
 	if len(records) != 2 || records[1][1] != "/v1/echo,with-comma" {
 		t.Fatalf("comma-containing operation not preserved through CSV round-trip: %v", records)
+	}
+}
+
+// TestHandler_CSVPreservesSubSecondTimestamps asserts the CSV export doesn't
+// collapse two rows created within the same whole second into identical
+// created_at values — RFC3339 (second precision) would make them
+// indistinguishable, unlike the JSON path's default time.Time marshaling.
+func TestHandler_CSVPreservesSubSecondTimestamps(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool)
+	key := seedAPIKey(t, pool, cust)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	seedUsageEvent(t, pool, cust, key, "/v1/echo", 1, base)
+	seedUsageEvent(t, pool, cust, key, "/v1/echo", 2, base.Add(500*time.Millisecond))
+
+	r := newRouter(pool)
+	req := httptest.NewRequest(http.MethodGet, "/v1/usage/events?format=csv", nil).WithContext(testKeyContext(cust))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	records, err := csv.NewReader(strings.NewReader(rec.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV body: %v — body: %s", err, rec.Body.String())
+	}
+	if len(records) != 3 {
+		t.Fatalf("len(records) = %d, want 3 (header + 2 rows): %v", len(records), records)
+	}
+	if records[1][3] == records[2][3] {
+		t.Errorf("both rows have identical created_at %q despite differing by 500ms — sub-second precision was dropped", records[1][3])
 	}
 }
