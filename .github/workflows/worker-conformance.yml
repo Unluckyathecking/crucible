@@ -112,3 +112,9 @@ jobs:
 
       - name: Python stub conformance
         run: bash scripts/conformance-run.sh python
+
+      - name: Python stub pytest
+        working-directory: workers/stubs/python
+        run: |
+          pip install pytest
+          python3 -m pytest test_worker.py -v
