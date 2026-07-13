@@ -43,7 +43,14 @@ def _api_error_from_http_error(e: "urllib.error.HTTPError") -> ApiError:
     # Read up to _MAX_ERROR_BODY + 1 bytes; the extra byte lets an oversized
     # body be detected explicitly instead of silently truncated, mirroring
     # the Go client's checkError bound.
-    raw = e.read(_MAX_ERROR_BODY + 1)
+    try:
+        raw = e.read(_MAX_ERROR_BODY + 1)
+    except TimeoutError as read_err:
+        # The server sent non-2xx status/headers, then stalled before
+        # finishing the error body — reading it can time out just like a
+        # success body can (see the request timeout handling in _request);
+        # this must not leak a raw TimeoutError past this typed-error path.
+        return ApiError("UNKNOWN", f"request timed out: {read_err}", True, "", e.code)
     if len(raw) > _MAX_ERROR_BODY:
         raw = raw[:_MAX_ERROR_BODY]
     return _parse_error_envelope(e.code, raw)

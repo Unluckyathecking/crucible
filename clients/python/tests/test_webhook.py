@@ -195,6 +195,24 @@ def test_invalid_secret_hex(secret, want_msg):
     assert want_msg in str(err)
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "  ",  # all whitespace, even length
+        "aa  bb" + "cc" * 13,  # embedded double-space, even length overall
+    ],
+)
+def test_secret_hex_rejects_whitespace(secret):
+    # bytes.fromhex() silently skips ASCII whitespace between byte pairs — a
+    # stdlib quirk neither Go's hex.DecodeString nor the TS regex path share.
+    # Without an explicit content check, an all-or-partly-whitespace
+    # secret_hex would decode to a shorter, degenerate key instead of failing.
+    ts = now_ts()
+    header = f"t={ts},v1={'a' * SHA256_HEX_LEN}"
+    err = expect_error(verify_webhook, secret, header, b'{"event":"test"}', DEFAULT_TOLERANCE_MS)
+    assert "non-hex" in str(err)
+
+
 def test_uppercase_secret_hex():
     secret = bytes(range(1, 33))
     secret_hex_upper = secret.hex().upper()

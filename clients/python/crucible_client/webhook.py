@@ -29,6 +29,10 @@ MAX_HEADER_PARTS = 16
 _SHA256_BYTE_LEN = 32
 _SHA256_HEX_LEN = _SHA256_BYTE_LEN * 2
 
+# Rejects any character bytes.fromhex() wouldn't reject on its own, notably
+# ASCII whitespace — see the comment at its call site in verify_webhook.
+_SECRET_HEX_CONTENT_RE = re.compile(r"^[0-9a-fA-F]+$")
+
 # 15 digits comfortably covers every real Unix timestamp while bounding the
 # string int() has to parse. Uses [0-9], not \d: unlike JavaScript's \d (always
 # ASCII-only), Python's \d also matches non-ASCII Unicode decimal digits (e.g.
@@ -98,12 +102,16 @@ def verify_webhook(
         raise WebhookVerificationError(
             "invalid secret_hex: must be non-empty even-length hex string"
         )
-    try:
-        secret = bytes.fromhex(secret_hex)
-    except ValueError:
+    # bytes.fromhex() silently skips ASCII whitespace between byte pairs (a
+    # documented stdlib quirk neither Go's hex.DecodeString nor the regex-
+    # gated TS path shares) — a secret_hex that's all or partly whitespace
+    # would otherwise decode to a shorter, degenerate key instead of failing,
+    # so hex-content is validated explicitly before decoding.
+    if not _SECRET_HEX_CONTENT_RE.match(secret_hex):
         raise WebhookVerificationError(
             "invalid secret_hex: contains non-hex characters"
-        ) from None
+        )
+    secret = bytes.fromhex(secret_hex)
 
     # Capture clock before parsing attacker-controlled header content, mirroring
     # both Go's and TypeScript's placement (immediately ahead of the timestamp

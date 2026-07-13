@@ -470,6 +470,27 @@ def test_healthz_wrapped_connect_timeout_is_retryable():
             assert e.retryable is True
 
 
+def test_healthz_error_body_read_timeout_is_retryable():
+    class _StallingBody:
+        def read(self, *args, **kwargs):
+            raise TimeoutError("timed out reading error body")
+
+        def close(self):
+            pass
+
+    def raise_http_error(*args, **kwargs):
+        raise urllib.error.HTTPError("http://example.invalid", 500, "err", {}, _StallingBody())
+
+    with patch("urllib.request.urlopen", side_effect=raise_http_error):
+        c = Client("http://example.invalid")
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+            assert e.retryable is True
+
+
 def test_client_normalizes_base_url():
     c = Client("https://gw.example:8443/api/?debug=1#frag")
     assert c.base_url == "https://gw.example:8443/api"
