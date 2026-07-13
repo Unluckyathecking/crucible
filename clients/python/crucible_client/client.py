@@ -176,10 +176,17 @@ class Client:
     Uses urllib.request from the standard library — zero runtime dependencies.
     Construct with Client(base_url, api_key=...); api_key set here is the
     default sent on every authenticated call and can be overridden per call
-    via the api_key parameter on individual methods.
+    via the api_key parameter on individual methods. timeout (seconds) is
+    passed straight through to urllib.request.urlopen on every call; the
+    default None means block indefinitely (urllib's own default), matching
+    the Go SDK's http.DefaultClient (also no timeout unless the caller
+    supplies one) and the TS SDK's bare fetch (also no timeout unless the
+    caller wires an AbortSignal) — callers who need a bound must opt in.
     """
 
-    def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self, base_url: str, api_key: Optional[str] = None, timeout: Optional[float] = None
+    ) -> None:
         # Normalize base_url: strip query, fragment, and credentials, and trim
         # a trailing "/" from the path — mirrors the Go/TS constructors, so a
         # base URL like "https://gw.example?debug=1" cannot silently corrupt
@@ -197,6 +204,7 @@ class Client:
         path = parsed.path.rstrip("/")
         self.base_url = urlunsplit((parsed.scheme, netloc, path, "", ""))
         self.default_api_key = api_key
+        self.timeout = timeout
 
     def healthz(self) -> HealthzResponse:
         """GET /healthz (healthz)."""
@@ -216,7 +224,7 @@ class Client:
 
     def invoke_echo(self, payload: Dict[str, Any], api_key: Optional[str] = None) -> Dict[str, Any]:
         """POST /v1/echo (invoke echo)."""
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
         raw = self._request("POST", "/v1/echo", api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
             raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
@@ -304,7 +312,7 @@ class Client:
         """POST /v1/keys/{id}/rotate (rotate key)."""
         if payload is None:
             payload = {}
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
         path = f"/v1/keys/{quote(str(id), safe='')}/rotate"
         raw = self._request("POST", path, api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
@@ -360,7 +368,7 @@ class Client:
 
     def create_webhook_endpoint(self, payload: Dict[str, Any], api_key: Optional[str] = None) -> CreateWebhookEndpointResponse:
         """POST /v1/webhooks/endpoints (create webhook endpoint)."""
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
         raw = self._request("POST", "/v1/webhooks/endpoints", api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
             raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
@@ -377,7 +385,7 @@ class Client:
         """PATCH /v1/webhooks/endpoints/{id} (update webhook endpoint subscription)."""
         if payload is None:
             payload = {}
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
         path = f"/v1/webhooks/endpoints/{quote(str(id), safe='')}"
         self._request("PATCH", path, api_key if api_key is not None else self.default_api_key, body)
         return None
@@ -402,11 +410,17 @@ class Client:
             headers[_API_KEY_HEADER] = api_key
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 if resp.status == 204:
                     return None
                 return resp.read()
         except urllib.error.HTTPError as e:
             raise _api_error_from_http_error(e) from None
+        except TimeoutError as e:
+            # A connect-phase timeout is wrapped by urllib as URLError(reason=TimeoutError(...)),
+            # but a read-phase timeout (the socket stalls mid-response, inside
+            # resp.read() above) raises this bare — neither is a URLError
+            # subclass, so both need their own except clause.
+            raise ApiError("UNKNOWN", f"request timed out: {e}", True, "", 0) from None
         except urllib.error.URLError as e:
             raise ApiError("UNKNOWN", f"connection error: {e.reason}", False, "", 0) from None

@@ -30,8 +30,12 @@ _SHA256_BYTE_LEN = 32
 _SHA256_HEX_LEN = _SHA256_BYTE_LEN * 2
 
 # 15 digits comfortably covers every real Unix timestamp while bounding the
-# string int() has to parse — mirrors the TypeScript /^\d{1,15}$/ guard.
-_TIMESTAMP_RE = re.compile(r"^\d{1,15}$")
+# string int() has to parse. Uses [0-9], not \d: unlike JavaScript's \d (always
+# ASCII-only), Python's \d also matches non-ASCII Unicode decimal digits (e.g.
+# Arabic-Indic) by default — those pass int() too but then fail
+# timestamp.encode("ascii") below with a raw UnicodeEncodeError instead of the
+# typed WebhookVerificationError, so this must reject them at the regex stage.
+_TIMESTAMP_RE = re.compile(r"^[0-9]{1,15}$")
 
 #: Default tolerance in ms: 5 minutes, matching the gateway's inbound replay window.
 DEFAULT_TOLERANCE_MS = 5 * 60 * 1000

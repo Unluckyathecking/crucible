@@ -1704,7 +1704,7 @@ def py_method(op):
 
     body_expr = "None"
     if op.has_body and op.body_required:
-        lines.append('        body = json.dumps(payload).encode("utf-8")')
+        lines.append('        body = json.dumps(payload, allow_nan=False).encode("utf-8")')
         body_expr = "body"
     elif op.has_body:
         # Some optional-body handlers decode with a strict JSON decoder and
@@ -1713,7 +1713,7 @@ def py_method(op):
         # omits it outright. Mirrors the Go/TS generators' identical guard.
         lines.append("        if payload is None:")
         lines.append("            payload = {}")
-        lines.append('        body = json.dumps(payload).encode("utf-8")')
+        lines.append('        body = json.dumps(payload, allow_nan=False).encode("utf-8")')
         body_expr = "body"
 
     path_lines, path_expr = py_path_and_query_lines(op)
@@ -1844,10 +1844,17 @@ class Client:
     Uses urllib.request from the standard library — zero runtime dependencies.
     Construct with Client(base_url, api_key=...); api_key set here is the
     default sent on every authenticated call and can be overridden per call
-    via the api_key parameter on individual methods.
+    via the api_key parameter on individual methods. timeout (seconds) is
+    passed straight through to urllib.request.urlopen on every call; the
+    default None means block indefinitely (urllib's own default), matching
+    the Go SDK's http.DefaultClient (also no timeout unless the caller
+    supplies one) and the TS SDK's bare fetch (also no timeout unless the
+    caller wires an AbortSignal) — callers who need a bound must opt in.
     \"\"\"
 
-    def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self, base_url: str, api_key: Optional[str] = None, timeout: Optional[float] = None
+    ) -> None:
         # Normalize base_url: strip query, fragment, and credentials, and trim
         # a trailing "/" from the path — mirrors the Go/TS constructors, so a
         # base URL like "https://gw.example?debug=1" cannot silently corrupt
@@ -1865,6 +1872,7 @@ class Client:
         path = parsed.path.rstrip("/")
         self.base_url = urlunsplit((parsed.scheme, netloc, path, "", ""))
         self.default_api_key = api_key
+        self.timeout = timeout
 """
 
 py_client_request_helper = '''
@@ -1879,12 +1887,18 @@ py_client_request_helper = '''
             headers[_API_KEY_HEADER] = api_key
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 if resp.status == 204:
                     return None
                 return resp.read()
         except urllib.error.HTTPError as e:
             raise _api_error_from_http_error(e) from None
+        except TimeoutError as e:
+            # A connect-phase timeout is wrapped by urllib as URLError(reason=TimeoutError(...)),
+            # but a read-phase timeout (the socket stalls mid-response, inside
+            # resp.read() above) raises this bare — neither is a URLError
+            # subclass, so both need their own except clause.
+            raise ApiError("UNKNOWN", f"request timed out: {e}", True, "", 0) from None
         except urllib.error.URLError as e:
             raise ApiError("UNKNOWN", f"connection error: {e.reason}", False, "", 0) from None
 '''
@@ -2176,6 +2190,56 @@ if first_typed_op:
         '            assert e.code == "UNKNOWN"',
     ])
 
+# Non-finite-float regression test: json.dumps(allow_nan=False) must reject
+# NaN/Infinity payloads locally rather than sending non-standard JSON tokens
+# the Go gateway's strict decoder would reject anyway.
+non_finite_payload_test_py = ""
+if first_auth_post.has_body:
+    non_finite_call_parts = [
+        p if not p.startswith("payload=") else 'payload={"x": float("nan")}'
+        for p in py_test_call_args(first_auth_post)
+    ]
+    call_non_finite = f"c.{first_auth_post.op_id}(" + ", ".join(non_finite_call_parts) + ")"
+    non_finite_payload_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_auth_post.op_id}_rejects_non_finite_payload():",
+        "    def handler(req):",
+        "        return json_response(200, {})",
+        "",
+        "    with serve(handler) as (base_url, _captured):",
+        "        c = Client(base_url)",
+        "        try:",
+        f"            {call_non_finite}",
+        '            assert False, "expected ValueError"',
+        "        except ValueError:",
+        "            pass",
+    ])
+
+# Timeout regression tests: Client accepts and stores a timeout, and actually
+# threads it into urlopen (a slow handler + a short timeout must fail fast
+# rather than block, mirroring Go's http.Client.Timeout / TS's AbortSignal).
+timeout_test_py = ""
+if first_typed_op:
+    call_timeout = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    timeout_test_py = "\n\n\n" + "\n".join([
+        "def test_client_stores_timeout():",
+        '    c = Client("http://example.invalid", timeout=2.5)',
+        "    assert c.timeout == 2.5",
+        "",
+        "",
+        f"def test_{first_typed_op.op_id}_respects_timeout():",
+        "    def handler(req):",
+        "        time.sleep(0.3)",
+        "        return json_response(200, {})",
+        "",
+        "    with serve(handler) as (base_url, _captured):",
+        "        c = Client(base_url, timeout=0.05)",
+        "        try:",
+        f"            {call_timeout}",
+        '            assert False, "expected a timeout error"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+    ])
+
 py_test_harness = '''"""Code generated by scripts/gen-clients.sh — DO NOT EDIT.
 Source: clients/openapi.json (test harness for the generated client)
 """
@@ -2185,6 +2249,7 @@ import contextlib
 import http.server
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
@@ -2285,7 +2350,8 @@ def query_params(path: str) -> Dict[str, list]:
 write(os.path.join(PY_DIR, "tests", "test_client.py"), (
     py_test_harness + "\n\n" + test_methods_py + null_body_test_py
     + query_encoding_test_py + optional_body_test_py + api_error_tests_py
-    + unexpected_204_test_py + non_utf8_error_test_py + base_url_normalization_test_py + "\n"
+    + unexpected_204_test_py + non_utf8_error_test_py + non_finite_payload_test_py
+    + timeout_test_py + base_url_normalization_test_py + "\n"
 ))
 
 print(f"Generated clients from {os.path.basename(SPEC_PATH)} ({title} {version})")

@@ -7,6 +7,7 @@ import contextlib
 import http.server
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
@@ -417,6 +418,38 @@ def test_healthz_non_utf8_error_body():
         try:
             c.healthz()
             assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+
+
+def test_invoke_echo_rejects_non_finite_payload():
+    def handler(req):
+        return json_response(200, {})
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        try:
+            c.invoke_echo(payload={"x": float("nan")}, api_key="test-key")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+
+def test_client_stores_timeout():
+    c = Client("http://example.invalid", timeout=2.5)
+    assert c.timeout == 2.5
+
+
+def test_healthz_respects_timeout():
+    def handler(req):
+        time.sleep(0.3)
+        return json_response(200, {})
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url, timeout=0.05)
+        try:
+            c.healthz()
+            assert False, "expected a timeout error"
         except ApiError as e:
             assert e.code == "UNKNOWN"
 
