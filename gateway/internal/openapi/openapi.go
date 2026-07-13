@@ -1219,7 +1219,7 @@ func usageEventsPathItems() map[string]PathItem {
 	eventProps := map[string]*Schema{
 		"id":             {Type: "string", Description: "usage_events row id (BIGSERIAL, encoded as a decimal string to avoid precision loss past Number.MAX_SAFE_INTEGER in JS clients)"},
 		"operation":      {Type: "string", Description: "The opaque worker operation string this usage row was recorded under (RouteDescriptor.Operation, e.g. \"echo\") — not a /v1/... path"},
-		"billable_units": {Type: "integer", Description: "Billable units metered for this call (always >= 1, invariant #2)"},
+		"billable_units": {Type: "string", Description: "Billable units metered for this call (always >= 1, invariant #2), encoded as a decimal string — usage.Recorder.Record accepts any int64 worker-reported value, so a JSON number could silently lose precision past Number.MAX_SAFE_INTEGER in JS clients"},
 		"created_at":     {Type: "string", Description: "RFC3339 creation timestamp"},
 	}
 	responseSchema := &Schema{

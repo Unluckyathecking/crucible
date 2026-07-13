@@ -77,7 +77,7 @@ export interface GetUsageResponse {
   used: number;
 }
 export interface ListUsageEventsResponseDataItem {
-  billable_units: number;
+  billable_units: string;
   created_at: string;
   id: string;
   operation: string;

@@ -1185,8 +1185,8 @@
                       "description": "Matching usage_events rows, newest-first",
                       "properties": {
                         "billable_units": {
-                          "type": "integer",
-                          "description": "Billable units metered for this call (always \u003e= 1, invariant #2)"
+                          "type": "string",
+                          "description": "Billable units metered for this call (always \u003e= 1, invariant #2), encoded as a decimal string — usage.Recorder.Record accepts any int64 worker-reported value, so a JSON number could silently lose precision past Number.MAX_SAFE_INTEGER in JS clients"
                         },
                         "created_at": {
                           "type": "string",

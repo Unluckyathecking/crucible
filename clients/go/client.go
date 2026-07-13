@@ -141,7 +141,7 @@ type GetUsageResponse struct {
 
 // ListUsageEventsResponseDataItem is one row of ListUsageEvents's "data" list.
 type ListUsageEventsResponseDataItem struct {
-	Billable_units int64  `json:"billable_units"`
+	Billable_units string `json:"billable_units"`
 	Created_at     string `json:"created_at"`
 	Id             string `json:"id"`
 	Operation      string `json:"operation"`

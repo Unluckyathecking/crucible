@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -186,7 +185,7 @@ func writeCSV(w http.ResponseWriter, events []Event) {
 		_ = cw.Write([]string{
 			e.ID,
 			e.Operation,
-			strconv.FormatInt(e.BillableUnits, 10),
+			e.BillableUnits,
 			e.CreatedAt.Format(time.RFC3339),
 		})
 	}

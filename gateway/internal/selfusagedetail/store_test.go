@@ -263,8 +263,8 @@ func TestStore_Query_HasMoreAndBillableUnits(t *testing.T) {
 	if len(page) != 1 {
 		t.Fatalf("len(page) = %d, want 1", len(page))
 	}
-	if page[0].BillableUnits != 7 {
-		t.Errorf("BillableUnits = %d, want 7 (newest row first)", page[0].BillableUnits)
+	if page[0].BillableUnits != "7" {
+		t.Errorf("BillableUnits = %q, want \"7\" (newest row first)", page[0].BillableUnits)
 	}
 
 	page2, hasMore2, err := store.Query(context.Background(), cust, from, to, nil, 1, 1)
@@ -274,7 +274,7 @@ func TestStore_Query_HasMoreAndBillableUnits(t *testing.T) {
 	if hasMore2 {
 		t.Error("hasMore = true on last page, want false")
 	}
-	if len(page2) != 1 || page2[0].BillableUnits != 5 {
-		t.Errorf("page2 = %+v, want single row with BillableUnits=5", page2)
+	if len(page2) != 1 || page2[0].BillableUnits != "5" {
+		t.Errorf("page2 = %+v, want single row with BillableUnits=\"5\"", page2)
 	}
 }

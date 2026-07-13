@@ -146,7 +146,7 @@ func TestHandler_Defaults(t *testing.T) {
 	if resp.Limit != 50 {
 		t.Errorf("Limit = %d, want 50", resp.Limit)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].BillableUnits != 3 {
+	if len(resp.Data) != 1 || resp.Data[0].BillableUnits != "3" {
 		t.Fatalf("unexpected Data: %+v", resp.Data)
 	}
 }

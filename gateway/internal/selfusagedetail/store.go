@@ -24,9 +24,14 @@ type Event struct {
 	// dashboard/lib/db.ts's listUsageEvents id::text cast: a JSON number would
 	// silently lose precision past Number.MAX_SAFE_INTEGER in JS clients doing
 	// invoice reconciliation, so this field is always a decimal string.
-	ID            string    `json:"id"`
+	ID string `json:"id"`
+	// BillableUnits is usage_events.billable_units (BIGINT) cast to text in
+	// SQL for the same reason as ID: usage.Recorder.Record accepts any int64
+	// worker-reported value, so a JSON number could silently round for a row
+	// above Number.MAX_SAFE_INTEGER, corrupting the exact export this endpoint
+	// exists for (reconciling against Stripe invoices).
+	BillableUnits string    `json:"billable_units"`
 	Operation     string    `json:"operation"`
-	BillableUnits int64     `json:"billable_units"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -60,7 +65,7 @@ func (s *Store) Query(
 	// timestamp could see duplicate or skipped rows across offset pages. id is
 	// BIGSERIAL (monotonic), making (created_at, id) a stable total order.
 	rows, err := s.db.Query(ctx, `
-		SELECT id::text, operation, billable_units, created_at
+		SELECT id::text, operation, billable_units::text, created_at
 		FROM usage_events
 		WHERE customer_id = $1
 		  AND created_at >= $2
