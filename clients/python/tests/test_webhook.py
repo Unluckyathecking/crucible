@@ -1,4 +1,4 @@
-"""Hand-maintained tests for crucible.webhook.verify_webhook.
+"""Hand-maintained tests for crucible_client.webhook.verify_webhook.
 
 Mirrors clients/go/webhook_test.go and clients/typescript/test/webhook.test.ts —
 same reference vectors and edge cases, ported to pytest idioms.
@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from crucible.webhook import (
+from crucible_client.webhook import (
     DEFAULT_TOLERANCE_MS,
     SIGNATURE_HEADER,
     TIMESTAMP_HEADER,

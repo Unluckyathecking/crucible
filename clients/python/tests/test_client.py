@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from crucible import ApiError, Client
+from crucible_client import ApiError, Client
 
 
 class CaseInsensitiveHeaders(Dict[str, str]):
@@ -356,7 +356,7 @@ def test_rotate_key_defaults_missing_optional_body():
 
 def test_api_error_typed():
     def handler(req):
-        return json_response(401, {"error": {"code": "UNAUTHORIZED", "message": "invalid API key", "retryable": False}})
+        return json_response(401, {"error": {"code": "UNAUTHORIZED", "message": "invalid API key", "retryable": False, "request_id": "req-123"}})
 
     with serve(handler) as (base_url, _captured):
         c = Client(base_url)
@@ -366,6 +366,7 @@ def test_api_error_typed():
         except ApiError as e:
             assert e.code == "UNAUTHORIZED"
             assert e.retryable is False
+            assert e.request_id == "req-123"
 
 
 def test_api_error_retryable():

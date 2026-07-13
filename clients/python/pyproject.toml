@@ -15,10 +15,10 @@ dependencies = []
 dev = ["pytest>=7.0"]
 
 [tool.setuptools.packages.find]
-include = ["crucible*"]
+include = ["crucible_client*"]
 
 [tool.setuptools.package-data]
-crucible = ["py.typed"]
+crucible_client = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,7 +10,7 @@
 | Generator script | `scripts/gen-clients.sh` | Reads the snapshot; uses embedded Python 3 (stdlib only) to regenerate all three SDKs deterministically |
 | Go client | `clients/go/` | Standalone `go.mod` module; typed `Client`, typed `APIError`, zero external deps |
 | TypeScript client | `clients/typescript/` | Strict-TS npm package; typed `Client`, typed `ApiError`, no runtime deps beyond `fetch` |
-| Python client | `clients/python/` | Pip-installable `crucible` package; typed `Client` (TypedDict responses), typed `ApiError`, zero runtime deps beyond `urllib`/`json` (stdlib) |
+| Python client | `clients/python/` | Pip-installable `crucible_client` package (named to avoid colliding with the `crucible` package the worker SDK already ships); typed `Client` (TypedDict responses), typed `ApiError`, zero runtime deps beyond `urllib`/`json` (stdlib) |
 | Drift CI | `.github/workflows/client-sdk-drift.yml` | Runs generator then `git diff --exit-code clients/`; fails if committed clients are stale |
 
 ## Design decisions

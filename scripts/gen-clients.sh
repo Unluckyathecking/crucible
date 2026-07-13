@@ -40,6 +40,11 @@ REPO_ROOT  = sys.argv[2]
 GO_DIR     = os.path.join(REPO_ROOT, "clients", "go")
 TS_DIR     = os.path.join(REPO_ROOT, "clients", "typescript")
 PY_DIR     = os.path.join(REPO_ROOT, "clients", "python")
+# Import package name is "crucible_client", not "crucible": workers/sdk-python
+# already ships a top-level "crucible" package (the worker SDK) — installing
+# both in one environment would make `import crucible` order-dependent and
+# let one SDK shadow the other.
+PY_PKG_DIR = os.path.join(PY_DIR, "crucible_client")
 
 with open(SPEC_PATH) as f:
     spec = json.load(f)
@@ -1715,7 +1720,7 @@ def py_method(op):
 methods_py = "\n\n".join(py_method(op) for op in ops)
 
 # ── clients/python/crucible/errors.py ─────────────────────────────────────────
-write(os.path.join(PY_DIR, "crucible", "errors.py"), py_header + """
+write(os.path.join(PY_PKG_DIR, "errors.py"), py_header + """
 from __future__ import annotations
 
 
@@ -1844,7 +1849,7 @@ if typeddicts_py:
 client_py_parts.append(py_client_class_preamble)
 client_py_parts.append("\n" + methods_py + "\n")
 client_py_parts.append(py_client_request_helper)
-write(os.path.join(PY_DIR, "crucible", "client.py"), "".join(client_py_parts))
+write(os.path.join(PY_PKG_DIR, "client.py"), "".join(client_py_parts))
 
 # ── clients/python/crucible/__init__.py ───────────────────────────────────────
 py_type_names = []
@@ -1881,7 +1886,7 @@ py_init_content = (
     + "".join(f'    "{n}",\n' for n in sorted(py_all_names))
     + "]\n"
 )
-write(os.path.join(PY_DIR, "crucible", "__init__.py"), py_init_content)
+write(os.path.join(PY_PKG_DIR, "__init__.py"), py_init_content)
 
 # ── clients/python/tests/test_client.py ───────────────────────────────────────
 
@@ -2032,7 +2037,7 @@ auth_call_rate = f"c.{auth_fn_py}(" + ", ".join(auth_call_base + ['api_key="key"
 api_error_tests_py = "\n\n\n" + "\n".join([
     "def test_api_error_typed():",
     "    def handler(req):",
-    '        return json_response(401, {"error": {"code": "UNAUTHORIZED", "message": "invalid API key", "retryable": False}})',
+    '        return json_response(401, {"error": {"code": "UNAUTHORIZED", "message": "invalid API key", "retryable": False, "request_id": "req-123"}})',
     "",
     "    with serve(handler) as (base_url, _captured):",
     "        c = Client(base_url)",
@@ -2042,6 +2047,7 @@ api_error_tests_py = "\n\n\n" + "\n".join([
     "        except ApiError as e:",
     '            assert e.code == "UNAUTHORIZED"',
     "            assert e.retryable is False",
+    '            assert e.request_id == "req-123"',
     "",
     "",
     "def test_api_error_retryable():",
@@ -2112,7 +2118,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from crucible import ApiError, Client
+from crucible_client import ApiError, Client
 
 
 class CaseInsensitiveHeaders(Dict[str, str]):
