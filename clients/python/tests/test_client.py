@@ -408,6 +408,24 @@ def test_healthz_unexpected_204_raises():
             assert e.code == "UNKNOWN"
 
 
+def test_healthz_non_utf8_error_body():
+    def handler(req):
+        return StubResponse(status=500, body=b"\xff\xfe not valid utf8 \x80\x81", content_type="application/json")
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+
+
 def test_client_normalizes_base_url():
     c = Client("https://gw.example:8443/api/?debug=1#frag")
     assert c.base_url == "https://gw.example:8443/api"
+
+
+def test_client_normalizes_ipv6_base_url():
+    c = Client("http://[::1]:8080/api/")
+    assert c.base_url == "http://[::1]:8080/api"

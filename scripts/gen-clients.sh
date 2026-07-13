@@ -238,6 +238,17 @@ def array_item_properties(fschema):
         return items["properties"]
     return {}
 
+# array_item_required is array_item_properties' counterpart for the sibling
+# `required` list on an array item's row schema (same two shapes: `required`
+# attached directly to the array schema, or nested under `items`).
+def array_item_required(fschema):
+    if fschema.get("properties"):
+        return fschema.get("required")
+    items = fschema.get("items")
+    if isinstance(items, dict) and items.get("properties"):
+        return items.get("required")
+    return None
+
 def go_leaf_type(fschema):
     ftype = fschema.get("type", "any")
     add   = fschema.get("additionalProperties")
@@ -1575,6 +1586,33 @@ def py_response_type(op):
         return go_name(op.op_id) + "Response"
     return "Dict[str, Any]"
 
+# emit_typeddict_class renders `name` as one or two TypedDict classes,
+# splitting into a required base + a `total=False` subclass whenever
+# `required_list` (the schema's own `required` array) is a proper subset of
+# `field_names` — e.g. GetJobResponse's billable_units/result/error/units_label
+# are only present once a job reaches a terminal state (asyncJobResponse's Go
+# struct tags carry `omitempty` for exactly these fields). A `required_list`
+# of None (no `required` key in the schema at all, e.g. Healthz/ReadyzResponse)
+# is treated the same as "every field required" — unchanged from prior
+# behavior for schemas that carry no such signal.
+def emit_typeddict_class(name, field_specs, required_list):
+    required_set = set(required_list) if required_list is not None else {f for f, _ in field_specs}
+    req = [(f, t) for f, t in field_specs if f in required_set]
+    opt = [(f, t) for f, t in field_specs if f not in required_set]
+    if not opt:
+        body = "\n".join(f"    {f}: {t}" for f, t in field_specs)
+        return f"class {name}(TypedDict):\n{body}\n"
+    if not req:
+        body = "\n".join(f"    {f}: {t}" for f, t in opt)
+        return f"class {name}(TypedDict, total=False):\n{body}\n"
+    base_name = f"_{name}Required"
+    req_body = "\n".join(f"    {f}: {t}" for f, t in req)
+    opt_body = "\n".join(f"    {f}: {t}" for f, t in opt)
+    return (
+        f"class {base_name}(TypedDict):\n{req_body}\n\n\n"
+        f"class {name}({base_name}, total=False):\n{opt_body}\n"
+    )
+
 def py_response_typeddicts(op):
     rtype = py_response_type(op)
     if rtype in ("None", "Dict[str, Any]"):
@@ -1589,11 +1627,10 @@ def py_response_typeddicts(op):
             item_props = array_item_properties(fschema)
             if item_props:
                 item_type = f"{rtype}{fname.capitalize()}Item"
-                item_fields = "\n".join(
-                    f"    {ifname}: {py_leaf_type(ifschema)}"
-                    for ifname, ifschema in sorted(item_props.items())
-                )
-                nested.append(f"class {item_type}(TypedDict):\n{item_fields}\n\n")
+                item_field_specs = [
+                    (ifname, py_leaf_type(ifschema)) for ifname, ifschema in sorted(item_props.items())
+                ]
+                nested.append(emit_typeddict_class(item_type, item_field_specs, array_item_required(fschema)) + "\n")
                 py_type = f"Optional[List[{item_type}]]"
             else:
                 # Mirrors the TS generator's conservative assumption: array
@@ -1603,9 +1640,8 @@ def py_response_typeddicts(op):
                 py_type = "Optional[List[Any]]"
         else:
             py_type = py_leaf_type(fschema)
-        fields.append(f"    {fname}: {py_type}")
-    field_block = "\n".join(fields)
-    return "\n".join(nested) + f"class {rtype}(TypedDict):\n{field_block}\n"
+        fields.append((fname, py_type))
+    return "\n".join(nested) + emit_typeddict_class(rtype, fields, schema.get("required"))
 
 typeddicts_py = "\n\n".join(td for op in ops if (td := py_response_typeddicts(op)))
 
@@ -1772,7 +1808,11 @@ _MAX_ERROR_BODY = 64 * 1024
 def _parse_error_envelope(status: int, raw: bytes) -> ApiError:
     try:
         envelope = json.loads(raw) if raw else None
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # json.loads decodes bytes itself (RFC 8259 UTF-8/16/32 sniffing); a
+        # non-UTF-8 error body raises UnicodeDecodeError before it ever gets
+        # to raise JSONDecodeError, so both must land here as "invalid JSON"
+        # rather than surfacing a raw codec exception to the caller.
         return ApiError("UNKNOWN", f"HTTP {status} (invalid JSON)", False, "", status)
     error = envelope.get("error") if isinstance(envelope, dict) else None
     if not isinstance(error, dict) or not error.get("code"):
@@ -1814,6 +1854,12 @@ class Client:
         # every request path built by appending "/v1/..." after it.
         parsed = urlsplit(base_url)
         netloc = parsed.hostname or ""
+        # urlsplit().hostname strips the brackets from an IPv6 literal (e.g.
+        # "[::1]" -> "::1"); re-add them so the rebuilt authority doesn't
+        # collide with the ":<port>" suffix below ("::1:8080" is a different,
+        # wrong host — the brackets are what disambiguate host from port).
+        if ":" in netloc:
+            netloc = f"[{netloc}]"
         if parsed.port:
             netloc += f":{parsed.port}"
         path = parsed.path.rstrip("/")
@@ -2103,7 +2149,32 @@ base_url_normalization_test_py = "\n\n\n" + "\n".join([
     "def test_client_normalizes_base_url():",
     '    c = Client("https://gw.example:8443/api/?debug=1#frag")',
     '    assert c.base_url == "https://gw.example:8443/api"',
+    "",
+    "",
+    "def test_client_normalizes_ipv6_base_url():",
+    '    c = Client("http://[::1]:8080/api/")',
+    '    assert c.base_url == "http://[::1]:8080/api"',
 ])
+
+# Non-UTF-8 error body regression test: json.loads decodes bytes itself, so a
+# non-UTF-8 error body raises UnicodeDecodeError before JSONDecodeError would
+# ever fire — must still surface as a typed ApiError, not a raw codec crash.
+non_utf8_error_test_py = ""
+if first_typed_op:
+    call_bad_utf8 = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
+    non_utf8_error_test_py = "\n\n\n" + "\n".join([
+        f"def test_{first_typed_op.op_id}_non_utf8_error_body():",
+        "    def handler(req):",
+        '        return StubResponse(status=500, body=b"\\xff\\xfe not valid utf8 \\x80\\x81", content_type="application/json")',
+        "",
+        "    with serve(handler) as (base_url, _captured):",
+        "        c = Client(base_url)",
+        "        try:",
+        f"            {call_bad_utf8}",
+        '            assert False, "expected ApiError"',
+        "        except ApiError as e:",
+        '            assert e.code == "UNKNOWN"',
+    ])
 
 py_test_harness = '''"""Code generated by scripts/gen-clients.sh — DO NOT EDIT.
 Source: clients/openapi.json (test harness for the generated client)
@@ -2214,7 +2285,7 @@ def query_params(path: str) -> Dict[str, list]:
 write(os.path.join(PY_DIR, "tests", "test_client.py"), (
     py_test_harness + "\n\n" + test_methods_py + null_body_test_py
     + query_encoding_test_py + optional_body_test_py + api_error_tests_py
-    + unexpected_204_test_py + base_url_normalization_test_py + "\n"
+    + unexpected_204_test_py + non_utf8_error_test_py + base_url_normalization_test_py + "\n"
 ))
 
 print(f"Generated clients from {os.path.basename(SPEC_PATH)} ({title} {version})")

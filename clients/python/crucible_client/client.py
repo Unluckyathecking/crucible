@@ -21,7 +21,11 @@ _MAX_ERROR_BODY = 64 * 1024
 def _parse_error_envelope(status: int, raw: bytes) -> ApiError:
     try:
         envelope = json.loads(raw) if raw else None
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # json.loads decodes bytes itself (RFC 8259 UTF-8/16/32 sniffing); a
+        # non-UTF-8 error body raises UnicodeDecodeError before it ever gets
+        # to raise JSONDecodeError, so both must land here as "invalid JSON"
+        # rather than surfacing a raw codec exception to the caller.
         return ApiError("UNKNOWN", f"HTTP {status} (invalid JSON)", False, "", status)
     error = envelope.get("error") if isinstance(envelope, dict) else None
     if not isinstance(error, dict) or not error.get("code"):
@@ -70,30 +74,36 @@ class ListErrorsResponse(TypedDict):
     page: int
 
 
-class ListJobsResponseItemsItem(TypedDict):
-    billable_units: int
+class _ListJobsResponseItemsItemRequired(TypedDict):
     created_at: str
-    error: Any
     job_id: str
     operation: str
     status: str
-    units_label: str
     updated_at: str
+
+
+class ListJobsResponseItemsItem(_ListJobsResponseItemsItemRequired, total=False):
+    billable_units: int
+    error: Any
+    units_label: str
 
 class ListJobsResponse(TypedDict):
     items: Optional[List[ListJobsResponseItemsItem]]
     total: int
 
 
-class GetJobResponse(TypedDict):
-    billable_units: int
+class _GetJobResponseRequired(TypedDict):
     created_at: str
-    error: Any
     job_id: str
-    result: Any
     status: str
-    units_label: str
     updated_at: str
+
+
+class GetJobResponse(_GetJobResponseRequired, total=False):
+    billable_units: int
+    error: Any
+    result: Any
+    units_label: str
 
 
 class ListKeysResponseItemsItem(TypedDict):
@@ -143,13 +153,16 @@ class ListWebhookEndpointsResponse(TypedDict):
     total: int
 
 
-class CreateWebhookEndpointResponse(TypedDict):
+class _CreateWebhookEndpointResponseRequired(TypedDict):
     active: bool
     created_at: str
     id: str
     secret_hex: str
-    subscribed_events: Optional[List[Any]]
     url: str
+
+
+class CreateWebhookEndpointResponse(_CreateWebhookEndpointResponseRequired, total=False):
+    subscribed_events: Optional[List[Any]]
 
 
 class RotateWebhookEndpointSecretResponse(TypedDict):
@@ -173,6 +186,12 @@ class Client:
         # every request path built by appending "/v1/..." after it.
         parsed = urlsplit(base_url)
         netloc = parsed.hostname or ""
+        # urlsplit().hostname strips the brackets from an IPv6 literal (e.g.
+        # "[::1]" -> "::1"); re-add them so the rebuilt authority doesn't
+        # collide with the ":<port>" suffix below ("::1:8080" is a different,
+        # wrong host — the brackets are what disambiguate host from port).
+        if ":" in netloc:
+            netloc = f"[{netloc}]"
         if parsed.port:
             netloc += f":{parsed.port}"
         path = parsed.path.rstrip("/")
