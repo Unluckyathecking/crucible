@@ -76,6 +76,18 @@ export interface GetUsageResponse {
   total_units: number;
   used: number;
 }
+export interface ListUsageEventsResponseDataItem {
+  billable_units: number;
+  created_at: string;
+  id: number;
+  operation: string;
+}
+export interface ListUsageEventsResponse {
+  data: ListUsageEventsResponseDataItem[] | null;
+  has_more: boolean;
+  limit: number;
+  page: number;
+}
 export interface ListWebhookEndpointsResponse {
   items: unknown[] | null;
   total: number;
@@ -223,6 +235,23 @@ export class Client {
    */
   async getUsage(apiKey?: string): Promise<GetUsageResponse> {
     return this.request<GetUsageResponse>("GET", "/v1/usage", undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/usage/events — list usage events.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listUsageEvents(from?: string, to?: string, operation?: string, page?: number, limit?: number, format?: string, apiKey?: string): Promise<ListUsageEventsResponse> {
+    let path: string = "/v1/usage/events";
+    const q = new URLSearchParams();
+    if (from !== undefined) q.set("from", String(from));
+    if (to !== undefined) q.set("to", String(to));
+    if (operation !== undefined) q.set("operation", String(operation));
+    if (page !== undefined) q.set("page", String(page));
+    if (limit !== undefined) q.set("limit", String(limit));
+    if (format !== undefined) q.set("format", String(format));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListUsageEventsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**

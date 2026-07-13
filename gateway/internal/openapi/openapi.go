@@ -812,6 +812,29 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		doc.Paths[path] = existing
 	}
 
+	// Layer the per-event usage export route on for the same reason as
+	// usagePathItem/keysPathItems/errorsPathItems/jobsPathItems above:
+	// framework infra (gateway/internal/selfusagedetail), not a per-product
+	// invoke route — kept out of Build()'s invoke-route-only paths (see
+	// server.TestV1RoutesDriftGuard) but still documented in the actual served
+	// /openapi.json.
+	for path, item := range usageEventsPathItems() {
+		existing := doc.Paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		doc.Paths[path] = existing
+	}
+
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
@@ -1178,6 +1201,62 @@ func errorsPathItems() map[string]PathItem {
 						Content:     map[string]MediaType{contentTypeJSON: {Schema: responseSchema}},
 					},
 					"400": errResp("Bad request — invalid date/operation/code filter or page"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+	}
+}
+
+// usageEventsPathItems documents GET /v1/usage/events: the customer-facing
+// per-event usage export (see gateway/internal/selfusagedetail), exposing the
+// caller's own usage_events rows as a paginated JSON envelope or an RFC-4180
+// CSV export. Framework infra, not a per-product invoke route — kept out of
+// Build()'s invoke-route paths for the same reason as
+// usagePathItem/keysPathItems/errorsPathItems; see Handler.
+func usageEventsPathItems() map[string]PathItem {
+	eventProps := map[string]*Schema{
+		"id":             {Type: "integer", Description: "usage_events row id"},
+		"operation":      {Type: "string", Description: "The /v1 route pattern that produced this usage row"},
+		"billable_units": {Type: "integer", Description: "Billable units metered for this call (always >= 1, invariant #2)"},
+		"created_at":     {Type: "string", Description: "RFC3339 creation timestamp"},
+	}
+	responseSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"data":     {Type: "array", Description: "Matching usage_events rows, newest-first", Properties: eventProps},
+			"has_more": {Type: "boolean", Description: "True when more rows exist beyond this page"},
+			"page":     {Type: "integer"},
+			"limit":    {Type: "integer"},
+		},
+		Required: []string{"data", "has_more", "page", "limit"},
+	}
+
+	return map[string]PathItem{
+		"/v1/usage/events": {
+			Get: &Operation{
+				OperationID: "list_usage_events",
+				Summary:     "Export the authenticated customer's own per-event metered usage rows",
+				Tags:        []string{"usage"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "from", In: "query", Description: "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to 30 days ago", Schema: &Schema{Type: "string"}},
+					{Name: "to", In: "query", Description: "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to today; range capped at 90 days", Schema: &Schema{Type: "string"}},
+					{Name: "operation", In: "query", Description: "Exact /v1/... path filter", Schema: &Schema{Type: "string"}},
+					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
+					{Name: "limit", In: "query", Description: "Page size; default 50, capped at 200", Schema: &Schema{Type: "integer"}},
+					{Name: "format", In: "query", Description: "Set to \"csv\" for an RFC-4180 CSV export instead of the JSON envelope; Accept: text/csv is equivalent", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "The caller's own usage events, newest-first, as a JSON envelope (default) or RFC-4180 CSV (format=csv or Accept: text/csv)",
+						Content: map[string]MediaType{
+							contentTypeJSON: {Schema: responseSchema},
+							"text/csv":      {Schema: &Schema{Type: "string", Description: "Header row: id,operation,billable_units,created_at"}},
+						},
+					},
+					"400": errResp("Bad request — invalid date/operation filter or page"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
 					"500": errResp("Internal server error"),
 				},

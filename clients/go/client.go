@@ -139,6 +139,22 @@ type GetUsageResponse struct {
 	Used         int64  `json:"used"`
 }
 
+// ListUsageEventsResponseDataItem is one row of ListUsageEvents's "data" list.
+type ListUsageEventsResponseDataItem struct {
+	Billable_units int64  `json:"billable_units"`
+	Created_at     string `json:"created_at"`
+	Id             int64  `json:"id"`
+	Operation      string `json:"operation"`
+}
+
+// ListUsageEventsResponse is returned by ListUsageEvents.
+type ListUsageEventsResponse struct {
+	Data     []ListUsageEventsResponseDataItem `json:"data"`
+	Has_more bool                              `json:"has_more"`
+	Limit    int64                             `json:"limit"`
+	Page     int64                             `json:"page"`
+}
+
 // ListWebhookEndpointsResponse is returned by ListWebhookEndpoints.
 type ListWebhookEndpointsResponse struct {
 	Items []any `json:"items"`
@@ -396,6 +412,47 @@ func (c *Client) GetUsage(ctx context.Context, apiKey string) (*GetUsageResponse
 		return nil, err
 	}
 	var out GetUsageResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListUsageEvents calls GET /v1/usage/events (list usage events).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListUsageEvents(ctx context.Context, apiKey string, from string, to string, operation string, page int64, limit int64, format string) (*ListUsageEventsResponse, error) {
+	q := url.Values{}
+	if from != "" {
+		q.Set("from", from)
+	}
+	if to != "" {
+		q.Set("to", to)
+	}
+	if operation != "" {
+		q.Set("operation", operation)
+	}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if limit != 0 {
+		q.Set("limit", strconv.FormatInt(limit, 10))
+	}
+	if format != "" {
+		q.Set("format", format)
+	}
+	reqPath := "/v1/usage/events"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListUsageEventsResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}
