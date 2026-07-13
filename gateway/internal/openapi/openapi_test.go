@@ -528,6 +528,103 @@ func TestOpenAPI_ErrorsPathPreservesProductPOST(t *testing.T) {
 	}
 }
 
+// TestOpenAPI_UsageEventsPathDocumented asserts GET /v1/usage/events is
+// present in the actual served /openapi.json (openapi.Handler's output) with
+// a 200 response, API-key security, and both JSON and CSV content types
+// documented. Mirrors TestOpenAPI_ErrorsPathDocumented's rationale: it's
+// framework infra layered onto the document inside Handler, deliberately
+// absent from openapi.Build()'s own return value so
+// server.TestV1RoutesDriftGuard's POST-only invariant holds.
+func TestOpenAPI_UsageEventsPathDocumented(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(nil)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Get *struct {
+				Security  []map[string][]string `json:"security"`
+				Responses map[string]struct {
+					Description string                     `json:"description"`
+					Content     map[string]json.RawMessage `json:"content"`
+				} `json:"responses"`
+			} `json:"get"`
+			Post json.RawMessage `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	item, ok := doc.Paths["/v1/usage/events"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/usage/events path")
+	}
+	if item.Get == nil {
+		t.Fatal("/v1/usage/events has no GET operation documented")
+	}
+	if item.Post != nil {
+		t.Error("/v1/usage/events should not document a POST operation")
+	}
+	resp200, ok := item.Get.Responses["200"]
+	if !ok {
+		t.Fatal("/v1/usage/events GET missing a 200 response schema")
+	}
+	if len(item.Get.Security) == 0 {
+		t.Error("/v1/usage/events GET should require API key security like other authenticated endpoints")
+	}
+	if _, ok := resp200.Content["application/json"]; !ok {
+		t.Error("/v1/usage/events 200 response missing application/json content")
+	}
+	if _, ok := resp200.Content["text/csv"]; !ok {
+		t.Error("/v1/usage/events 200 response missing text/csv content")
+	}
+}
+
+// TestOpenAPI_UsageEventsPathPreservesProductPOST asserts that if a product
+// clone names a per-product invoke route "/usage/events" (POST
+// /v1/usage/events, registered through the ordinary V1Routes mechanism),
+// layering the self-service GET onto the document doesn't clobber that
+// route's documentation. Mirrors TestOpenAPI_ErrorsPathPreservesProductPOST.
+func TestOpenAPI_UsageEventsPathPreservesProductPOST(t *testing.T) {
+	routes := []openapi.RouteDescriptor{
+		{Path: "/usage/events", Operation: "usage-events", Summary: "Invoke usage/events worker operation (authenticated)"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(routes)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Get  json.RawMessage `json:"get"`
+			Post json.RawMessage `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	item, ok := doc.Paths["/v1/usage/events"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/usage/events path")
+	}
+	if item.Get == nil {
+		t.Error("/v1/usage/events lost its self-service GET operation when a product POST route shares the path")
+	}
+	if item.Post == nil {
+		t.Error("/v1/usage/events lost its product POST operation — self-service GET overwrote it")
+	}
+}
+
 // TestBuild_SampleRequestSurfacesAsExample verifies that a route's
 // RouteDescriptor.SampleRequest is emitted verbatim as the request body's
 // "example" value (MediaType.Example) for that route's operation.

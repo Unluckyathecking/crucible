@@ -40,6 +40,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/respcache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selferrors"
 	"github.com/Unluckyathecking/crucible/gateway/internal/selfusage"
+	"github.com/Unluckyathecking/crucible/gateway/internal/selfusagedetail"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/validate"
@@ -287,6 +288,20 @@ func NewRouter(d *Deps) http.Handler {
 		// block). Scoped strictly to the caller's own jobs — see
 		// jobs.Store.List's SQL-level customer_id scoping.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs", jobsListHandler(jobStore))
+
+		// === Per-event usage export (auth gated; active when DB is set; read-only) ===
+		// GET /v1/usage/events: the caller's own usage_events rows (id, operation,
+		// billable_units, created_at), newest-first, date/operation-filtered,
+		// paginated JSON or RFC-4180 CSV (?format=csv / Accept: text/csv). The
+		// API-key-authenticated counterpart to the dashboard's usage export
+		// (dashboard/app/api/usage), for programmatic customers reconciling
+		// against Stripe invoices. Framework infra, not a per-product invoke
+		// route: no customer_id parameter — the customer comes strictly from
+		// auth.FromContext, so this can only ever return the caller's own usage.
+		// Kept out of the per-product r.Route("/v1", ...) POST loop below for
+		// the same reason as GET /v1/errors and GET /v1/jobs above (that block's
+		// POST-only invariant is asserted by TestV1RoutesDriftGuard).
+		r.With(auth.Middleware(d.Auth)).Get("/v1/usage/events", selfusagedetail.Handler(d.DB))
 	}
 
 	// === Framework customer usage self-service route (auth gated; read-only) ===

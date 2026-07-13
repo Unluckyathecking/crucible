@@ -1117,6 +1117,160 @@
         }
       }
     },
+    "/v1/usage/events": {
+      "get": {
+        "operationId": "list_usage_events",
+        "summary": "Export the authenticated customer's own per-event metered usage rows",
+        "description": "Returns a JSON envelope by default. Direct HTTP callers (not the generated SDKs) may pass ?format=csv or an Accept: text/csv header for an RFC-4180 CSV export instead.",
+        "tags": [
+          "usage"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to 30 days ago",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive ISO 8601 date (YYYY-MM-DD, UTC); defaults to today; range capped at 90 days",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Exact match against the opaque worker operation string (e.g. \"echo\"); max 128 characters",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; default 50, capped at 200",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own usage events, newest-first, as a JSON envelope (default) or RFC-4180 CSV (format=csv or Accept: text/csv)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "description": "Matching usage_events rows, newest-first",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "billable_units": {
+                            "type": "string",
+                            "description": "Billable units metered for this call (always \u003e= 1, invariant #2), encoded as a decimal string — usage.Recorder.Record accepts any int64 worker-reported value, so a JSON number could silently lose precision past Number.MAX_SAFE_INTEGER in JS clients"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "description": "RFC3339 creation timestamp"
+                          },
+                          "id": {
+                            "type": "string",
+                            "description": "usage_events row id (BIGSERIAL, encoded as a decimal string to avoid precision loss past Number.MAX_SAFE_INTEGER in JS clients)"
+                          },
+                          "operation": {
+                            "type": "string",
+                            "description": "The opaque worker operation string this usage row was recorded under (RouteDescriptor.Operation, e.g. \"echo\") — not a /v1/... path"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "operation",
+                          "billable_units",
+                          "created_at"
+                        ]
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean",
+                      "description": "True when more rows exist beyond this page"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "page": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more",
+                    "page",
+                    "limit"
+                  ]
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "description": "Header row: id,operation,billable_units,created_at"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — invalid date/operation filter or page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/webhooks/endpoints": {
       "get": {
         "operationId": "list_webhook_endpoints",
