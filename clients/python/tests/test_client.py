@@ -392,3 +392,21 @@ def test_api_error_unknown_body():
             assert False, "expected ApiError"
         except ApiError as e:
             assert e.code == "UNKNOWN"
+
+
+def test_healthz_unexpected_204_raises():
+    def handler(req):
+        return StubResponse(status=204)
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        try:
+            c.healthz()
+            assert False, "expected ApiError"
+        except ApiError as e:
+            assert e.code == "UNKNOWN"
+
+
+def test_client_normalizes_base_url():
+    c = Client("https://gw.example:8443/api/?debug=1#frag")
+    assert c.base_url == "https://gw.example:8443/api"

@@ -8,7 +8,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, TypedDict, cast
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from .errors import ApiError
 
@@ -167,14 +167,23 @@ class Client:
     """
 
     def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
-        self.base_url = base_url.rstrip("/")
+        # Normalize base_url: strip query, fragment, and credentials, and trim
+        # a trailing "/" from the path — mirrors the Go/TS constructors, so a
+        # base URL like "https://gw.example?debug=1" cannot silently corrupt
+        # every request path built by appending "/v1/..." after it.
+        parsed = urlsplit(base_url)
+        netloc = parsed.hostname or ""
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        path = parsed.path.rstrip("/")
+        self.base_url = urlunsplit((parsed.scheme, netloc, path, "", ""))
         self.default_api_key = api_key
 
     def healthz(self) -> HealthzResponse:
         """GET /healthz (healthz)."""
         raw = self._request("GET", "/healthz", None, None)
         if raw is None:
-            return cast(HealthzResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(HealthzResponse, out)
 
@@ -182,7 +191,7 @@ class Client:
         """GET /readyz (readyz)."""
         raw = self._request("GET", "/readyz", None, None)
         if raw is None:
-            return cast(ReadyzResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ReadyzResponse, out)
 
@@ -191,7 +200,7 @@ class Client:
         body = json.dumps(payload).encode("utf-8")
         raw = self._request("POST", "/v1/echo", api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
-            return {}
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         if out is None:
             out = {}
@@ -217,7 +226,7 @@ class Client:
             path += "?" + urlencode(_params)
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(ListErrorsResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListErrorsResponse, out)
 
@@ -237,7 +246,7 @@ class Client:
             path += "?" + urlencode(_params)
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(ListJobsResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListJobsResponse, out)
 
@@ -246,7 +255,7 @@ class Client:
         path = f"/v1/jobs/{quote(str(id), safe='')}"
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(GetJobResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(GetJobResponse, out)
 
@@ -262,7 +271,7 @@ class Client:
             path += "?" + urlencode(_params)
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(ListKeysResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListKeysResponse, out)
 
@@ -280,7 +289,7 @@ class Client:
         path = f"/v1/keys/{quote(str(id), safe='')}/rotate"
         raw = self._request("POST", path, api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
-            return cast(RotateKeyResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(RotateKeyResponse, out)
 
@@ -288,7 +297,7 @@ class Client:
         """GET /v1/usage (get usage)."""
         raw = self._request("GET", "/v1/usage", api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(GetUsageResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(GetUsageResponse, out)
 
@@ -310,7 +319,7 @@ class Client:
             path += "?" + urlencode(_params)
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(ListUsageEventsResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListUsageEventsResponse, out)
 
@@ -326,7 +335,7 @@ class Client:
             path += "?" + urlencode(_params)
         raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(ListWebhookEndpointsResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListWebhookEndpointsResponse, out)
 
@@ -335,7 +344,7 @@ class Client:
         body = json.dumps(payload).encode("utf-8")
         raw = self._request("POST", "/v1/webhooks/endpoints", api_key if api_key is not None else self.default_api_key, body)
         if raw is None:
-            return cast(CreateWebhookEndpointResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(CreateWebhookEndpointResponse, out)
 
@@ -359,7 +368,7 @@ class Client:
         path = f"/v1/webhooks/endpoints/{quote(str(id), safe='')}/rotate-secret"
         raw = self._request("POST", path, api_key if api_key is not None else self.default_api_key, None)
         if raw is None:
-            return cast(RotateWebhookEndpointSecretResponse, {})
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(RotateWebhookEndpointSecretResponse, out)
 
