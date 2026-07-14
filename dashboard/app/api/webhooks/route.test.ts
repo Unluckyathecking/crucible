@@ -11,7 +11,7 @@
  *      strings → stored subscription; anything else → a rejection error
  *   3. FormData's comma-separated subscribed_events field → string[] | null
  *   4. isPrivateHostname: SSRF guard — rejects loopback, private IPv4, and IPv6
- *      loopback/ULA/link-local address literals at registration time
+ *      loopback/ULA/link-local/IPv4-mapped address literals at registration time
  *
  * If lib/db.ts's real implementations of these change, keep this file's copies
  * and route.ts in sync together.
@@ -77,6 +77,9 @@ function isPrivateHostname(hostname: string): boolean {
       h.startsWith("[fea") || h.startsWith("[feb")) return true;
   if ((h.startsWith("fe8") || h.startsWith("fe9") ||
        h.startsWith("fea") || h.startsWith("feb")) && h.includes(":")) return true;
+
+  // IPv4-mapped IPv6 (::ffff::/96)
+  if (h.startsWith("[::ffff:") || h.startsWith("::ffff:")) return true;
 
   const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
 
@@ -278,6 +281,16 @@ describe("isPrivateHostname", () => {
     });
     it("does not block [fec0::1] — just above the fe80::/10 range", () => {
       expect(isPrivateHostname("[fec0::1]")).toBe(false);
+    });
+  });
+
+  describe("IPv4-mapped IPv6 (::ffff::/96)", () => {
+    it("blocks a private IPv4-mapped address in bracketed form", () => {
+      // new URL('https://[::ffff:10.0.0.1]/').hostname normalizes to [::ffff:a00:1]
+      expect(isPrivateHostname("[::ffff:a00:1]")).toBe(true);
+    });
+    it("blocks a private IPv4-mapped address in bare form", () => {
+      expect(isPrivateHostname("::ffff:a00:1")).toBe(true);
     });
   });
 

@@ -41,6 +41,11 @@ function isPrivateHostname(hostname: string): boolean {
   if ((h.startsWith("fe8") || h.startsWith("fe9") ||
        h.startsWith("fea") || h.startsWith("feb")) && h.includes(":")) return true;
 
+  // IPv4-mapped IPv6 (::ffff::/96): WHATWG URL normalizes [::ffff:10.0.0.1] to
+  // [::ffff:a00:1], bypassing the dotted-quad checks below. Block the whole
+  // mapped range — no legitimate public webhook uses this notation.
+  if (h.startsWith("[::ffff:") || h.startsWith("::ffff:")) return true;
+
   // Check for well-formed dotted-quad IPv4 first.
   const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
 
