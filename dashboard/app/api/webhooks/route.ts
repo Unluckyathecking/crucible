@@ -30,6 +30,17 @@ function isPrivateHostname(hostname: string): boolean {
   // IPv6 loopback
   if (h === "::1" || h === "[::1]") return true;
 
+  // IPv6 unique-local (fc00::/7): first octet is fc or fd (7-bit prefix 1111110)
+  if (h.startsWith("[fc") || h.startsWith("[fd")) return true;
+  if ((h.startsWith("fc") || h.startsWith("fd")) && h.includes(":")) return true;
+
+  // IPv6 link-local (fe80::/10): fe80 through febf
+  // Second nibble of byte 1 in {8,9,a,b} covers the /10 prefix boundary.
+  if (h.startsWith("[fe8") || h.startsWith("[fe9") ||
+      h.startsWith("[fea") || h.startsWith("[feb")) return true;
+  if ((h.startsWith("fe8") || h.startsWith("fe9") ||
+       h.startsWith("fea") || h.startsWith("feb")) && h.includes(":")) return true;
+
   // Check for well-formed dotted-quad IPv4 first.
   const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
 
