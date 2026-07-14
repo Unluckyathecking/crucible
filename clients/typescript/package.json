@@ -10,7 +10,7 @@
   "scripts": {
     "prepack": "npm run build",
     "build": "tsc",
-    "test": "npm run build && node --test dist/test/client.test.js dist/test/webhook.test.js",
+    "test": "npm run build && node --test dist/test/client.test.js dist/test/webhook.test.js dist/test/jobs.test.js",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

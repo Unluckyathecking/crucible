@@ -1252,10 +1252,11 @@ type_export_line = (
 )
 
 # index.ts appends an extra comment (beyond ts_header) to make clear that the
-# webhook re-export on the final line is also generator-produced, not a hand-edit.
-# ts_header is shared with errors.ts and client.ts; the webhook note is index-specific.
+# webhook/jobs re-exports on the final lines are also generator-produced, not
+# hand-edits. ts_header is shared with errors.ts and client.ts; the note is
+# index-specific.
 index_webhook_note = (
-    "// Webhook re-exports (last line) are emitted by this generator; "
+    "// Webhook/jobs re-exports (last lines) are emitted by this generator; "
     "edit gen-clients.sh and re-run — do not hand-edit.\n"
 )
 write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + index_webhook_note + (
@@ -1264,6 +1265,8 @@ write(os.path.join(TS_DIR, "src", "index.ts"), ts_header + index_webhook_note + 
     f'export {{ ApiError }} from "./errors";\n'
     f'export type {{ ErrorBody }} from "./errors";\n'
     f'export {{ verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER, WEBHOOK_EVENT_ID_HEADER, WEBHOOK_EVENT_TYPE_HEADER }} from "./webhook";\n'
+    f'export {{ waitForJob, JobWaitAbortedError, JOB_STATUS_SUCCEEDED, JOB_STATUS_FAILED, DEFAULT_POLL_INTERVAL_MS }} from "./jobs";\n'
+    f'export type {{ WaitForJobOptions }} from "./jobs";\n'
 ))
 
 # ── test/client.test.ts ───────────────────────────────────────────────────────
@@ -1958,11 +1961,12 @@ for op in ops:
 py_all_names = ["Client", "ApiError"] + py_type_names + [
     "verify_webhook", "WebhookVerificationError", "DEFAULT_TOLERANCE_MS",
     "SIGNATURE_HEADER", "TIMESTAMP_HEADER", "WEBHOOK_EVENT_ID_HEADER", "WEBHOOK_EVENT_TYPE_HEADER",
+    "wait_for_job", "JobWaitCancelledError", "JOB_STATUS_SUCCEEDED", "JOB_STATUS_FAILED", "DEFAULT_POLL_INTERVAL",
 ]
 py_init_content = (
     py_header
-    + "# Webhook re-exports (below) are emitted by this generator; edit gen-clients.sh\n"
-    + "# and re-run — do not hand-edit. webhook.py itself is hand-maintained.\n"
+    + "# Webhook/jobs re-exports (below) are emitted by this generator; edit gen-clients.sh\n"
+    + "# and re-run — do not hand-edit. webhook.py and jobs.py are hand-maintained.\n"
     + "from __future__ import annotations\n\n"
     + "from .client import Client" + (", " + ", ".join(py_type_names) if py_type_names else "") + "\n"
     + "from .errors import ApiError\n"
@@ -1974,6 +1978,13 @@ py_init_content = (
     + "    WEBHOOK_EVENT_TYPE_HEADER,\n"
     + "    WebhookVerificationError,\n"
     + "    verify_webhook,\n"
+    + ")\n"
+    + "from .jobs import (\n"
+    + "    DEFAULT_POLL_INTERVAL,\n"
+    + "    JOB_STATUS_FAILED,\n"
+    + "    JOB_STATUS_SUCCEEDED,\n"
+    + "    JobWaitCancelledError,\n"
+    + "    wait_for_job,\n"
     + ")\n\n"
     + "__all__ = [\n"
     + "".join(f'    "{n}",\n' for n in sorted(py_all_names))
