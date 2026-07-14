@@ -27,6 +27,7 @@
 //	crucible_jobs_completed_total{operation,outcome}     — async jobs finished; outcome=succeeded|failed
 //	crucible_jobs_retried_total{operation}               — async jobs requeued after a transient worker failure (jobs.Executor)
 //	crucible_job_execution_duration_seconds{operation}   — wall time from claim to terminal state (jobs.Executor)
+//	crucible_jobs_reaped_total                           — terminal async_jobs rows deleted by retention (jobs.Reaper)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -213,6 +214,14 @@ var (
 		Help:    "Wall time from claim to terminal state for an async job, by operation.",
 		Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600},
 	}, []string{"operation"})
+
+	// JobsReapedTotal counts terminal (succeeded, failed) async_jobs rows
+	// deleted by the retention reaper (gateway/internal/jobs.Reaper).
+	// Label-free.
+	JobsReapedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_jobs_reaped_total",
+		Help: "Number of terminal async_jobs rows deleted by the retention reaper (label-free).",
+	})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -244,6 +253,7 @@ type Metrics struct {
 	JobsCompletedTotal             *prometheus.CounterVec
 	JobsRetriedTotal               *prometheus.CounterVec
 	JobExecutionDuration           *prometheus.HistogramVec
+	JobsReapedTotal                prometheus.Counter
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -354,6 +364,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Help:    "Wall time from claim to terminal state for an async job, by operation.",
 			Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"operation"}),
+		JobsReapedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_jobs_reaped_total",
+			Help: "Number of terminal async_jobs rows deleted by the retention reaper (label-free).",
+		}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -381,6 +395,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.JobsCompletedTotal,
 		m.JobsRetriedTotal,
 		m.JobExecutionDuration,
+		m.JobsReapedTotal,
 	)
 	return m
 }
