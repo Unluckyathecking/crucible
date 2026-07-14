@@ -178,9 +178,14 @@ func main() {
 	// Same Emitter instance injected into server.Deps below — one shared
 	// delivery worker, not a second Emitter.
 	jobExecutor.SetEmitter(emitter)
+	reaper := jobs.NewReaper(pool, cfg.JobRetention(), cfg.JobReaperInterval())
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
+
+	// Async: delete terminal async_jobs rows past JOB_RETENTION_DAYS. Inert
+	// (no-op) until an operator opts in, see jobs.Reaper.Run.
+	go reaper.Run(rootCtx)
 
 	// Async: execute durable jobs opted into routes_table.go's AsyncRoutes.
 	// jobsDone closes once jobExecutor.Run has released any jobs it still

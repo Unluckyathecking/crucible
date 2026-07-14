@@ -96,6 +96,14 @@ type Config struct {
 	// jobs.ExecutorConfig.RetryBackoff). Matches jobs.ExecutorConfig's own
 	// zero-value fallback.
 	JobRetryBackoffMS int `envconfig:"JOB_RETRY_BACKOFF_MS" default:"2000"`
+	// JobRetentionDays bounds how long a terminal (succeeded, failed)
+	// async_jobs row is kept before jobs.Reaper deletes it. Zero-config-safe:
+	// defaults to 0, which makes the reaper inert (never deletes) — matching
+	// the stance every other Job knob takes of preserving today's behaviour
+	// until a product clone opts in.
+	JobRetentionDays int `envconfig:"JOB_RETENTION_DAYS" default:"0"`
+	// JobReaperIntervalMS is the delay between jobs.Reaper sweeps.
+	JobReaperIntervalMS int `envconfig:"JOB_REAPER_INTERVAL_MS" default:"3600000"`
 
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
@@ -226,6 +234,21 @@ func Load() (*Config, error) {
 	if c.JobRetryBackoffMS > 60000 {
 		return nil, fmt.Errorf("JOB_RETRY_BACKOFF_MS must be <= 60000 (1 minute) (got %d)", c.JobRetryBackoffMS)
 	}
+	// Unlike the other Job knobs above, zero is a valid, meaningful value
+	// here (disables the reaper) rather than a placeholder promoted to a
+	// default — only negative is a misconfiguration error.
+	if c.JobRetentionDays < 0 {
+		return nil, fmt.Errorf("JOB_RETENTION_DAYS must be >= 0 (got %d)", c.JobRetentionDays)
+	}
+	if c.JobRetentionDays > 3650 {
+		return nil, fmt.Errorf("JOB_RETENTION_DAYS must be <= 3650 (10 years) (got %d)", c.JobRetentionDays)
+	}
+	if c.JobReaperIntervalMS <= 0 {
+		return nil, fmt.Errorf("JOB_REAPER_INTERVAL_MS must be > 0 (got %d)", c.JobReaperIntervalMS)
+	}
+	if c.JobReaperIntervalMS > 86400000 {
+		return nil, fmt.Errorf("JOB_REAPER_INTERVAL_MS must be <= 86400000 (24 hours) (got %d)", c.JobReaperIntervalMS)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
@@ -289,6 +312,18 @@ func (c *Config) JobTimeout() time.Duration {
 // JobRetryBackoff converts JobRetryBackoffMS to time.Duration.
 func (c *Config) JobRetryBackoff() time.Duration {
 	return time.Duration(c.JobRetryBackoffMS) * time.Millisecond
+}
+
+// JobRetention converts JobRetentionDays to time.Duration. Zero (the
+// default) means retention is disabled — see jobs.Reaper.Run's nil/zero
+// no-op check.
+func (c *Config) JobRetention() time.Duration {
+	return time.Duration(c.JobRetentionDays) * 24 * time.Hour
+}
+
+// JobReaperInterval converts JobReaperIntervalMS to time.Duration.
+func (c *Config) JobReaperInterval() time.Duration {
+	return time.Duration(c.JobReaperIntervalMS) * time.Millisecond
 }
 
 // ClampRespCacheTTL normalizes a route's requested respcache TTL (seconds)
