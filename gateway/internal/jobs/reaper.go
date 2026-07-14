@@ -17,6 +17,13 @@ import (
 // async_jobs for the duration.
 const reaperBatchSize = 500
 
+// maxBatchesPerSweep caps how many batches a single tick will issue even
+// when every batch comes back full, so a pathologically large backlog
+// (e.g. JOB_RETENTION_DAYS lowered on an already-huge table) can't hold one
+// tick's goroutine issuing back-to-back DELETEs indefinitely; the remainder
+// drains over subsequent ticks instead.
+const maxBatchesPerSweep = 20
+
 // Reaper periodically deletes terminal (succeeded, failed) async_jobs rows
 // older than retention, in batches bounded by reaperBatchSize per tick.
 type Reaper struct {
@@ -69,12 +76,15 @@ func (r *Reaper) Run(ctx context.Context) {
 
 // sweep deletes terminal rows older than retention in batches of
 // r.batchSize, repeating within this tick until a batch deletes fewer than
-// r.batchSize rows (the backlog is drained) or ctx is cancelled — the same
-// "keep going until a batch comes back short" bound the usage flusher's
-// batchPageSize-limited phases use, so a large backlog can't hold a single
-// DELETE (and its row locks) open indefinitely.
+// r.batchSize rows (the backlog is drained), maxBatchesPerSweep batches have
+// run (the remaining backlog rolls over to the next tick), or ctx is
+// cancelled — the same "keep going until a batch comes back short" bound the
+// usage flusher's batchPageSize-limited phases use, so a large backlog can't
+// hold a single DELETE (and its row locks) open indefinitely, and the
+// maxBatchesPerSweep ceiling bounds total per-tick work even when every
+// batch comes back full.
 func (r *Reaper) sweep(ctx context.Context) {
-	for {
+	for i := 0; i < maxBatchesPerSweep; i++ {
 		if err := ctx.Err(); err != nil {
 			return
 		}
@@ -93,15 +103,20 @@ func (r *Reaper) sweep(ctx context.Context) {
 }
 
 // deleteBatch deletes up to r.batchSize terminal (succeeded, failed) rows
-// older than retention, keyed off created_at — never queued or running rows,
-// regardless of age.
+// older than retention, keyed off updated_at — never queued or running rows,
+// regardless of age. updated_at, not created_at, because Store.Complete/
+// Fail/DeadLetter stamp updated_at on the terminal transition itself; keying
+// off created_at would measure age from enqueue time, so a job that sits
+// queued or running longer than the retention window would be eligible for
+// deletion the instant it finally terminalizes — sometimes before a customer
+// ever observes the result via GET /v1/jobs/{id}.
 func (r *Reaper) deleteBatch(ctx context.Context) (int64, error) {
 	tag, err := r.db.Exec(ctx, `
 		DELETE FROM async_jobs
 		WHERE id IN (
 			SELECT id FROM async_jobs
 			WHERE status IN ('succeeded', 'failed')
-			  AND created_at < NOW() - $1 * INTERVAL '1 second'
+			  AND updated_at < NOW() - $1 * INTERVAL '1 second'
 			LIMIT $2
 		)
 	`, r.retention.Seconds(), r.batchSize)

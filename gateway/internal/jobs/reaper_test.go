@@ -11,8 +11,9 @@ import (
 )
 
 // seedJobWithStatusAge enqueues a job then force-sets its status and
-// backdates created_at, so tests can construct rows the normal Store API
-// can't reach directly (e.g. an aged 'succeeded' row).
+// backdates updated_at (the column the reaper keys retention off of — see
+// reaper.go's deleteBatch doc comment), so tests can construct rows the
+// normal Store API can't reach directly (e.g. an aged 'succeeded' row).
 func seedJobWithStatusAge(t *testing.T, pool *pgxpool.Pool, custID, keyID uuid.UUID, status string, age time.Duration) uuid.UUID {
 	t.Helper()
 	s := NewStore(pool)
@@ -21,7 +22,7 @@ func seedJobWithStatusAge(t *testing.T, pool *pgxpool.Pool, custID, keyID uuid.U
 		t.Fatalf("seedJobWithStatusAge: enqueue: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
-		UPDATE async_jobs SET status = $2, created_at = NOW() - $3 * INTERVAL '1 second'
+		UPDATE async_jobs SET status = $2, updated_at = NOW() - $3 * INTERVAL '1 second'
 		WHERE id = $1
 	`, id, status, age.Seconds()); err != nil {
 		t.Fatalf("seedJobWithStatusAge: backdate: %v", err)
@@ -77,6 +78,42 @@ func TestReaper_Sweep_TableDriven(t *testing.T) {
 		if gotExists != wantExists {
 			t.Errorf("%s: row exists=%v, want %v", c.name, gotExists, wantExists)
 		}
+	}
+}
+
+// TestReaper_Sweep_KeysOffUpdatedAt_NotCreatedAt proves a job that sat
+// queued/running long past retention but terminalized recently is kept —
+// retention must measure age since the terminal transition (updated_at,
+// stamped by Store.Complete/Fail/DeadLetter), not since enqueue (created_at).
+// Keying off created_at would delete such a row the instant it terminalizes,
+// sometimes before a customer ever observes the result via GET /v1/jobs/{id}.
+func TestReaper_Sweep_KeysOffUpdatedAt_NotCreatedAt(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedCustomer(t, pool, "reaper-updated-at-"+uuid.New().String()+"@example.com")
+
+	const retention = time.Hour
+
+	s := NewStore(pool)
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-old-enqueue", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	// Simulate a job that sat queued/running for much longer than retention,
+	// then just terminalized: created_at is far in the past, but updated_at
+	// (the terminal-transition stamp) is recent.
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE async_jobs
+		SET status = $2, created_at = NOW() - $3 * INTERVAL '1 second', updated_at = NOW()
+		WHERE id = $1
+	`, id, StatusSucceeded, (retention * 10).Seconds()); err != nil {
+		t.Fatalf("backdate created_at only: %v", err)
+	}
+
+	r := NewReaper(pool, retention, time.Hour)
+	r.sweep(context.Background())
+
+	if !jobRowExists(t, pool, id) {
+		t.Error("row with old created_at but recent updated_at was deleted; retention must key off updated_at (terminalization time), not created_at (enqueue time)")
 	}
 }
 
