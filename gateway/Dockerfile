@@ -1,9 +1,14 @@
 # Crucible gateway. Multi-stage build; ~25 MB final.
 FROM golang:1.25-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY gateway/go.mod gateway/go.sum ./gateway/
+COPY workers/sdk-go/go.mod workers/sdk-go/go.sum ./workers/sdk-go/
+COPY workers/stubs/textkit/go.mod workers/stubs/textkit/go.sum ./workers/stubs/textkit/
+WORKDIR /src/gateway
 RUN go mod download
-COPY . .
+COPY gateway ./
+COPY workers/sdk-go ../workers/sdk-go
+COPY workers/stubs/textkit ../workers/stubs/textkit
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 
 FROM alpine:3.20

@@ -43,8 +43,10 @@ services:
 
   gateway:
     build:
-      context: ./gateway
-      dockerfile: Dockerfile
+      # The gateway go.mod replaces shared modules under workers/, so its
+      # Docker build needs the repository root as context.
+      context: .
+      dockerfile: gateway/Dockerfile
     env_file: .env
     environment:
       WORKER_URL: http://worker:8081

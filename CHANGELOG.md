@@ -21,5 +21,7 @@ as described in [docs/releases.md](docs/releases.md).
   GO-2026-5856.
 - Made clone acceptance hydrate the active Go worker's standalone module graph and
   serialized integration-test packages while they share a migration database.
+- Corrected the gateway container build context so its local worker-module replacements
+  are available during dependency resolution.
 
 [Unreleased]: https://github.com/Unluckyathecking/crucible/compare/main...HEAD
