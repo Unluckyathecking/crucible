@@ -8,8 +8,8 @@ not promise compatibility outside the listed surface.
 
 | Component | Declared or supported | Tested in CI | Notes |
 |---|---|---|---|
-| Gateway and Go worker SDKs | Go 1.25.11 toolchain | Go 1.25.11 on Ubuntu | Go modules declare 1.25 and pin toolchain 1.25.11. |
-| Go consumer client | Go 1.22+ | Go 1.22 and 1.25.11 on Ubuntu and macOS | Standalone generated module. |
+| Gateway and Go worker SDKs | Go 1.25.12 toolchain | Go 1.25.12 on Ubuntu | Go modules declare 1.25 and pin toolchain 1.25.12. |
+| Go consumer client | Go 1.22+ | Go 1.22 on Ubuntu; Go 1.25.12 on Ubuntu and macOS | Go 1.22 binaries are not run on current macOS runners because that legacy toolchain cannot emit binaries accepted by the current macOS loader. |
 | Dashboard | Node.js 22, pnpm 10 | Node.js 22 on Ubuntu | Next.js 15 production build is a required CI gate. |
 | TypeScript SDKs/clients | Node.js 18+ | Node.js 18 and 22 on Ubuntu and macOS | Generated client declares Node 18 minimum. |
 | Python SDKs/clients | Python 3.9+ | Python 3.9 and 3.12 on Ubuntu and macOS | Runtime code is standard-library only. |

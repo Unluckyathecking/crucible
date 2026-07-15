@@ -95,7 +95,11 @@ case "$LANG_ID" in
         # workers/active at a brand new workers/<product>/ directory (per
         # ADAPT.md) fails to build unless that directory is also added to
         # go.work — an extra step this script must not require.
-        (cd "$ACTIVE_DIR" && GOWORK=off go build -o "$WORKER_BIN" .)
+        # A preceding `go work sync` can raise an indirect dependency selected
+        # by the active module without populating that module's go.sum. The
+        # acceptance workflow intentionally builds with GOWORK=off, so fetch
+        # the synchronized module graph before invoking the read-only build.
+        (cd "$ACTIVE_DIR" && GOWORK=off go mod download && GOWORK=off go build -o "$WORKER_BIN" .)
         ;;
     rust)
         echo "==> Building workers/active (rust)..."

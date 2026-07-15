@@ -15,4 +15,11 @@ as described in [docs/releases.md](docs/releases.md).
 - Structured issue forms, pull request guidance, dependency update configuration,
   and SDK compatibility CI.
 
+### Changed
+
+- Updated the canonical Go toolchain to 1.25.12 for the standard-library fix for
+  GO-2026-5856.
+- Made clone acceptance hydrate the active Go worker's standalone module graph and
+  serialized integration-test packages while they share a migration database.
+
 [Unreleased]: https://github.com/Unluckyathecking/crucible/compare/main...HEAD

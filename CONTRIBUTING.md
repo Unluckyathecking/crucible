@@ -19,7 +19,7 @@ compatibility improvements, or additions to an existing SDK.
 
 ## Development setup
 
-The canonical environment uses Go 1.25.11, Node.js 22 with pnpm 10, Python 3.12,
+The canonical environment uses Go 1.25.12, Node.js 22 with pnpm 10, Python 3.12,
 the stable Rust toolchain, PostgreSQL 16, and Redis 7. See
 [docs/compatibility.md](docs/compatibility.md) for minimums and CI coverage.
 

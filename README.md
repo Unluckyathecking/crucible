@@ -36,7 +36,7 @@ The shortest path exercises a worker without external services.
 ### Prerequisites
 
 - Git
-- Go 1.25.11 (the toolchain declared by the gateway and worker modules)
+- Go 1.25.12 (the toolchain declared by the gateway and worker modules)
 - `curl`
 
 ```bash
