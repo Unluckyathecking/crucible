@@ -433,6 +433,7 @@ func (e *Executor) retryOrDeadLetter(job Job, code, message string) {
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
+	observability.JobsDeadletteredTotal.WithLabelValues(job.Operation).Inc()
 	log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 		Int("attempts", newAttempts).Msg("jobs: retries exhausted, dead-lettered")
 	// A fresh timeout — see fail's call site for why.
