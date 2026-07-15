@@ -299,13 +299,15 @@ func TestAdminRequeueJobHandler_RejectRunning(t *testing.T) {
 		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		Code string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Code != "JOB_NOT_REQUEUABLE" {
-		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Code)
+	if body.Error.Code != "JOB_NOT_REQUEUABLE" {
+		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Error.Code)
 	}
 	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
 		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
@@ -333,13 +335,15 @@ func TestAdminRequeueJobHandler_RejectSucceeded(t *testing.T) {
 		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		Code string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Code != "JOB_NOT_REQUEUABLE" {
-		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Code)
+	if body.Error.Code != "JOB_NOT_REQUEUABLE" {
+		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Error.Code)
 	}
 	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
 		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
