@@ -243,8 +243,13 @@ func TestAdminRequeueJobHandler_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+	// Put the job into terminal 'failed' state — the legitimate requeue path.
+	// Claim first (Fail requires a running row in practice) then fail it.
 	if _, err := store.Claim(ctx, 10, uuid.New()); err != nil {
 		t.Fatalf("Claim: %v", err)
+	}
+	if err := store.Fail(ctx, id, "TEST_ERROR", "seeded for requeue test"); err != nil {
+		t.Fatalf("Fail: %v", err)
 	}
 
 	h := newJobsAdminRouter(pool)
@@ -272,6 +277,76 @@ func TestAdminRequeueJobHandler_OK(t *testing.T) {
 	}
 	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 1 {
 		t.Errorf("audit rows for job %s: got %d, want 1", id, n)
+	}
+}
+
+func TestAdminRequeueJobHandler_RejectRunning(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedJobsCustomer(t, pool, "jobs-admin-http-requeue-running-"+uuid.New().String()+"@example.com")
+	store := jobs.NewStore(pool)
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, custA, keyA, "echo", "req-running", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, 10, uuid.New()); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	h := newJobsAdminRouter(pool)
+	rec := doJobsAdminRequest(t, h, http.MethodPost, "/v1/admin/jobs/"+id.String()+"/requeue", testJobsOperatorToken, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "JOB_NOT_REQUEUABLE" {
+		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Error.Code)
+	}
+	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
+		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
+	}
+}
+
+func TestAdminRequeueJobHandler_RejectSucceeded(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedJobsCustomer(t, pool, "jobs-admin-http-requeue-succeeded-"+uuid.New().String()+"@example.com")
+	store := jobs.NewStore(pool)
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, custA, keyA, "echo", "req-succeeded", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	// Force the job directly to 'succeeded' via SQL — jobs.Store has no exported
+	// Complete that accepts a pool-backed call without a real worker response.
+	if _, err := pool.Exec(ctx, `UPDATE async_jobs SET status = 'succeeded', claimed_at = NULL, claimed_by = NULL WHERE id = $1`, id); err != nil {
+		t.Fatalf("force succeeded: %v", err)
+	}
+
+	h := newJobsAdminRouter(pool)
+	rec := doJobsAdminRequest(t, h, http.MethodPost, "/v1/admin/jobs/"+id.String()+"/requeue", testJobsOperatorToken, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "JOB_NOT_REQUEUABLE" {
+		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Error.Code)
+	}
+	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
+		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
 	}
 }
 

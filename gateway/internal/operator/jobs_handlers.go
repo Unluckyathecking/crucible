@@ -42,6 +42,7 @@ const (
 // as local literals rather than imported from package jobs: see JobsAdminStore's
 // doc comment for why this package cannot import jobs directly.
 const (
+	jobStatusRunning   = "running"
 	jobStatusSucceeded = "succeeded"
 	jobStatusFailed    = "failed"
 )
@@ -228,12 +229,21 @@ func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handler
 		// jobs.Store.Requeue is an unconditional UPDATE ... WHERE id=$1 with no
 		// rows-affected signal, so a 404 on an unknown id has to be established
 		// with a lookup here rather than inferred from Requeue's own return.
-		if _, ok, err := store.AdminGet(r.Context(), id); err != nil {
+		// The returned job is also used to guard against requeuing a running or
+		// succeeded job, which would cause concurrent double-execution or
+		// re-billing of already-completed work.
+		job, ok, err := store.AdminGet(r.Context(), id)
+		if err != nil {
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job lookup failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
 			return
-		} else if !ok {
+		}
+		if !ok {
 			apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
+			return
+		}
+		if job.Status == jobStatusRunning || job.Status == jobStatusSucceeded {
+			apierror.Write(w, rid, http.StatusConflict, "JOB_NOT_REQUEUABLE", "job cannot be requeued in its current state", false)
 			return
 		}
 
@@ -245,7 +255,7 @@ func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handler
 		observability.JobsRequeuedTotal.Inc()
 		emitJobAudit(r.Context(), db, rid, ActionJobRequeued, "async_job", id.String())
 
-		job, ok, err := store.AdminGet(r.Context(), id)
+		job, ok, err = store.AdminGet(r.Context(), id)
 		if err != nil || !ok {
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job re-fetch failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "requeue succeeded but re-fetch failed", false)
