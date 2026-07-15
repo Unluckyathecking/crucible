@@ -499,6 +499,7 @@ func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
 	})
 
 	retriedBefore := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo"))
+	deadletteredBefore := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo"))
 
 	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-retry-exhaust", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
@@ -529,6 +530,9 @@ func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
 
 	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
 		t.Errorf("crucible_jobs_retried_total delta = %v, want 1 (one retry before exhausting MaxAttempts=2)", retried)
+	}
+	if dl := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo")) - deadletteredBefore; dl != 1 {
+		t.Errorf("crucible_jobs_deadlettered_total delta = %v, want 1 (exactly one dead-letter on exhausted retries)", dl)
 	}
 }
 
@@ -695,6 +699,9 @@ func TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne(t
 	custA, keyA := seedCustomer(t, pool, "jobs-exec-emit-deadletter-"+uuid.New().String()+"@example.com")
 	seedWebhookEndpoint(t, pool, custA)
 
+	deadletteredBefore := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo"))
+	retriedBefore := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo"))
+
 	var calls int32
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -728,5 +735,14 @@ func TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne(t
 	count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second)
 	if count != 1 {
 		t.Fatalf("job.failed webhook_deliveries rows = %d, want exactly 1 (never one per retry attempt)", count)
+	}
+
+	// The retry attempt (attempt 1) must not increment deadlettered; the
+	// dead-letter path (attempt 2 = MaxAttempts) must increment it exactly once.
+	if dl := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo")) - deadletteredBefore; dl != 1 {
+		t.Errorf("crucible_jobs_deadlettered_total{operation=echo} delta = %.0f, want 1", dl)
+	}
+	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
+		t.Errorf("crucible_jobs_retried_total{operation=echo} delta = %.0f, want 1 (one non-terminal retry)", retried)
 	}
 }

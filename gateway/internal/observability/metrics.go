@@ -30,6 +30,7 @@
 //	crucible_jobs_reaped_total                           — terminal async_jobs rows deleted by retention (jobs.Reaper)
 //	crucible_jobs_requeued_total                         — async jobs requeued by an operator (operator.AdminRequeueJobHandler)
 //	crucible_jobs_released_total                         — async jobs force-released from a dead instance by an operator (operator.AdminReleaseJobsHandler)
+//	crucible_jobs_deadlettered_total{operation}          — async jobs that exhausted all retries and moved to terminal failed (jobs.Executor)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -239,6 +240,16 @@ var (
 		Name: "crucible_jobs_released_total",
 		Help: "Number of async jobs force-released from a dead instance's claim by an operator (label-free).",
 	})
+
+	// JobsDeadletteredTotal counts async jobs that exhausted all retry attempts
+	// and moved to terminal 'failed' via Store.DeadLetter. This is a subset of
+	// JobsCompletedTotal{outcome="failed"} — the existing counter is not relabeled,
+	// so the AsyncJobFailureRateElevated alert remains unaffected.
+	// operation is bounded (fixed V1Routes set).
+	JobsDeadletteredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_jobs_deadlettered_total",
+		Help: "Number of async jobs that exhausted all retries and were dead-lettered to terminal failed, by operation.",
+	}, []string{"operation"})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -273,6 +284,7 @@ type Metrics struct {
 	JobsReapedTotal                prometheus.Counter
 	JobsRequeuedTotal              prometheus.Counter
 	JobsReleasedTotal              prometheus.Counter
+	JobsDeadletteredTotal          *prometheus.CounterVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -395,6 +407,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_jobs_released_total",
 			Help: "Number of async jobs force-released from a dead instance's claim by an operator (label-free).",
 		}),
+		JobsDeadletteredTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_jobs_deadlettered_total",
+			Help: "Number of async jobs that exhausted all retries and were dead-lettered to terminal failed, by operation.",
+		}, []string{"operation"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -425,6 +441,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.JobsReapedTotal,
 		m.JobsRequeuedTotal,
 		m.JobsReleasedTotal,
+		m.JobsDeadletteredTotal,
 	)
 	return m
 }
