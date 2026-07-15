@@ -12,8 +12,8 @@ The contract is defined in `gateway/proto/tool.proto`. Workers speak HTTP/JSON b
 | Path | What |
 |---|---|
 | `sdk-go/` | Go SDK. Import this, write one function, you have a working worker. |
-| `sdk-python/` | (v1.5) |
-| `sdk-typescript/` | (v1.5) |
+| `sdk-python/` | Stdlib-only Python worker SDK. |
+| `sdk-ts/` | Zero-runtime-dependency TypeScript worker SDK. |
 | `sdk-rust/` | Rust SDK. Depend on it, write one async handler, call `serve`. |
 | `stubs/` | Hello-world reference impls — one per SDK language. |
 | `active` | Symlink to the worker this clone ships. Edit this when adapting Crucible. |

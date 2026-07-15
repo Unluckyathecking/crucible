@@ -16,11 +16,22 @@ _API_KEY_HEADER = "X-API-Key"
 
 
 _MAX_ERROR_BODY = 64 * 1024
+_MAX_JSON_INTEGER_DIGITS = 4300
+
+
+def _bounded_json_int(value: str) -> int:
+    # Python 3.11 added a default int-string conversion limit to address
+    # CVE-2020-10735. Crucible supports Python 3.9+, so enforce the same bound
+    # explicitly and keep untrusted error parsing consistent on every
+    # supported interpreter.
+    if len(value.lstrip("-")) > _MAX_JSON_INTEGER_DIGITS:
+        raise ValueError("JSON integer exceeds safe digit limit")
+    return int(value)
 
 
 def _parse_error_envelope(status: int, raw: bytes) -> ApiError:
     try:
-        envelope = json.loads(raw) if raw else None
+        envelope = json.loads(raw, parse_int=_bounded_json_int) if raw else None
     except ValueError:
         # Catches json.JSONDecodeError (malformed JSON), UnicodeDecodeError
         # (json.loads decodes bytes itself per RFC 8259 UTF-8/16/32 sniffing,

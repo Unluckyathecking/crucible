@@ -2,6 +2,7 @@
   "name": "@crucible/worker-stub-ts",
   "version": "0.0.1",
   "description": "Hello-world Crucible worker stub (TypeScript/Node.js)",
+  "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

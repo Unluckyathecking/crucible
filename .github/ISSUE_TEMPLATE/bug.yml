@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible defect in Crucible
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Do not report vulnerabilities here; follow SECURITY.md.
+  - type: input
+    id: commit
+    attributes:
+      label: Crucible commit
+      description: The exact tag or commit SHA you tested.
+      placeholder: a51b552...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Gateway
+        - Dashboard
+        - Worker SDK or stub
+        - Consumer client
+        - Database migration
+        - Deployment or observability
+        - Documentation or tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, language/toolchain, PostgreSQL/Redis, and deployment method.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal numbered steps or a link to a minimal repository. Remove all secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Include request IDs and sanitized logs when relevant.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and tested a currently maintained commit.
+          required: true
+        - label: This report contains no vulnerability details, secrets, or private data.
+          required: true

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,7 @@ name = "crucible-worker-sdk"
 version = "0.1.0"
 description = "Stdlib-only Python SDK for Crucible workers"
 requires-python = ">=3.9"
+license = "MIT"
 dependencies = []
 
 [tool.setuptools.packages.find]

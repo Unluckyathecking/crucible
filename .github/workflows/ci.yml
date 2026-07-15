@@ -55,7 +55,7 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379
           POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
-        run: cd gateway && go vet ./... && go test -race -timeout 9m $(go list ./... | grep -v '/test')
+        run: cd gateway && go vet ./... && go list ./... | grep -v '/test' | xargs go test -race -timeout 9m
       - name: gateway integration tests
         # timeout-minutes (15) is 3m beyond the binary -timeout (12m) so the job watchdog
         # fires only on genuine hangs; the extra time lets cleanup goroutines flush and

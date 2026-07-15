@@ -1,0 +1,87 @@
+name: compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-client:
+    name: Go client (${{ matrix.os }}, Go ${{ matrix.go }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.22", "1.25.11"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - working-directory: clients/go
+        run: go build ./... && go test ./...
+
+  typescript:
+    name: TypeScript (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            clients/typescript/package-lock.json
+            workers/sdk-ts/package-lock.json
+      - working-directory: clients/typescript
+        run: npm ci && npm test
+      - working-directory: workers/sdk-ts
+        run: npm ci && npm test
+
+  python:
+    name: Python (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Consumer client
+        working-directory: clients/python
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+      - name: Worker SDK
+        working-directory: workers/sdk-python
+        run: python -m unittest conformance.test_fixture_conformance -v
+
+  rust:
+    name: Rust (${{ matrix.os }}, stable)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - working-directory: workers/sdk-rust
+        run: cargo test --locked && cargo clippy --locked -- -D warnings

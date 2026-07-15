@@ -2,6 +2,7 @@
 name = "crucible-sdk-conformance"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 # No library target — this crate only provides integration tests.
 

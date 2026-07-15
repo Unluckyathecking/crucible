@@ -1,0 +1,5 @@
+# Default review owner. Governance and security policy changes always require owner review.
+* @Unluckyathecking
+/SECURITY.md @Unluckyathecking
+/GOVERNANCE.md @Unluckyathecking
+/.github/ @Unluckyathecking

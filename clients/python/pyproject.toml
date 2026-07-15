@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,7 @@ name = "crucible-client"
 version = "0.1.0"
 description = "Type-safe client SDK for the Crucible Gateway API"
 requires-python = ">=3.9"
+license = "MIT"
 # Zero runtime dependencies — mirrors the Go/TS clients' zero-external-dep
 # stance. Only urllib, json, hmac, hashlib, and other stdlib modules are used.
 dependencies = []

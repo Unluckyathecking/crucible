@@ -1,0 +1,29 @@
+name: Support question
+description: Ask for help after checking the documentation
+title: "support: "
+labels: [support]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read SUPPORT.md first. Never include secrets or vulnerability details.
+  - type: input
+    id: commit
+    attributes:
+      label: Crucible commit
+      placeholder: a51b552...
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: attempts
+    attributes:
+      label: What have you tried?
+      description: Include sanitized commands, output, environment, and relevant documentation.
+    validations:
+      required: true

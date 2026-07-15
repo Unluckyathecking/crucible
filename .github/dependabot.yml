@@ -1,0 +1,56 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directories:
+      - /gateway
+      - /workers/sdk-go
+      - /workers/stubs/go
+      - /workers/stubs/textkit
+      - /clients/go
+      - /test/conformance
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directories:
+      - /dashboard
+      - /clients/typescript
+      - /workers/sdk-ts
+      - /workers/stubs/ts
+    schedule:
+      interval: weekly
+    groups:
+      javascript-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directories:
+      - /workers/sdk-rust
+      - /workers/sdk-rust/conformance
+      - /workers/stubs/rust
+    schedule:
+      interval: weekly
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directories:
+      - /clients/python
+      - /workers/sdk-python
+    schedule:
+      interval: weekly
+    groups:
+      python-dependencies:
+        patterns: ["*"]

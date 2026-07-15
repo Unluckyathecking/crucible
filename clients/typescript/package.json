@@ -2,6 +2,7 @@
   "name": "@crucible/client",
   "version": "0.1.0",
   "description": "Type-safe client SDK for the Crucible Gateway API",
+  "license": "MIT",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "files": [
