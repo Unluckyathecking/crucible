@@ -55,6 +55,33 @@ export interface Plan {
   created_at: string;
 }
 
+export interface AdminJobError {
+  code: string;
+  message: string;
+}
+
+// AdminJob is the cross-customer job view from GET /v1/admin/jobs* — unlike
+// the customer-facing job shape, it carries customer_id and claimed_by/
+// claimed_at (gateway/internal/operator's adminJobItem).
+export interface AdminJob {
+  job_id: string;
+  customer_id: string;
+  operation: string;
+  status: string;
+  result?: unknown;
+  billable_units?: number;
+  units_label?: string;
+  error?: AdminJobError;
+  claimed_by?: string;
+  claimed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReleaseJobsResult {
+  released: number;
+}
+
 export class OperatorApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
@@ -136,6 +163,25 @@ function isCustomerUsageResultShape(value: unknown): value is CustomerUsageResul
   );
 }
 
+function isAdminJobErrorShape(value: unknown): value is AdminJobError {
+  return isRecord(value) && typeof value.code === "string" && typeof value.message === "string";
+}
+
+function isAdminJobShape(value: unknown): value is AdminJob {
+  return (
+    isRecord(value) &&
+    typeof value.job_id === "string" &&
+    typeof value.customer_id === "string" &&
+    typeof value.operation === "string" &&
+    typeof value.status === "string" &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string" &&
+    (value.error === undefined || isAdminJobErrorShape(value.error)) &&
+    (value.claimed_by === undefined || typeof value.claimed_by === "string") &&
+    (value.claimed_at === undefined || typeof value.claimed_at === "string")
+  );
+}
+
 function isPlanShape(value: unknown): value is Plan {
   return (
     isRecord(value) &&
@@ -169,23 +215,52 @@ function assertPlanArray(value: unknown, context: string): Plan[] {
   return value;
 }
 
+function assertAdminJob(value: unknown, context: string): AdminJob {
+  if (!isAdminJobShape(value)) {
+    throw new OperatorApiError(`malformed response for ${context}: expected an AdminJob object`, 502);
+  }
+  return value;
+}
+
+function isReleaseJobsResultShape(value: unknown): value is ReleaseJobsResult {
+  return isRecord(value) && isSafeCount(value.released);
+}
+
+function assertReleaseJobsResult(value: unknown, context: string): ReleaseJobsResult {
+  if (!isReleaseJobsResultShape(value)) {
+    throw new OperatorApiError(`malformed response for ${context}: expected {released: number}`, 502);
+  }
+  return value;
+}
+
 function validateUuid(id: string, context: string): void {
   if (!UUID_RE.test(id)) {
     throw new OperatorApiError(`invalid id for ${context}: not a UUID`, 400);
   }
 }
 
-async function operatorFetch(path: string, searchParams?: Record<string, string | undefined>): Promise<unknown> {
+// operatorFetch is the only place requireOperatorToken() is called — every
+// exported function in this module (GET reads and POST actions alike) routes
+// through here so the bearer header is attached in exactly one spot.
+async function operatorFetch(
+  path: string,
+  opts: { searchParams?: Record<string, string | undefined>; method?: string; body?: unknown } = {},
+): Promise<unknown> {
   const token = requireOperatorToken();
   const url = new URL(path, getGatewayUrl());
-  if (searchParams) {
-    for (const [key, value] of Object.entries(searchParams)) {
+  if (opts.searchParams) {
+    for (const [key, value] of Object.entries(opts.searchParams)) {
       if (value !== undefined && value !== "") url.searchParams.set(key, value);
     }
   }
 
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    method: opts.method ?? "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     cache: "no-store",
   });
 
@@ -203,6 +278,10 @@ async function operatorFetch(path: string, searchParams?: Record<string, string 
   return res.json();
 }
 
+async function operatorPost(path: string, body?: unknown): Promise<unknown> {
+  return operatorFetch(path, { method: "POST", body });
+}
+
 export interface ListCustomersParams {
   planId?: string;
   page?: number;
@@ -211,9 +290,11 @@ export interface ListCustomersParams {
 
 export async function listCustomers(params: ListCustomersParams = {}): Promise<Page<Customer>> {
   const data = await operatorFetch("/v1/admin/customers", {
-    plan_id: params.planId,
-    page: params.page?.toString(),
-    per_page: params.perPage?.toString(),
+    searchParams: {
+      plan_id: params.planId,
+      page: params.page?.toString(),
+      per_page: params.perPage?.toString(),
+    },
   });
   return assertPage<Customer>(data, "listCustomers", isCustomerShape);
 }
@@ -232,8 +313,7 @@ export interface GetCustomerUsageParams {
 export async function getCustomerUsage(id: string, params: GetCustomerUsageParams = {}): Promise<CustomerUsageResult> {
   validateUuid(id, "getCustomerUsage");
   const data = await operatorFetch(`/v1/admin/customers/${encodeURIComponent(id)}/usage`, {
-    start: params.start,
-    end: params.end,
+    searchParams: { start: params.start, end: params.end },
   });
   return assertUsageResult(data, "getCustomerUsage");
 }
@@ -249,12 +329,14 @@ export interface ListAuditEventsParams {
 
 export async function listAuditEvents(params: ListAuditEventsParams = {}): Promise<Page<AuditEvent>> {
   const data = await operatorFetch("/v1/admin/audit", {
-    customer_id: params.customerId,
-    action: params.action,
-    start: params.start,
-    end: params.end,
-    page: params.page?.toString(),
-    per_page: params.perPage?.toString(),
+    searchParams: {
+      customer_id: params.customerId,
+      action: params.action,
+      start: params.start,
+      end: params.end,
+      page: params.page?.toString(),
+      per_page: params.perPage?.toString(),
+    },
   });
   return assertPage<AuditEvent>(data, "listAuditEvents", isAuditEventShape);
 }
@@ -262,4 +344,40 @@ export async function listAuditEvents(params: ListAuditEventsParams = {}): Promi
 export async function listPlans(): Promise<Plan[]> {
   const data = await operatorFetch("/v1/admin/plans");
   return assertPlanArray(data, "listPlans");
+}
+
+export interface ListAdminJobsParams {
+  status?: string;
+  page?: number;
+  perPage?: number;
+}
+
+export async function listAdminJobs(params: ListAdminJobsParams = {}): Promise<Page<AdminJob>> {
+  const data = await operatorFetch("/v1/admin/jobs", {
+    searchParams: {
+      status: params.status,
+      page: params.page?.toString(),
+      per_page: params.perPage?.toString(),
+    },
+  });
+  return assertPage<AdminJob>(data, "listAdminJobs", isAdminJobShape);
+}
+
+// requeueJob flips a claimed/failed/dead-lettered job back to queued —
+// see gateway/internal/jobs.Store.Requeue's doc comment on why this is only
+// safe once the caller has positively confirmed no worker is still
+// processing the job.
+export async function requeueJob(id: string): Promise<AdminJob> {
+  validateUuid(id, "requeueJob");
+  const data = await operatorPost(`/v1/admin/jobs/${encodeURIComponent(id)}/requeue`);
+  return assertAdminJob(data, "requeueJob");
+}
+
+// releaseJobs force-releases every job claimed by instanceId back to queued —
+// see gateway/internal/jobs.Store.ReleaseClaimed's doc comment on why this is
+// only safe once the caller has positively confirmed that instance is dead.
+export async function releaseJobs(instanceId: string): Promise<ReleaseJobsResult> {
+  validateUuid(instanceId, "releaseJobs");
+  const data = await operatorPost("/v1/admin/jobs/release", { instance_id: instanceId });
+  return assertReleaseJobsResult(data, "releaseJobs");
 }

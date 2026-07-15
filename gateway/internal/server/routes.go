@@ -119,6 +119,62 @@ type Deps struct {
 	OperatorToken string
 }
 
+// jobsAdminAdapter bridges jobs.Store's admin methods to
+// operator.JobsAdminStore, translating jobs.AdminJob into operator.AdminJob.
+// Lives here — not in package operator or package jobs — because package
+// jobs already imports webhookout, and webhookout's own test suite
+// (adminhttp_test.go) imports package operator for its cross-endpoint
+// coverage; operator importing jobs directly would create an import cycle
+// in webhookout's test binary. Package server already imports both without
+// issue, since nothing imports package server.
+type jobsAdminAdapter struct{ store *jobs.Store }
+
+func (a jobsAdminAdapter) AdminList(ctx context.Context, status *string, limit, offset int) ([]operator.AdminJob, int64, error) {
+	rows, total, err := a.store.AdminList(ctx, status, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]operator.AdminJob, len(rows))
+	for i, j := range rows {
+		out[i] = adminJobFromStoreRow(j)
+	}
+	return out, total, nil
+}
+
+func (a jobsAdminAdapter) AdminGet(ctx context.Context, id uuid.UUID) (operator.AdminJob, bool, error) {
+	j, ok, err := a.store.AdminGet(ctx, id)
+	if err != nil || !ok {
+		return operator.AdminJob{}, ok, err
+	}
+	return adminJobFromStoreRow(j), true, nil
+}
+
+func (a jobsAdminAdapter) Requeue(ctx context.Context, id uuid.UUID) error {
+	return a.store.Requeue(ctx, id)
+}
+
+func (a jobsAdminAdapter) ReleaseClaimed(ctx context.Context, instanceID uuid.UUID) (int64, error) {
+	return a.store.ReleaseClaimed(ctx, instanceID)
+}
+
+func adminJobFromStoreRow(j jobs.AdminJob) operator.AdminJob {
+	return operator.AdminJob{
+		ID:            j.ID,
+		CustomerID:    j.CustomerID,
+		Operation:     j.Operation,
+		Status:        j.Status,
+		Result:        j.Result,
+		UnitsLabel:    j.UnitsLabel,
+		BillableUnits: j.BillableUnits,
+		ErrorCode:     j.ErrorCode,
+		ErrorMessage:  j.ErrorMessage,
+		ClaimedBy:     j.ClaimedBy,
+		ClaimedAt:     j.ClaimedAt,
+		CreatedAt:     j.CreatedAt,
+		UpdatedAt:     j.UpdatedAt,
+	}
+}
+
 // NewRouter builds the gateway router: public health + stripe webhook, plus auth+ratelimit-gated /v1 routes.
 //
 // The outbound webhook emitter is normally supplied via d.Emitter (main.go
@@ -360,6 +416,22 @@ func NewRouter(d *Deps) http.Handler {
 				r.Get("/webhooks/deadletters", webhookout.ListDeadLettersHandler(d.DB))
 				r.Post("/webhooks/deadletters/{id}/replay", webhookout.ReplaySingleHandler(d.DB))
 				r.Post("/webhooks/deadletters/replay", webhookout.ReplayBulkHandler(d.DB))
+				// Cross-customer job recovery: exposes the jobs.Store.Requeue /
+				// ReleaseClaimed primitives (reserved for "future operator tooling"
+				// since the async subsystem shipped) behind the same
+				// OPERATOR_TOKEN-gated pattern as the dead-letter replay routes
+				// above. jobStore is nil-safe but is only ever nil when d.DB is
+				// nil, so this is gated on d.DB for symmetry with those routes.
+				// Wrapped in jobsAdminAdapter (below) rather than passed
+				// directly: package operator can't import package jobs without
+				// creating an import cycle in webhookout's test binary (jobs
+				// imports webhookout; webhookout's own test suite imports
+				// operator) — see operator.JobsAdminStore's doc comment.
+				jobsAdmin := jobsAdminAdapter{store: jobStore}
+				r.Get("/jobs", operator.AdminListJobsHandler(jobsAdmin))
+				r.Get("/jobs/{id}", operator.AdminGetJobHandler(jobsAdmin))
+				r.Post("/jobs/{id}/requeue", operator.AdminRequeueJobHandler(jobsAdmin, d.DB))
+				r.Post("/jobs/release", operator.AdminReleaseJobsHandler(jobsAdmin, d.DB))
 			}
 		})
 	}
