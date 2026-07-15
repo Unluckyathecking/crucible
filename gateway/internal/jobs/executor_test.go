@@ -499,6 +499,7 @@ func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
 	})
 
 	retriedBefore := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo"))
+	deadletteredBefore := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo"))
 
 	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-retry-exhaust", "free", json.RawMessage(`{}`), 0, "")
 	if err != nil {
@@ -529,6 +530,9 @@ func TestExecutor_TransientFailure_ExhaustsRetries_DeadLetters(t *testing.T) {
 
 	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
 		t.Errorf("crucible_jobs_retried_total delta = %v, want 1 (one retry before exhausting MaxAttempts=2)", retried)
+	}
+	if dl := testutil.ToFloat64(observability.JobsDeadletteredTotal.WithLabelValues("echo")) - deadletteredBefore; dl != 1 {
+		t.Errorf("crucible_jobs_deadlettered_total delta = %v, want 1 (exactly one dead-letter on exhausted retries)", dl)
 	}
 }
 
