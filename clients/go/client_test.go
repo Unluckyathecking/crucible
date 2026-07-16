@@ -256,6 +256,22 @@ func TestListUsageEvents(t *testing.T) {
 	}
 }
 
+func TestListWebhookDeliveries(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/webhooks/deliveries" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		writeJSON(w, map[string]any{"items": []any{}, "total": 1})
+	})
+	_, err := c.ListWebhookDeliveries(context.Background(), "test-key", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListWebhookEndpoints(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/webhooks/endpoints" {

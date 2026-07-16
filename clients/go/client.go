@@ -167,6 +167,23 @@ type ListUsageEventsResponse struct {
 	Page     int64                             `json:"page"`
 }
 
+// ListWebhookDeliveriesResponseItemsItem is one row of ListWebhookDeliveries's "items" list.
+type ListWebhookDeliveriesResponseItemsItem struct {
+	Attempts           int64  `json:"attempts"`
+	Created_at         string `json:"created_at"`
+	Endpoint_url       string `json:"endpoint_url"`
+	Event_id           string `json:"event_id"`
+	Id                 string `json:"id"`
+	Last_response_code int64  `json:"last_response_code"`
+	Status             string `json:"status"`
+}
+
+// ListWebhookDeliveriesResponse is returned by ListWebhookDeliveries.
+type ListWebhookDeliveriesResponse struct {
+	Items []ListWebhookDeliveriesResponseItemsItem `json:"items"`
+	Total int64                                    `json:"total"`
+}
+
 // ListWebhookEndpointsResponse is returned by ListWebhookEndpoints.
 type ListWebhookEndpointsResponse struct {
 	Items []any `json:"items"`
@@ -481,6 +498,35 @@ func (c *Client) ListUsageEvents(ctx context.Context, apiKey string, from string
 		return nil, err
 	}
 	var out ListUsageEventsResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// ListWebhookDeliveries calls GET /v1/webhooks/deliveries (list webhook deliveries).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) ListWebhookDeliveries(ctx context.Context, apiKey string, page int64, perPage int64) (*ListWebhookDeliveriesResponse, error) {
+	q := url.Values{}
+	if page != 0 {
+		q.Set("page", strconv.FormatInt(page, 10))
+	}
+	if perPage != 0 {
+		q.Set("per_page", strconv.FormatInt(perPage, 10))
+	}
+	reqPath := "/v1/webhooks/deliveries"
+	if len(q) > 0 {
+		reqPath += "?" + q.Encode()
+	}
+	resp, err := c.do(ctx, http.MethodGet, reqPath, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out ListWebhookDeliveriesResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}

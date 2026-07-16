@@ -188,6 +188,23 @@ class ListUsageEventsResponse(TypedDict):
     page: int
 
 
+class _ListWebhookDeliveriesResponseItemsItemRequired(TypedDict):
+    attempts: int
+    created_at: str
+    endpoint_url: str
+    event_id: str
+    id: str
+    status: str
+
+
+class ListWebhookDeliveriesResponseItemsItem(_ListWebhookDeliveriesResponseItemsItemRequired, total=False):
+    last_response_code: int
+
+class ListWebhookDeliveriesResponse(TypedDict):
+    items: Optional[List[ListWebhookDeliveriesResponseItemsItem]]
+    total: int
+
+
 class ListWebhookEndpointsResponse(TypedDict):
     items: Optional[List[Any]]
     total: int
@@ -398,6 +415,22 @@ class Client:
             raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(ListUsageEventsResponse, out)
+
+    def list_webhook_deliveries(self, page: Optional[int] = None, per_page: Optional[int] = None, api_key: Optional[str] = None) -> ListWebhookDeliveriesResponse:
+        """GET /v1/webhooks/deliveries (list webhook deliveries)."""
+        _params: Dict[str, str] = {}
+        if page is not None:
+            _params["page"] = str(page)
+        if per_page is not None:
+            _params["per_page"] = str(per_page)
+        path = "/v1/webhooks/deliveries"
+        if _params:
+            path += "?" + urlencode(_params)
+        raw = self._request("GET", path, api_key if api_key is not None else self.default_api_key, None)
+        if raw is None:
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
+        out = json.loads(raw)
+        return cast(ListWebhookDeliveriesResponse, out)
 
     def list_webhook_endpoints(self, page: Optional[int] = None, per_page: Optional[int] = None, api_key: Optional[str] = None) -> ListWebhookEndpointsResponse:
         """GET /v1/webhooks/endpoints (list webhook endpoints)."""

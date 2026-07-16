@@ -835,6 +835,29 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		doc.Paths[path] = existing
 	}
 
+	// Layer the webhook delivery log route on for the same reason as
+	// usagePathItem/keysPathItems/errorsPathItems/jobsPathItems/usageEventsPathItems
+	// above: framework infra (gateway/internal/webhookout), not a per-product
+	// invoke route — kept out of Build()'s invoke-route-only paths (see
+	// server.TestV1RoutesDriftGuard) but still documented in the actual served
+	// /openapi.json.
+	for path, item := range webhookDeliveriesPathItems() {
+		existing := doc.Paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		doc.Paths[path] = existing
+	}
+
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic("openapi: failed to marshal static document: " + err.Error())
@@ -1388,6 +1411,62 @@ func jobsPathItems() map[string]PathItem {
 						Content:     map[string]MediaType{contentTypeJSON: {Schema: listResponseSchema}},
 					},
 					"400": errResp("Bad request — unknown status filter, or page too large"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+	}
+}
+
+// webhookDeliveriesPathItems documents GET /v1/webhooks/deliveries: the
+// customer-facing paginated delivery log exposing the caller's own outbound
+// webhook delivery rows across all their registered endpoints (see
+// webhookDeliveriesHandler in gateway/internal/server/routes.go). Framework
+// infra, not a per-product invoke route — kept out of Build()'s invoke-route
+// paths for the same reason as usagePathItem/keysPathItems/errorsPathItems;
+// see Handler.
+func webhookDeliveriesPathItems() map[string]PathItem {
+	itemProps := map[string]*Schema{
+		"id":                 {Type: "string", Description: "Delivery UUID"},
+		"event_id":           {Type: "string", Description: "The outbound webhook event type (e.g. invocation.succeeded)"},
+		"endpoint_url":       {Type: "string", Description: "The registered HTTPS delivery URL the event was sent to"},
+		"status":             {Type: "string", Description: "pending | delivered | failed"},
+		"attempts":           {Type: "integer", Description: "Number of delivery attempts made so far"},
+		"last_response_code": {Type: "integer", Description: "HTTP status code returned by the endpoint on the last attempt; absent if no attempt has completed"},
+		"created_at":         {Type: "string", Description: "RFC3339 creation timestamp"},
+	}
+	responseSchema := &Schema{
+		Type:        "object",
+		Description: "Paginated envelope of the caller's own webhook deliveries",
+		Properties: map[string]*Schema{
+			"items": {
+				Type:        "array",
+				Description: "Matching webhook_deliveries rows, newest-first",
+				Items:       &Schema{Type: "object", Properties: itemProps, Required: []string{"id", "event_id", "endpoint_url", "status", "attempts", "created_at"}},
+			},
+			"total": {Type: "integer", Description: "Total matching deliveries across all pages"},
+		},
+		Required: []string{"items", "total"},
+	}
+
+	return map[string]PathItem{
+		"/v1/webhooks/deliveries": {
+			Get: &Operation{
+				OperationID: "list_webhook_deliveries",
+				Summary:     "List the authenticated customer's outbound webhook deliveries across all their registered endpoints",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "page", In: "query", Description: "1-indexed page number; default 1", Schema: &Schema{Type: "integer"}},
+					{Name: "per_page", In: "query", Description: "Page size; default 100, capped at 100", Schema: &Schema{Type: "integer"}},
+				},
+				Responses: map[string]Response{
+					"200": {
+						Description: "The caller's own webhook deliveries, newest-first",
+						Content:     map[string]MediaType{contentTypeJSON: {Schema: responseSchema}},
+					},
+					"400": errResp("Bad request — page too large"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
 					"500": errResp("Internal server error"),
 				},
