@@ -5,11 +5,9 @@ excluded from their respective generators' write scope).
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
-from typing import Any, Optional, cast
-from urllib.parse import quote
+from typing import Any, Optional
 
 from .client import Client, GetJobResponse
 from .errors import ApiError
@@ -21,25 +19,6 @@ JOB_STATUS_SUCCEEDED = "succeeded"
 JOB_STATUS_FAILED = "failed"
 JOB_STATUS_CANCELLED = "cancelled"
 
-
-def cancel_job(client: Client, job_id: str, api_key: Optional[str] = None) -> GetJobResponse:
-    """POST /v1/jobs/{id}/cancel: withdraws the caller's own still-queued job.
-
-    Hand-maintained here rather than generated into client.py: client.py's
-    methods are emitted one per operationId in clients/openapi.json by
-    scripts/gen-clients.sh, but this module already hosts the SDK's other
-    hand-maintained job helpers (wait_for_job below). The response is
-    byte-identical in shape to get_job's (the gateway's jobsCancelHandler
-    returns the same asyncJobResponse envelope jobsGetHandler does), so this
-    reuses GetJobResponse rather than introducing a duplicate type. Uses
-    Client._request, the same primitive client.py's generated methods use.
-    """
-    path = f"/v1/jobs/{quote(str(job_id), safe='')}/cancel"
-    raw = client._request("POST", path, api_key if api_key is not None else client.default_api_key, None)
-    if raw is None:
-        raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
-    out = json.loads(raw)
-    return cast(GetJobResponse, out)
 
 #: Default delay between get_job polls, in seconds, used when wait_for_job's
 #: poll_interval is left at its default.

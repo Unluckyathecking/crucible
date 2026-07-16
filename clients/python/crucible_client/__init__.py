@@ -5,7 +5,7 @@ Source: clients/openapi.json (Crucible Gateway 1.0.0)
 # and re-run — do not hand-edit. webhook.py and jobs.py are hand-maintained.
 from __future__ import annotations
 
-from .client import Client, HealthzResponse, ReadyzResponse, ListErrorsResponse, ListErrorsResponseDataItem, ListJobsResponse, ListJobsResponseItemsItem, GetJobResponse, ListKeysResponse, ListKeysResponseItemsItem, RotateKeyResponse, GetUsageResponse, ListUsageEventsResponse, ListUsageEventsResponseDataItem, ListWebhookEndpointsResponse, CreateWebhookEndpointResponse, RotateWebhookEndpointSecretResponse
+from .client import Client, HealthzResponse, ReadyzResponse, ListErrorsResponse, ListErrorsResponseDataItem, ListJobsResponse, ListJobsResponseItemsItem, GetJobResponse, CancelJobResponse, ListKeysResponse, ListKeysResponseItemsItem, RotateKeyResponse, GetUsageResponse, ListUsageEventsResponse, ListUsageEventsResponseDataItem, ListWebhookEndpointsResponse, CreateWebhookEndpointResponse, RotateWebhookEndpointSecretResponse
 from .errors import ApiError
 from .webhook import (
     DEFAULT_TOLERANCE_MS,
@@ -26,6 +26,7 @@ from .jobs import (
 
 __all__ = [
     "ApiError",
+    "CancelJobResponse",
     "Client",
     "CreateWebhookEndpointResponse",
     "DEFAULT_POLL_INTERVAL",

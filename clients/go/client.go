@@ -105,6 +105,18 @@ type GetJobResponse struct {
 	Updated_at     string `json:"updated_at"`
 }
 
+// CancelJobResponse is returned by CancelJob.
+type CancelJobResponse struct {
+	Billable_units int64  `json:"billable_units"`
+	Created_at     string `json:"created_at"`
+	Error          any    `json:"error"`
+	Job_id         string `json:"job_id"`
+	Result         any    `json:"result"`
+	Status         string `json:"status"`
+	Units_label    string `json:"units_label"`
+	Updated_at     string `json:"updated_at"`
+}
+
 // ListKeysResponseItemsItem is one row of ListKeys's "items" list.
 type ListKeysResponseItemsItem struct {
 	Created_at   string `json:"created_at"`
@@ -324,6 +336,25 @@ func (c *Client) GetJob(ctx context.Context, apiKey string, id string) (*GetJobR
 		return nil, err
 	}
 	var out GetJobResponse
+	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
+		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
+	}
+	return &out, nil
+}
+
+// CancelJob calls POST /v1/jobs/{id}/cancel (cancel job).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) CancelJob(ctx context.Context, apiKey string, id string) (*CancelJobResponse, error) {
+	path := fmt.Sprintf("/v1/jobs/%s/cancel", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodPost, path, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return nil, err
+	}
+	var out CancelJobResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
 		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
 	}

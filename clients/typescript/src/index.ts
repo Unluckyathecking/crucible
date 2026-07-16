@@ -2,7 +2,7 @@
 // Source: clients/openapi.json (Crucible Gateway 1.0.0)
 // Webhook/jobs re-exports (last lines) are emitted by this generator; edit gen-clients.sh and re-run — do not hand-edit.
 export { Client } from "./client";
-export type { ClientOptions, HealthzResponse, ReadyzResponse, ListErrorsResponse, ListErrorsResponseDataItem, ListJobsResponse, ListJobsResponseItemsItem, GetJobResponse, ListKeysResponse, ListKeysResponseItemsItem, RotateKeyResponse, GetUsageResponse, ListUsageEventsResponse, ListUsageEventsResponseDataItem, ListWebhookEndpointsResponse, CreateWebhookEndpointResponse, RotateWebhookEndpointSecretResponse } from "./client";
+export type { ClientOptions, HealthzResponse, ReadyzResponse, ListErrorsResponse, ListErrorsResponseDataItem, ListJobsResponse, ListJobsResponseItemsItem, GetJobResponse, CancelJobResponse, ListKeysResponse, ListKeysResponseItemsItem, RotateKeyResponse, GetUsageResponse, ListUsageEventsResponse, ListUsageEventsResponseDataItem, ListWebhookEndpointsResponse, CreateWebhookEndpointResponse, RotateWebhookEndpointSecretResponse } from "./client";
 export { ApiError } from "./errors";
 export type { ErrorBody } from "./errors";
 export { verifyWebhook, WebhookVerificationError, DEFAULT_TOLERANCE_MS, SIGNATURE_HEADER, TIMESTAMP_HEADER, WEBHOOK_EVENT_ID_HEADER, WEBHOOK_EVENT_TYPE_HEADER } from "./webhook";

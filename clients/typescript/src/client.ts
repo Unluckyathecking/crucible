@@ -50,6 +50,16 @@ export interface GetJobResponse {
   units_label: string;
   updated_at: string;
 }
+export interface CancelJobResponse {
+  billable_units: number;
+  created_at: string;
+  error: unknown;
+  job_id: string;
+  result: unknown;
+  status: string;
+  units_label: string;
+  updated_at: string;
+}
 export interface ListKeysResponseItemsItem {
   created_at: string;
   expires_at: string | null;
@@ -198,6 +208,14 @@ export class Client {
    */
   async getJob(id: string, apiKey?: string): Promise<GetJobResponse> {
     return this.request<GetJobResponse>("GET", `/v1/jobs/${encodeURIComponent(id)}`, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * POST /v1/jobs/{id}/cancel — cancel job.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async cancelJob(id: string, apiKey?: string): Promise<CancelJobResponse> {
+    return this.request<CancelJobResponse>("POST", `/v1/jobs/${encodeURIComponent(id)}/cancel`, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**

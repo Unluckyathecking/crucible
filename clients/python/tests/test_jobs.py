@@ -8,7 +8,7 @@ import time
 import pytest
 
 from crucible_client import ApiError, Client
-from crucible_client.jobs import JobWaitCancelledError, cancel_job, wait_for_job
+from crucible_client.jobs import JobWaitCancelledError, wait_for_job
 
 from test_client import json_response, serve
 
@@ -119,41 +119,3 @@ def test_wait_for_job_returns_on_job_cancelled_status():
         job = wait_for_job(c, "job-1", poll_interval=0.01)
         assert job["status"] == "cancelled"
         assert calls["n"] >= 3
-
-
-def test_cancel_job_succeeds():
-    def handler(req):
-        assert req.method == "POST"
-        assert req.path.split("?")[0] == "/v1/jobs/job-1/cancel"
-        return json_response(200, {"job_id": "job-1", "status": "cancelled"})
-
-    with serve(handler) as (base_url, _captured):
-        c = Client(base_url)
-        job = cancel_job(c, "job-1")
-        assert job["status"] == "cancelled"
-        assert job["job_id"] == "job-1"
-
-
-def test_cancel_job_conflict():
-    def handler(req):
-        return json_response(
-            409,
-            {"error": {"code": "JOB_NOT_CANCELLABLE", "message": "job cannot be cancelled in its current state"}},
-        )
-
-    with serve(handler) as (base_url, _captured):
-        c = Client(base_url)
-        with pytest.raises(ApiError) as exc_info:
-            cancel_job(c, "job-1")
-        assert exc_info.value.code == "JOB_NOT_CANCELLABLE"
-
-
-def test_cancel_job_not_found():
-    def handler(req):
-        return json_response(404, {"error": {"code": "NOT_FOUND", "message": "job not found"}})
-
-    with serve(handler) as (base_url, _captured):
-        c = Client(base_url)
-        with pytest.raises(ApiError) as exc_info:
-            cancel_job(c, "missing")
-        assert exc_info.value.code == "NOT_FOUND"

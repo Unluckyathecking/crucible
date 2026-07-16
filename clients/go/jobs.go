@@ -6,10 +6,6 @@ package crucible
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -24,34 +20,6 @@ const (
 	JobStatusFailed    = "failed"
 	JobStatusCancelled = "cancelled"
 )
-
-// CancelJob calls POST /v1/jobs/{id}/cancel: withdraws apiKey's own
-// still-queued job. Hand-maintained here rather than generated into
-// client.go: scripts/gen-clients.sh emits one method per operationId
-// declared in clients/openapi.json, but this file already hosts the SDK's
-// other hand-maintained job helpers (WaitForJob below), and CancelJob's
-// response is byte-identical in shape to GetJob's (the gateway's
-// jobsCancelHandler returns the same asyncJobResponse envelope
-// jobsGetHandler does), so it reuses GetJobResponse rather than
-// introducing a duplicate type. Uses the same c.do/checkError primitives
-// client.go's generated methods use — same package, so both are visible
-// here.
-func (c *Client) CancelJob(ctx context.Context, apiKey, jobID string) (*GetJobResponse, error) {
-	path := fmt.Sprintf("/v1/jobs/%s/cancel", url.PathEscape(jobID))
-	resp, err := c.do(ctx, http.MethodPost, path, apiKey, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if err := checkError(resp); err != nil {
-		return nil, err
-	}
-	var out GetJobResponse
-	if decErr := json.NewDecoder(resp.Body).Decode(&out); decErr != nil {
-		return nil, fmt.Errorf("crucible: decode response: %w", decErr)
-	}
-	return &out, nil
-}
 
 // DefaultPollInterval is used by WaitForJob when WaitForJobOptions is nil or
 // its PollInterval is zero.
