@@ -1,13 +1,15 @@
-"""jobs.py provides wait_for_job, a poll helper for Crucible async jobs.
-Hand-maintained — NOT written by scripts/gen-clients.sh (mirrors
+"""jobs.py provides wait_for_job (a poll helper) and cancel_job for Crucible
+async jobs. Hand-maintained — NOT written by scripts/gen-clients.sh (mirrors
 clients/go/jobs.go and clients/typescript/src/jobs.ts, which are also
 excluded from their respective generators' write scope).
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, cast
+from urllib.parse import quote
 
 from .client import Client, GetJobResponse
 from .errors import ApiError
@@ -17,6 +19,27 @@ from .errors import ApiError
 #: part of the frozen contract, changes only alongside it.
 JOB_STATUS_SUCCEEDED = "succeeded"
 JOB_STATUS_FAILED = "failed"
+JOB_STATUS_CANCELLED = "cancelled"
+
+
+def cancel_job(client: Client, job_id: str, api_key: Optional[str] = None) -> GetJobResponse:
+    """POST /v1/jobs/{id}/cancel: withdraws the caller's own still-queued job.
+
+    Hand-maintained here rather than generated into client.py: client.py's
+    methods are emitted one per operationId in clients/openapi.json by
+    scripts/gen-clients.sh, but this module already hosts the SDK's other
+    hand-maintained job helpers (wait_for_job below). The response is
+    byte-identical in shape to get_job's (the gateway's jobsCancelHandler
+    returns the same asyncJobResponse envelope jobsGetHandler does), so this
+    reuses GetJobResponse rather than introducing a duplicate type. Uses
+    Client._request, the same primitive client.py's generated methods use.
+    """
+    path = f"/v1/jobs/{quote(str(job_id), safe='')}/cancel"
+    raw = client._request("POST", path, api_key if api_key is not None else client.default_api_key, None)
+    if raw is None:
+        raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
+    out = json.loads(raw)
+    return cast(GetJobResponse, out)
 
 #: Default delay between get_job polls, in seconds, used when wait_for_job's
 #: poll_interval is left at its default.
@@ -51,11 +74,14 @@ def wait_for_job(
     """Polls client.get_job(job_id) until the job reaches a terminal status,
     cancel_event is set, or timeout seconds elapse — whichever comes first.
 
-    On "succeeded" returns the job's final GetJobResponse. On "failed" raises
-    an ApiError built from the job's recorded error code/message. Raises
+    On "succeeded" or "cancelled" returns the job's final GetJobResponse
+    (callers distinguish the two via job["status"]). On "failed" raises an
+    ApiError built from the job's recorded error code/message. Raises
     TimeoutError if timeout elapses first, or JobWaitCancelledError if
-    cancel_event is set first. No new HTTP route is introduced: every poll is
-    a plain get_job call.
+    cancel_event is set first — a distinct concept from the job itself
+    reaching the "cancelled" status server-side (see cancel_job above): this
+    error means the *local poll* was aborted, not that the job was cancelled.
+    No new HTTP route is introduced: every poll is a plain get_job call.
     """
     deadline = time.monotonic() + timeout if timeout is not None else None
 
@@ -65,7 +91,7 @@ def wait_for_job(
 
         job = client.get_job(job_id, api_key)
         status = job.get("status")
-        if status == JOB_STATUS_SUCCEEDED:
+        if status in (JOB_STATUS_SUCCEEDED, JOB_STATUS_CANCELLED):
             return job
         if status == JOB_STATUS_FAILED:
             raise _job_error_to_api_error(job.get("error"))

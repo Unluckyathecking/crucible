@@ -1430,3 +1430,175 @@ func TestJobsListHandler_Unauthorized(t *testing.T) {
 	}
 }
 
+// --- POST /v1/jobs/{id}/cancel (jobsCancelHandler) tests ---
+//
+// jobsCancelHandler reads its "id" path param via chi.URLParam, so — unlike
+// jobsListHandler above — these tests route requests through a small chi
+// router (mirroring operator/jobs_handlers_test.go's newJobsAdminRouter
+// pattern) rather than calling the handler directly. A middleware injects
+// the auth.Key the same way auth.Middleware would, without needing a real
+// auth.Store.
+
+// newJobsCancelRouter mounts jobsCancelHandler at the same path routes.go
+// registers it under, with a middleware injecting key into the request
+// context via auth.WithKey (nil key exercises the unauthenticated path).
+func newJobsCancelRouter(store *jobs.Store, key *auth.Key) http.Handler {
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if key != nil {
+				req = req.WithContext(auth.WithKey(req.Context(), key))
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Post("/v1/jobs/{id}/cancel", jobsCancelHandler(store))
+	return r
+}
+
+// TestJobsCancelHandler_TableDriven covers all three documented outcomes:
+// 200 on queued->cancelled, 409 (JOB_NOT_CANCELLABLE) when the job exists
+// but isn't queued, and 404 when the job is absent or owned by another
+// customer (IDOR-safe, indistinguishable by design — mirrors jobsGetHandler).
+func TestJobsCancelHandler_TableDriven(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-cancel-route-"+uuid.New().String()+"@example.com")
+	otherKey := seedJobsListCustomer(t, pool, "jobs-cancel-route-other-"+uuid.New().String()+"@example.com")
+
+	newJob := func(t *testing.T) uuid.UUID {
+		t.Helper()
+		id, err := store.Enqueue(context.Background(), key.Customer.ID, key.ID, "echo", "req-"+uuid.New().String(), "free", json.RawMessage(`{}`), 0, "")
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		return id
+	}
+
+	doCancel := func(t *testing.T, router http.Handler, id uuid.UUID) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("queued job is cancelled with 200", func(t *testing.T) {
+		id := newJob(t)
+		w := doCancel(t, newJobsCancelRouter(store, key), id)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var body asyncJobResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+		}
+		if body.Status != jobs.StatusCancelled {
+			t.Errorf("status field = %q, want %q", body.Status, jobs.StatusCancelled)
+		}
+
+		job, ok, err := store.Get(context.Background(), id, key.Customer.ID)
+		if err != nil || !ok {
+			t.Fatalf("Get: ok=%v err=%v", ok, err)
+		}
+		if job.Status != jobs.StatusCancelled {
+			t.Errorf("persisted status = %q, want %q", job.Status, jobs.StatusCancelled)
+		}
+	})
+
+	t.Run("running job is rejected with 409", func(t *testing.T) {
+		id := newJob(t)
+		if _, err := store.Claim(context.Background(), 10, uuid.New()); err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		w := doCancel(t, newJobsCancelRouter(store, key), id)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+		}
+		errObj, ok := body["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected error object, got %T", body["error"])
+		}
+		if errObj["code"] != "JOB_NOT_CANCELLABLE" {
+			t.Errorf("error.code = %v, want JOB_NOT_CANCELLABLE", errObj["code"])
+		}
+	})
+
+	t.Run("succeeded job is rejected with 409", func(t *testing.T) {
+		id := newJob(t)
+		if _, err := store.Claim(context.Background(), 10, uuid.New()); err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if err := store.Complete(context.Background(), id, json.RawMessage(`{}`), 1, "units"); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		w := doCancel(t, newJobsCancelRouter(store, key), id)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("nonexistent job is 404", func(t *testing.T) {
+		w := doCancel(t, newJobsCancelRouter(store, key), uuid.New())
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("another customer's job is 404 (IDOR)", func(t *testing.T) {
+		id := newJob(t)
+		w := doCancel(t, newJobsCancelRouter(store, otherKey), id)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+		}
+		job, ok, err := store.Get(context.Background(), id, key.Customer.ID)
+		if err != nil || !ok {
+			t.Fatalf("Get: ok=%v err=%v", ok, err)
+		}
+		if job.Status != jobs.StatusQueued {
+			t.Errorf("status = %q, want %q (must be left untouched)", job.Status, jobs.StatusQueued)
+		}
+	})
+}
+
+func TestJobsCancelHandler_NotConfigured(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/"+uuid.New().String()+"/cancel", nil)
+	w := httptest.NewRecorder()
+	newJobsCancelRouter(nil, testKey()).ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobsCancelHandler_Unauthorized(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/"+uuid.New().String()+"/cancel", nil)
+	w := httptest.NewRecorder()
+	newJobsCancelRouter(store, nil).ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestJobsCancelHandler_InvalidID(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-cancel-invalid-id-"+uuid.New().String()+"@example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/not-a-uuid/cancel", nil)
+	w := httptest.NewRecorder()
+	newJobsCancelRouter(store, key).ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+

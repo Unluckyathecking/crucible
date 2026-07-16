@@ -374,6 +374,32 @@ func (s *Store) DeadLetter(ctx context.Context, id uuid.UUID, attempts int, code
 	return nil
 }
 
+// CancelQueued transitions a job owned by customerID from 'queued' to the
+// terminal 'cancelled' state, scoped and guarded entirely in the SQL's WHERE
+// clause: AND customer_id = $2 (IDOR-safe, mirroring Get's SQL-level
+// scoping) AND status = 'queued' (mirrors the operator requeue handler's
+// running/succeeded guard in jobs_handlers.go, inverted — cancellation is
+// only ever valid from 'queued', never 'running', which this cycle has no
+// cooperative-cancel path for, nor any already-terminal status). ok is
+// false, with no error, whenever the UPDATE affects zero rows — the id
+// doesn't exist, belongs to another customer, or is not currently queued;
+// the caller (jobsCancelHandler) distinguishes those cases with a follow-up
+// Get for the 404-vs-409 response.
+func (s *Store) CancelQueued(ctx context.Context, id, customerID uuid.UUID) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("jobs: store is nil")
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE async_jobs
+		SET status = 'cancelled', updated_at = NOW()
+		WHERE id = $1 AND customer_id = $2 AND status = 'queued'
+	`, id, customerID)
+	if err != nil {
+		return false, fmt.Errorf("jobs: cancel queued: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // Requeue returns a claimed job to 'queued' without recording an error.
 // Not called by Executor itself — see Run's doc comment for why a job
 // interrupted by shutdown is left 'running' for the crash-recovery sweep to

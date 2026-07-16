@@ -454,6 +454,46 @@ func TestStore_Claim_SkipLocked_NoDoubleClaim(t *testing.T) {
 	}
 }
 
+// TestStore_Claim_NeverClaimsCancelled proves a cancelled job can never be
+// claimed/executed by jobs.Executor and so never bills any units — Claim's
+// scan is WHERE status = 'queued', which a cancelled row no longer matches
+// the instant CancelQueued transitions it.
+func TestStore_Claim_NeverClaimsCancelled(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-cancel-claim-"+uuid.New().String()+"@example.com")
+
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	ok, err := s.CancelQueued(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("CancelQueued: ok=%v err=%v", ok, err)
+	}
+
+	claimed, err := s.Claim(context.Background(), 10, uuid.New())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	for _, j := range claimed {
+		if j.ID == id {
+			t.Fatalf("Claim returned cancelled job %s", id)
+		}
+	}
+
+	job, found, err := s.Get(context.Background(), id, custA)
+	if err != nil || !found {
+		t.Fatalf("Get: found=%v err=%v", found, err)
+	}
+	if job.Status != StatusCancelled {
+		t.Errorf("status = %q, want %q", job.Status, StatusCancelled)
+	}
+	if job.BillableUnits != 0 {
+		t.Errorf("billable_units = %d, want 0 (a cancelled job must never bill)", job.BillableUnits)
+	}
+}
+
 func TestStore_Claim_StuckJobRecovery(t *testing.T) {
 	pool := newTestPostgres(t)
 	s := NewStore(pool)
@@ -620,6 +660,113 @@ func TestStore_ReleaseClaimed_ScopedToInstance(t *testing.T) {
 	}
 	if queuedCount != 1 || runningCount != 1 {
 		t.Errorf("queued=%d running=%d, want 1 and 1", queuedCount, runningCount)
+	}
+}
+
+// TestStore_CancelQueued_TableDriven proves CancelQueued's full contract:
+// a queued job transitions to cancelled; a running/succeeded/failed job is
+// left untouched (ok=false); an unowned or nonexistent id is also ok=false,
+// indistinguishable from each other by design (mirrors Get's IDOR-safe 404).
+func TestStore_CancelQueued_TableDriven(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-cancel-"+uuid.New().String()+"@example.com")
+	custB, _ := seedCustomer(t, pool, "jobs-cancel-other-"+uuid.New().String()+"@example.com")
+
+	newJob := func(t *testing.T) uuid.UUID {
+		t.Helper()
+		id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-"+uuid.New().String(), "free", json.RawMessage(`{}`), 0, "")
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		return id
+	}
+
+	t.Run("queued job is cancelled", func(t *testing.T) {
+		id := newJob(t)
+		ok, err := s.CancelQueued(context.Background(), id, custA)
+		if err != nil || !ok {
+			t.Fatalf("CancelQueued: ok=%v err=%v, want (true, nil)", ok, err)
+		}
+		job, found, err := s.Get(context.Background(), id, custA)
+		if err != nil || !found {
+			t.Fatalf("Get: found=%v err=%v", found, err)
+		}
+		if job.Status != StatusCancelled {
+			t.Errorf("status = %q, want %q", job.Status, StatusCancelled)
+		}
+	})
+
+	t.Run("running job is rejected", func(t *testing.T) {
+		id := newJob(t)
+		if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		ok, err := s.CancelQueued(context.Background(), id, custA)
+		if err != nil || ok {
+			t.Fatalf("CancelQueued(running): ok=%v err=%v, want (false, nil)", ok, err)
+		}
+		job, found, err := s.Get(context.Background(), id, custA)
+		if err != nil || !found {
+			t.Fatalf("Get: found=%v err=%v", found, err)
+		}
+		if job.Status != StatusRunning {
+			t.Errorf("status = %q, want %q (must be left untouched)", job.Status, StatusRunning)
+		}
+	})
+
+	t.Run("succeeded job is rejected", func(t *testing.T) {
+		id := newJob(t)
+		if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if err := s.Complete(context.Background(), id, json.RawMessage(`{}`), 1, "units"); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		ok, err := s.CancelQueued(context.Background(), id, custA)
+		if err != nil || ok {
+			t.Fatalf("CancelQueued(succeeded): ok=%v err=%v, want (false, nil)", ok, err)
+		}
+	})
+
+	t.Run("failed job is rejected", func(t *testing.T) {
+		id := newJob(t)
+		if err := s.Fail(context.Background(), id, "WORKER_BAD_RESPONSE", "worker contract violation"); err != nil {
+			t.Fatalf("Fail: %v", err)
+		}
+		ok, err := s.CancelQueued(context.Background(), id, custA)
+		if err != nil || ok {
+			t.Fatalf("CancelQueued(failed): ok=%v err=%v, want (false, nil)", ok, err)
+		}
+	})
+
+	t.Run("other customer's job is not cancelled (IDOR)", func(t *testing.T) {
+		id := newJob(t)
+		ok, err := s.CancelQueued(context.Background(), id, custB)
+		if err != nil || ok {
+			t.Fatalf("CancelQueued(other customer): ok=%v err=%v, want (false, nil)", ok, err)
+		}
+		job, found, err := s.Get(context.Background(), id, custA)
+		if err != nil || !found {
+			t.Fatalf("Get: found=%v err=%v", found, err)
+		}
+		if job.Status != StatusQueued {
+			t.Errorf("status = %q, want %q (must be left untouched)", job.Status, StatusQueued)
+		}
+	})
+
+	t.Run("nonexistent id", func(t *testing.T) {
+		ok, err := s.CancelQueued(context.Background(), uuid.New(), custA)
+		if err != nil || ok {
+			t.Fatalf("CancelQueued(nonexistent): ok=%v err=%v, want (false, nil)", ok, err)
+		}
+	})
+}
+
+func TestStore_CancelQueued_NilReceiver(t *testing.T) {
+	var s *Store
+	if _, err := s.CancelQueued(context.Background(), uuid.New(), uuid.New()); err == nil {
+		t.Error("nil Store.CancelQueued: want error")
 	}
 }
 

@@ -43,6 +43,34 @@ func TestWaitForJob_succeeds(t *testing.T) {
 	}
 }
 
+func TestWaitForJob_cancelled(t *testing.T) {
+	calls := 0
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		status := "queued"
+		if calls >= 3 {
+			status = "cancelled"
+		}
+		writeJSON(w, map[string]any{
+			"job_id": "job-1",
+			"status": status,
+		})
+	})
+
+	resp, err := c.WaitForJob(context.Background(), "test-key", "job-1", &crucible.WaitForJobOptions{
+		PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForJob: %v", err)
+	}
+	if resp.Status != crucible.JobStatusCancelled {
+		t.Errorf("Status = %q, want %q", resp.Status, crucible.JobStatusCancelled)
+	}
+	if calls < 3 {
+		t.Errorf("calls = %d, want >= 3 (polled until terminal)", calls)
+	}
+}
+
 func TestWaitForJob_failed(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -133,6 +161,65 @@ func TestWaitForJob_getJobErrorPropagates(t *testing.T) {
 	})
 
 	_, err := c.WaitForJob(context.Background(), "test-key", "missing", nil)
+	var apiErr *crucible.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.Code != "NOT_FOUND" {
+		t.Errorf("Code = %q, want NOT_FOUND", apiErr.Code)
+	}
+}
+
+func TestCancelJob_succeeds(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs/job-1/cancel" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		writeJSON(w, map[string]any{
+			"job_id": "job-1",
+			"status": "cancelled",
+		})
+	})
+
+	resp, err := c.CancelJob(context.Background(), "test-key", "job-1")
+	if err != nil {
+		t.Fatalf("CancelJob: %v", err)
+	}
+	if resp.Status != crucible.JobStatusCancelled {
+		t.Errorf("Status = %q, want %q", resp.Status, crucible.JobStatusCancelled)
+	}
+	if resp.Job_id != "job-1" {
+		t.Errorf("Job_id = %q, want job-1", resp.Job_id)
+	}
+}
+
+func TestCancelJob_conflict(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"code": "JOB_NOT_CANCELLABLE", "message": "job cannot be cancelled in its current state"},
+		})
+	})
+
+	_, err := c.CancelJob(context.Background(), "test-key", "job-1")
+	var apiErr *crucible.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.Code != "JOB_NOT_CANCELLABLE" {
+		t.Errorf("Code = %q, want JOB_NOT_CANCELLABLE", apiErr.Code)
+	}
+}
+
+func TestCancelJob_notFound(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"code": "NOT_FOUND", "message": "job not found"},
+		})
+	})
+
+	_, err := c.CancelJob(context.Background(), "test-key", "missing")
 	var apiErr *crucible.APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %v, want *APIError", err)
