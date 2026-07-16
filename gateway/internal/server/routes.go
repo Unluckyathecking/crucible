@@ -336,6 +336,19 @@ func NewRouter(d *Deps) http.Handler {
 		// customer_id scoping.
 		r.With(auth.Middleware(d.Auth)).Get("/v1/jobs/{id}", jobsGetHandler(jobStore))
 
+		// === Async job cancellation (auth gated; active when DB is set; customer-owned mutation) ===
+		// POST /v1/jobs/{id}/cancel: withdraws the caller's own still-queued
+		// job, mirroring GET /v1/jobs/{id}'s registration rationale (framework
+		// infra, kept out of the per-product POST-only r.Route("/v1", ...)
+		// block below — that block's invariant is asserted by
+		// TestV1RoutesDriftGuard). Scoped strictly to the caller's own jobs —
+		// see jobs.Store.CancelQueued's SQL-level customer_id scoping. This is
+		// the one customer-facing mutation among the framework's /v1/jobs
+		// routes; unlike the admin requeue/release primitives (gated behind
+		// OPERATOR_TOKEN below), a customer may only ever cancel their own
+		// queued submission, never touch another customer's or a running one.
+		r.With(auth.Middleware(d.Auth)).Post("/v1/jobs/{id}/cancel", jobsCancelHandler(jobStore))
+
 		// === Async job history listing (auth gated; active when DB is set; read-only) ===
 		// GET /v1/jobs: a paginated history of the caller's own enqueued jobs,
 		// the enumerate-many counterpart to GET /v1/jobs/{id} above. Same
@@ -762,6 +775,82 @@ func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
 	}
 }
 
+// jobsCancelHandler handles POST /v1/jobs/{id}/cancel: withdraws the
+// caller's own job while it is still queued, via jobs.Store.CancelQueued's
+// single atomic UPDATE ... WHERE id=$1 AND customer_id=$2 AND status='queued'
+// (IDOR-safe and status-guarded in one statement, unlike the admin requeue
+// handler's separate lookup-then-update — see AdminRequeueJobHandler). When
+// CancelQueued reports no row changed, a follow-up Get (itself IDOR-safe)
+// distinguishes the two possible causes: the job doesn't exist or isn't
+// owned by this customer (404, indistinguishable by design, matching
+// jobsGetHandler), or it exists but is no longer queued (409
+// JOB_NOT_CANCELLABLE, mirroring AdminRequeueJobHandler's
+// JOB_NOT_REQUEUABLE guard for the same reason — a running job may already
+// be mid-flight, and a succeeded/failed/cancelled job is already terminal).
+// This cycle has no cooperative cancel of a RUNNING job: it always 409s.
+func jobsCancelHandler(store *jobs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		if store == nil {
+			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
+			return
+		}
+		key := auth.FromContext(r.Context())
+		if key == nil {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid job id", false)
+			return
+		}
+
+		cancelled, err := store.CancelQueued(r.Context(), id, key.Customer.ID)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", rid).Msg("jobs: cancel failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "cancel failed", false)
+			return
+		}
+
+		if !cancelled {
+			_, ok, err := store.Get(r.Context(), id, key.Customer.ID)
+			if err != nil {
+				log.Error().Err(err).Str("request_id", rid).Msg("jobs: cancel lookup failed")
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
+				return
+			}
+			if !ok {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
+				return
+			}
+			apierror.Write(w, rid, http.StatusConflict, "JOB_NOT_CANCELLABLE", "job cannot be cancelled in its current state", false)
+			return
+		}
+
+		job, ok, err := store.Get(r.Context(), id, key.Customer.ID)
+		if err != nil || !ok {
+			log.Error().Err(err).Str("request_id", rid).Msg("jobs: cancel re-fetch failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "cancel succeeded but re-fetch failed", false)
+			return
+		}
+
+		resp := asyncJobResponse{
+			JobID:      job.ID.String(),
+			Status:     job.Status,
+			Result:     job.Result,
+			UnitsLabel: job.UnitsLabel,
+			CreatedAt:  job.CreatedAt,
+			UpdatedAt:  job.UpdatedAt,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
 // validJobStatuses is the set of accepted ?status= filter values for
 // jobsListHandler, mirrored from jobs.Status* so an unrecognized value can be
 // rejected as 400 rather than silently matching zero rows.
@@ -770,6 +859,7 @@ var validJobStatuses = map[string]bool{
 	jobs.StatusRunning:   true,
 	jobs.StatusSucceeded: true,
 	jobs.StatusFailed:    true,
+	jobs.StatusCancelled: true,
 }
 
 const (

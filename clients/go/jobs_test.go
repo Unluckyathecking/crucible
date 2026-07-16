@@ -43,6 +43,34 @@ func TestWaitForJob_succeeds(t *testing.T) {
 	}
 }
 
+func TestWaitForJob_cancelled(t *testing.T) {
+	calls := 0
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		status := "queued"
+		if calls >= 3 {
+			status = "cancelled"
+		}
+		writeJSON(w, map[string]any{
+			"job_id": "job-1",
+			"status": status,
+		})
+	})
+
+	resp, err := c.WaitForJob(context.Background(), "test-key", "job-1", &crucible.WaitForJobOptions{
+		PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitForJob: %v", err)
+	}
+	if resp.Status != crucible.JobStatusCancelled {
+		t.Errorf("Status = %q, want %q", resp.Status, crucible.JobStatusCancelled)
+	}
+	if calls < 3 {
+		t.Errorf("calls = %d, want >= 3 (polled until terminal)", calls)
+	}
+}
+
 func TestWaitForJob_failed(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{

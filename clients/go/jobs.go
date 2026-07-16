@@ -10,13 +10,15 @@ import (
 )
 
 // Terminal status values returned by GetJob. Mirror gateway/internal/jobs.Job's
-// Status constants (StatusSucceeded, StatusFailed) — the client package cannot
-// import the gateway's internal package, so the strings are duplicated here;
-// they are part of the frozen wire contract (asyncJobResponse.Status in
-// gateway/internal/server/routes.go) and change only alongside it.
+// Status constants (StatusSucceeded, StatusFailed, StatusCancelled) — the
+// client package cannot import the gateway's internal package, so the
+// strings are duplicated here; they are part of the frozen wire contract
+// (asyncJobResponse.Status in gateway/internal/server/routes.go) and change
+// only alongside it.
 const (
 	JobStatusSucceeded = "succeeded"
 	JobStatusFailed    = "failed"
+	JobStatusCancelled = "cancelled"
 )
 
 // DefaultPollInterval is used by WaitForJob when WaitForJobOptions is nil or
@@ -48,8 +50,9 @@ func (e *JobFailedError) Error() string {
 
 // WaitForJob polls GetJob(ctx, apiKey, jobID) until the job reaches a terminal
 // status, ctx is cancelled/expires, or opts.Timeout elapses — whichever comes
-// first. On "succeeded" it returns the job's final GetJobResponse. On "failed"
-// it returns a *JobFailedError built from the job's recorded error code/message.
+// first. On "succeeded" or "cancelled" it returns the job's final
+// GetJobResponse (callers distinguish the two via Status); on "failed" it
+// returns a *JobFailedError built from the job's recorded error code/message.
 // No new HTTP route is introduced: every poll is a plain GetJob call.
 func (c *Client) WaitForJob(ctx context.Context, apiKey, jobID string, opts *WaitForJobOptions) (*GetJobResponse, error) {
 	interval := DefaultPollInterval
@@ -72,7 +75,7 @@ func (c *Client) WaitForJob(ctx context.Context, apiKey, jobID string, opts *Wai
 			return nil, err
 		}
 		switch job.Status {
-		case JobStatusSucceeded:
+		case JobStatusSucceeded, JobStatusCancelled:
 			return job, nil
 		case JobStatusFailed:
 			code, message := jobErrorDetails(job.Error)

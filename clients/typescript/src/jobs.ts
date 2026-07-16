@@ -10,6 +10,7 @@ import type { Client, GetJobResponse } from "./client";
  * part of the frozen contract, changes only alongside it. */
 export const JOB_STATUS_SUCCEEDED = "succeeded";
 export const JOB_STATUS_FAILED = "failed";
+export const JOB_STATUS_CANCELLED = "cancelled";
 
 /** Default delay between getJob polls, used when WaitForJobOptions.pollIntervalMs is omitted. */
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -82,10 +83,11 @@ function jobErrorToApiError(raw: unknown): ApiError {
 /**
  * waitForJob polls client.getJob(jobId) until the job reaches a terminal
  * status, options.signal aborts, or options.timeoutMs elapses — whichever
- * comes first. On "succeeded" it resolves with the job's final
- * GetJobResponse. On "failed" it rejects with an ApiError built from the
- * job's recorded error code/message. No new HTTP route is introduced: every
- * poll is a plain getJob call.
+ * comes first. On "succeeded" or "cancelled" it resolves with the job's
+ * final GetJobResponse (callers distinguish the two via job.status). On
+ * "failed" it rejects with an ApiError built from the job's recorded error
+ * code/message. No new HTTP route is introduced: every poll is a plain
+ * getJob call.
  */
 export async function waitForJob(
   client: Client,
@@ -113,7 +115,7 @@ export async function waitForJob(
         throw combined.reason ?? new JobWaitAbortedError("waitForJob: aborted");
       }
       const job = await client.getJob(jobId, options.apiKey);
-      if (job.status === JOB_STATUS_SUCCEEDED) {
+      if (job.status === JOB_STATUS_SUCCEEDED || job.status === JOB_STATUS_CANCELLED) {
         return job;
       }
       if (job.status === JOB_STATUS_FAILED) {

@@ -24,8 +24,9 @@ const reaperBatchSize = 500
 // drains over subsequent ticks instead.
 const maxBatchesPerSweep = 20
 
-// Reaper periodically deletes terminal (succeeded, failed) async_jobs rows
-// older than retention, in batches bounded by reaperBatchSize per tick.
+// Reaper periodically deletes terminal (succeeded, failed, cancelled)
+// async_jobs rows older than retention, in batches bounded by
+// reaperBatchSize per tick.
 type Reaper struct {
 	db          *pgxpool.Pool
 	retention   time.Duration
@@ -102,20 +103,21 @@ func (r *Reaper) sweep(ctx context.Context) {
 	}
 }
 
-// deleteBatch deletes up to r.batchSize terminal (succeeded, failed) rows
-// older than retention, keyed off updated_at — never queued or running rows,
-// regardless of age. updated_at, not created_at, because Store.Complete/
-// Fail/DeadLetter stamp updated_at on the terminal transition itself; keying
-// off created_at would measure age from enqueue time, so a job that sits
-// queued or running longer than the retention window would be eligible for
-// deletion the instant it finally terminalizes — sometimes before a customer
-// ever observes the result via GET /v1/jobs/{id}.
+// deleteBatch deletes up to r.batchSize terminal (succeeded, failed,
+// cancelled) rows older than retention, keyed off updated_at — never queued
+// or running rows, regardless of age. updated_at, not created_at, because
+// Store.Complete/Fail/DeadLetter/CancelQueued stamp updated_at on the
+// terminal transition itself; keying off created_at would measure age from
+// enqueue time, so a job that sits queued or running longer than the
+// retention window would be eligible for deletion the instant it finally
+// terminalizes — sometimes before a customer ever observes the result via
+// GET /v1/jobs/{id}.
 func (r *Reaper) deleteBatch(ctx context.Context) (int64, error) {
 	tag, err := r.db.Exec(ctx, `
 		DELETE FROM async_jobs
 		WHERE id IN (
 			SELECT id FROM async_jobs
-			WHERE status IN ('succeeded', 'failed')
+			WHERE status IN ('succeeded', 'failed', 'cancelled')
 			  AND updated_at < NOW() - $1 * INTERVAL '1 second'
 			LIMIT $2
 		)

@@ -185,6 +185,19 @@ def test_get_job():
         assert got is not None
 
 
+def test_cancel_job():
+    def handler(req):
+        assert req.method == "POST"
+        assert req.path.split("?")[0] == "/v1/jobs/test-id/cancel"
+        assert req.headers.get("X-API-Key") == "test-key"
+        return json_response(200, {"billable_units": 1, "created_at": "ok", "error": {"db": "ok"}, "job_id": "ok", "result": {"db": "ok"}, "status": "ok", "units_label": "ok", "updated_at": "ok"})
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        got = c.cancel_job("test-id", api_key="test-key")
+        assert got is not None
+
+
 def test_list_keys():
     def handler(req):
         assert req.method == "GET"

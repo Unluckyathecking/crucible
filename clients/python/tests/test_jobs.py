@@ -100,3 +100,22 @@ def test_wait_for_job_propagates_get_job_error():
         with pytest.raises(ApiError) as exc_info:
             wait_for_job(c, "missing")
         assert exc_info.value.code == "NOT_FOUND"
+
+
+def test_wait_for_job_returns_on_job_cancelled_status():
+    """Distinct from test_wait_for_job_cancelled above (which exercises the
+    local cancel_event abort): this proves wait_for_job stops polling and
+    returns (rather than raising) once the job itself reaches the
+    server-side terminal "cancelled" status."""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        status = "cancelled" if calls["n"] >= 3 else "queued"
+        return json_response(200, {"job_id": "job-1", "status": status})
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        job = wait_for_job(c, "job-1", poll_interval=0.01)
+        assert job["status"] == "cancelled"
+        assert calls["n"] >= 3

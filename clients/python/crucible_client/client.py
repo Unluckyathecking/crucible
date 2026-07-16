@@ -132,6 +132,20 @@ class GetJobResponse(_GetJobResponseRequired, total=False):
     units_label: str
 
 
+class _CancelJobResponseRequired(TypedDict):
+    created_at: str
+    job_id: str
+    status: str
+    updated_at: str
+
+
+class CancelJobResponse(_CancelJobResponseRequired, total=False):
+    billable_units: int
+    error: Any
+    result: Any
+    units_label: str
+
+
 class ListKeysResponseItemsItem(TypedDict):
     created_at: str
     expires_at: Optional[str]
@@ -311,6 +325,15 @@ class Client:
             raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
         out = json.loads(raw)
         return cast(GetJobResponse, out)
+
+    def cancel_job(self, id: str, api_key: Optional[str] = None) -> CancelJobResponse:
+        """POST /v1/jobs/{id}/cancel (cancel job)."""
+        path = f"/v1/jobs/{quote(str(id), safe='')}/cancel"
+        raw = self._request("POST", path, api_key if api_key is not None else self.default_api_key, None)
+        if raw is None:
+            raise ApiError("UNKNOWN", "unexpected 204 No Content for a typed JSON response", False, "", 204)
+        out = json.loads(raw)
+        return cast(CancelJobResponse, out)
 
     def list_keys(self, page: Optional[int] = None, per_page: Optional[int] = None, api_key: Optional[str] = None) -> ListKeysResponse:
         """GET /v1/keys (list keys)."""

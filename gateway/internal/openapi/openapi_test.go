@@ -528,6 +528,103 @@ func TestOpenAPI_ErrorsPathPreservesProductPOST(t *testing.T) {
 	}
 }
 
+// TestOpenAPI_JobsCancelPathDocumented asserts POST /v1/jobs/{id}/cancel is
+// present in the actual served /openapi.json (openapi.Handler's output) with
+// a 200 response, API-key security, and the 409/404 outcomes documented.
+// Mirrors TestOpenAPI_ErrorsPathDocumented's rationale.
+func TestOpenAPI_JobsCancelPathDocumented(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(nil)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var doc struct {
+		Paths map[string]struct {
+			Post *struct {
+				Security  []map[string][]string `json:"security"`
+				Responses map[string]struct {
+					Description string `json:"description"`
+				} `json:"responses"`
+			} `json:"post"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	item, ok := doc.Paths["/v1/jobs/{id}/cancel"]
+	if !ok {
+		t.Fatal("served /openapi.json missing /v1/jobs/{id}/cancel path")
+	}
+	if item.Post == nil {
+		t.Fatal("/v1/jobs/{id}/cancel has no POST operation documented")
+	}
+	if len(item.Post.Security) == 0 {
+		t.Error("/v1/jobs/{id}/cancel POST should require API key security like other authenticated endpoints")
+	}
+	for _, code := range []string{"200", "404", "409"} {
+		if _, ok := item.Post.Responses[code]; !ok {
+			t.Errorf("/v1/jobs/{id}/cancel POST missing a %s response", code)
+		}
+	}
+}
+
+// TestOpenAPI_JobsStatusEnumIncludesCancelled asserts the jobs status field
+// descriptions mention "cancelled" in both GET /v1/jobs/{id}'s response
+// schema and GET /v1/jobs's ?status= filter parameter, so the served
+// document doesn't silently fall out of sync with jobs.StatusCancelled.
+func TestOpenAPI_JobsStatusEnumIncludesCancelled(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	openapi.Handler(nil)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	var doc struct {
+		Paths map[string]struct {
+			Get *struct {
+				Parameters []struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"parameters"`
+				Responses map[string]struct {
+					Content map[string]struct {
+						Schema struct {
+							Properties map[string]struct {
+								Description string `json:"description"`
+							} `json:"properties"`
+						} `json:"schema"`
+					} `json:"content"`
+				} `json:"responses"`
+			} `json:"get"`
+		} `json:"paths"`
+	}
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&doc); err != nil {
+		t.Fatalf("decode /openapi.json: %v", err)
+	}
+
+	statusDesc := doc.Paths["/v1/jobs/{id}"].Get.Responses["200"].Content["application/json"].Schema.Properties["status"].Description
+	if !strings.Contains(statusDesc, "cancelled") {
+		t.Errorf("GET /v1/jobs/{id} status description = %q, want it to mention cancelled", statusDesc)
+	}
+
+	var filterDesc string
+	for _, p := range doc.Paths["/v1/jobs"].Get.Parameters {
+		if p.Name == "status" {
+			filterDesc = p.Description
+		}
+	}
+	if !strings.Contains(filterDesc, "cancelled") {
+		t.Errorf("GET /v1/jobs ?status= filter description = %q, want it to mention cancelled", filterDesc)
+	}
+}
+
 // TestOpenAPI_UsageEventsPathDocumented asserts GET /v1/usage/events is
 // present in the actual served /openapi.json (openapi.Handler's output) with
 // a 200 response, API-key security, and both JSON and CSV content types

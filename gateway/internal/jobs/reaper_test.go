@@ -58,8 +58,10 @@ func TestReaper_Sweep_TableDriven(t *testing.T) {
 	}{
 		{"succeeded past retention is deleted", StatusSucceeded, retention + time.Minute, true},
 		{"failed past retention is deleted", StatusFailed, retention + time.Minute, true},
+		{"cancelled past retention is deleted", StatusCancelled, retention + time.Minute, true},
 		{"succeeded within retention is kept", StatusSucceeded, retention - time.Minute, false},
 		{"failed within retention is kept", StatusFailed, retention - time.Minute, false},
+		{"cancelled within retention is kept", StatusCancelled, retention - time.Minute, false},
 		{"queued row is never deleted regardless of age", StatusQueued, retention + 24*time.Hour, false},
 		{"running row is never deleted regardless of age", StatusRunning, retention + 24*time.Hour, false},
 	}

@@ -23,6 +23,11 @@ const (
 	StatusRunning   = "running"
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
+	// StatusCancelled is the terminal state a queued job transitions into via
+	// CancelQueued (POST /v1/jobs/{id}/cancel). Unlike StatusFailed, it
+	// reflects a caller-initiated withdrawal, never a worker or gateway
+	// error — no error_code/error_message is ever set on a cancelled row.
+	StatusCancelled = "cancelled"
 )
 
 // Job is one async_jobs row.

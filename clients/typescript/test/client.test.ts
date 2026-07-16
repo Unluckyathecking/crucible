@@ -184,6 +184,41 @@ describe("Client.getJob", () => {
   });
 });
 
+describe("Client.cancelJob", () => {
+  it("sends the expected request and handles the 200 response", async () => {
+    let capturedInit: RequestInit | undefined;
+    let capturedUrl: string | URL | Request | undefined;
+    const capFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(JSON.stringify({"billable_units": 1, "created_at": "ok", "error": {"db": "ok"}, "job_id": "ok", "result": {"db": "ok"}, "status": "ok", "units_label": "ok", "updated_at": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c = new Client("http://gw.test", { fetch: capFetch });
+    const got = await c.cancelJob("test-id", "key");
+    assert.equal(String(capturedUrl), "http://gw.test/v1/jobs/test-id/cancel");
+    assert.equal(capturedInit!.method, "POST");
+    const hdrs = capturedInit!.headers as Record<string, string>;
+    assert.equal(hdrs["X-API-Key"], "key");
+    assert.equal(got.created_at, "ok");
+  });
+
+  it("falls back to constructor apiKey when not provided", async () => {
+    let capturedInit2: RequestInit | undefined;
+    const capFetch2: typeof globalThis.fetch = async (_url, init) => {
+      capturedInit2 = init;
+      return new Response(JSON.stringify({"billable_units": 1, "created_at": "ok", "error": {"db": "ok"}, "job_id": "ok", "result": {"db": "ok"}, "status": "ok", "units_label": "ok", "updated_at": "ok"}), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    };
+    const c2 = new Client("http://gw.test", { fetch: capFetch2, apiKey: "default-key" });
+    await c2.cancelJob("test-id");
+    const hdrs2 = capturedInit2!.headers as Record<string, string>;
+    assert.equal(hdrs2["X-API-Key"], "default-key");
+  });
+});
+
 describe("Client.listKeys", () => {
   it("sends the expected request and handles the 200 response", async () => {
     let capturedInit: RequestInit | undefined;

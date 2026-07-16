@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Client, ApiError } from "../src/index";
-import { waitForJob, JobWaitAbortedError, JOB_STATUS_SUCCEEDED } from "../src/jobs";
+import { waitForJob, JobWaitAbortedError, JOB_STATUS_SUCCEEDED, JOB_STATUS_CANCELLED } from "../src/jobs";
 
 function fakeFetch(handler: (url: string, init?: RequestInit) => Response): typeof globalThis.fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => handler(String(url), init)) as typeof globalThis.fetch;
@@ -127,5 +127,23 @@ describe("waitForJob", () => {
       assert.equal(err.code, "NOT_FOUND");
       return true;
     });
+  });
+
+  it("polls until cancelled and resolves (does not reject)", async () => {
+    let calls = 0;
+    const c = new Client("http://gw.test", {
+      fetch: fakeFetch(() => {
+        calls++;
+        const status = calls >= 3 ? "cancelled" : "queued";
+        return new Response(JSON.stringify({ job_id: "job-1", status }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    });
+
+    const job = await waitForJob(c, "job-1", { pollIntervalMs: 1 });
+    assert.equal(job.status, JOB_STATUS_CANCELLED);
+    assert.ok(calls >= 3, `expected at least 3 polls, got ${calls}`);
   });
 });
