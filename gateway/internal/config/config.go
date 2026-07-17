@@ -122,6 +122,24 @@ type Config struct {
 	// unconditionally, as today.
 	JobMaxQueuedPerCustomer int `envconfig:"JOB_MAX_QUEUED_PER_CUSTOMER" default:"0"`
 
+	// IdempotencyRetentionDays bounds how long an idempotency_keys row is kept
+	// before idempotency.Reaper deletes it. Zero-config-safe: defaults to 0,
+	// which makes the reaper inert (never deletes). idempotency_keys rows are
+	// deleted only lazily by the Store today (on re-query of the same key), so
+	// without this knob the table grows without bound at high request volume.
+	IdempotencyRetentionDays int `envconfig:"IDEMPOTENCY_RETENTION_DAYS" default:"0"`
+	// IdempotencyReaperIntervalMS is the delay between idempotency.Reaper sweeps.
+	IdempotencyReaperIntervalMS int `envconfig:"IDEMPOTENCY_REAPER_INTERVAL_MS" default:"3600000"`
+
+	// WebhookDeliveryRetentionDays bounds how long a delivered webhook_deliveries
+	// row is kept before webhookout.DeliveryReaper deletes it. Zero-config-safe:
+	// defaults to 0, making the reaper inert. dead_letter rows are never deleted
+	// by the reaper regardless of this setting — operators replay those via the
+	// dead-letter replay console.
+	WebhookDeliveryRetentionDays int `envconfig:"WEBHOOK_DELIVERY_RETENTION_DAYS" default:"0"`
+	// WebhookDeliveryReaperIntervalMS is the delay between webhookout.DeliveryReaper sweeps.
+	WebhookDeliveryReaperIntervalMS int `envconfig:"WEBHOOK_DELIVERY_REAPER_INTERVAL_MS" default:"3600000"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
@@ -278,6 +296,30 @@ func Load() (*Config, error) {
 	if c.JobMaxQueuedPerCustomer < 0 {
 		return nil, fmt.Errorf("JOB_MAX_QUEUED_PER_CUSTOMER must be >= 0 (got %d)", c.JobMaxQueuedPerCustomer)
 	}
+	if c.IdempotencyRetentionDays < 0 {
+		return nil, fmt.Errorf("IDEMPOTENCY_RETENTION_DAYS must be >= 0 (got %d)", c.IdempotencyRetentionDays)
+	}
+	if c.IdempotencyRetentionDays > 3650 {
+		return nil, fmt.Errorf("IDEMPOTENCY_RETENTION_DAYS must be <= 3650 (10 years) (got %d)", c.IdempotencyRetentionDays)
+	}
+	if c.IdempotencyReaperIntervalMS <= 0 {
+		return nil, fmt.Errorf("IDEMPOTENCY_REAPER_INTERVAL_MS must be > 0 (got %d)", c.IdempotencyReaperIntervalMS)
+	}
+	if c.IdempotencyReaperIntervalMS > 86400000 {
+		return nil, fmt.Errorf("IDEMPOTENCY_REAPER_INTERVAL_MS must be <= 86400000 (24 hours) (got %d)", c.IdempotencyReaperIntervalMS)
+	}
+	if c.WebhookDeliveryRetentionDays < 0 {
+		return nil, fmt.Errorf("WEBHOOK_DELIVERY_RETENTION_DAYS must be >= 0 (got %d)", c.WebhookDeliveryRetentionDays)
+	}
+	if c.WebhookDeliveryRetentionDays > 3650 {
+		return nil, fmt.Errorf("WEBHOOK_DELIVERY_RETENTION_DAYS must be <= 3650 (10 years) (got %d)", c.WebhookDeliveryRetentionDays)
+	}
+	if c.WebhookDeliveryReaperIntervalMS <= 0 {
+		return nil, fmt.Errorf("WEBHOOK_DELIVERY_REAPER_INTERVAL_MS must be > 0 (got %d)", c.WebhookDeliveryReaperIntervalMS)
+	}
+	if c.WebhookDeliveryReaperIntervalMS > 86400000 {
+		return nil, fmt.Errorf("WEBHOOK_DELIVERY_REAPER_INTERVAL_MS must be <= 86400000 (24 hours) (got %d)", c.WebhookDeliveryReaperIntervalMS)
+	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
 	// accepts "NaN" and "Inf" from env vars, both of which would produce undefined sampler behaviour.
@@ -353,6 +395,28 @@ func (c *Config) JobRetention() time.Duration {
 // JobReaperInterval converts JobReaperIntervalMS to time.Duration.
 func (c *Config) JobReaperInterval() time.Duration {
 	return time.Duration(c.JobReaperIntervalMS) * time.Millisecond
+}
+
+// IdempotencyRetention converts IdempotencyRetentionDays to time.Duration.
+// Zero (the default) means retention is disabled — see idempotency.Reaper.Run.
+func (c *Config) IdempotencyRetention() time.Duration {
+	return time.Duration(c.IdempotencyRetentionDays) * 24 * time.Hour
+}
+
+// IdempotencyReaperInterval converts IdempotencyReaperIntervalMS to time.Duration.
+func (c *Config) IdempotencyReaperInterval() time.Duration {
+	return time.Duration(c.IdempotencyReaperIntervalMS) * time.Millisecond
+}
+
+// WebhookDeliveryRetention converts WebhookDeliveryRetentionDays to time.Duration.
+// Zero (the default) means retention is disabled — see webhookout.DeliveryReaper.Run.
+func (c *Config) WebhookDeliveryRetention() time.Duration {
+	return time.Duration(c.WebhookDeliveryRetentionDays) * 24 * time.Hour
+}
+
+// WebhookDeliveryReaperInterval converts WebhookDeliveryReaperIntervalMS to time.Duration.
+func (c *Config) WebhookDeliveryReaperInterval() time.Duration {
+	return time.Duration(c.WebhookDeliveryReaperIntervalMS) * time.Millisecond
 }
 
 // ClampRespCacheTTL normalizes a route's requested respcache TTL (seconds)

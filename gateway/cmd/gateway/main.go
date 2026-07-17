@@ -23,6 +23,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
@@ -179,6 +180,8 @@ func main() {
 	// delivery worker, not a second Emitter.
 	jobExecutor.SetEmitter(emitter)
 	reaper := jobs.NewReaper(pool, cfg.JobRetention(), cfg.JobReaperInterval())
+	idempReaper := idempotency.NewReaper(pool, cfg.IdempotencyRetention(), cfg.IdempotencyReaperInterval())
+	deliveryReaper := webhookout.NewDeliveryReaper(pool, cfg.WebhookDeliveryRetention(), cfg.WebhookDeliveryReaperInterval())
 
 	// Async: flush usage to Stripe.
 	go flusher.Run(rootCtx)
@@ -186,6 +189,15 @@ func main() {
 	// Async: delete terminal async_jobs rows past JOB_RETENTION_DAYS. Inert
 	// (no-op) until an operator opts in, see jobs.Reaper.Run.
 	go reaper.Run(rootCtx)
+
+	// Async: delete old idempotency_keys rows past IDEMPOTENCY_RETENTION_DAYS.
+	// Inert (no-op) until an operator opts in, see idempotency.Reaper.Run.
+	go idempReaper.Run(rootCtx)
+
+	// Async: delete delivered webhook_deliveries rows past
+	// WEBHOOK_DELIVERY_RETENTION_DAYS. dead_letter rows are never deleted.
+	// Inert (no-op) until an operator opts in, see webhookout.DeliveryReaper.Run.
+	go deliveryReaper.Run(rootCtx)
 
 	// Async: execute durable jobs opted into routes_table.go's AsyncRoutes.
 	// jobsDone closes once jobExecutor.Run has released any jobs it still
