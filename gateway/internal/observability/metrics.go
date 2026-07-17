@@ -35,6 +35,7 @@
 //	crucible_jobs_customer_throttled_total{reason}       — async job claims/enqueues held back by per-customer fairness; reason=inflight_cap|backlog_ceiling (jobs.Store/routes.enqueueAsync)
 //	crucible_idempotency_keys_reaped_total               — idempotency_keys rows deleted by retention (idempotency.Reaper)
 //	crucible_webhook_deliveries_reaped_total             — delivered webhook_deliveries rows deleted by retention (webhookout.DeliveryReaper)
+//	crucible_webhook_deliveries_throttled_total{reason}  — webhook delivery claims held back by the per-customer fairness cap; reason=inflight_cap (webhookout.Emitter.claimDue)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -282,6 +283,18 @@ var (
 		Help: "Number of idempotency_keys rows deleted by the retention reaper (label-free).",
 	})
 
+	// WebhookDeliveriesThrottledTotal counts outbound webhook delivery claims
+	// held back by the opt-in per-customer fairness cap
+	// (WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER, see webhookout.Emitter.claimDue).
+	// reason is a bounded single-value enum today (inflight_cap), labeled to
+	// match crucible_jobs_customer_throttled_total's shape and leave room for
+	// a future admission-side reason without a metric rename. Always zero
+	// when the knob is at its default disabled value.
+	WebhookDeliveriesThrottledTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_webhook_deliveries_throttled_total",
+		Help: "Number of outbound webhook delivery claims held back by the per-customer fairness cap, by reason (inflight_cap).",
+	}, []string{"reason"})
+
 	// WebhookDeliveriesReapedTotal counts delivered webhook_deliveries rows
 	// deleted by the retention reaper (gateway/internal/webhookout.DeliveryReaper).
 	// dead_letter rows are never deleted by the reaper. Label-free.
@@ -295,39 +308,40 @@ var (
 // Use NewMetricsForTest with prometheus.NewRegistry() to get an isolated copy.
 // Pass the result to the proxy client's metrics injection method for worker-call metrics in tests.
 type Metrics struct {
-	RequestsTotal                  *prometheus.CounterVec
-	RequestDuration                *prometheus.HistogramVec
-	WorkerCallDuration             prometheus.Histogram
-	WorkerErrorsTotal              *prometheus.CounterVec
-	WorkerRetriesTotal             prometheus.Counter
-	WorkerBreakerState             prometheus.Gauge
-	UsageRecordsTotal              prometheus.Counter
-	BillingFlushTotal              *prometheus.CounterVec
-	BillingBacklogUnits            prometheus.Gauge
-	BillingBacklogRows             prometheus.Gauge
-	BillingBacklogOldestAgeSeconds prometheus.Gauge
-	BillingUnbillableUnits         prometheus.Gauge
-	BillingUnbillableRows          prometheus.Gauge
-	BillingReconcileErrorsTotal    prometheus.Counter
-	RateLimitedTotal               prometheus.Counter
-	QuotaExceededTotal             prometheus.Counter
-	RateLimitFailOpen              prometheus.Counter
-	QuotaFailOpen                  prometheus.Counter
-	RespCacheHitsTotal             *prometheus.CounterVec
-	RespCacheMissesTotal           *prometheus.CounterVec
-	RespCacheFailOpenTotal         *prometheus.CounterVec
-	JobsEnqueuedTotal              *prometheus.CounterVec
-	JobsCompletedTotal             *prometheus.CounterVec
-	JobsRetriedTotal               *prometheus.CounterVec
-	JobExecutionDuration           *prometheus.HistogramVec
-	JobsReapedTotal                prometheus.Counter
-	JobsRequeuedTotal              prometheus.Counter
-	JobsReleasedTotal              prometheus.Counter
-	JobsDeadletteredTotal          *prometheus.CounterVec
-	JobsQueueDepth                 prometheus.Gauge
-	JobsCustomerThrottledTotal     *prometheus.CounterVec
-	IdempotencyKeysReapedTotal     prometheus.Counter
-	WebhookDeliveriesReapedTotal   prometheus.Counter
+	RequestsTotal                   *prometheus.CounterVec
+	RequestDuration                 *prometheus.HistogramVec
+	WorkerCallDuration              prometheus.Histogram
+	WorkerErrorsTotal               *prometheus.CounterVec
+	WorkerRetriesTotal              prometheus.Counter
+	WorkerBreakerState              prometheus.Gauge
+	UsageRecordsTotal               prometheus.Counter
+	BillingFlushTotal               *prometheus.CounterVec
+	BillingBacklogUnits             prometheus.Gauge
+	BillingBacklogRows              prometheus.Gauge
+	BillingBacklogOldestAgeSeconds  prometheus.Gauge
+	BillingUnbillableUnits          prometheus.Gauge
+	BillingUnbillableRows           prometheus.Gauge
+	BillingReconcileErrorsTotal     prometheus.Counter
+	RateLimitedTotal                prometheus.Counter
+	QuotaExceededTotal              prometheus.Counter
+	RateLimitFailOpen               prometheus.Counter
+	QuotaFailOpen                   prometheus.Counter
+	RespCacheHitsTotal              *prometheus.CounterVec
+	RespCacheMissesTotal            *prometheus.CounterVec
+	RespCacheFailOpenTotal          *prometheus.CounterVec
+	JobsEnqueuedTotal               *prometheus.CounterVec
+	JobsCompletedTotal              *prometheus.CounterVec
+	JobsRetriedTotal                *prometheus.CounterVec
+	JobExecutionDuration            *prometheus.HistogramVec
+	JobsReapedTotal                 prometheus.Counter
+	JobsRequeuedTotal               prometheus.Counter
+	JobsReleasedTotal               prometheus.Counter
+	JobsDeadletteredTotal           *prometheus.CounterVec
+	JobsQueueDepth                  prometheus.Gauge
+	JobsCustomerThrottledTotal      *prometheus.CounterVec
+	IdempotencyKeysReapedTotal      prometheus.Counter
+	WebhookDeliveriesReapedTotal    prometheus.Counter
+	WebhookDeliveriesThrottledTotal *prometheus.CounterVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -470,6 +484,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_webhook_deliveries_reaped_total",
 			Help: "Number of delivered webhook_deliveries rows deleted by the retention reaper (label-free).",
 		}),
+		WebhookDeliveriesThrottledTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_webhook_deliveries_throttled_total",
+			Help: "Number of outbound webhook delivery claims held back by the per-customer fairness cap, by reason (inflight_cap).",
+		}, []string{"reason"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -505,6 +523,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.JobsCustomerThrottledTotal,
 		m.IdempotencyKeysReapedTotal,
 		m.WebhookDeliveriesReapedTotal,
+		m.WebhookDeliveriesThrottledTotal,
 	)
 	return m
 }

@@ -5,14 +5,17 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
+	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 )
 
 // TestSign verifies that Sign produces a deterministic, non-empty HMAC-SHA256 hex digest
@@ -608,5 +611,275 @@ func TestEmit_InactiveEndpoint_GetsZeroRows(t *testing.T) {
 	}
 	if n := countDeliveriesForEndpoint(t, pool, activeID); n != 1 {
 		t.Errorf("deliveries for active sibling endpoint: got %d, want 1", n)
+	}
+}
+
+// TestWebhookFairClaimAdvisoryLockKey_DistinctFromJobsKey guards against the
+// two independent fair-claim paths (this package's claimDue and
+// jobs.Store.Claim) ever contending on the same session-scoped Postgres
+// advisory lock. jobs.fairClaimAdvisoryLockKey is unexported in package jobs
+// (0x63727563_69626c65, "crucible" in hex — see gateway/internal/jobs/store.go),
+// so its literal value is duplicated here as the only way to compare across
+// packages.
+func TestWebhookFairClaimAdvisoryLockKey_DistinctFromJobsKey(t *testing.T) {
+	const jobsFairClaimAdvisoryLockKey int64 = 0x63727563_69626c65
+	if webhookFairClaimAdvisoryLockKey == jobsFairClaimAdvisoryLockKey {
+		t.Fatal("webhookFairClaimAdvisoryLockKey must differ from jobs.fairClaimAdvisoryLockKey to avoid cross-package advisory lock contention")
+	}
+}
+
+// TestWithMaxInflightPerCustomer_SetsField verifies the functional-option
+// wiring NewEmitter uses, without needing a live Postgres connection.
+func TestWithMaxInflightPerCustomer_SetsField(t *testing.T) {
+	e := &Emitter{}
+	WithMaxInflightPerCustomer(5)(e)
+	if e.maxInflightPerCustomer != 5 {
+		t.Errorf("maxInflightPerCustomer = %d, want 5", e.maxInflightPerCustomer)
+	}
+}
+
+// TestClaimDue_ZeroDisables_DoesNotSelectCustomerID is the "zero disables"
+// acceptance check: with maxInflightPerCustomer at its default (0), claimDue
+// must run the exact original single-query global-FIFO SELECT, which never
+// fetches we.customer_id — so a claimed row's pendingRow.customerID is left
+// at its zero value. Only the fairness-enabled path (> 0) fetches and relies
+// on that column.
+func TestClaimDue_ZeroDisables_DoesNotSelectCustomerID(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "webhookout-zero-disabled@example.com")
+	epID := seedEndpoint(t, pool, custID, "https://example.com/hook")
+	seedDelivery(t, pool, epID, "pending", seedDeliveryOpts{attempts: 0})
+
+	e := &Emitter{db: pool}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(context.Background()) //nolint:errcheck
+
+	due, err := e.claimDue(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("claimDue: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("due: got %d rows, want 1", len(due))
+	}
+	if due[0].customerID != uuid.Nil {
+		t.Errorf("customerID: got %v, want uuid.Nil — the disabled path's query must not select we.customer_id", due[0].customerID)
+	}
+}
+
+// claimAndMarkDelivering exercises exactly the transaction shape processDue
+// uses around claimDue: begin, claim, mark 'delivering', commit. Used by the
+// fairness tests below in place of processDue itself so they exercise the
+// claim primitive without also making real HTTP deliveries.
+func claimAndMarkDelivering(t *testing.T, pool *pgxpool.Pool, maxInflightPerCustomer int) []pendingRow {
+	t.Helper()
+	ctx := context.Background()
+	e := &Emitter{db: pool, maxInflightPerCustomer: maxInflightPerCustomer}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	due, err := e.claimDue(ctx, tx)
+	if err != nil {
+		t.Fatalf("claimDue: %v", err)
+	}
+	if len(due) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, len(due))
+	for i, r := range due {
+		ids[i] = r.id
+	}
+	if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET status = 'delivering', claimed_at = NOW() WHERE id = ANY($1)`, ids); err != nil {
+		t.Fatalf("mark delivering: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return due
+}
+
+// TestClaimDue_FairnessPreventsBacklogStarvation is the acceptance test for
+// the fair-claim path: with maxInflightPerCustomer disabled (0), customer
+// B's due delivery is starved out of the claim page by customer A's deep
+// backlog (bigger than claimPageSize). With the cap enabled, the exact same
+// queue state claims B within the very first claim.
+func TestClaimDue_FairnessPreventsBacklogStarvation(t *testing.T) {
+	pool := newTestPostgres(t)
+
+	run := func(t *testing.T, maxInflightPerCustomer int) bool {
+		custA := seedCustomer(t, pool, "webhookout-fair-a-"+uuid.New().String()+"@example.com")
+		custB := seedCustomer(t, pool, "webhookout-fair-b-"+uuid.New().String()+"@example.com")
+		epA := seedEndpoint(t, pool, custA, "https://example.com/hook-a")
+		epB := seedEndpoint(t, pool, custB, "https://example.com/hook-b")
+
+		// A's backlog exceeds claimPageSize so the disabled (pure-FIFO) path
+		// fills its entire page from A alone, before B's row is even seeded.
+		for i := 0; i < claimPageSize+5; i++ {
+			seedDelivery(t, pool, epA, "pending", seedDeliveryOpts{attempts: 0})
+		}
+		idB := seedDelivery(t, pool, epB, "pending", seedDeliveryOpts{attempts: 0})
+
+		e := &Emitter{db: pool, maxInflightPerCustomer: maxInflightPerCustomer}
+		tx, err := pool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		defer tx.Rollback(context.Background()) //nolint:errcheck
+
+		due, err := e.claimDue(context.Background(), tx)
+		if err != nil {
+			t.Fatalf("claimDue: %v", err)
+		}
+		for _, r := range due {
+			if r.id == idB {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("disabled_starves_B", func(t *testing.T) {
+		if run(t, 0) {
+			t.Fatal("customer B claimed within the first cycle even though the fairness cap is disabled — pure-FIFO should have exhausted the page on A's backlog first")
+		}
+	})
+
+	t.Run("enabled_claims_B_within_first_cycle", func(t *testing.T) {
+		if !run(t, 1) {
+			t.Fatal("customer B was not claimed within the first cycle despite maxInflightPerCustomer=1 — fairness cap did not protect against A's backlog")
+		}
+	})
+}
+
+// TestClaimDue_ThrottledMetric_IncrementsByDeferredCount is the acceptance
+// test for crucible_webhook_deliveries_throttled_total{reason="inflight_cap"}:
+// it must increment by exactly the number of candidate rows the cap deferred,
+// no more and no less.
+func TestClaimDue_ThrottledMetric_IncrementsByDeferredCount(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA := seedCustomer(t, pool, "webhookout-throttle-metric-a-"+uuid.New().String()+"@example.com")
+	custB := seedCustomer(t, pool, "webhookout-throttle-metric-b-"+uuid.New().String()+"@example.com")
+	epA := seedEndpoint(t, pool, custA, "https://example.com/hook-a")
+	epB := seedEndpoint(t, pool, custB, "https://example.com/hook-b")
+
+	const maxInflightPerCustomer = 2
+	const numA = 5
+	for i := 0; i < numA; i++ {
+		seedDelivery(t, pool, epA, "pending", seedDeliveryOpts{attempts: 0})
+	}
+	seedDelivery(t, pool, epB, "pending", seedDeliveryOpts{attempts: 0})
+
+	before := testutil.ToFloat64(observability.WebhookDeliveriesThrottledTotal.WithLabelValues("inflight_cap"))
+
+	e := &Emitter{db: pool, maxInflightPerCustomer: maxInflightPerCustomer}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(context.Background()) //nolint:errcheck
+
+	due, err := e.claimDue(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("claimDue: %v", err)
+	}
+
+	var claimedA int
+	for _, r := range due {
+		if r.customerID == custA {
+			claimedA++
+		}
+	}
+	if claimedA != maxInflightPerCustomer {
+		t.Fatalf("claimedA: got %d, want %d (cap)", claimedA, maxInflightPerCustomer)
+	}
+	wantThrottled := numA - claimedA
+
+	after := testutil.ToFloat64(observability.WebhookDeliveriesThrottledTotal.WithLabelValues("inflight_cap"))
+	if got := after - before; got != float64(wantThrottled) {
+		t.Errorf("WebhookDeliveriesThrottledTotal increment: got %v, want %v", got, wantThrottled)
+	}
+}
+
+// TestClaimDue_MaxInflightPerCustomer_RaceEnforced is the -race test for the
+// per-customer cap itself: many concurrent claimAndMarkDelivering callers
+// (simulating concurrent gateway replicas) against one customer's deep
+// backlog must never let that customer exceed maxInflightPerCustomer
+// simultaneously 'delivering' rows, while a second customer's deliveries
+// still make progress concurrently. Mirrors
+// jobs.TestStore_Claim_MaxInflightPerCustomer_RaceEnforced.
+func TestClaimDue_MaxInflightPerCustomer_RaceEnforced(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA := seedCustomer(t, pool, "webhookout-fair-race-a-"+uuid.New().String()+"@example.com")
+	custB := seedCustomer(t, pool, "webhookout-fair-race-b-"+uuid.New().String()+"@example.com")
+	epA := seedEndpoint(t, pool, custA, "https://example.com/hook-a")
+	epB := seedEndpoint(t, pool, custB, "https://example.com/hook-b")
+
+	const (
+		numDeliveriesA         = 30
+		numDeliveriesB         = 10
+		maxInflightPerCustomer = 3
+		numWorkers             = 16
+	)
+	for i := 0; i < numDeliveriesA; i++ {
+		seedDelivery(t, pool, epA, "pending", seedDeliveryOpts{attempts: 0})
+	}
+	for i := 0; i < numDeliveriesB; i++ {
+		seedDelivery(t, pool, epB, "pending", seedDeliveryOpts{attempts: 0})
+	}
+
+	var (
+		wg          sync.WaitGroup
+		mu          sync.Mutex
+		maxSeenA    int
+		claimedForB int
+	)
+	checkDeliveringCap := func() {
+		var n int
+		if err := pool.QueryRow(context.Background(), `
+			SELECT COUNT(*) FROM webhook_deliveries d
+			JOIN webhook_endpoints we ON we.id = d.endpoint_id
+			WHERE we.customer_id = $1 AND d.status = 'delivering'
+		`, custA).Scan(&n); err != nil {
+			t.Errorf("count delivering: %v", err)
+			return
+		}
+		mu.Lock()
+		if n > maxSeenA {
+			maxSeenA = n
+		}
+		mu.Unlock()
+	}
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 8; i++ {
+				due := claimAndMarkDelivering(t, pool, maxInflightPerCustomer)
+				checkDeliveringCap()
+				mu.Lock()
+				for _, r := range due {
+					if r.customerID == custB {
+						claimedForB++
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if maxSeenA > maxInflightPerCustomer {
+		t.Errorf("customer A had %d rows simultaneously delivering, want <= %d (maxInflightPerCustomer)", maxSeenA, maxInflightPerCustomer)
+	}
+	if claimedForB == 0 {
+		t.Error("customer B's deliveries never progressed while A's backlog was being claimed — fairness cap did not protect B")
 	}
 }

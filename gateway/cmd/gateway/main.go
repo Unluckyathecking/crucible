@@ -149,7 +149,8 @@ func main() {
 	// one per consumer. context.Background() keeps the delivery worker alive
 	// for the process lifetime; process exit (SIGTERM/SIGKILL) stops the
 	// goroutine, same as every other long-lived background component here.
-	emitter := webhookout.NewEmitter(context.Background(), pool)
+	emitter := webhookout.NewEmitter(context.Background(), pool,
+		webhookout.WithMaxInflightPerCustomer(cfg.WebhookMaxInflightPerCustomer))
 	jobStore := jobs.NewStore(pool)
 	// jobProxyClient is deliberately separate from workerClient: proxy.New's
 	// timeout argument becomes http.Client.Timeout, a hard ceiling that

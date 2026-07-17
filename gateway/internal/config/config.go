@@ -140,6 +140,14 @@ type Config struct {
 	// WebhookDeliveryReaperIntervalMS is the delay between webhookout.DeliveryReaper sweeps.
 	WebhookDeliveryReaperIntervalMS int `envconfig:"WEBHOOK_DELIVERY_REAPER_INTERVAL_MS" default:"3600000"`
 
+	// WebhookMaxInflightPerCustomer bounds how many 'delivering' webhook_deliveries
+	// rows a single customer may occupy at once across the shared delivery worker
+	// (see webhookout.Emitter.claimDue). Mirrors JobMaxInflightPerCustomer's
+	// opt-in shape: 0 (default) disables the per-customer cap and preserves
+	// today's exact single-query global-FIFO claim behaviour byte-for-byte;
+	// a product clone opts in by setting a positive value.
+	WebhookMaxInflightPerCustomer int `envconfig:"WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER" default:"0"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
@@ -319,6 +327,12 @@ func Load() (*Config, error) {
 	}
 	if c.WebhookDeliveryReaperIntervalMS > 86400000 {
 		return nil, fmt.Errorf("WEBHOOK_DELIVERY_REAPER_INTERVAL_MS must be <= 86400000 (24 hours) (got %d)", c.WebhookDeliveryReaperIntervalMS)
+	}
+	// <= 0 (default 0) preserves today's unbounded global-FIFO behaviour
+	// (mirrors JobMaxInflightPerCustomer's validation above) — only negative
+	// is a misconfiguration error.
+	if c.WebhookMaxInflightPerCustomer < 0 {
+		return nil, fmt.Errorf("WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER must be >= 0 (got %d)", c.WebhookMaxInflightPerCustomer)
 	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat

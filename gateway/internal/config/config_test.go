@@ -955,3 +955,41 @@ func TestJobMaxQueuedPerCustomerPositiveIsValid(t *testing.T) {
 		t.Errorf("JobMaxQueuedPerCustomer = %d, want 100", c.JobMaxQueuedPerCustomer)
 	}
 }
+
+func TestWebhookMaxInflightPerCustomerDefaultDisabled(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.WebhookMaxInflightPerCustomer != 0 {
+		t.Errorf("WebhookMaxInflightPerCustomer = %d, want 0 (unbounded/disabled)", c.WebhookMaxInflightPerCustomer)
+	}
+}
+
+func TestWebhookMaxInflightPerCustomerNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER") {
+		t.Errorf("error %q does not mention WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER", err.Error())
+	}
+}
+
+func TestWebhookMaxInflightPerCustomerPositiveIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER", "3")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.WebhookMaxInflightPerCustomer != 3 {
+		t.Errorf("WebhookMaxInflightPerCustomer = %d, want 3", c.WebhookMaxInflightPerCustomer)
+	}
+}
