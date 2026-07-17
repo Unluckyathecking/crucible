@@ -265,6 +265,19 @@ def test_list_usage_events():
         assert got is not None
 
 
+def test_list_webhook_deliveries():
+    def handler(req):
+        assert req.method == "GET"
+        assert req.path.split("?")[0] == "/v1/webhooks/deliveries"
+        assert req.headers.get("X-API-Key") == "test-key"
+        return json_response(200, {"items": [], "total": 1})
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        got = c.list_webhook_deliveries(page=2, per_page=2, api_key="test-key")
+        assert got is not None
+
+
 def test_list_webhook_endpoints():
     def handler(req):
         assert req.method == "GET"

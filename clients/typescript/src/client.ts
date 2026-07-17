@@ -98,6 +98,19 @@ export interface ListUsageEventsResponse {
   limit: number;
   page: number;
 }
+export interface ListWebhookDeliveriesResponseItemsItem {
+  attempts: number;
+  created_at: string;
+  endpoint_url: string;
+  event_id: string;
+  id: string;
+  last_response_code: number;
+  status: string;
+}
+export interface ListWebhookDeliveriesResponse {
+  items: ListWebhookDeliveriesResponseItemsItem[] | null;
+  total: number;
+}
 export interface ListWebhookEndpointsResponse {
   items: unknown[] | null;
   total: number;
@@ -269,6 +282,19 @@ export class Client {
     if (limit !== undefined) q.set("limit", String(limit));
     if ([...q].length > 0) path += "?" + q.toString();
     return this.request<ListUsageEventsResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * GET /v1/webhooks/deliveries — list webhook deliveries.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async listWebhookDeliveries(page?: number, perPage?: number, apiKey?: string): Promise<ListWebhookDeliveriesResponse> {
+    let path: string = "/v1/webhooks/deliveries";
+    const q = new URLSearchParams();
+    if (page !== undefined) q.set("page", String(page));
+    if (perPage !== undefined) q.set("per_page", String(perPage));
+    if ([...q].length > 0) path += "?" + q.toString();
+    return this.request<ListWebhookDeliveriesResponse>("GET", path, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**

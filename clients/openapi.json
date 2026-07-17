@@ -1398,6 +1398,136 @@
         }
       }
     },
+    "/v1/webhooks/deliveries": {
+      "get": {
+        "operationId": "list_webhook_deliveries",
+        "summary": "List the authenticated customer's outbound webhook deliveries across all their registered endpoints",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-indexed page number; default 1",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Page size; default 100, capped at 100",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own webhook deliveries, newest-first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Paginated envelope of the caller's own webhook deliveries",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "description": "Matching webhook_deliveries rows, newest-first",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "attempts": {
+                            "type": "integer",
+                            "description": "Number of delivery attempts made so far"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "description": "RFC3339 creation timestamp"
+                          },
+                          "endpoint_url": {
+                            "type": "string",
+                            "description": "The registered HTTPS delivery URL the event was sent to"
+                          },
+                          "event_id": {
+                            "type": "string",
+                            "description": "The outbound webhook event type (e.g. invocation.succeeded)"
+                          },
+                          "id": {
+                            "type": "string",
+                            "description": "Delivery UUID"
+                          },
+                          "last_response_code": {
+                            "type": "integer",
+                            "description": "HTTP status code returned by the endpoint on the last attempt; absent if no attempt has completed"
+                          },
+                          "status": {
+                            "type": "string",
+                            "description": "pending | delivered | failed"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "event_id",
+                          "endpoint_url",
+                          "status",
+                          "attempts",
+                          "created_at"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total matching deliveries across all pages"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — page too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/webhooks/endpoints": {
       "get": {
         "operationId": "list_webhook_endpoints",
