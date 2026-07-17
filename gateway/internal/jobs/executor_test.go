@@ -396,7 +396,7 @@ func TestStore_ReleaseClaimed_UsableAsOperatorPrimitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := store.Claim(context.Background(), 1, instanceID); err != nil {
+	if _, err := store.Claim(context.Background(), 1, instanceID, 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 

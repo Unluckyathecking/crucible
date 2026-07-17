@@ -871,3 +871,87 @@ func TestClampRespCacheTTL(t *testing.T) {
 		t.Errorf("ClampRespCacheTTL(120) = %v, want %v (clamped to max)", got, want)
 	}
 }
+
+// --- Async job fairness field tests ---
+
+func TestJobFairnessDefaultsUnbounded(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.JobMaxInflightPerCustomer != 0 {
+		t.Errorf("JobMaxInflightPerCustomer = %d, want 0 (unbounded/disabled)", c.JobMaxInflightPerCustomer)
+	}
+	if c.JobMaxQueuedPerCustomer != 0 {
+		t.Errorf("JobMaxQueuedPerCustomer = %d, want 0 (unbounded/disabled)", c.JobMaxQueuedPerCustomer)
+	}
+}
+
+func TestJobMaxInflightPerCustomerNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "JOB_MAX_INFLIGHT_PER_CUSTOMER", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for JOB_MAX_INFLIGHT_PER_CUSTOMER=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "JOB_MAX_INFLIGHT_PER_CUSTOMER") {
+		t.Errorf("error %q does not mention JOB_MAX_INFLIGHT_PER_CUSTOMER", err.Error())
+	}
+}
+
+func TestJobMaxInflightPerCustomerAboveWorkerPoolSizeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "JOB_WORKER_POOL_SIZE", "4")
+	setenv(t, "JOB_MAX_INFLIGHT_PER_CUSTOMER", "5")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for JOB_MAX_INFLIGHT_PER_CUSTOMER > JOB_WORKER_POOL_SIZE, got nil")
+	}
+	if !strings.Contains(err.Error(), "JOB_MAX_INFLIGHT_PER_CUSTOMER") {
+		t.Errorf("error %q does not mention JOB_MAX_INFLIGHT_PER_CUSTOMER", err.Error())
+	}
+}
+
+func TestJobMaxInflightPerCustomerWithinWorkerPoolSizeIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "JOB_WORKER_POOL_SIZE", "4")
+	setenv(t, "JOB_MAX_INFLIGHT_PER_CUSTOMER", "4")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.JobMaxInflightPerCustomer != 4 {
+		t.Errorf("JobMaxInflightPerCustomer = %d, want 4", c.JobMaxInflightPerCustomer)
+	}
+}
+
+func TestJobMaxQueuedPerCustomerNegativeReturnsError(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "JOB_MAX_QUEUED_PER_CUSTOMER", "-1")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for JOB_MAX_QUEUED_PER_CUSTOMER=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "JOB_MAX_QUEUED_PER_CUSTOMER") {
+		t.Errorf("error %q does not mention JOB_MAX_QUEUED_PER_CUSTOMER", err.Error())
+	}
+}
+
+func TestJobMaxQueuedPerCustomerPositiveIsValid(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "JOB_MAX_QUEUED_PER_CUSTOMER", "100")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.JobMaxQueuedPerCustomer != 100 {
+		t.Errorf("JobMaxQueuedPerCustomer = %d, want 100", c.JobMaxQueuedPerCustomer)
+	}
+}

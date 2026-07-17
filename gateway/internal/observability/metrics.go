@@ -31,6 +31,8 @@
 //	crucible_jobs_requeued_total                         — async jobs requeued by an operator (operator.AdminRequeueJobHandler)
 //	crucible_jobs_released_total                         — async jobs force-released from a dead instance by an operator (operator.AdminReleaseJobsHandler)
 //	crucible_jobs_deadlettered_total{operation}          — async jobs that exhausted all retries and moved to terminal failed (jobs.Executor)
+//	crucible_jobs_queue_depth                            — current total queued async_jobs rows (label-free gauge, jobs.Executor poll tick)
+//	crucible_jobs_customer_throttled_total{reason}       — async job claims/enqueues held back by per-customer fairness; reason=inflight_cap|backlog_ceiling (jobs.Store/routes.enqueueAsync)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -250,6 +252,27 @@ var (
 		Name: "crucible_jobs_deadlettered_total",
 		Help: "Number of async jobs that exhausted all retries and were dead-lettered to terminal failed, by operation.",
 	}, []string{"operation"})
+
+	// JobsQueueDepth is the current total number of 'queued' async_jobs rows
+	// across all customers, refreshed once per Executor poll tick
+	// (jobs.Executor.claimAndDispatch). Label-free: a per-customer breakdown
+	// would give customer_id unbounded cardinality.
+	JobsQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "crucible_jobs_queue_depth",
+		Help: "Current total number of queued async_jobs rows (label-free; refreshed each executor poll tick).",
+	})
+
+	// JobsCustomerThrottledTotal counts async job claims/enqueues held back
+	// by the opt-in multi-tenant fairness knobs (JOB_MAX_INFLIGHT_PER_CUSTOMER,
+	// JOB_MAX_QUEUED_PER_CUSTOMER). reason is a bounded two-value enum:
+	// inflight_cap (jobs.Store.Claim skipped an over-cap candidate this
+	// cycle) or backlog_ceiling (routes.enqueueAsync rejected an enqueue
+	// with 429 JOB_BACKLOG_EXCEEDED). Always zero when both knobs are at
+	// their default disabled value.
+	JobsCustomerThrottledTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "crucible_jobs_customer_throttled_total",
+		Help: "Number of async job claims/enqueues held back by per-customer fairness limits, by reason (inflight_cap|backlog_ceiling).",
+	}, []string{"reason"})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -285,6 +308,8 @@ type Metrics struct {
 	JobsRequeuedTotal              prometheus.Counter
 	JobsReleasedTotal              prometheus.Counter
 	JobsDeadletteredTotal          *prometheus.CounterVec
+	JobsQueueDepth                 prometheus.Gauge
+	JobsCustomerThrottledTotal     *prometheus.CounterVec
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -411,6 +436,14 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_jobs_deadlettered_total",
 			Help: "Number of async jobs that exhausted all retries and were dead-lettered to terminal failed, by operation.",
 		}, []string{"operation"}),
+		JobsQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "crucible_jobs_queue_depth",
+			Help: "Current total number of queued async_jobs rows (label-free; refreshed each executor poll tick).",
+		}),
+		JobsCustomerThrottledTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "crucible_jobs_customer_throttled_total",
+			Help: "Number of async job claims/enqueues held back by per-customer fairness limits, by reason (inflight_cap|backlog_ceiling).",
+		}, []string{"reason"}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -442,6 +475,8 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.JobsRequeuedTotal,
 		m.JobsReleasedTotal,
 		m.JobsDeadletteredTotal,
+		m.JobsQueueDepth,
+		m.JobsCustomerThrottledTotal,
 	)
 	return m
 }

@@ -100,7 +100,7 @@ func TestStore_NilReceiver_SafeNoop(t *testing.T) {
 	if _, ok, err := s.Get(context.Background(), uuid.New(), uuid.New()); ok || err != nil {
 		t.Errorf("nil Store.Get: got (ok=%v, err=%v), want (false, nil)", ok, err)
 	}
-	if jobs, err := s.Claim(context.Background(), 5, uuid.New()); jobs != nil || err != nil {
+	if jobs, err := s.Claim(context.Background(), 5, uuid.New(), 0); jobs != nil || err != nil {
 		t.Errorf("nil Store.Claim: got (%v, %v), want (nil, nil)", jobs, err)
 	}
 	if n, err := s.ReleaseClaimed(context.Background(), uuid.New()); n != 0 || err != nil {
@@ -344,7 +344,7 @@ func TestStore_Claim_MarksRunningAndScansFields(t *testing.T) {
 	}
 
 	instance := uuid.New()
-	claimed, err := s.Claim(context.Background(), 10, instance)
+	claimed, err := s.Claim(context.Background(), 10, instance, 0)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestStore_Claim_MarksRunningAndScansFields(t *testing.T) {
 	}
 
 	// A second claim must not return the same job again — it's already 'running'.
-	claimed2, err := s.Claim(context.Background(), 10, instance)
+	claimed2, err := s.Claim(context.Background(), 10, instance, 0)
 	if err != nil {
 		t.Fatalf("Claim (2nd): %v", err)
 	}
@@ -420,7 +420,7 @@ func TestStore_Claim_SkipLocked_NoDoubleClaim(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			claimed, err := s.Claim(context.Background(), 1, uuid.New())
+			claimed, err := s.Claim(context.Background(), 1, uuid.New(), 0)
 			if err != nil {
 				t.Errorf("Claim: %v", err)
 				return
@@ -454,6 +454,142 @@ func TestStore_Claim_SkipLocked_NoDoubleClaim(t *testing.T) {
 	}
 }
 
+// TestStore_Claim_FairnessPreventsBacklogStarvation is the acceptance test for
+// the fair-claim path: with maxInflightPerCustomer disabled (0), a customer B
+// job enqueued after customer A's deep backlog only gets claimed once A's
+// backlog has drained below the pool's free-slot count. With the cap enabled,
+// the exact same queue state claims B within the very first Claim call.
+func TestStore_Claim_FairnessPreventsBacklogStarvation(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+
+	run := func(t *testing.T, maxInflightPerCustomer int) bool {
+		custA, keyA := seedCustomer(t, pool, "jobs-fair-a-"+uuid.New().String()+"@example.com")
+		custB, keyB := seedCustomer(t, pool, "jobs-fair-b-"+uuid.New().String()+"@example.com")
+
+		const backlogSize = 5
+		const poolFreeSlots = 3
+		for i := 0; i < backlogSize; i++ {
+			if _, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-a", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+				t.Fatalf("Enqueue (A): %v", err)
+			}
+		}
+		idB, err := s.Enqueue(context.Background(), custB, keyB, "echo", "req-b", "free", json.RawMessage(`{}`), 0, "")
+		if err != nil {
+			t.Fatalf("Enqueue (B): %v", err)
+		}
+
+		claimed, err := s.Claim(context.Background(), poolFreeSlots, uuid.New(), maxInflightPerCustomer)
+		if err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		for _, j := range claimed {
+			if j.ID == idB {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("disabled_starves_B", func(t *testing.T) {
+		if run(t, 0) {
+			t.Fatalf("customer B claimed within the first cycle even though the fairness cap is disabled — pure-FIFO should have exhausted the pool on A's backlog first")
+		}
+	})
+
+	t.Run("enabled_claims_B_within_first_cycle", func(t *testing.T) {
+		if !run(t, 1) {
+			t.Fatalf("customer B was not claimed within the first cycle despite maxInflightPerCustomer=1 — fairness cap did not protect against A's backlog")
+		}
+	})
+}
+
+// TestStore_Claim_MaxInflightPerCustomer_RaceEnforced is the -race test for
+// the per-customer cap itself: many concurrent Claim callers (simulating
+// concurrent gateway replicas, mirroring TestStore_Claim_SkipLocked_NoDoubleClaim's
+// shape) against one customer's deep backlog must never let that customer
+// exceed maxInflightPerCustomer simultaneously 'running' rows, while a second
+// customer's jobs still make progress concurrently.
+func TestStore_Claim_MaxInflightPerCustomer_RaceEnforced(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-fair-race-a-"+uuid.New().String()+"@example.com")
+	custB, keyB := seedCustomer(t, pool, "jobs-fair-race-b-"+uuid.New().String()+"@example.com")
+
+	const (
+		numJobsA               = 30
+		numJobsB               = 10
+		maxInflightPerCustomer = 3
+		numWorkers             = 16
+	)
+	for i := 0; i < numJobsA; i++ {
+		if _, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req-a", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+			t.Fatalf("Enqueue (A): %v", err)
+		}
+	}
+	for i := 0; i < numJobsB; i++ {
+		if _, err := s.Enqueue(context.Background(), custB, keyB, "echo", "req-b", "free", json.RawMessage(`{}`), 0, ""); err != nil {
+			t.Fatalf("Enqueue (B): %v", err)
+		}
+	}
+
+	var (
+		wg          sync.WaitGroup
+		mu          sync.Mutex
+		maxSeenA    int
+		claimedIDs  = make(map[uuid.UUID]bool)
+		claimedForB int
+	)
+	checkRunningCap := func() {
+		var n int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT COUNT(*) FROM async_jobs WHERE customer_id = $1 AND status = 'running'`, custA,
+		).Scan(&n); err != nil {
+			t.Errorf("count running: %v", err)
+			return
+		}
+		mu.Lock()
+		if n > maxSeenA {
+			maxSeenA = n
+		}
+		mu.Unlock()
+	}
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 8; i++ {
+				claimed, err := s.Claim(context.Background(), 2, uuid.New(), maxInflightPerCustomer)
+				if err != nil {
+					t.Errorf("Claim: %v", err)
+					return
+				}
+				checkRunningCap()
+				mu.Lock()
+				for _, j := range claimed {
+					claimedIDs[j.ID] = true
+					if j.CustomerID == custB {
+						claimedForB++
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if maxSeenA > maxInflightPerCustomer {
+		t.Errorf("customer A had %d rows simultaneously running, want <= %d (maxInflightPerCustomer)", maxSeenA, maxInflightPerCustomer)
+	}
+	if claimedForB == 0 {
+		t.Error("customer B's jobs never progressed while A's backlog was being claimed — fairness cap did not protect B")
+	}
+	if len(claimedIDs) == 0 {
+		t.Error("no jobs claimed at all")
+	}
+}
+
 // TestStore_Claim_NeverClaimsCancelled proves a cancelled job can never be
 // claimed/executed by jobs.Executor and so never bills any units — Claim's
 // scan is WHERE status = 'queued', which a cancelled row no longer matches
@@ -472,7 +608,7 @@ func TestStore_Claim_NeverClaimsCancelled(t *testing.T) {
 		t.Fatalf("CancelQueued: ok=%v err=%v", ok, err)
 	}
 
-	claimed, err := s.Claim(context.Background(), 10, uuid.New())
+	claimed, err := s.Claim(context.Background(), 10, uuid.New(), 0)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -514,7 +650,7 @@ func TestStore_Claim_StuckJobRecovery(t *testing.T) {
 		t.Fatalf("seed stuck row: %v", err)
 	}
 
-	claimed, err := s.Claim(context.Background(), 10, uuid.New())
+	claimed, err := s.Claim(context.Background(), 10, uuid.New(), 0)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -537,7 +673,7 @@ func TestStore_Complete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -625,10 +761,10 @@ func TestStore_ReleaseClaimed_ScopedToInstance(t *testing.T) {
 	// Claim each job under a distinct instance by claiming one at a time —
 	// Claim assigns the same instanceID to every row it claims in one call,
 	// so two separate calls (different instance ids) are used here.
-	if _, err := s.Claim(context.Background(), 1, instanceA); err != nil {
+	if _, err := s.Claim(context.Background(), 1, instanceA, 0); err != nil {
 		t.Fatalf("Claim A: %v", err)
 	}
-	if _, err := s.Claim(context.Background(), 1, instanceB); err != nil {
+	if _, err := s.Claim(context.Background(), 1, instanceB, 0); err != nil {
 		t.Fatalf("Claim B: %v", err)
 	}
 
@@ -699,7 +835,7 @@ func TestStore_CancelQueued_TableDriven(t *testing.T) {
 
 	t.Run("running job is rejected", func(t *testing.T) {
 		id := newJob(t)
-		if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+		if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 			t.Fatalf("Claim: %v", err)
 		}
 		ok, err := s.CancelQueued(context.Background(), id, custA)
@@ -717,7 +853,7 @@ func TestStore_CancelQueued_TableDriven(t *testing.T) {
 
 	t.Run("succeeded job is rejected", func(t *testing.T) {
 		id := newJob(t)
-		if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+		if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 			t.Fatalf("Claim: %v", err)
 		}
 		if err := s.Complete(context.Background(), id, json.RawMessage(`{}`), 1, "units"); err != nil {
@@ -778,7 +914,7 @@ func TestStore_Requeue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -803,7 +939,7 @@ func TestStore_RequeueRetry_SetsAttemptsAndNextAttemptAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -861,7 +997,7 @@ func TestStore_Claim_SkipsFutureNextAttemptAt(t *testing.T) {
 		t.Fatalf("Enqueue (eligible): %v", err)
 	}
 
-	claimed, err := s.Claim(context.Background(), 10, uuid.New())
+	claimed, err := s.Claim(context.Background(), 10, uuid.New(), 0)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -898,7 +1034,7 @@ func TestStore_DeadLetter_SetsAttemptsAndTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := s.Claim(context.Background(), 10, uuid.New()); err != nil {
+	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 

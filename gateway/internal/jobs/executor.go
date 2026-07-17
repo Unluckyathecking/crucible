@@ -70,6 +70,14 @@ type ExecutorConfig struct {
 	// exponential backoff — see retryBackoffDelay). <= 0 defaults to 2s.
 	// Mirrors config.Config.JobRetryBackoffMS (JOB_RETRY_BACKOFF_MS).
 	RetryBackoff time.Duration
+	// MaxInflightPerCustomer bounds how many 'running' jobs a single
+	// customer may occupy at once (see Store.Claim). <= 0 (the default)
+	// disables the cap and preserves the original pure-FIFO claim query
+	// byte-for-byte. Mirrors config.Config.JobMaxInflightPerCustomer
+	// (JOB_MAX_INFLIGHT_PER_CUSTOMER). Deliberately NOT defaulted by
+	// withDefaults below — unlike PoolSize/PollInterval/etc., zero is this
+	// knob's meaningful "disabled" value, not a placeholder to promote.
+	MaxInflightPerCustomer int
 }
 
 // defaultMaxAttempts/defaultRetryBackoff are ExecutorConfig's zero-value
@@ -216,11 +224,20 @@ func (e *Executor) Run(ctx context.Context) {
 }
 
 func (e *Executor) claimAndDispatch(ctx context.Context, sem chan struct{}, wg *sync.WaitGroup) {
+	// Refreshed once per poll tick regardless of whether fairness is
+	// enabled — a cheap, index-backed COUNT (idx_async_jobs_queued) that
+	// gives operators queue-depth visibility even on the default unbounded
+	// FIFO path. A failure here is observability-only, never fatal to
+	// claiming/dispatching.
+	if depth, err := e.store.QueueDepth(ctx); err == nil {
+		observability.JobsQueueDepth.Set(float64(depth))
+	}
+
 	free := cap(sem) - len(sem)
 	if free <= 0 {
 		return
 	}
-	claimed, err := e.store.Claim(ctx, free, e.instanceID)
+	claimed, err := e.store.Claim(ctx, free, e.instanceID, e.cfg.MaxInflightPerCustomer)
 	if err != nil {
 		log.Warn().Err(err).Msg("jobs: claim failed")
 		return

@@ -245,7 +245,7 @@ func TestAdminRequeueJobHandler_OK(t *testing.T) {
 	}
 	// Put the job into terminal 'failed' state — the legitimate requeue path.
 	// Claim first (Fail requires a running row in practice) then fail it.
-	if _, err := store.Claim(ctx, 10, uuid.New()); err != nil {
+	if _, err := store.Claim(ctx, 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if err := store.Fail(ctx, id, "TEST_ERROR", "seeded for requeue test"); err != nil {
@@ -289,7 +289,7 @@ func TestAdminRequeueJobHandler_RejectRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := store.Claim(ctx, 10, uuid.New()); err != nil {
+	if _, err := store.Claim(ctx, 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -387,10 +387,10 @@ func TestAdminReleaseJobsHandler_ScopedToInstance(t *testing.T) {
 	}
 	instanceA := uuid.New()
 	instanceB := uuid.New()
-	if _, err := store.Claim(ctx, 1, instanceA); err != nil {
+	if _, err := store.Claim(ctx, 1, instanceA, 0); err != nil {
 		t.Fatalf("Claim A: %v", err)
 	}
-	if _, err := store.Claim(ctx, 1, instanceB); err != nil {
+	if _, err := store.Claim(ctx, 1, instanceB, 0); err != nil {
 		t.Fatalf("Claim B: %v", err)
 	}
 

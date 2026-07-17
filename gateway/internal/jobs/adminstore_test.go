@@ -42,7 +42,7 @@ func TestStore_AdminGet_ClaimedFieldsPopulated(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	instanceID := uuid.New()
-	if _, err := s.Claim(context.Background(), 10, instanceID); err != nil {
+	if _, err := s.Claim(context.Background(), 10, instanceID, 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 

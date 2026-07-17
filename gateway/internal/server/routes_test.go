@@ -1508,7 +1508,7 @@ func TestJobsCancelHandler_TableDriven(t *testing.T) {
 
 	t.Run("running job is rejected with 409", func(t *testing.T) {
 		id := newJob(t)
-		if _, err := store.Claim(context.Background(), 10, uuid.New()); err != nil {
+		if _, err := store.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 			t.Fatalf("Claim: %v", err)
 		}
 		w := doCancel(t, newJobsCancelRouter(store, key), id)
@@ -1530,7 +1530,7 @@ func TestJobsCancelHandler_TableDriven(t *testing.T) {
 
 	t.Run("succeeded job is rejected with 409", func(t *testing.T) {
 		id := newJob(t)
-		if _, err := store.Claim(context.Background(), 10, uuid.New()); err != nil {
+		if _, err := store.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 			t.Fatalf("Claim: %v", err)
 		}
 		if err := store.Complete(context.Background(), id, json.RawMessage(`{}`), 1, "units"); err != nil {
@@ -1563,6 +1563,76 @@ func TestJobsCancelHandler_TableDriven(t *testing.T) {
 			t.Errorf("status = %q, want %q (must be left untouched)", job.Status, jobs.StatusQueued)
 		}
 	})
+}
+
+// TestEnqueueAsync_BacklogCeiling is the acceptance test for
+// JOB_MAX_QUEUED_PER_CUSTOMER: enqueues under the ceiling still return 202
+// with a job_id, and the enqueue that would push the customer's queued+
+// running backlog past the ceiling is rejected with 429 JOB_BACKLOG_EXCEEDED
+// instead of growing the backlog further.
+func TestEnqueueAsync_BacklogCeiling(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-enqueue-ceiling-"+uuid.New().String()+"@example.com")
+
+	doEnqueue := func(t *testing.T, maxQueuedPerCustomer int) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(auth.WithKey(req.Context(), key))
+		w := httptest.NewRecorder()
+		enqueueAsync(store, "echo", 0, maxQueuedPerCustomer)(w, req)
+		return w
+	}
+
+	const ceiling = 2
+	for i := 0; i < ceiling; i++ {
+		w := doEnqueue(t, ceiling)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("enqueue %d: status = %d, want 202: %s", i, w.Code, w.Body.String())
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+		}
+		if body["job_id"] == "" {
+			t.Errorf("enqueue %d: job_id missing from response", i)
+		}
+	}
+
+	w := doEnqueue(t, ceiling)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-ceiling enqueue: status = %d, want 429: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v\nbody: %s", err, w.Body.String())
+	}
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", body["error"])
+	}
+	if errObj["code"] != jobBacklogExceededCode {
+		t.Errorf("error.code = %v, want %q", errObj["code"], jobBacklogExceededCode)
+	}
+}
+
+// TestEnqueueAsync_BacklogCeilingDisabledAdmitsUnconditionally proves the
+// zero-value default (maxQueuedPerCustomer=0) preserves today's behaviour:
+// enqueue never returns 429 regardless of how deep the caller's backlog is.
+func TestEnqueueAsync_BacklogCeilingDisabledAdmitsUnconditionally(t *testing.T) {
+	pool := jobsListTestPostgres(t)
+	store := jobs.NewStore(pool)
+	key := seedJobsListCustomer(t, pool, "jobs-enqueue-unbounded-"+uuid.New().String()+"@example.com")
+
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
+		req = req.WithContext(auth.WithKey(req.Context(), key))
+		w := httptest.NewRecorder()
+		enqueueAsync(store, "echo", 0, 0)(w, req)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("enqueue %d: status = %d, want 202 (ceiling disabled): %s", i, w.Code, w.Body.String())
+		}
+	}
 }
 
 func TestJobsCancelHandler_NotConfigured(t *testing.T) {
