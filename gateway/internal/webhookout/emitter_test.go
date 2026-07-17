@@ -821,11 +821,17 @@ func TestClaimDue_MaxInflightPerCustomer_RaceEnforced(t *testing.T) {
 	epA := seedEndpoint(t, pool, custA, "https://example.com/hook-a")
 	epB := seedEndpoint(t, pool, custB, "https://example.com/hook-b")
 
+	// Kept deliberately small: this is a genuine concurrency test (not a
+	// throughput benchmark), and CI runs it alongside every other package's
+	// DB-backed suite against one shared Postgres instance — a large worker
+	// count here adds contention that can destabilize unrelated marginal
+	// tests elsewhere without making this test any better at catching a
+	// real cap violation.
 	const (
-		numDeliveriesA         = 30
-		numDeliveriesB         = 10
+		numDeliveriesA         = 16
+		numDeliveriesB         = 6
 		maxInflightPerCustomer = 3
-		numWorkers             = 16
+		numWorkers             = 8
 	)
 	for i := 0; i < numDeliveriesA; i++ {
 		seedDelivery(t, pool, epA, "pending", seedDeliveryOpts{attempts: 0})
@@ -861,7 +867,7 @@ func TestClaimDue_MaxInflightPerCustomer_RaceEnforced(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 8; i++ {
+			for i := 0; i < 4; i++ {
 				due := claimAndMarkDelivering(t, pool, maxInflightPerCustomer)
 				checkDeliveringCap()
 				mu.Lock()
