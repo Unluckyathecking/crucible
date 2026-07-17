@@ -7,16 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 )
-
-func applyMigrationsWebhook(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	if err := db.Apply(context.Background(), pool); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-}
 
 func deliveryRowExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 	t.Helper()
@@ -45,7 +36,6 @@ func seedDeliveryAged(t *testing.T, pool *pgxpool.Pool, endpointID uuid.UUID, st
 //   - status='pending' and 'delivering' rows are NEVER deleted regardless of age
 func TestDeliveryReaper_Sweep_TableDriven(t *testing.T) {
 	pool := newTestPostgres(t)
-	applyMigrationsWebhook(t, pool)
 	custID := seedCustomer(t, pool, "reaper-delivery-"+uuid.NewString()+"@example.com")
 	endpointID := seedEndpoint(t, pool, custID, "https://example.com/webhook")
 
@@ -86,7 +76,6 @@ func TestDeliveryReaper_Sweep_TableDriven(t *testing.T) {
 // a backlog larger than one batch, mirroring the jobs.Reaper batch test.
 func TestDeliveryReaper_Sweep_BatchedAcrossMultipleDeletes(t *testing.T) {
 	pool := newTestPostgres(t)
-	applyMigrationsWebhook(t, pool)
 	custID := seedCustomer(t, pool, "reaper-batch-"+uuid.NewString()+"@example.com")
 	endpointID := seedEndpoint(t, pool, custID, "https://example.com/webhook")
 
@@ -134,7 +123,6 @@ func TestDeliveryReaper_Run_NilSafe(t *testing.T) {
 	mustReturnImmediately("nil db", func() { nilDB.Run(context.Background()) })
 
 	pool := newTestPostgres(t)
-	applyMigrationsWebhook(t, pool)
 	zeroRetention := NewDeliveryReaper(pool, 0, time.Second)
 	mustReturnImmediately("retention = 0", func() { zeroRetention.Run(context.Background()) })
 
