@@ -105,6 +105,23 @@ type Config struct {
 	// JobReaperIntervalMS is the delay between jobs.Reaper sweeps.
 	JobReaperIntervalMS int `envconfig:"JOB_REAPER_INTERVAL_MS" default:"3600000"`
 
+	// Async job multi-tenant fairness (see internal/jobs.Store.Claim) — opt-in,
+	// independent of the AsyncRoutes gate above. Zero-value (the default)
+	// disables both knobs and preserves today's exact unbounded global-FIFO
+	// claim/admission behaviour byte-for-byte; a product clone opts in by
+	// setting either to a positive value.
+	//
+	// JobMaxInflightPerCustomer bounds how many 'running' rows a single
+	// customer may occupy at once across the shared worker pool. 0 (default)
+	// disables the per-customer cap — Claim falls back to its original
+	// pure-FIFO query.
+	JobMaxInflightPerCustomer int `envconfig:"JOB_MAX_INFLIGHT_PER_CUSTOMER" default:"0"`
+	// JobMaxQueuedPerCustomer ceilings a single customer's queued+running
+	// backlog; enqueueAsync (routes.go) returns 429 JOB_BACKLOG_EXCEEDED once
+	// it's reached. 0 (default) disables the ceiling — enqueue admits
+	// unconditionally, as today.
+	JobMaxQueuedPerCustomer int `envconfig:"JOB_MAX_QUEUED_PER_CUSTOMER" default:"0"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
@@ -248,6 +265,18 @@ func Load() (*Config, error) {
 	}
 	if c.JobReaperIntervalMS > 86400000 {
 		return nil, fmt.Errorf("JOB_REAPER_INTERVAL_MS must be <= 86400000 (24 hours) (got %d)", c.JobReaperIntervalMS)
+	}
+	// Zero is the valid, meaningful "disabled" value for both fairness knobs
+	// (preserves today's unbounded global-FIFO behaviour) — only negative is
+	// a misconfiguration error, mirroring JobRetentionDays above.
+	if c.JobMaxInflightPerCustomer < 0 {
+		return nil, fmt.Errorf("JOB_MAX_INFLIGHT_PER_CUSTOMER must be >= 0 (got %d)", c.JobMaxInflightPerCustomer)
+	}
+	if c.JobMaxInflightPerCustomer > c.JobWorkerPoolSize {
+		return nil, fmt.Errorf("JOB_MAX_INFLIGHT_PER_CUSTOMER must be <= JOB_WORKER_POOL_SIZE (%d) when set (got %d)", c.JobWorkerPoolSize, c.JobMaxInflightPerCustomer)
+	}
+	if c.JobMaxQueuedPerCustomer < 0 {
+		return nil, fmt.Errorf("JOB_MAX_QUEUED_PER_CUSTOMER must be >= 0 (got %d)", c.JobMaxQueuedPerCustomer)
 	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat

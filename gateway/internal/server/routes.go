@@ -502,7 +502,7 @@ func NewRouter(d *Deps) http.Handler {
 			// chain as every synchronous /v1 route — including the quota.Reserve
 			// admission check on every request.
 			if timeoutSeconds, async := AsyncRoutes[rt.Path]; async {
-				r.Post(rt.Path, enqueueAsync(jobStore, rt.Operation, timeoutSeconds))
+				r.Post(rt.Path, enqueueAsync(jobStore, rt.Operation, timeoutSeconds, d.Cfg.JobMaxQueuedPerCustomer))
 				continue
 			}
 			ttl := d.Cfg.ClampRespCacheTTL(RespCacheTTLSeconds[rt.Path])
@@ -658,13 +658,28 @@ type asyncJobError struct {
 	Message string `json:"message"`
 }
 
+// jobBacklogExceededCode is enqueueAsync's stable error code for a
+// JOB_MAX_QUEUED_PER_CUSTOMER rejection. Declared here rather than added to
+// apierror's shared constant block (out of this feature's file scope) —
+// apierror.Write accepts any string code, so a package-local constant gives
+// the same stability/discoverability for this one route without touching
+// that file.
+const jobBacklogExceededCode = "JOB_BACKLOG_EXCEEDED"
+
 // enqueueAsync handles POST /v1/<op> for a route opted into AsyncRoutes: it
 // decodes the request body exactly like invoke does, then persists a queued
 // job row instead of calling the worker inline, and returns 202 {job_id}.
 // The worker invocation, billable_units contract check, and usage.Recorder
 // call happen later, out of band, in jobs.Executor.process — the caller
 // polls GET /v1/jobs/{id} for the eventual result.
-func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.HandlerFunc {
+//
+// maxQueuedPerCustomer <= 0 (the config.Config.JobMaxQueuedPerCustomer
+// zero-value default) admits unconditionally, exactly as before this knob
+// existed. > 0 ceilings the caller's queued+running backlog
+// (jobs.Store.CountActive); once reached, enqueue is rejected with 429
+// jobBacklogExceededCode rather than growing an unbounded backlog for one
+// customer at every other tenant's expense.
+func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds, maxQueuedPerCustomer int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
 		if store == nil {
@@ -675,6 +690,20 @@ func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds int) http.
 		if key == nil {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
 			return
+		}
+
+		if maxQueuedPerCustomer > 0 {
+			active, err := store.CountActive(r.Context(), key.Customer.ID)
+			if err != nil {
+				log.Error().Err(err).Str("request_id", rid).Str("operation", operation).Msg("jobs: backlog check failed")
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "enqueue failed", false)
+				return
+			}
+			if active >= int64(maxQueuedPerCustomer) {
+				observability.JobsCustomerThrottledTotal.WithLabelValues("backlog_ceiling").Inc()
+				apierror.Write(w, rid, http.StatusTooManyRequests, jobBacklogExceededCode, "async job backlog limit exceeded", true)
+				return
+			}
 		}
 
 		var payload json.RawMessage
