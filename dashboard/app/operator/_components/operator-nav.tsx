@@ -14,6 +14,9 @@ export function OperatorNav() {
         <Link href="/operator/plans" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100">
           Plans
         </Link>
+        <Link href="/operator/webhooks" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100">
+          Dead-letters
+        </Link>
         <Link href="/operator/jobs" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100">
           Jobs
         </Link>

@@ -82,6 +82,28 @@ export interface ReleaseJobsResult {
   released: number;
 }
 
+// DeadLetterDelivery is the operator-visible projection of a dead_letter
+// webhook_deliveries row from GET /v1/admin/webhooks/deadletters (mirrors
+// gateway/internal/webhookout.DeadLetterDelivery). The gateway encodes id as
+// a JSON string (`json:"id,string"`) so a BIGSERIAL id that has grown past
+// Number.MAX_SAFE_INTEGER never gets silently rounded on this side.
+export interface DeadLetterDelivery {
+  id: string;
+  event_id: string;
+  event_type: string;
+  endpoint_id: string;
+  endpoint_url: string;
+  endpoint_active: boolean;
+  customer_id: string;
+  attempts: number;
+  last_response_code?: number;
+  created_at: string;
+}
+
+export interface ReplayResult {
+  requeued: number;
+}
+
 export class OperatorApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
@@ -233,9 +255,47 @@ function assertReleaseJobsResult(value: unknown, context: string): ReleaseJobsRe
   return value;
 }
 
+function isDeadLetterDeliveryShape(value: unknown): value is DeadLetterDelivery {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.event_id === "string" &&
+    typeof value.event_type === "string" &&
+    typeof value.endpoint_id === "string" &&
+    typeof value.endpoint_url === "string" &&
+    typeof value.endpoint_active === "boolean" &&
+    typeof value.customer_id === "string" &&
+    isSafeCount(value.attempts) &&
+    (value.last_response_code === undefined || value.last_response_code === null || isSafeCount(value.last_response_code)) &&
+    typeof value.created_at === "string"
+  );
+}
+
+function isReplayResultShape(value: unknown): value is ReplayResult {
+  return isRecord(value) && isSafeCount(value.requeued);
+}
+
+function assertReplayResult(value: unknown, context: string): ReplayResult {
+  if (!isReplayResultShape(value)) {
+    throw new OperatorApiError(`malformed response for ${context}: expected {requeued: number}`, 502);
+  }
+  return value;
+}
+
 function validateUuid(id: string, context: string): void {
   if (!UUID_RE.test(id)) {
     throw new OperatorApiError(`invalid id for ${context}: not a UUID`, 400);
+  }
+}
+
+// DELIVERY_ID_RE matches webhook_deliveries.id (BIGSERIAL, encoded as a JSON
+// string by the gateway) — distinct from validateUuid because delivery ids
+// are integers, not UUIDs.
+const DELIVERY_ID_RE = /^[0-9]+$/;
+
+function validateDeliveryId(id: string, context: string): void {
+  if (!DELIVERY_ID_RE.test(id)) {
+    throw new OperatorApiError(`invalid id for ${context}: not a delivery id`, 400);
   }
 }
 
@@ -380,4 +440,40 @@ export async function releaseJobs(instanceId: string): Promise<ReleaseJobsResult
   validateUuid(instanceId, "releaseJobs");
   const data = await operatorPost("/v1/admin/jobs/release", { instance_id: instanceId });
   return assertReleaseJobsResult(data, "releaseJobs");
+}
+
+export interface ListDeadLettersParams {
+  page?: number;
+  perPage?: number;
+}
+
+export async function listDeadLetters(params: ListDeadLettersParams = {}): Promise<Page<DeadLetterDelivery>> {
+  const data = await operatorFetch("/v1/admin/webhooks/deadletters", {
+    searchParams: {
+      page: params.page?.toString(),
+      per_page: params.perPage?.toString(),
+    },
+  });
+  return assertPage<DeadLetterDelivery>(data, "listDeadLetters", isDeadLetterDeliveryShape);
+}
+
+// replayDeadLetter requeues a single dead-letter delivery back to pending —
+// see gateway/internal/webhookout.ReplayByID's doc comment on the
+// ErrEndpointInactive (409) case when the row's endpoint has been deactivated.
+export async function replayDeadLetter(id: string): Promise<ReplayResult> {
+  validateDeliveryId(id, "replayDeadLetter");
+  const data = await operatorPost(`/v1/admin/webhooks/deadletters/${encodeURIComponent(id)}/replay`);
+  return assertReplayResult(data, "replayDeadLetter");
+}
+
+// replayEndpointDeadLetters requeues every dead-letter delivery belonging to
+// endpointId back to pending. The gateway reads endpoint_id off the query
+// string (not a JSON body) for this endpoint, so it's passed as a search param.
+export async function replayEndpointDeadLetters(endpointId: string): Promise<ReplayResult> {
+  validateUuid(endpointId, "replayEndpointDeadLetters");
+  const data = await operatorFetch("/v1/admin/webhooks/deadletters/replay", {
+    method: "POST",
+    searchParams: { endpoint_id: endpointId },
+  });
+  return assertReplayResult(data, "replayEndpointDeadLetters");
 }
