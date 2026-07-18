@@ -43,7 +43,20 @@ const releaseTimeout = 10 * time.Second
 // sweep. A short bound caps that blast radius to trace loss for the batch,
 // never to stranding claimed work — see the lookup failure's fallback in
 // claimAndDispatch.
-const traceparentLookupTimeout = 5 * time.Second
+//
+// Deliberately tight, not releaseTimeout-sized: this query sits between
+// Claim's commit (rows already marked 'running') and the dispatch loop that
+// attempts the worker call, so its own duration is exactly the window in
+// which a graceful shutdown (ctx cancelled mid-lookup) can leave a batch of
+// jobs claimed but never contacting the worker, stuck 'running' until the
+// crash-recovery sweep reclaims them (JobTimeout + grace) — an existing,
+// accepted "not instant, but no lost work" tradeoff (see Run's doc comment),
+// but one this lookup must not needlessly widen. It is a single indexed
+// SELECT ... WHERE id = ANY($1) over at most a poll tick's worth of claimed
+// ids, which normally completes in single-digit milliseconds; 1s leaves
+// generous headroom for a transient blip while keeping the shutdown-race
+// window close to what it was before this lookup existed.
+const traceparentLookupTimeout = 1 * time.Second
 
 // completeMaxAttempts/completeRetryBackoff bound the retry of Store.Complete
 // after a successful worker call. A worker success followed by a failed
