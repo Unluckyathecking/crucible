@@ -533,6 +533,8 @@ export const WEBHOOK_EVENT_TYPES = [
   "quota.exceeded",
   "api_key.rotated",
   "api_key.revoked",
+  "job.succeeded",
+  "job.failed",
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
