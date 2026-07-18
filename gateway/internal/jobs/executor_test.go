@@ -12,6 +12,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -19,6 +22,27 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
+
+// withGlobalTestTracerProvider registers a SpanRecorder-backed TracerProvider
+// as the process-global otel provider — the mechanism jobs.Executor.process
+// relies on (see jobsTracerName's doc comment) since it has no
+// constructor-injection point for an explicit TracerProvider. Restores
+// whatever was globally registered before the test via t.Cleanup so this
+// test's provider can't leak into any other test in the package.
+func withGlobalTestTracerProvider(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tp.Shutdown(ctx)
+	})
+	return sr
+}
 
 // hijackAndClose aborts the HTTP response by hijacking the connection and
 // closing it without writing anything — the client sees a transport error
@@ -744,5 +768,144 @@ func TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne(t
 	}
 	if retried := testutil.ToFloat64(observability.JobsRetriedTotal.WithLabelValues("echo")) - retriedBefore; retried != 1 {
 		t.Errorf("crucible_jobs_retried_total{operation=echo} delta = %.0f, want 1 (one non-terminal retry)", retried)
+	}
+}
+
+// TestStore_Enqueue_NoActiveSpan_LeavesTraceparentNull proves the
+// disabled/no-span path never fabricates a traceparent: TraceparentsByID
+// returns no entry for a job enqueued under a context with no active span —
+// tracing disabled, or the enqueue call made outside any traced request.
+func TestStore_Enqueue_NoActiveSpan_LeavesTraceparentNull(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-notrace-"+uuid.New().String()+"@example.com")
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-notrace", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	tps, err := store.TraceparentsByID(context.Background(), []uuid.UUID{id})
+	if err != nil {
+		t.Fatalf("TraceparentsByID: %v", err)
+	}
+	if _, ok := tps[id]; ok {
+		t.Errorf("TraceparentsByID returned an entry for a job enqueued with no active span")
+	}
+}
+
+// TestExecutor_TraceContext_RestoresParentAndNestsProxySpan proves the
+// capture-at-enqueue / restore-at-execute round trip end-to-end: a job
+// enqueued under an active span produces a jobs.execute span that continues
+// the SAME trace as the original enqueue call, and — since proxy.Client's
+// doOnce derives its tracer from whatever span is already in the context it
+// receives, unchanged by this module — a nested proxy.invoke span, so a
+// caller with tracing enabled sees one continuous trace from submit through
+// async execution to the worker call.
+func TestExecutor_TraceContext_RestoresParentAndNestsProxySpan(t *testing.T) {
+	sr := withGlobalTestTracerProvider(t)
+
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-trace-"+uuid.New().String()+"@example.com")
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "enqueue-request")
+	parentSC := parentSpan.SpanContext()
+
+	id, err := store.Enqueue(parentCtx, custA, keyA, "echo", "req-trace-1", "free", json.RawMessage(`{}`), 0, "")
+	parentSpan.End()
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.Run(ctx) }()
+
+	waitForStatus(t, store, id, custA, StatusSucceeded, 2*time.Second)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Executor.Run did not stop after context cancellation")
+	}
+
+	var jobsExecuteSpan, proxyInvokeSpan sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		switch s.Name() {
+		case "jobs.execute":
+			jobsExecuteSpan = s
+		case "proxy.invoke":
+			proxyInvokeSpan = s
+		}
+	}
+	if jobsExecuteSpan == nil {
+		t.Fatal("no jobs.execute span recorded")
+	}
+	if jobsExecuteSpan.SpanContext().TraceID() != parentSC.TraceID() {
+		t.Errorf("jobs.execute trace ID = %s, want %s (must continue the enqueue trace)", jobsExecuteSpan.SpanContext().TraceID(), parentSC.TraceID())
+	}
+	if jobsExecuteSpan.Parent().SpanID() != parentSC.SpanID() {
+		t.Errorf("jobs.execute parent span ID = %s, want %s (must nest directly under the enqueue span)", jobsExecuteSpan.Parent().SpanID(), parentSC.SpanID())
+	}
+
+	if proxyInvokeSpan == nil {
+		t.Fatal("no proxy.invoke span recorded")
+	}
+	if proxyInvokeSpan.SpanContext().TraceID() != parentSC.TraceID() {
+		t.Errorf("proxy.invoke trace ID = %s, want %s", proxyInvokeSpan.SpanContext().TraceID(), parentSC.TraceID())
+	}
+	if proxyInvokeSpan.Parent().SpanID() != jobsExecuteSpan.SpanContext().SpanID() {
+		t.Errorf("proxy.invoke parent span ID = %s, want jobs.execute span ID %s (must nest under it, not orphan)", proxyInvokeSpan.Parent().SpanID(), jobsExecuteSpan.SpanContext().SpanID())
+	}
+}
+
+// TestExecutor_TracingDisabled_NoSpansProduced proves the zero-overhead
+// disabled path: with no TracerProvider ever registered globally (the
+// default state — mirrors OtelTracingEnabled=false, under which
+// tracing.NewProvider, the only place that calls otel.SetTracerProvider, is
+// never invoked), a job runs to completion exactly as before and produces no
+// spans of any kind — jobs.execute included.
+func TestExecutor_TracingDisabled_NoSpansProduced(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-notracing-"+uuid.New().String()+"@example.com")
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-notracing-1", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.Run(ctx) }()
+
+	job := waitForStatus(t, store, id, custA, StatusSucceeded, 2*time.Second)
+	if job.BillableUnits != 1 {
+		t.Errorf("billable_units = %d, want 1 (tracing being disabled must not change worker outcome handling)", job.BillableUnits)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Executor.Run did not stop after context cancellation")
 	}
 }

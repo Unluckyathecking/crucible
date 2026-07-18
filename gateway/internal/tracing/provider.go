@@ -12,6 +12,7 @@ import (
 	"net"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -100,6 +101,19 @@ func NewProvider(endpoint string, insecure bool, sampleRatio float64) (*sdktrace
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRatio))),
 		sdktrace.WithResource(res),
 	)
+
+	// Register as the process-global provider. server.Deps.TracerProvider (set
+	// from this function's return value by cmd/gateway/main.go) only reaches
+	// the synchronous HTTP path via Middleware; the async outbox subsystems
+	// (jobs.Executor, webhookout.Emitter's delivery loop) run detached from any
+	// request and have no equivalent explicit-injection point, so they call
+	// otel.Tracer(name) and rely on the global registration made here to reach
+	// this same live provider. When OtelTracingEnabled is false this
+	// constructor is never called, so the global stays at the otel API's
+	// default no-op provider and those callers get zero-overhead noop spans —
+	// mirroring Middleware(nil)'s default-off discipline.
+	otel.SetTracerProvider(tp)
+
 	// Shutdown flushes the BatchSpanProcessor and shuts down the exporter via
 	// tp.Shutdown, which transitively calls exp.Shutdown through the BSP.
 	shutdown := func(ctx context.Context) error {

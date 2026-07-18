@@ -27,12 +27,33 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/channelsig"
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
+
+// webhookoutTracerName names the Tracer deliver starts webhook.deliver spans
+// from. Derived via otel.Tracer, which resolves to whatever provider is
+// currently registered via otel.SetTracerProvider — see
+// tracing.NewProvider's doc comment for why the async delivery loop uses the
+// global registry instead of an explicit TracerProvider field: Emitter has
+// no constructor-injection point that main.go (outside this module's edit
+// scope) could wire one through.
+const webhookoutTracerName = "crucible.webhookout"
+
+// deliverPropagator is the W3C TraceContext propagator used to inject the
+// outbound traceparent header on a delivery request. A distinct package-level
+// var from tracing's unexported one (that package's is not reachable from
+// here); propagation.TraceContext is a zero-size stateless struct so a
+// second instance costs nothing.
+var deliverPropagator = propagation.TraceContext{}
 
 const (
 	// maxAttempts is the delivery attempt cap before a row is dead-lettered.
@@ -160,13 +181,21 @@ func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType stri
 		return fmt.Errorf("webhookout: emit: payload is not valid JSON")
 	}
 	eventID := uuid.New().String()
+	// Captured from whatever span (if any) is active in ctx — tracing.Middleware
+	// places one there when OTEL tracing is enabled. "" (tracing disabled, or
+	// no active span) stores NULL, never an empty string, so deliver's
+	// RestoreTraceparent no-op path is exact rather than approximate.
+	var traceparentParam *string
+	if tv := tracing.CaptureTraceparent(ctx); tv != "" {
+		traceparentParam = &tv
+	}
 	_, err := e.db.Exec(ctx, `
-		INSERT INTO webhook_deliveries (event_id, event_type, endpoint_id, payload)
-		SELECT $1, $2, we.id, $3::jsonb
+		INSERT INTO webhook_deliveries (event_id, event_type, endpoint_id, payload, traceparent)
+		SELECT $1, $2, we.id, $3::jsonb, $5
 		FROM webhook_endpoints we
 		WHERE we.customer_id = $4 AND we.active = TRUE
 		  AND (we.subscribed_events IS NULL OR $2 = ANY(we.subscribed_events))
-	`, eventID, eventType, string(payload), customerID)
+	`, eventID, eventType, string(payload), customerID, traceparentParam)
 	return err
 }
 
@@ -232,6 +261,10 @@ type pendingRow struct {
 	// (maxInflightPerCustomer > 0); the default disabled path never selects
 	// or needs it.
 	customerID uuid.UUID
+	// traceparent is the W3C traceparent captured by Emit at enqueue time
+	// (see tracing.CaptureTraceparent), "" when none was captured — tracing
+	// disabled, or Emit's caller context carried no active span.
+	traceparent string
 }
 
 func (e *Emitter) processDue(ctx context.Context) error {
@@ -305,7 +338,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error) {
 	if e.maxInflightPerCustomer <= 0 {
 		rows, err := tx.Query(ctx, `
-			SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret
+			SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, d.traceparent
 			FROM webhook_deliveries d
 			JOIN webhook_endpoints we ON we.id = d.endpoint_id
 			WHERE d.status = 'pending'
@@ -324,8 +357,12 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 		var due []pendingRow
 		for rows.Next() {
 			var r pendingRow
-			if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret); err != nil {
+			var tp *string
+			if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &tp); err != nil {
 				return nil, fmt.Errorf("webhookout: scan: %w", err)
+			}
+			if tp != nil {
+				r.traceparent = *tp
 			}
 			due = append(due, r)
 		}
@@ -358,7 +395,7 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, we.customer_id
+		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, we.customer_id, d.traceparent
 		FROM webhook_deliveries d
 		JOIN webhook_endpoints we ON we.id = d.endpoint_id
 		WHERE d.status = 'pending'
@@ -376,9 +413,13 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 	var candidates []pendingRow
 	for rows.Next() {
 		var r pendingRow
-		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &r.customerID); err != nil {
+		var tp *string
+		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &r.customerID, &tp); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("webhookout: scan: %w", err)
+		}
+		if tp != nil {
+			r.traceparent = *tp
 		}
 		candidates = append(candidates, r)
 	}
@@ -468,7 +509,18 @@ func applyWebhookInflightCap(candidates []pendingRow, delivering map[uuid.UUID]i
 }
 
 func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
-	reqCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	// execCtx continues the trace that started at Emit's enqueue call (see
+	// tracing.RestoreTraceparent); "" is a no-op, leaving ctx unchanged —
+	// tracing disabled, or the row predates this column.
+	execCtx := tracing.RestoreTraceparent(ctx, r.traceparent)
+	execCtx, span := otel.Tracer(webhookoutTracerName).Start(execCtx, "webhook.deliver")
+	span.SetAttributes(
+		attribute.String("webhook.event_id", r.eventID),
+		attribute.String("webhook.event_type", r.eventType),
+	)
+	defer span.End()
+
+	reqCtx, cancel := context.WithTimeout(execCtx, deliveryTimeout)
 	defer cancel()
 
 	ts := strconv.FormatInt(time.Now().UTC().Unix(), 10)
@@ -476,6 +528,8 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, r.url, bytes.NewReader(r.payload))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		// URL is permanently malformed; dead-letter immediately, no HTTP status.
 		e.markDeadLetter(r.id, r.attempts+1, nil)
 		return
@@ -485,6 +539,10 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 	req.Header.Set("X-Crucible-Signature", "t="+ts+",v1="+sig)
 	req.Header.Set("X-Webhook-Event-ID", r.eventID)
 	req.Header.Set("X-Webhook-Event-Type", r.eventType)
+	// Propagate W3C traceparent when a span is active in execCtx; no-op when
+	// absent (disabled path). The X-Crucible-*/X-Webhook-* headers above are
+	// not removed or modified.
+	deliverPropagator.Inject(execCtx, propagation.HeaderCarrier(req.Header))
 
 	resp, doErr := e.client.Do(req)
 	if doErr == nil {
@@ -497,6 +555,13 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 	if doErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		e.markDelivered(r.id, newAttempts, resp.StatusCode)
 		return
+	}
+
+	if doErr != nil {
+		span.RecordError(doErr)
+		span.SetStatus(codes.Error, doErr.Error())
+	} else {
+		span.SetStatus(codes.Error, fmt.Sprintf("webhook endpoint returned HTTP %d", resp.StatusCode))
 	}
 
 	// nil means no HTTP response (network error); non-nil is the actual status code.

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
 
 // defaultStuckJobTimeout is Store's built-in fallback for the crash-recovery
@@ -84,13 +85,24 @@ func (s *Store) Enqueue(ctx context.Context, customerID, apiKeyID uuid.UUID, ope
 		idemKeyParam = &idempotencyKey
 	}
 
+	// Captured from whatever span (if any) is active in ctx when the
+	// synchronous /v1 enqueue handler calls this — tracing.Middleware places
+	// one there when OTEL tracing is enabled. "" (tracing disabled, or no
+	// active span) stores NULL, never an empty string, so
+	// TraceparentsByID/tracing.RestoreTraceparent's no-op-on-absent path is
+	// exact rather than approximate.
+	var traceparentParam *string
+	if tv := tracing.CaptureTraceparent(ctx); tv != "" {
+		traceparentParam = &tv
+	}
+
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO async_jobs (customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds, idempotency_key, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+		INSERT INTO async_jobs (customer_id, api_key_id, operation, request_id, plan, payload, timeout_seconds, idempotency_key, status, traceparent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued', $9)
 		ON CONFLICT (customer_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING id
-	`, customerID, apiKeyID, operation, requestID, plan, []byte(payload), timeoutSeconds, idemKeyParam).Scan(&id)
+	`, customerID, apiKeyID, operation, requestID, plan, []byte(payload), timeoutSeconds, idemKeyParam, traceparentParam).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -433,6 +445,46 @@ func applyInflightCap(candidates []Job, running map[uuid.UUID]int, maxInflightPe
 		selected = append(selected, j)
 	}
 	return selected, throttled
+}
+
+// TraceparentsByID returns the captured W3C traceparent (see
+// tracing.CaptureTraceparent) for each of ids that has one recorded, keyed
+// by job id. A deliberate separate query rather than a Job struct field:
+// Job (jobs.go) is shared with every Store/Executor caller across the
+// codebase, and Claim's SELECT/scan is the fairness-critical claim path this
+// module must not touch (see Claim's doc comment) — so Executor.claimAndDispatch
+// calls this once per claimed batch instead. ids with no captured
+// traceparent (enqueued before this column existed, tracing disabled, or
+// enqueued outside any traced request) are simply absent from the returned
+// map; callers treat a missing entry the same as an empty string, which
+// tracing.RestoreTraceparent already no-ops on.
+func (s *Store) TraceparentsByID(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	if s == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, traceparent FROM async_jobs WHERE id = ANY($1) AND traceparent IS NOT NULL
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: traceparents: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[uuid.UUID]string, len(ids))
+	for rows.Next() {
+		var (
+			id uuid.UUID
+			tv string
+		)
+		if err := rows.Scan(&id, &tv); err != nil {
+			return nil, fmt.Errorf("jobs: traceparents scan: %w", err)
+		}
+		out[id] = tv
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jobs: traceparents rows: %w", err)
+	}
+	return out, nil
 }
 
 // CountActive returns the number of queued+running async_jobs rows currently

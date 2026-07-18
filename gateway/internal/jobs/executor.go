@@ -8,13 +8,26 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/proxy"
+	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 	"github.com/Unluckyathecking/crucible/gateway/internal/usage"
 	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
+
+// jobsTracerName names the Tracer Executor.process starts jobs.execute spans
+// from. Derived via otel.Tracer, which resolves to whatever provider is
+// currently registered via otel.SetTracerProvider — see
+// tracing.NewProvider's doc comment for why the async path uses the global
+// registry instead of an explicit TracerProvider field: Executor has no
+// constructor-injection point that main.go (outside this module's edit
+// scope) could wire one through.
+const jobsTracerName = "crucible.jobs"
 
 // releaseTimeout bounds the per-job background writes (Complete/Fail) that
 // must still land even after the caller's context is cancelled.
@@ -242,13 +255,32 @@ func (e *Executor) claimAndDispatch(ctx context.Context, sem chan struct{}, wg *
 		log.Warn().Err(err).Msg("jobs: claim failed")
 		return
 	}
+	if len(claimed) == 0 {
+		return
+	}
+
+	// One batch lookup per claim tick, not per job — see
+	// Store.TraceparentsByID's doc comment for why this is a separate query
+	// rather than a Claim-returned field. A lookup failure degrades to
+	// tracing loss for this batch, never to dropping the claimed work itself:
+	// traceparents left nil makes every process() call below restore a
+	// no-op parent (tracing.RestoreTraceparent("") is exact for that).
+	ids := make([]uuid.UUID, len(claimed))
+	for i, j := range claimed {
+		ids[i] = j.ID
+	}
+	traceparents, err := e.store.TraceparentsByID(ctx, ids)
+	if err != nil {
+		log.Warn().Err(err).Msg("jobs: fetch traceparents failed")
+	}
+
 	for _, j := range claimed {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(job Job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			e.process(ctx, job)
+			e.process(ctx, job, traceparents[job.ID])
 		}(j)
 	}
 }
@@ -256,18 +288,37 @@ func (e *Executor) claimAndDispatch(ctx context.Context, sem chan struct{}, wg *
 // process invokes the worker for a single claimed job and records the
 // outcome. runCtx is the Executor.Run-scoped context (cancelled at
 // shutdown); a per-job timeout is derived from it so a hung worker cannot
-// block a pool slot forever.
-func (e *Executor) process(runCtx context.Context, job Job) {
+// block a pool slot forever. traceparent is job's captured enqueue-time
+// trace context (from Store.TraceparentsByID), "" when none was captured.
+//
+// The jobs.execute span started below is restored onto runCtx, not derived
+// from it: runCtx comes from Executor.Run's caller (main.go's background
+// context), which never carries a span of its own — the whole point of this
+// module is that the async path is otherwise completely dark to tracing.
+// Once jobCtx (derived from the span-bearing context) is passed to
+// e.proxy.Invoke, proxy.Client.doOnce's existing
+// oteltrace.SpanFromContext(ctx).TracerProvider() derivation picks up this
+// same real provider automatically and proxy.invoke nests under jobs.execute
+// — proxy/client.go needs no changes for that to happen.
+func (e *Executor) process(runCtx context.Context, job Job, traceparent string) {
 	start := time.Now()
 	defer func() {
 		observability.JobExecutionDuration.WithLabelValues(job.Operation).Observe(time.Since(start).Seconds())
 	}()
 
+	execCtx := tracing.RestoreTraceparent(runCtx, traceparent)
+	execCtx, span := otel.Tracer(jobsTracerName).Start(execCtx, "jobs.execute")
+	span.SetAttributes(
+		attribute.String("job.id", job.ID.String()),
+		attribute.String("job.operation", job.Operation),
+	)
+	defer span.End()
+
 	timeout := e.cfg.JobTimeout
 	if job.TimeoutSeconds > 0 {
 		timeout = time.Duration(job.TimeoutSeconds) * time.Second
 	}
-	jobCtx, cancel := context.WithTimeout(runCtx, timeout)
+	jobCtx, cancel := context.WithTimeout(execCtx, timeout)
 	defer cancel()
 
 	req := &proxy.InvokeRequest{
@@ -291,6 +342,8 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		log.Error().Err(err).Str("job_id", job.ID.String()).Str("operation", job.Operation).
 			Msg("jobs: worker invocation failed")
 		observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_UNREACHABLE).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, apierror.WORKER_UNREACHABLE)
 		// Retryable: a transport/WORKER_UNREACHABLE failure is exactly the
 		// class of error that clears on its own once a restarted worker or a
 		// network blip recovers — see retryOrDeadLetter's doc comment for why
@@ -312,6 +365,11 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		// a structured business error, so retrying would just waste another
 		// call for the same outcome — fail immediately, attempts untouched.
 		sanitizedCode, sanitizedMsg := SanitizeWorkerError(e.cfg.ErrorExposure, resp.Error.Code, resp.Error.Message)
+		// The span is an internal observability surface, not the
+		// customer-facing job record, so it carries the worker's raw error
+		// detail regardless of WORKER_ERROR_EXPOSURE — that policy only
+		// governs what GET /v1/jobs/{id} returns to the customer.
+		span.SetStatus(codes.Error, resp.Error.Code+": "+resp.Error.Message)
 		e.fail(job, sanitizedCode, sanitizedMsg)
 		return
 	}
@@ -326,6 +384,7 @@ func (e *Executor) process(runCtx context.Context, job Job) {
 		log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 			Msg("jobs: worker returned success with billable_units<1 — rejecting")
 		observability.WorkerErrorsTotal.WithLabelValues(apierror.WORKER_BAD_RESPONSE).Inc()
+		span.SetStatus(codes.Error, "worker contract violation: billable_units < 1")
 		e.fail(job, apierror.WORKER_BAD_RESPONSE, "worker contract violation")
 		return
 	}
