@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,11 +13,37 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/egress"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
+	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
 )
+
+// withGlobalTestTracerProvider registers a SpanRecorder-backed TracerProvider
+// as the process-global otel provider — the mechanism Emitter.deliver relies
+// on (see webhookoutTracerName's doc comment) since it has no
+// constructor-injection point for an explicit TracerProvider. Restores
+// whatever was globally registered before the test via t.Cleanup so this
+// test's provider can't leak into any other test in the package.
+func withGlobalTestTracerProvider(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tp.Shutdown(ctx)
+	})
+	return sr
+}
 
 // TestSign verifies that Sign produces a deterministic, non-empty HMAC-SHA256 hex digest
 // and that different inputs produce different signatures.
@@ -887,5 +914,186 @@ func TestClaimDue_MaxInflightPerCustomer_RaceEnforced(t *testing.T) {
 	}
 	if claimedForB == 0 {
 		t.Error("customer B's deliveries never progressed while A's backlog was being claimed — fairness cap did not protect B")
+	}
+}
+
+// TestDeliver_PropagatesTraceContext proves the restore-at-execute half of
+// the round trip: a pendingRow carrying a traceparent captured at Emit time
+// produces a webhook.deliver span that continues the SAME trace, and an
+// outbound HTTP request whose traceparent header carries that trace ID
+// alongside the existing X-Crucible-*/X-Webhook-* headers.
+func TestDeliver_PropagatesTraceContext(t *testing.T) {
+	sr := withGlobalTestTracerProvider(t)
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "emit")
+	parentSC := parentSpan.SpanContext()
+	traceparent := tracing.CaptureTraceparent(parentCtx)
+	parentSpan.End()
+	if traceparent == "" {
+		t.Fatal("CaptureTraceparent returned empty string for an active span")
+	}
+
+	secret, _ := GenerateSecret()
+	captured := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	row := pendingRow{
+		id:          1,
+		eventID:     "evt-trace",
+		eventType:   "order.created",
+		payload:     []byte(`{"type":"test"}`),
+		attempts:    0,
+		url:         srv.URL,
+		secret:      secret,
+		traceparent: traceparent,
+	}
+
+	e := &Emitter{client: &http.Client{Timeout: deliveryTimeout}}
+	e.deliver(context.Background(), row)
+
+	var h http.Header
+	select {
+	case h = <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server was not called within timeout")
+	}
+
+	outboundTP := h.Get("traceparent")
+	if outboundTP == "" {
+		t.Fatal("expected a traceparent header on the outbound delivery request")
+	}
+	if !strings.Contains(outboundTP, parentSC.TraceID().String()) {
+		t.Errorf("outbound traceparent %q does not carry trace ID %s", outboundTP, parentSC.TraceID())
+	}
+
+	var deliverSpan sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == "webhook.deliver" {
+			deliverSpan = s
+		}
+	}
+	if deliverSpan == nil {
+		t.Fatal("no webhook.deliver span recorded")
+	}
+	if deliverSpan.SpanContext().TraceID() != parentSC.TraceID() {
+		t.Errorf("webhook.deliver trace ID = %s, want %s (must continue the enqueue trace)", deliverSpan.SpanContext().TraceID(), parentSC.TraceID())
+	}
+	if deliverSpan.Parent().SpanID() != parentSC.SpanID() {
+		t.Errorf("webhook.deliver parent span ID = %s, want %s", deliverSpan.Parent().SpanID(), parentSC.SpanID())
+	}
+}
+
+// TestDeliver_TracingDisabled_NoOutboundTraceparentHeader proves the
+// zero-overhead disabled path: with the global TracerProvider at its no-op
+// default (mirrors OtelTracingEnabled=false, under which tracing.NewProvider
+// — the only place that calls otel.SetTracerProvider — is never invoked),
+// deliver produces no outbound traceparent header and the row itself carries
+// no captured traceparent either.
+func TestDeliver_TracingDisabled_NoOutboundTraceparentHeader(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(noop.NewTracerProvider())
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	secret, _ := GenerateSecret()
+	captured := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	row := pendingRow{
+		id:        1,
+		eventID:   "evt-notracing",
+		eventType: "order.created",
+		payload:   []byte(`{"type":"test"}`),
+		attempts:  0,
+		url:       srv.URL,
+		secret:    secret,
+		// traceparent left "" — never captured (Emit's ctx carried no active
+		// span, or tracing was disabled at enqueue time too).
+	}
+
+	e := &Emitter{client: &http.Client{Timeout: deliveryTimeout}}
+	e.deliver(context.Background(), row)
+
+	var h http.Header
+	select {
+	case h = <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server was not called within timeout")
+	}
+	if tp := h.Get("traceparent"); tp != "" {
+		t.Errorf("expected no traceparent header when tracing is disabled, got %q", tp)
+	}
+}
+
+// TestEmitterEmit_CapturesTraceparent proves the capture-at-enqueue half of
+// the round trip against a real database: Emit called under an active span
+// persists a traceparent on the resulting webhook_deliveries row that
+// carries the same trace ID as the enqueueing span.
+func TestEmitterEmit_CapturesTraceparent(t *testing.T) {
+	withGlobalTestTracerProvider(t)
+
+	pool := newTestPostgres(t)
+	custA := seedCustomer(t, pool, "webhookout-trace-"+uuid.New().String()+"@example.com")
+	seedEndpoint(t, pool, custA, "https://example.com/hook")
+
+	e := &Emitter{db: pool}
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "emit")
+	parentSC := parentSpan.SpanContext()
+
+	if err := e.Emit(parentCtx, custA, "order.created", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	parentSpan.End()
+
+	var tp *string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT d.traceparent
+		FROM webhook_deliveries d
+		JOIN webhook_endpoints we ON we.id = d.endpoint_id
+		WHERE we.customer_id = $1
+	`, custA).Scan(&tp); err != nil {
+		t.Fatalf("query traceparent: %v", err)
+	}
+	if tp == nil || *tp == "" {
+		t.Fatal("expected a captured traceparent on the webhook_deliveries row")
+	}
+	if !strings.Contains(*tp, parentSC.TraceID().String()) {
+		t.Errorf("stored traceparent %q does not carry trace ID %s", *tp, parentSC.TraceID())
+	}
+}
+
+// TestEmitterEmit_NoActiveSpan_LeavesTraceparentNull proves the
+// disabled/no-span path never fabricates a traceparent: a delivery row
+// created by Emit under a context with no active span has a NULL
+// traceparent column.
+func TestEmitterEmit_NoActiveSpan_LeavesTraceparentNull(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA := seedCustomer(t, pool, "webhookout-notrace-"+uuid.New().String()+"@example.com")
+	seedEndpoint(t, pool, custA, "https://example.com/hook")
+
+	e := &Emitter{db: pool}
+	if err := e.Emit(context.Background(), custA, "order.created", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	var tp *string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT d.traceparent
+		FROM webhook_deliveries d
+		JOIN webhook_endpoints we ON we.id = d.endpoint_id
+		WHERE we.customer_id = $1
+	`, custA).Scan(&tp); err != nil {
+		t.Fatalf("query traceparent: %v", err)
+	}
+	if tp != nil {
+		t.Errorf("traceparent = %q, want NULL for an Emit call with no active span", *tp)
 	}
 }
