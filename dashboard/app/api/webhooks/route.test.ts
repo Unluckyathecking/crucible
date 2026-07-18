@@ -25,6 +25,8 @@ const WEBHOOK_EVENT_TYPES = [
   "quota.exceeded",
   "api_key.rotated",
   "api_key.revoked",
+  "job.succeeded",
+  "job.failed",
 ] as const;
 
 function isValidWebhookEventType(t: string): boolean {
