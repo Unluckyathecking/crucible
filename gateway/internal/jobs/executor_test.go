@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -907,5 +908,183 @@ func TestExecutor_TracingDisabled_NoSpansProduced(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Executor.Run did not stop after context cancellation")
+	}
+}
+
+// queryDeliveryTraceparent returns the traceparent column of the single
+// webhook_deliveries row for (customerID, eventType), failing the test if
+// zero or more than one row matches.
+func queryDeliveryTraceparent(t *testing.T, pool *pgxpool.Pool, customerID uuid.UUID, eventType string) *string {
+	t.Helper()
+	var tp *string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT d.traceparent
+		FROM webhook_deliveries d
+		JOIN webhook_endpoints we ON we.id = d.endpoint_id
+		WHERE we.customer_id = $1 AND d.event_type = $2
+	`, customerID, eventType).Scan(&tp); err != nil {
+		t.Fatalf("query traceparent for %s: %v", eventType, err)
+	}
+	return tp
+}
+
+// TestExecutor_Success_TerminalWebhookPreservesTraceContext proves the fix
+// for a gap the PR review caught: process's success path built notifyCtx
+// from context.Background() with no span attached, so the job.succeeded
+// webhook_deliveries row it produced always stored a NULL traceparent even
+// though jobs.execute/proxy.invoke had just continued the enqueue trace —
+// the terminal notification silently orphaned from it. notifyCtx must now
+// carry the jobs.execute span's SpanContext so Emit captures it.
+func TestExecutor_Success_TerminalWebhookPreservesTraceContext(t *testing.T) {
+	withGlobalTestTracerProvider(t)
+
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-notify-trace-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payload":{"ok":true},"billable_units":1}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second})
+	e.SetEmitter(emitter)
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "enqueue-request")
+	parentSC := parentSpan.SpanContext()
+	id, err := store.Enqueue(parentCtx, custA, keyA, "echo", "req-notify-trace", "free", json.RawMessage(`{}`), 0, "")
+	parentSpan.End()
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.Run(ctx) }()
+
+	waitForStatus(t, store, id, custA, StatusSucceeded, 2*time.Second)
+	if count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobSucceeded, 1, 2*time.Second); count != 1 {
+		t.Fatalf("job.succeeded webhook_deliveries rows = %d, want 1", count)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Executor.Run did not stop after context cancellation")
+	}
+
+	tp := queryDeliveryTraceparent(t, pool, custA, events.JobSucceeded)
+	if tp == nil || *tp == "" {
+		t.Fatal("job.succeeded webhook_deliveries row has no captured traceparent")
+	}
+	if !strings.Contains(*tp, parentSC.TraceID().String()) {
+		t.Errorf("job.succeeded traceparent %q does not carry enqueue trace ID %s", *tp, parentSC.TraceID())
+	}
+}
+
+// TestExecutor_WorkerError_TerminalWebhookPreservesTraceContext is
+// TestExecutor_Success_TerminalWebhookPreservesTraceContext's counterpart for
+// fail() — the deterministic worker-structured-error path — proving its
+// job.failed notification also preserves the enqueue trace.
+func TestExecutor_WorkerError_TerminalWebhookPreservesTraceContext(t *testing.T) {
+	withGlobalTestTracerProvider(t)
+
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-failnotify-trace-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"BAD_INPUT","message":"nope","retryable":false},"billable_units":0}`))
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 5*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second, ErrorExposure: "full"})
+	e.SetEmitter(emitter)
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "enqueue-request")
+	parentSC := parentSpan.SpanContext()
+	id, err := store.Enqueue(parentCtx, custA, keyA, "echo", "req-failnotify-trace", "free", json.RawMessage(`{}`), 0, "")
+	parentSpan.End()
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusFailed, 2*time.Second)
+	if count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second); count != 1 {
+		t.Fatalf("job.failed webhook_deliveries rows = %d, want 1", count)
+	}
+
+	tp := queryDeliveryTraceparent(t, pool, custA, events.JobFailed)
+	if tp == nil || *tp == "" {
+		t.Fatal("job.failed webhook_deliveries row has no captured traceparent")
+	}
+	if !strings.Contains(*tp, parentSC.TraceID().String()) {
+		t.Errorf("job.failed traceparent %q does not carry enqueue trace ID %s", *tp, parentSC.TraceID())
+	}
+}
+
+// TestExecutor_DeadLetter_TerminalWebhookPreservesTraceContext is the same
+// proof for retryOrDeadLetter's dead-letter branch — a distinct function and
+// call site from fail() that the review specifically flagged — using
+// MaxAttempts=1 so the very first transient failure dead-letters directly.
+func TestExecutor_DeadLetter_TerminalWebhookPreservesTraceContext(t *testing.T) {
+	withGlobalTestTracerProvider(t)
+
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-exec-deadletternotify-trace-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijackAndClose(t, w)
+	}))
+	t.Cleanup(worker.Close)
+	p := proxy.New(worker.URL, 2*time.Second, 0)
+	recorder := usage.NewRecorder(pool, nil)
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+	e := NewExecutor(store, p, recorder, ExecutorConfig{
+		PoolSize: 2, PollInterval: 20 * time.Millisecond, JobTimeout: 5 * time.Second,
+		MaxAttempts: 1, RetryBackoff: 20 * time.Millisecond,
+	})
+	e.SetEmitter(emitter)
+
+	parentCtx, parentSpan := otel.Tracer("test").Start(context.Background(), "enqueue-request")
+	parentSC := parentSpan.SpanContext()
+	id, err := store.Enqueue(parentCtx, custA, keyA, "echo", "req-deadletternotify-trace", "free", json.RawMessage(`{}`), 0, "")
+	parentSpan.End()
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	waitForStatus(t, store, id, custA, StatusFailed, 5*time.Second)
+	if count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 1, 2*time.Second); count != 1 {
+		t.Fatalf("job.failed webhook_deliveries rows = %d, want 1", count)
+	}
+
+	tp := queryDeliveryTraceparent(t, pool, custA, events.JobFailed)
+	if tp == nil || *tp == "" {
+		t.Fatal("dead-lettered job.failed webhook_deliveries row has no captured traceparent")
+	}
+	if !strings.Contains(*tp, parentSC.TraceID().String()) {
+		t.Errorf("dead-lettered job.failed traceparent %q does not carry enqueue trace ID %s", *tp, parentSC.TraceID())
 	}
 }
