@@ -392,6 +392,112 @@ func TestEmit_SubscriptionFilter_NilSubscriptionMeansAllEvents(t *testing.T) {
 	}
 }
 
+// TestEmitTx_RollbackLeavesZeroRows proves EmitTx's core atomicity guarantee:
+// a delivery row inserted on a caller transaction that is then rolled back
+// never becomes visible.
+func TestEmitTx_RollbackLeavesZeroRows(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emittx-rollback@example.com")
+	epID := seedEndpoint(t, pool, custID, "https://example.com/hook")
+
+	e := &Emitter{db: pool}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := e.EmitTx(context.Background(), tx, custID, "order.created", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("EmitTx: %v", err)
+	}
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, epID); n != 0 {
+		t.Errorf("deliveries after rollback: got %d, want 0", n)
+	}
+}
+
+// TestEmitTx_CommitPersistsRow is TestEmitTx_RollbackLeavesZeroRows's positive
+// counterpart: committing the caller transaction makes the row durable and
+// claimable by the background delivery worker exactly like Emit's.
+func TestEmitTx_CommitPersistsRow(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emittx-commit@example.com")
+	epID := seedEndpoint(t, pool, custID, "https://example.com/hook")
+
+	e := &Emitter{db: pool}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := e.EmitTx(context.Background(), tx, custID, "order.created", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("EmitTx: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if n := countDeliveriesForEndpoint(t, pool, epID); n != 1 {
+		t.Errorf("deliveries after commit: got %d, want 1", n)
+	}
+}
+
+// TestEmitTx_ConcurrentCommitsRace is the -race acceptance test: many
+// concurrent goroutines each open their own transaction, EmitTx, and commit —
+// proving EmitTx is safe for concurrent callers sharing one *Emitter and that
+// every committed transaction's row survives (none are lost or duplicated).
+func TestEmitTx_ConcurrentCommitsRace(t *testing.T) {
+	pool := newTestPostgres(t)
+	custID := seedCustomer(t, pool, "emittx-race@example.com")
+	epID := seedEndpoint(t, pool, custID, "https://example.com/hook")
+
+	e := &Emitter{db: pool}
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Errorf("begin tx: %v", err)
+				return
+			}
+			if err := e.EmitTx(ctx, tx, custID, "order.created", []byte(`{"ok":true}`)); err != nil {
+				t.Errorf("EmitTx: %v", err)
+				_ = tx.Rollback(ctx)
+				return
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("commit: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := countDeliveriesForEndpoint(t, pool, epID); got != n {
+		t.Errorf("deliveries after %d concurrent commits: got %d, want %d", n, got, n)
+	}
+}
+
+// TestEmitTx_NilEmitter_NoOp verifies the nil-receiver safety EmitTx mirrors
+// from Emit — no panic, no error, regardless of the tx argument.
+func TestEmitTx_NilEmitter_NoOp(t *testing.T) {
+	var e *Emitter
+	if err := e.EmitTx(context.Background(), nil, uuid.New(), "test", []byte(`{}`)); err != nil {
+		t.Fatalf("nil Emitter.EmitTx returned unexpected error: %v", err)
+	}
+}
+
+// TestEmitTx_NilTx verifies the defensive nil-tx error path on a non-nil Emitter.
+func TestEmitTx_NilTx(t *testing.T) {
+	e := &Emitter{db: nil}
+	if err := e.EmitTx(context.Background(), nil, uuid.New(), "test", []byte(`{}`)); err == nil {
+		t.Fatal("expected error for nil tx, got nil")
+	}
+}
+
 // TestValidateSubscribedEvents covers the nil/valid/invalid cases of the Go-side
 // registration helper.
 func TestValidateSubscribedEvents(t *testing.T) {

@@ -182,15 +182,14 @@ type Executor struct {
 	store      *Store
 	proxy      *proxy.Client
 	recorder   *usage.Recorder
-	emitter    *webhookout.Emitter
 	cfg        ExecutorConfig
 	instanceID uuid.UUID
 }
 
 // NewExecutor constructs an Executor. store or p being nil makes Run a no-op
 // (nil-safe, matching the framework's optional-Deps pattern) — this lets
-// cmd/gateway/main.go construct the Executor unconditionally. The emitter
-// starts nil (safe no-op for Emit); wire one in via SetEmitter.
+// cmd/gateway/main.go construct the Executor unconditionally. Wire an
+// outbound webhook emitter in via SetEmitter.
 func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg ExecutorConfig) *Executor {
 	cfg = cfg.withDefaults()
 	// Keep the store's stuck-job recovery threshold in sync with this
@@ -209,15 +208,19 @@ func NewExecutor(store *Store, p *proxy.Client, recorder *usage.Recorder, cfg Ex
 	}
 }
 
-// SetEmitter wires the outbound webhook emitter used to notify customers of
-// job.succeeded/job.failed terminal transitions, mirroring
-// auth.Store.SetEmitter and billing.Webhook.SetEmitter. cmd/gateway/main.go
-// calls this with the SAME *webhookout.Emitter instance it injects into the
-// router's Deps — one shared delivery worker, not a second Emitter. Passing
-// nil (or never calling SetEmitter) is a safe no-op: Emitter.Emit nil-checks
-// its own receiver.
+// SetEmitter wires the outbound webhook emitter Store.Complete/Fail/DeadLetter
+// use to enqueue job.succeeded/job.failed terminal-transition webhooks
+// atomically with the status write, mirroring auth.Store.SetEmitter and
+// billing.Webhook.SetEmitter. cmd/gateway/main.go calls this with the SAME
+// *webhookout.Emitter instance it injects into the router's Deps — one
+// shared delivery worker, not a second Emitter. Passing nil (or never
+// calling SetEmitter) is a safe no-op: Store.SetEmitter and EmitTx both
+// nil-check.
 func (e *Executor) SetEmitter(emitter *webhookout.Emitter) {
-	e.emitter = emitter
+	if e == nil || e.store == nil {
+		return
+	}
+	e.store.SetEmitter(emitter)
 }
 
 // Run polls for queued jobs until ctx is cancelled, dispatching each claimed
@@ -437,9 +440,20 @@ func (e *Executor) process(runCtx context.Context, job Job, traceparent string) 
 	// time. Between a rare silent discount and a rare double charge, this
 	// keeps the fail-safe direction on the side that doesn't harm a
 	// customer.
-	bg, bgCancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer bgCancel()
-	if err := e.complete(job.ID, resp.Payload, resp.BillableUnits, resp.UnitsLabel); err != nil {
+	// completeCtx carries jobs.execute's trace linkage (a plain value,
+	// unaffected by cancellation) on a context rooted in Background rather
+	// than execCtx or runCtx: execCtx/runCtx are cancelled the moment Run's
+	// shutdown begins, which would abort this background write exactly when
+	// releaseTimeout exists to protect it. Store.Complete now enqueues the
+	// job.succeeded webhook inside the same transaction as the status write
+	// (see Store.Complete's doc comment), so this same context — not a
+	// second, later-constructed one — is what Emit captures the traceparent
+	// from; a fresh context after Complete returns would be too late, since
+	// the enqueue already happened as part of that call.
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer completeCancel()
+	completeCtx = oteltrace.ContextWithSpanContext(completeCtx, span.SpanContext())
+	if err := e.complete(completeCtx, job.ID, resp.Payload, resp.BillableUnits, resp.UnitsLabel); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID.String()).
 			Msg("jobs: mark complete failed after retries — job remains 'running' and the worker's result is lost; the crash-recovery sweep will re-execute it")
 		span.RecordError(err)
@@ -448,43 +462,26 @@ func (e *Executor) process(runCtx context.Context, job Job, traceparent string) 
 	}
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "succeeded").Inc()
 	if e.recorder != nil {
+		bg, bgCancel := context.WithTimeout(context.Background(), releaseTimeout)
+		defer bgCancel()
 		if err := e.recorder.Record(bg, job.CustomerID, job.APIKeyID, job.Operation, job.RequestID, resp.BillableUnits); err != nil {
 			log.Warn().Err(err).Str("job_id", job.ID.String()).Msg("jobs: usage record failed")
 		}
 	}
-	// A fresh timeout rooted in Background, not bg or execCtx: bg's clock
-	// started before e.complete's retry loop (up to completeMaxAttempts
-	// attempts) and recorder.Record, both of which can consume most or all of
-	// releaseTimeout before this point — notifySucceeded would then run
-	// against an already-expired context, silently dropping the webhook
-	// (Emit only logs on error) even though the job itself completed
-	// successfully. execCtx is avoided for the same reason runCtx is: it is
-	// cancelled the moment Run's shutdown begins, which would abort this
-	// background write exactly when releaseTimeout exists to protect it.
-	// oteltrace.ContextWithSpanContext re-attaches jobs.execute's trace
-	// linkage (a plain value, unaffected by cancellation) onto that
-	// independent context so the job.succeeded webhook_deliveries row still
-	// captures the traceparent and the eventual webhook.deliver span
-	// continues this same trace instead of orphaning.
-	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer notifyCancel()
-	notifyCtx = oteltrace.ContextWithSpanContext(notifyCtx, span.SpanContext())
-	notifySucceeded(notifyCtx, e.emitter, job)
 }
 
 // complete retries Store.Complete up to completeMaxAttempts times with a
-// fixed backoff between attempts. See completeMaxAttempts's doc comment for
-// why a worker success followed by a failed Complete write deserves more
-// resilience than an ordinary background write.
-func (e *Executor) complete(id uuid.UUID, payload json.RawMessage, billableUnits uint64, unitsLabel string) error {
+// fixed backoff between attempts, sharing ctx's single deadline across every
+// attempt. See completeMaxAttempts's doc comment for why a worker success
+// followed by a failed Complete write deserves more resilience than an
+// ordinary background write.
+func (e *Executor) complete(ctx context.Context, id uuid.UUID, payload json.RawMessage, billableUnits uint64, unitsLabel string) error {
 	var lastErr error
 	for attempt := 0; attempt < completeMaxAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(completeRetryBackoff)
 		}
-		bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
-		err := e.store.Complete(bg, id, payload, billableUnits, unitsLabel)
-		cancel()
+		err := e.store.Complete(ctx, id, payload, billableUnits, unitsLabel)
 		if err == nil {
 			return nil
 		}
@@ -496,28 +493,23 @@ func (e *Executor) complete(id uuid.UUID, payload json.RawMessage, billableUnits
 }
 
 // spanCtx is the jobs.execute span's SpanContext (see process), carried
-// through so the terminal job.failed webhook notification below still
-// captures a traceparent linking back to the same trace — see notifyCtx's
-// construction for why it is re-attached to a fresh Background-rooted
-// context rather than passed as a live context.Context.
+// through so the terminal job.failed webhook enqueued by Store.Fail below
+// still captures a traceparent linking back to the same trace — see
+// process's completeCtx comment for why it is re-attached to a fresh
+// Background-rooted context rather than passed as a live context.Context.
 func (e *Executor) fail(spanCtx oteltrace.SpanContext, job Job, code, message string) {
-	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	// A context rooted in Background, not runCtx/execCtx — see process's
+	// completeCtx comment for why. Store.Fail enqueues the job.failed
+	// webhook inside the same transaction as the status write, so this is
+	// the context Emit captures the traceparent from.
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer cancel()
-	if err := e.store.Fail(bg, job.ID, code, message); err != nil {
+	ctx = oteltrace.ContextWithSpanContext(ctx, spanCtx)
+	if err := e.store.Fail(ctx, job.ID, code, message); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: mark failed failed")
 		return
 	}
 	observability.JobsCompletedTotal.WithLabelValues(job.Operation, "failed").Inc()
-	// A fresh timeout rooted in Background, not bg: see notifySucceeded's
-	// call site in process for why reusing a context whose clock started
-	// before the terminal DB write — or one descended from Run's cancellable
-	// runCtx — risks handing notifyFailed an already-(near-)expired or
-	// already-cancelled context. oteltrace.ContextWithSpanContext re-attaches
-	// the trace linkage as a plain value so the notification still preserves it.
-	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer notifyCancel()
-	notifyCtx = oteltrace.ContextWithSpanContext(notifyCtx, spanCtx)
-	notifyFailed(notifyCtx, e.emitter, job, code)
 }
 
 // retryOrDeadLetter handles the ONLY failure kind Executor ever retries: a
@@ -537,8 +529,9 @@ func (e *Executor) fail(spanCtx oteltrace.SpanContext, job Job, code, message st
 // (GET /v1/jobs/{id} never gains a new status).
 // spanCtx is the jobs.execute span's SpanContext (see process and fail's doc
 // comment) — threaded through so the dead-letter branch's terminal
-// job.failed notification preserves the same trace linkage; the requeue
-// branch never notifies, so it does not need spanCtx.
+// job.failed webhook (enqueued by Store.DeadLetter inside its own tx)
+// preserves the same trace linkage; the requeue branch never terminates the
+// job, so it does not need spanCtx.
 func (e *Executor) retryOrDeadLetter(spanCtx oteltrace.SpanContext, job Job, code, message string) {
 	newAttempts := job.Attempts + 1
 	if newAttempts < e.cfg.MaxAttempts {
@@ -556,9 +549,12 @@ func (e *Executor) retryOrDeadLetter(spanCtx oteltrace.SpanContext, job Job, cod
 		return
 	}
 
-	bg, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	// A context rooted in Background, not runCtx/execCtx — see process's
+	// completeCtx comment for why.
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer cancel()
-	if err := e.store.DeadLetter(bg, job.ID, newAttempts, code, message); err != nil {
+	ctx = oteltrace.ContextWithSpanContext(ctx, spanCtx)
+	if err := e.store.DeadLetter(ctx, job.ID, newAttempts, code, message); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID.String()).Msg("jobs: dead letter failed")
 		return
 	}
@@ -566,9 +562,4 @@ func (e *Executor) retryOrDeadLetter(spanCtx oteltrace.SpanContext, job Job, cod
 	observability.JobsDeadletteredTotal.WithLabelValues(job.Operation).Inc()
 	log.Warn().Str("job_id", job.ID.String()).Str("operation", job.Operation).
 		Int("attempts", newAttempts).Msg("jobs: retries exhausted, dead-lettered")
-	// A fresh timeout, trace linkage re-attached — see fail's call site for why.
-	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), releaseTimeout)
-	defer notifyCancel()
-	notifyCtx = oteltrace.ContextWithSpanContext(notifyCtx, spanCtx)
-	notifyFailed(notifyCtx, e.emitter, job, code)
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -24,11 +25,23 @@ import (
 )
 
 // db is the subset of *pgxpool.Pool used by this package. Extracted as an
-// interface to allow test mocking without changing runtime behaviour.
+// interface to allow test mocking without changing runtime behaviour. Also
+// used by PlanCache (plans.go), so its surface stays minimal — Webhook's own
+// Begin requirement is added on top via txDB below rather than growing this
+// shared interface.
 type db interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// txDB extends db with Begin, needed only by recordEventAndEmit's
+// transactional dedup+emit path (see its doc comment). *pgxpool.Pool and
+// pgxmock's mock pool both satisfy it already; kept separate from the
+// shared db interface so PlanCache and its own test fakes are unaffected.
+type txDB interface {
+	db
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // CacheDeleter abstracts the Redis DEL operation. Extracting it as an interface
@@ -52,7 +65,7 @@ func WithCacheDeleter(d CacheDeleter) WebhookOption {
 // and updates the customer's plan_id on subscription lifecycle events.
 type Webhook struct {
 	secret  string
-	db      db
+	db      txDB
 	cache   CacheDeleter // optional; nil → no immediate cache invalidation
 	now     func() time.Time // injectable for tests
 	emitter *webhookout.Emitter // optional; nil → no outbound webhook emission
@@ -117,24 +130,32 @@ func (h *Webhook) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handler succeeded — record the event so future retries dedupe.
-	// If two deliveries race and both succeed at dispatch, ON CONFLICT keeps the table clean.
-	recorded, err := h.recordEvent(r.Context(), event.ID, event.Type, body)
-	if err != nil {
-		log.Error().Err(err).Msg("webhook record failed AFTER successful dispatch — duplicate dispatch possible on retry")
-		// Still return 200 — the action ran. A re-dispatch is at worst a no-op (handler is idempotent on subscription state).
+	// emission != nil means the dispatched handler has a subscription webhook
+	// to enqueue (an emitter is configured and the customer.subscription
+	// upsert/delete actually applied). recordEventAndEmit records the dedup
+	// row and enqueues that webhook atomically — either both commit, or (on
+	// any failure, including a lost ON CONFLICT dedup race against a
+	// concurrent duplicate delivery) neither does, so a lost webhook can never
+	// be marked processed. On failure we return 500 so Stripe retries the
+	// SAME event, giving the enqueue another chance instead of silently
+	// dropping the customer notification the way a post-hoc best-effort Emit
+	// call would have.
+	if emission != nil {
+		if _, err := h.recordEventAndEmit(r.Context(), event.ID, event.Type, body, emission); err != nil {
+			log.Error().Err(err).Str("event_type", event.Type).Msg("webhook record+emit tx failed — event not marked processed, Stripe will retry")
+			http.Error(w, "persist error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 
-	// Only emit when this request is not a confirmed loser of the recordEvent race:
-	// recordEvent's ON CONFLICT DO NOTHING means at most one of two concurrent
-	// deliveries of the same Stripe event gets recorded=true; the other must not
-	// also enqueue a second, differently-IDed webhook_deliveries row for customers.
-	// A recordEvent DB error is NOT treated as "lost the race" — we can't tell which
-	// side of the race we're on, and mirroring invariant #3's bias (duplicate dispatch
-	// is safe; permanent loss is not), we still emit rather than risk dropping the event.
-	lostDedupRace := err == nil && !recorded
-	if emission != nil && !lostDedupRace {
-		h.emitSubscriptionEvent(r.Context(), emission.eventType, emission.customerID, emission.planID)
+	// No pending emission (no emitter configured, or this event type/outcome
+	// carries no customer-facing webhook): record for dedup exactly as
+	// before dispatch handlers ever gained an EmitTx path.
+	if _, err := h.recordEvent(r.Context(), event.ID, event.Type, body); err != nil {
+		log.Error().Err(err).Msg("webhook record failed AFTER successful dispatch — duplicate dispatch possible on retry")
+		// Still return 200 — the action ran. A re-dispatch is at worst a no-op (handler is idempotent on subscription state).
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -235,10 +256,79 @@ func (h *Webhook) recordEvent(ctx context.Context, id, eventType string, payload
 // twice on the same event yields the same result. The dispatch-then-record ordering above
 // accepts a low-probability double-dispatch (record race) in exchange for never losing an event.
 
-// pendingEmission carries the outbound-webhook call deferred until after
-// recordEvent confirms this delivery is not a loser of the dedup race (see
-// Handle). A nil *pendingEmission means the dispatched handler has nothing to
-// emit (no emitter configured, or the event type carries no lifecycle event).
+// recordEventAndEmit atomically records the Stripe event as processed (the
+// same webhook_events dedup insert recordEvent performs) and enqueues
+// emission's outbound customer webhook, on one transaction: either both
+// survive, or neither does. This closes two loss windows at once:
+//
+//  1. The crash window between recordEvent committing and a separate Emit
+//     call running — previously an Emit failure here (or a crash before it
+//     ran) permanently lost the customer notification, since a recorded
+//     event is never re-dispatched.
+//  2. Concurrent duplicate deliveries of the SAME Stripe event (retries
+//     landing before the first delivery's dedup insert commits): the
+//     ON CONFLICT DO NOTHING on webhook_events is evaluated by Postgres
+//     itself inside this transaction, so only the delivery that genuinely
+//     wins the race ever reaches the EmitTx call — the others observe
+//     RowsAffected()==0 and roll back before enqueuing anything. This is
+//     the same dedup guarantee the old post-hoc "only emit if recordEvent
+//     confirms non-race-loser" pattern provided, just enforced by the
+//     database instead of by ordering emission after the fact.
+//
+// recorded reports whether this call won the dedup race — Handle doesn't
+// currently need the distinction (both outcomes return the same 200), but
+// the return value is kept for symmetry with recordEvent and future callers.
+// Note this is deliberately NOT "the same tx as the customers.plan_id
+// upsert" itself: that UPDATE already runs (and commits) inside dispatch,
+// before Handle can know whether this delivery will win the dedup race —
+// merging it here would mean re-applying it from a rolled-back loser's tx,
+// which handleSubscriptionUpsert/handleSubscriptionDeleted's callers (real
+// Postgres integration tests AND pgxmock-based unit tests exercising those
+// handlers directly) don't expect. Fusing the dedup insert with the
+// emission it gates is the atomicity boundary that's both safe to add and
+// closes the loss window that actually matters: whether the CUSTOMER
+// notification survives a crash, independent of dispatch's own state write.
+func (h *Webhook) recordEventAndEmit(ctx context.Context, id, eventType string, body []byte, emission *pendingEmission) (recorded bool, err error) {
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO webhook_events (event_id, type, payload) VALUES ($1, $2, $3)
+		ON CONFLICT (event_id) DO NOTHING
+	`, id, eventType, body)
+	if err != nil {
+		return false, fmt.Errorf("record event: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		// Lost the dedup race: another delivery already recorded and emitted
+		// this event. Roll back (deferred) — nothing to commit.
+		return false, nil
+	}
+
+	payload, err := json.Marshal(events.SubscriptionEventPayload{CustomerID: emission.customerID.String(), PlanID: emission.planID})
+	if err != nil {
+		return false, fmt.Errorf("marshal webhook payload: %w", err)
+	}
+	if h.emitter != nil {
+		if err := h.emitter.EmitTx(ctx, tx, emission.customerID, emission.eventType, payload); err != nil {
+			return false, fmt.Errorf("webhook emit tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return true, nil
+}
+
+// pendingEmission carries the outbound-webhook call deferred until
+// recordEventAndEmit's dedup insert confirms this delivery is not a loser of
+// the dedup race (see Handle). A nil *pendingEmission means the dispatched
+// handler has nothing to emit (no emitter configured, or the event type
+// carries no lifecycle event).
 type pendingEmission struct {
 	eventType  string
 	customerID uuid.UUID
@@ -315,23 +405,6 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 		}
 	}
 	return emission, nil
-}
-
-// emitSubscriptionEvent is best-effort and non-blocking to the caller's success
-// path: an Emit error (or nil emitter) is logged, never returned, so it cannot
-// fail or delay the originating Stripe dispatch.
-func (h *Webhook) emitSubscriptionEvent(ctx context.Context, eventType string, customerID uuid.UUID, planID string) {
-	if h.emitter == nil {
-		return
-	}
-	payload, err := json.Marshal(events.SubscriptionEventPayload{CustomerID: customerID.String(), PlanID: planID})
-	if err != nil {
-		log.Warn().Err(err).Str("event_type", eventType).Msg("webhook emit: payload marshal failed")
-		return
-	}
-	if err := h.emitter.Emit(ctx, customerID, eventType, payload); err != nil {
-		log.Warn().Err(err).Str("event_type", eventType).Msg("webhook emit failed")
-	}
 }
 
 func (h *Webhook) handleSubscriptionDeleted(ctx context.Context, event *stripeEvent) (*pendingEmission, error) {

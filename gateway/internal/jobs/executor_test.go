@@ -772,6 +772,95 @@ func TestExecutor_TransientFailure_RetryEmitsNothing_DeadLetterEmitsExactlyOne(t
 	}
 }
 
+// TestStore_Complete_TxFailure_PersistsNeitherStatusNorDelivery is the
+// negative half of the atomicity acceptance test for Store.Complete's
+// EmitTx-based enqueue: when the underlying transaction can never begin
+// (total DB failure, simulated by a closed pool), Complete must leave the
+// job's status untouched (still 'running', not 'succeeded') and enqueue no
+// job.succeeded webhook_deliveries row — the status write and the event
+// enqueue succeed or fail as one unit. The positive half (both land together
+// on success) is already proven by TestExecutor_Success_EmitsJobSucceededWebhook.
+func TestStore_Complete_TxFailure_PersistsNeitherStatusNorDelivery(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-complete-txfail-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-complete-txfail", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := store.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+
+	brokenPool := newTestPostgres(t)
+	brokenPool.Close()
+	brokenStore := NewStore(brokenPool)
+	brokenStore.SetEmitter(emitter)
+
+	if err := brokenStore.Complete(context.Background(), id, json.RawMessage(`{"out":true}`), 1, "units"); err == nil {
+		t.Fatal("expected Complete to fail against a closed pool")
+	}
+
+	job, ok, err := store.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusRunning {
+		t.Errorf("status = %q, want %q (unchanged — the failed tx must not have partially applied)", job.Status, StatusRunning)
+	}
+
+	if count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobSucceeded, 0, 100*time.Millisecond); count != 0 {
+		t.Errorf("job.succeeded webhook_deliveries rows = %d, want 0 (no event enqueued when the status write never committed)", count)
+	}
+}
+
+// TestStore_Fail_TxFailure_PersistsNeitherStatusNorDelivery mirrors
+// TestStore_Complete_TxFailure_PersistsNeitherStatusNorDelivery for
+// Store.Fail.
+func TestStore_Fail_TxFailure_PersistsNeitherStatusNorDelivery(t *testing.T) {
+	pool := newTestPostgres(t)
+	store := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-fail-txfail-"+uuid.New().String()+"@example.com")
+	seedWebhookEndpoint(t, pool, custA)
+
+	id, err := store.Enqueue(context.Background(), custA, keyA, "echo", "req-fail-txfail", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := store.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	emitter := webhookout.NewEmitter(context.Background(), pool)
+	t.Cleanup(emitter.Stop)
+
+	brokenPool := newTestPostgres(t)
+	brokenPool.Close()
+	brokenStore := NewStore(brokenPool)
+	brokenStore.SetEmitter(emitter)
+
+	if err := brokenStore.Fail(context.Background(), id, "WORKER_BAD_RESPONSE", "worker contract violation"); err == nil {
+		t.Fatal("expected Fail to fail against a closed pool")
+	}
+
+	job, ok, err := store.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusRunning {
+		t.Errorf("status = %q, want %q (unchanged — the failed tx must not have partially applied)", job.Status, StatusRunning)
+	}
+
+	if count, _ := waitForWebhookDeliveryCount(t, pool, custA, events.JobFailed, 0, 100*time.Millisecond); count != 0 {
+		t.Errorf("job.failed webhook_deliveries rows = %d, want 0 (no event enqueued when the status write never committed)", count)
+	}
+}
+
 // TestStore_Enqueue_NoActiveSpan_LeavesTraceparentNull proves the
 // disabled/no-span path never fabricates a traceparent: TraceparentsByID
 // returns no entry for a job enqueued under a context with no active span —

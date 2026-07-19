@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
 	"github.com/Unluckyathecking/crucible/gateway/internal/events"
@@ -131,13 +130,22 @@ func (s *Store) Close() {
 	s.wg.Wait()
 }
 
-// Revoke marks a key revoked in Postgres AND deletes the corresponding Redis cache entry
-// so the revocation takes effect immediately rather than after the 60s cache TTL.
+// Revoke marks a key revoked in Postgres, records the audit row, and enqueues
+// the api_key.revoked webhook — all inside one transaction, so a crash can
+// never leave the key revoked with its audit/webhook event lost, or vice
+// versa. The Redis cache entry is deleted after commit so the revocation
+// takes effect immediately rather than after the 60s cache TTL.
 // Idempotent — revoking an already-revoked key returns nil.
 func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("revoke: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
 	var prefix string
 	var customerID uuid.UUID
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE api_keys SET revoked_at = NOW()
 		WHERE id = $1 AND revoked_at IS NULL
 		RETURNING prefix, customer_id
@@ -149,35 +157,39 @@ func (s *Store) Revoke(ctx context.Context, keyID uuid.UUID) error {
 		}
 		return fmt.Errorf("mark revoked: %w", err)
 	}
-	// Best-effort cache invalidation. Even if Redis is down, the DB is the source of
-	// truth and the cache entry expires within 60 s — a small window of risk that callers
-	// who care can handle by rotating salts.
-	_ = s.cache.Del(ctx, "auth:"+prefix).Err()
 
-	// Best-effort audit — failure must not fail the revocation. Mirrors Rotate's
-	// audit.Emit call below.
 	targetType := "api_key"
 	targetID := keyID.String()
-	_ = audit.Emit(ctx, s.db, audit.Event{
+	if err := audit.EmitTx(ctx, tx, audit.Event{
 		ActorType:  audit.ActorCustomer,
 		ActorID:    customerID.String(),
 		Action:     "api_key.revoked",
 		TargetType: &targetType,
 		TargetID:   &targetID,
 		Details:    map[string]any{"prefix": prefix},
-	})
+	}); err != nil {
+		return fmt.Errorf("revoke: audit emit: %w", err)
+	}
 
-	// Best-effort outbound webhook emission. Never returned as an error: the
-	// revocation itself already committed, so an Emit failure (or nil emitter)
-	// must not fail or delay the caller.
 	if s.emitter != nil {
 		payload, err := json.Marshal(events.APIKeyRevokedPayload{CustomerID: customerID.String(), KeyID: keyID.String()})
 		if err != nil {
-			log.Warn().Err(err).Msg("webhook emit: api_key.revoked payload marshal failed")
-		} else if err := s.emitter.Emit(ctx, customerID, events.APIKeyRevoked, payload); err != nil {
-			log.Warn().Err(err).Str("key_id", keyID.String()).Msg("webhook emit failed for api_key.revoked")
+			return fmt.Errorf("revoke: marshal webhook payload: %w", err)
+		}
+		if err := s.emitter.EmitTx(ctx, tx, customerID, events.APIKeyRevoked, payload); err != nil {
+			return fmt.Errorf("revoke: webhook emit tx: %w", err)
 		}
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("revoke: commit: %w", err)
+	}
+
+	// Best-effort cache invalidation, after commit. Even if Redis is down, the
+	// DB is the source of truth and the cache entry expires within 60 s — a
+	// small window of risk that callers who care can handle by rotating salts.
+	_ = s.cache.Del(ctx, "auth:"+prefix).Err()
+
 	return nil
 }
 
@@ -256,28 +268,23 @@ func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, g
 		return "", uuid.Nil, fmt.Errorf("rotate: set expiry: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return "", uuid.Nil, fmt.Errorf("rotate: commit: %w", err)
-	}
-
-	// Best-effort cache invalidation: force the next Lookup of the old key to re-read
-	// from Postgres so the new expires_at is stored in the cache entry. Mirrors Revoke.
-	_ = s.cache.Del(ctx, "auth:"+oldPrefix).Err()
-
-	// Best-effort audit — failure must not fail the rotation.
+	// Audit + webhook enqueue join this same transaction (rather than running
+	// after tx.Commit) so the rotation, its audit trail, and its customer
+	// notification commit or roll back as one unit — a crash between commit
+	// and a post-commit Emit can no longer lose the event.
 	targetType := "api_key"
 	targetID := keyID.String()
-	_ = audit.Emit(ctx, s.db, audit.Event{
+	if err := audit.EmitTx(ctx, tx, audit.Event{
 		ActorType:  audit.ActorCustomer,
 		ActorID:    customerID.String(),
 		Action:     "api_key.rotated",
 		TargetType: &targetType,
 		TargetID:   &targetID,
 		Details:    map[string]any{"prefix": oldPrefix},
-	})
+	}); err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: audit emit: %w", err)
+	}
 
-	// Best-effort outbound webhook emission — failure must not fail the rotation,
-	// which already committed above.
 	if s.emitter != nil {
 		payload, err := json.Marshal(events.APIKeyRotatedPayload{
 			CustomerID: customerID.String(),
@@ -285,11 +292,21 @@ func (s *Store) Rotate(ctx context.Context, keyID uuid.UUID, keyPrefix string, g
 			NewKeyID:   newKeyID.String(),
 		})
 		if err != nil {
-			log.Warn().Err(err).Msg("webhook emit: api_key.rotated payload marshal failed")
-		} else if err := s.emitter.Emit(ctx, customerID, events.APIKeyRotated, payload); err != nil {
-			log.Warn().Err(err).Str("key_id", keyID.String()).Msg("webhook emit failed for api_key.rotated")
+			return "", uuid.Nil, fmt.Errorf("rotate: marshal webhook payload: %w", err)
+		}
+		if err := s.emitter.EmitTx(ctx, tx, customerID, events.APIKeyRotated, payload); err != nil {
+			return "", uuid.Nil, fmt.Errorf("rotate: webhook emit tx: %w", err)
 		}
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", uuid.Nil, fmt.Errorf("rotate: commit: %w", err)
+	}
+
+	// Best-effort cache invalidation, after commit: force the next Lookup of
+	// the old key to re-read from Postgres so the new expires_at is stored in
+	// the cache entry. Mirrors Revoke.
+	_ = s.cache.Del(ctx, "auth:"+oldPrefix).Err()
 
 	return newFull, newKeyID, nil
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
@@ -177,6 +178,33 @@ func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType stri
 	if e == nil {
 		return nil
 	}
+	return e.emit(ctx, e.db, customerID, eventType, payload)
+}
+
+// EmitTx fans an event out exactly like Emit, but inserts the
+// webhook_deliveries row(s) on the caller's existing transaction tx instead
+// of a fresh pool connection — so the enqueue commits or rolls back
+// atomically with whatever state change tx also contains. The background
+// delivery worker (claimDue/deliver) is unaffected: it only ever sees rows
+// once tx has committed. A nil Emitter is a safe no-op, matching Emit.
+func (e *Emitter) EmitTx(ctx context.Context, tx pgx.Tx, customerID uuid.UUID, eventType string, payload []byte) error {
+	if e == nil {
+		return nil
+	}
+	if tx == nil {
+		return fmt.Errorf("webhookout: emit tx: tx is nil")
+	}
+	return e.emit(ctx, tx, customerID, eventType, payload)
+}
+
+// txExecer is the subset of *pgxpool.Pool and pgx.Tx that emit needs —
+// extracted so the same insert logic runs against either the emitter's own
+// pool (Emit) or a caller-supplied transaction (EmitTx).
+type txExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (e *Emitter) emit(ctx context.Context, x txExecer, customerID uuid.UUID, eventType string, payload []byte) error {
 	if !json.Valid(payload) {
 		return fmt.Errorf("webhookout: emit: payload is not valid JSON")
 	}
@@ -189,7 +217,7 @@ func (e *Emitter) Emit(ctx context.Context, customerID uuid.UUID, eventType stri
 	if tv := tracing.CaptureTraceparent(ctx); tv != "" {
 		traceparentParam = &tv
 	}
-	_, err := e.db.Exec(ctx, `
+	_, err := x.Exec(ctx, `
 		INSERT INTO webhook_deliveries (event_id, event_type, endpoint_id, payload, traceparent)
 		SELECT $1, $2, we.id, $3::jsonb, $5
 		FROM webhook_endpoints we

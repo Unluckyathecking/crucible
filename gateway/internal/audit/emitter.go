@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -69,12 +71,37 @@ func sanitizeDetails(details map[string]any) map[string]any {
 	return sanitized
 }
 
+// execer is the subset of *pgxpool.Pool and pgx.Tx that Emit/EmitTx need —
+// extracted so the same insert logic runs against either a pool (Emit) or an
+// existing caller transaction (EmitTx).
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // Emit writes one append-only row to audit_log.
 // ActorType is validated here (fail fast) and also enforced by the Postgres CHECK constraint.
 // Validation order: invalid type → empty action → non-system empty ID → system non-empty ID.
 // The TypeScript mirror (dashboard/lib/audit.ts) applies the same rules in the same order but
 // logs-and-swallows instead of returning errors. Keep both sides in sync when modifying.
 func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
+	if db == nil {
+		return fmt.Errorf("audit: db pool is nil")
+	}
+	return emit(ctx, db, e)
+}
+
+// EmitTx writes one append-only row to audit_log on the caller's existing
+// transaction tx, instead of a fresh pool connection — so the audit row
+// commits or rolls back atomically with whatever state change tx also
+// contains. Validation is identical to Emit; see its doc comment.
+func EmitTx(ctx context.Context, tx pgx.Tx, e Event) error {
+	if tx == nil {
+		return fmt.Errorf("audit: tx is nil")
+	}
+	return emit(ctx, tx, e)
+}
+
+func emit(ctx context.Context, x execer, e Event) error {
 	if e.ActorType != ActorCustomer && e.ActorType != ActorAdmin && e.ActorType != ActorSystem {
 		return fmt.Errorf("audit: invalid actor_type %q: must be customer|admin|system", e.ActorType)
 	}
@@ -90,9 +117,6 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	// system event indicates a caller bug (e.g. passing a customer ID to a background job).
 	if e.ActorType == ActorSystem && e.ActorID != "" {
 		return fmt.Errorf("audit: actor_id must be empty for actor_type %q", e.ActorType)
-	}
-	if db == nil {
-		return fmt.Errorf("audit: db pool is nil")
 	}
 	var detailsJSON []byte
 	if e.Details != nil {
@@ -120,7 +144,7 @@ func Emit(ctx context.Context, db *pgxpool.Pool, e Event) error {
 	// insertSQL is a package-level constant: column names and parameter slots are
 	// fixed at compile time, never constructed from user input or runtime data.
 	const insertSQL = `INSERT INTO audit_log (actor_type, actor_id, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`
-	_, err := db.Exec(auditCtx, insertSQL,
+	_, err := x.Exec(auditCtx, insertSQL,
 		string(e.ActorType), actorIDParam, e.Action,
 		e.TargetType, e.TargetID, detailsJSON)
 	if err != nil {
