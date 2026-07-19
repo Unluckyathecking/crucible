@@ -189,6 +189,98 @@ func TestStore_Revoke(t *testing.T) {
 	})
 }
 
+// TestStore_Revoke_TxFailure_PersistsNeitherKeyStateNorAuditRow is the
+// acceptance test for Revoke's atomicity: an injected commit failure (here,
+// a Store whose pool is already closed, so the transaction can never begin
+// or commit) must leave neither the key-state change (revoked_at) nor the
+// audit row — the two either land together or not at all. The positive half
+// (both land together on success) is already proven by
+// TestStore_Revoke_EmitsWebhook in store_emit_test.go.
+func TestStore_Revoke_TxFailure_PersistsNeitherKeyStateNorAuditRow(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
+
+	brokenDB := newTestPostgres(t)
+	brokenDB.Close()
+	broken := NewStore(brokenDB, rdb, testSalt)
+
+	if err := broken.Revoke(ctx, keyID); err == nil {
+		t.Fatal("expected Revoke to fail against a closed pool")
+	}
+
+	var revokedAt *time.Time
+	if err := db.QueryRow(ctx, `SELECT revoked_at FROM api_keys WHERE id = $1`, keyID).Scan(&revokedAt); err != nil {
+		t.Fatalf("query revoked_at: %v", err)
+	}
+	if revokedAt != nil {
+		t.Error("key-state change persisted despite the transaction never committing")
+	}
+
+	var auditCount int
+	if err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM audit_log WHERE target_type = 'api_key' AND target_id = $1 AND action = 'api_key.revoked'`,
+		keyID.String(),
+	).Scan(&auditCount); err != nil {
+		t.Fatalf("query audit_log: %v", err)
+	}
+	if auditCount != 0 {
+		t.Errorf("audit row count = %d, want 0 — audit must not persist when the key-state change never committed", auditCount)
+	}
+}
+
+// TestStore_Rotate_TxFailure_PersistsNeitherKeyStateNorAuditRow mirrors the
+// Revoke case for Rotate.
+func TestStore_Rotate_TxFailure_PersistsNeitherKeyStateNorAuditRow(t *testing.T) {
+	db := newTestPostgres(t)
+	defer db.Close()
+	rdb := newTestRedis(t)
+	ctx := context.Background()
+	keyID, _, _ := insertTestKey(t, ctx, db, testSalt)
+
+	var keyCountBefore int64
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys`).Scan(&keyCountBefore); err != nil {
+		t.Fatalf("query key count before: %v", err)
+	}
+
+	brokenDB := newTestPostgres(t)
+	brokenDB.Close()
+	broken := NewStore(brokenDB, rdb, testSalt)
+
+	if _, _, err := broken.Rotate(ctx, keyID, testPrefix, time.Hour); err == nil {
+		t.Fatal("expected Rotate to fail against a closed pool")
+	}
+
+	var expiresAt *time.Time
+	if err := db.QueryRow(ctx, `SELECT expires_at FROM api_keys WHERE id = $1`, keyID).Scan(&expiresAt); err != nil {
+		t.Fatalf("query expires_at: %v", err)
+	}
+	if expiresAt != nil {
+		t.Error("old key was marked expiring despite the transaction never committing")
+	}
+
+	var keyCountAfter int64
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys`).Scan(&keyCountAfter); err != nil {
+		t.Fatalf("query key count after: %v", err)
+	}
+	if keyCountAfter != keyCountBefore {
+		t.Errorf("api_keys row count changed from %d to %d — no replacement key should exist when the transaction never committed", keyCountBefore, keyCountAfter)
+	}
+
+	var auditCount int
+	if err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM audit_log WHERE target_type = 'api_key' AND target_id = $1 AND action = 'api_key.rotated'`,
+		keyID.String(),
+	).Scan(&auditCount); err != nil {
+		t.Fatalf("query audit_log: %v", err)
+	}
+	if auditCount != 0 {
+		t.Errorf("audit row count = %d, want 0 — audit must not persist when the key-state change never committed", auditCount)
+	}
+}
+
 func TestStore_CacheMissFallsThroughToPostgres(t *testing.T) {
 	db := newTestPostgres(t)
 	defer db.Close()

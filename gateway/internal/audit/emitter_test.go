@@ -292,6 +292,85 @@ func TestEmit_NilTargetTypeAndID(t *testing.T) {
 	}
 }
 
+// TestEmitTx_RollbackLeavesNoRow proves EmitTx's core atomicity guarantee:
+// an audit row inserted on a caller transaction that is then rolled back
+// never becomes visible, exactly as if EmitTx had never been called.
+func TestEmitTx_RollbackLeavesNoRow(t *testing.T) {
+	db := newTestPostgres(t)
+	ctx := context.Background()
+	uniqueAction := fmt.Sprintf("test.tx-rollback.%s", t.Name())
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := audit.EmitTx(ctx, tx, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   fmt.Sprintf("cust-%s", t.Name()),
+		Action:    uniqueAction,
+	}); err != nil {
+		t.Fatalf("EmitTx: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	var exists bool
+	if err := db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM audit_log WHERE action = $1)`, uniqueAction,
+	).Scan(&exists); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if exists {
+		t.Fatal("audit row is visible despite the caller transaction being rolled back")
+	}
+}
+
+// TestEmitTx_CommitPersistsRow is TestEmitTx_RollbackLeavesNoRow's positive
+// counterpart: committing the caller transaction makes the audit row durable.
+func TestEmitTx_CommitPersistsRow(t *testing.T) {
+	db := newTestPostgres(t)
+	ctx := context.Background()
+	uniqueAction := fmt.Sprintf("test.tx-commit.%s", t.Name())
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := audit.EmitTx(ctx, tx, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   fmt.Sprintf("cust-%s", t.Name()),
+		Action:    uniqueAction,
+	}); err != nil {
+		t.Fatalf("EmitTx: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var exists bool
+	if err := db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM audit_log WHERE action = $1)`, uniqueAction,
+	).Scan(&exists); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !exists {
+		t.Fatal("audit row missing after the caller transaction committed")
+	}
+}
+
+// TestEmitTx_NilTx verifies the defensive nil-tx error path.
+func TestEmitTx_NilTx(t *testing.T) {
+	err := audit.EmitTx(context.Background(), nil, audit.Event{
+		ActorType: audit.ActorCustomer,
+		ActorID:   "cust-1",
+		Action:    "test.action",
+	})
+	if err == nil {
+		t.Fatal("expected error for nil tx, got nil")
+	}
+}
+
 func TestEmit_NilDetails(t *testing.T) {
 	db := newTestPostgres(t)
 	ctx := context.Background()

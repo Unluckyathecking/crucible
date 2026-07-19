@@ -10,9 +10,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/events"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/tracing"
+	"github.com/Unluckyathecking/crucible/gateway/internal/webhookout"
 )
 
 // defaultStuckJobTimeout is Store's built-in fallback for the crash-recovery
@@ -47,6 +50,38 @@ type Store struct {
 	// the two stay in sync by construction; defaults to
 	// defaultStuckJobTimeout for callers that construct a Store directly.
 	DefaultJobTimeout time.Duration
+	// emitter is optional; nil → Complete/Fail/DeadLetter enqueue no
+	// outbound webhook event. Typed as the narrow txEmitter interface
+	// (rather than *webhookout.Emitter directly) purely so tests can inject
+	// a fake that fails deterministically; SetEmitter is still the only
+	// production call path and preserves *webhookout.Emitter's own
+	// nil-receiver safety (see SetEmitter's doc comment).
+	emitter txEmitter
+}
+
+// txEmitter is the subset of *webhookout.Emitter's transactional API Store
+// needs for the terminal-transition webhook enqueue.
+type txEmitter interface {
+	EmitTx(ctx context.Context, tx pgx.Tx, customerID uuid.UUID, eventType string, payload []byte) error
+}
+
+// SetEmitter wires the outbound webhook emitter used to notify customers of
+// job.succeeded/job.failed terminal transitions, mirroring
+// auth.Store.SetEmitter and billing.Webhook.SetEmitter. A nil e clears any
+// previously set emitter rather than storing a typed-nil interface value —
+// webhookout.NewEmitter returns nil when its DB dependency is unset, and
+// Executor.SetEmitter forwards exactly that value here, so this must treat
+// nil as "no emitter" the same way e.EmitTx(...) itself nil-checks its
+// receiver, not skip emission via a non-nil interface wrapping a nil pointer.
+func (s *Store) SetEmitter(e *webhookout.Emitter) {
+	if s == nil {
+		return
+	}
+	if e == nil {
+		s.emitter = nil
+		return
+	}
+	s.emitter = e
 }
 
 // NewStore returns nil when db is nil, matching the optional-Deps nil-safe
@@ -530,36 +565,93 @@ func (s *Store) QueueDepth(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-// Complete marks a claimed job succeeded with its worker result.
+// Complete marks a claimed job succeeded with its worker result and, inside
+// the same transaction, enqueues the job.succeeded webhook — so the terminal
+// status write and the customer notification commit or roll back as one
+// unit, closing the crash window between the old post-complete notify call
+// and this write. A nil emitter (SetEmitter never called, or called with
+// nil) makes the enqueue a no-op, same as every other optional-Deps emit
+// call site in this codebase.
 func (s *Store) Complete(ctx context.Context, id uuid.UUID, result json.RawMessage, billableUnits uint64, unitsLabel string) error {
 	if s == nil {
 		return fmt.Errorf("jobs: store is nil")
 	}
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("jobs: complete: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var customerID uuid.UUID
+	var operation string
+	err = tx.QueryRow(ctx, `
 		UPDATE async_jobs
 		SET status = 'succeeded', result = $2, billable_units = $3, units_label = $4,
 		    claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
 		WHERE id = $1
-	`, id, []byte(result), billableUnits, unitsLabel)
+		RETURNING customer_id, operation
+	`, id, []byte(result), billableUnits, unitsLabel).Scan(&customerID, &operation)
 	if err != nil {
 		return fmt.Errorf("jobs: complete: %w", err)
+	}
+
+	if s.emitter != nil {
+		payload, merr := json.Marshal(events.JobSucceededPayload{
+			JobID: id.String(), Operation: operation, Status: StatusSucceeded,
+		})
+		if merr != nil {
+			log.Warn().Err(merr).Str("job_id", id.String()).Msg("webhook emit: job.succeeded payload marshal failed")
+		} else if err := s.emitter.EmitTx(ctx, tx, customerID, events.JobSucceeded, payload); err != nil {
+			return fmt.Errorf("jobs: complete: emit tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("jobs: complete: commit: %w", err)
 	}
 	return nil
 }
 
-// Fail marks a claimed job permanently failed with a structured error.
+// Fail marks a claimed job permanently failed with a structured error and,
+// inside the same transaction, enqueues the job.failed webhook. See
+// Complete's doc comment for why this closes the crash window the old
+// post-fail notify call left open.
 func (s *Store) Fail(ctx context.Context, id uuid.UUID, code, message string) error {
 	if s == nil {
 		return fmt.Errorf("jobs: store is nil")
 	}
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("jobs: fail: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var customerID uuid.UUID
+	var operation string
+	err = tx.QueryRow(ctx, `
 		UPDATE async_jobs
 		SET status = 'failed', error_code = $2, error_message = $3,
 		    claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
 		WHERE id = $1
-	`, id, code, message)
+		RETURNING customer_id, operation
+	`, id, code, message).Scan(&customerID, &operation)
 	if err != nil {
 		return fmt.Errorf("jobs: fail: %w", err)
+	}
+
+	if s.emitter != nil {
+		payload, merr := json.Marshal(events.JobFailedPayload{
+			JobID: id.String(), Operation: operation, Status: StatusFailed, ErrorCode: code,
+		})
+		if merr != nil {
+			log.Warn().Err(merr).Str("job_id", id.String()).Msg("webhook emit: job.failed payload marshal failed")
+		} else if err := s.emitter.EmitTx(ctx, tx, customerID, events.JobFailed, payload); err != nil {
+			return fmt.Errorf("jobs: fail: emit tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("jobs: fail: commit: %w", err)
 	}
 	return nil
 }
@@ -590,22 +682,47 @@ func (s *Store) RequeueRetry(ctx context.Context, id uuid.UUID, attempts int, ne
 // DeadLetter marks a claimed job permanently failed after its retry budget
 // (ExecutorConfig.MaxAttempts) is exhausted, recording the final attempt
 // count alongside the structured error — mirrors webhookout's
-// markDeadLetter. Distinct from Fail, which is used for deterministic
-// failures (a worker structured business error, or a billable_units<1
-// contract violation) that must never be retried and must leave attempts
-// unchanged.
+// markDeadLetter — and, inside the same transaction, enqueues the
+// job.failed webhook (see Complete's doc comment for why). Distinct from
+// Fail, which is used for deterministic failures (a worker structured
+// business error, or a billable_units<1 contract violation) that must never
+// be retried and must leave attempts unchanged.
 func (s *Store) DeadLetter(ctx context.Context, id uuid.UUID, attempts int, code, message string) error {
 	if s == nil {
 		return fmt.Errorf("jobs: store is nil")
 	}
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("jobs: dead letter: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var customerID uuid.UUID
+	var operation string
+	err = tx.QueryRow(ctx, `
 		UPDATE async_jobs
 		SET status = 'failed', attempts = $2, error_code = $3, error_message = $4,
 		    claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
 		WHERE id = $1
-	`, id, attempts, code, message)
+		RETURNING customer_id, operation
+	`, id, attempts, code, message).Scan(&customerID, &operation)
 	if err != nil {
 		return fmt.Errorf("jobs: dead letter: %w", err)
+	}
+
+	if s.emitter != nil {
+		payload, merr := json.Marshal(events.JobFailedPayload{
+			JobID: id.String(), Operation: operation, Status: StatusFailed, ErrorCode: code,
+		})
+		if merr != nil {
+			log.Warn().Err(merr).Str("job_id", id.String()).Msg("webhook emit: job.failed payload marshal failed")
+		} else if err := s.emitter.EmitTx(ctx, tx, customerID, events.JobFailed, payload); err != nil {
+			return fmt.Errorf("jobs: dead letter: emit tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("jobs: dead letter: commit: %w", err)
 	}
 	return nil
 }
