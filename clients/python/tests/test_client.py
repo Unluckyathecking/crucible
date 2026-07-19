@@ -298,7 +298,7 @@ def test_create_webhook_endpoint():
         assert req.headers.get("X-API-Key") == "test-key"
         req_body = json.loads(req.body)
         assert req_body.get("x") == 1
-        return json_response(200, {"active": True, "created_at": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": [], "url": "ok"})
+        return json_response(200, {"active": True, "created_at": "ok", "disabled_at": "ok", "disabled_reason": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": [], "url": "ok"})
 
     with serve(handler) as (base_url, _captured):
         c = Client(base_url)
@@ -331,6 +331,19 @@ def test_update_webhook_endpoint_subscription():
     with serve(handler) as (base_url, _captured):
         c = Client(base_url)
         result = c.update_webhook_endpoint_subscription("test-id", payload={"x": 1}, api_key="test-key")
+        assert result is None
+
+
+def test_enable_webhook_endpoint():
+    def handler(req):
+        assert req.method == "POST"
+        assert req.path.split("?")[0] == "/v1/webhooks/endpoints/test-id/enable"
+        assert req.headers.get("X-API-Key") == "test-key"
+        return StubResponse(status=204)
+
+    with serve(handler) as (base_url, _captured):
+        c = Client(base_url)
+        result = c.enable_webhook_endpoint("test-id", api_key="test-key")
         assert result is None
 
 

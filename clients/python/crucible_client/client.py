@@ -219,6 +219,8 @@ class _CreateWebhookEndpointResponseRequired(TypedDict):
 
 
 class CreateWebhookEndpointResponse(_CreateWebhookEndpointResponseRequired, total=False):
+    disabled_at: Optional[str]
+    disabled_reason: Optional[str]
     subscribed_events: Optional[List[Any]]
 
 
@@ -470,6 +472,12 @@ class Client:
         body = json.dumps(payload, allow_nan=False).encode("utf-8")
         path = f"/v1/webhooks/endpoints/{quote(str(id), safe='')}"
         self._request("PATCH", path, api_key if api_key is not None else self.default_api_key, body)
+        return None
+
+    def enable_webhook_endpoint(self, id: str, api_key: Optional[str] = None) -> None:
+        """POST /v1/webhooks/endpoints/{id}/enable (enable webhook endpoint)."""
+        path = f"/v1/webhooks/endpoints/{quote(str(id), safe='')}/enable"
+        self._request("POST", path, api_key if api_key is not None else self.default_api_key, None)
         return None
 
     def rotate_webhook_endpoint_secret(self, id: str, api_key: Optional[str] = None) -> RotateWebhookEndpointSecretResponse:

@@ -194,6 +194,8 @@ type ListWebhookEndpointsResponse struct {
 type CreateWebhookEndpointResponse struct {
 	Active            bool   `json:"active"`
 	Created_at        string `json:"created_at"`
+	Disabled_at       string `json:"disabled_at"`
+	Disabled_reason   string `json:"disabled_reason"`
 	Id                string `json:"id"`
 	Secret_hex        string `json:"secret_hex"`
 	Subscribed_events []any  `json:"subscribed_events"`
@@ -611,6 +613,21 @@ func (c *Client) UpdateWebhookEndpointSubscription(ctx context.Context, apiKey s
 	}
 	path := fmt.Sprintf("/v1/webhooks/endpoints/%s", url.PathEscape(id))
 	resp, err := c.do(ctx, http.MethodPatch, path, apiKey, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkError(resp); err != nil {
+		return err
+	}
+	return nil
+}
+
+// EnableWebhookEndpoint calls POST /v1/webhooks/endpoints/{id}/enable (enable webhook endpoint).
+// apiKey is sent as the X-API-Key header.
+func (c *Client) EnableWebhookEndpoint(ctx context.Context, apiKey string, id string) error {
+	path := fmt.Sprintf("/v1/webhooks/endpoints/%s/enable", url.PathEscape(id))
+	resp, err := c.do(ctx, http.MethodPost, path, apiKey, nil)
 	if err != nil {
 		return err
 	}
