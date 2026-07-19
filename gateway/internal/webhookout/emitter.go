@@ -17,10 +17,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -122,6 +124,15 @@ type Emitter struct {
 	// without WithMaxInflightPerCustomer) keeps claimDue's original
 	// single-query global-FIFO SELECT byte-for-byte unchanged.
 	maxInflightPerCustomer int
+	// failureThreshold is the consecutive-dead-letter count past which an
+	// endpoint auto-disables (see recordDeliveryFailure); <= 0 (the zero
+	// value) disables auto-disable. Unlike maxInflightPerCustomer this is
+	// set post-construction via SetFailureThreshold — routes.go's NewRouter
+	// wires it in from config after obtaining the Emitter, which may already
+	// be running its background delivery worker goroutine (started by
+	// NewEmitter before it returns) — so it needs atomic access rather than
+	// a plain field to stay race-free under `go test -race`.
+	failureThreshold atomic.Int32
 }
 
 // EmitterOption configures optional Emitter behavior at construction time.
@@ -164,6 +175,20 @@ func (e *Emitter) Stop() {
 		return
 	}
 	e.cancel()
+}
+
+// SetFailureThreshold sets the consecutive-dead-letter count after which an
+// endpoint auto-disables — see Emitter.failureThreshold's doc comment for why
+// this is a post-construction setter rather than a NewEmitter option/field.
+// n <= 0 disables auto-disable (the zero-value default, matching
+// WEBHOOK_ENDPOINT_FAILURE_THRESHOLD's zero-config-safe default). Safe to
+// call on a nil Emitter and safe to call concurrently with the running
+// delivery worker.
+func (e *Emitter) SetFailureThreshold(n int) {
+	if e == nil {
+		return
+	}
+	e.failureThreshold.Store(int32(n))
 }
 
 // Emit fans an event out to all active endpoints registered by customerID that
@@ -278,13 +303,14 @@ func (e *Emitter) run(ctx context.Context) {
 }
 
 type pendingRow struct {
-	id        int64
-	eventID   string
-	eventType string
-	payload   []byte
-	attempts  int
-	url       string
-	secret    []byte
+	id         int64
+	eventID    string
+	eventType  string
+	payload    []byte
+	attempts   int
+	url        string
+	secret     []byte
+	endpointID uuid.UUID
 	// customerID is only populated by claimDue's fairness-enabled path
 	// (maxInflightPerCustomer > 0); the default disabled path never selects
 	// or needs it.
@@ -366,7 +392,7 @@ func (e *Emitter) processDue(ctx context.Context) error {
 func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error) {
 	if e.maxInflightPerCustomer <= 0 {
 		rows, err := tx.Query(ctx, `
-			SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, d.traceparent
+			SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, we.id, d.traceparent
 			FROM webhook_deliveries d
 			JOIN webhook_endpoints we ON we.id = d.endpoint_id
 			WHERE d.status = 'pending'
@@ -386,7 +412,7 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 		for rows.Next() {
 			var r pendingRow
 			var tp *string
-			if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &tp); err != nil {
+			if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &r.endpointID, &tp); err != nil {
 				return nil, fmt.Errorf("webhookout: scan: %w", err)
 			}
 			if tp != nil {
@@ -423,7 +449,7 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, we.customer_id, d.traceparent
+		SELECT d.id, d.event_id, d.event_type, d.payload, d.attempts, we.url, we.secret, we.customer_id, we.id, d.traceparent
 		FROM webhook_deliveries d
 		JOIN webhook_endpoints we ON we.id = d.endpoint_id
 		WHERE d.status = 'pending'
@@ -442,7 +468,7 @@ func (e *Emitter) claimDue(ctx context.Context, tx pgx.Tx) ([]pendingRow, error)
 	for rows.Next() {
 		var r pendingRow
 		var tp *string
-		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &r.customerID, &tp); err != nil {
+		if err := rows.Scan(&r.id, &r.eventID, &r.eventType, &r.payload, &r.attempts, &r.url, &r.secret, &r.customerID, &r.endpointID, &tp); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("webhookout: scan: %w", err)
 		}
@@ -581,7 +607,7 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 
 	newAttempts := r.attempts + 1
 	if doErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		e.markDelivered(r.id, newAttempts, resp.StatusCode)
+		e.markDelivered(r.id, r.endpointID, newAttempts, resp.StatusCode)
 		return
 	}
 
@@ -609,7 +635,7 @@ func (e *Emitter) deliver(ctx context.Context, r pendingRow) {
 // markDelivered, markDeadLetter, scheduleRetry use a fresh background-derived context
 // so a shutting-down worker context does not prevent recording the delivery outcome.
 
-func (e *Emitter) markDelivered(id int64, attempts, statusCode int) {
+func (e *Emitter) markDelivered(id int64, endpointID uuid.UUID, attempts, statusCode int) {
 	if e.db == nil {
 		return
 	}
@@ -623,6 +649,9 @@ func (e *Emitter) markDelivered(id int64, attempts, statusCode int) {
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark delivered failed")
 	}
+	if err := recordDeliverySuccess(ctx, e.db, endpointID); err != nil {
+		log.Warn().Err(err).Int64("delivery_id", id).Str("endpoint_id", endpointID.String()).Msg("webhookout: reset endpoint failure counter failed")
+	}
 }
 
 func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
@@ -631,18 +660,55 @@ func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
 	defer cancel()
-	tag, err := e.db.Exec(ctx, `
+	// RETURNING we.id both confirms the UPDATE actually matched a row (the
+	// pre-existing unsubscribed-row fallback below) and hands back the
+	// endpoint id for the health accounting that follows — without needing
+	// endpointID threaded in as a parameter, keeping this method's signature
+	// unchanged for every existing caller.
+	var endpointID uuid.UUID
+	err := e.db.QueryRow(ctx, `
 		UPDATE webhook_deliveries AS d
 		SET status = 'dead_letter', attempts = $2, last_response_code = $3, claimed_at = NULL
 		FROM webhook_endpoints AS we
 		WHERE d.id = $1 AND we.id = d.endpoint_id
 		  AND (we.subscribed_events IS NULL OR d.event_type = ANY(we.subscribed_events))
-	`, id, attempts, statusCode)
-	if err == nil && tag.RowsAffected() == 0 {
-		err = e.deleteUnsubscribedRow(ctx, id)
-	}
+		RETURNING we.id
+	`, id, attempts, statusCode).Scan(&endpointID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Row was for an event type the endpoint no longer subscribes to
+			// — not a genuine delivery failure of the endpoint itself, so it
+			// doesn't count toward auto-disable.
+			if derr := e.deleteUnsubscribedRow(ctx, id); derr != nil {
+				log.Warn().Err(derr).Int64("delivery_id", id).Msg("webhookout: mark dead_letter failed")
+			}
+			return
+		}
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark dead_letter failed")
+		return
+	}
+
+	custID, justDisabled, herr := recordDeliveryFailure(ctx, e.db, endpointID, int(e.failureThreshold.Load()))
+	if herr != nil {
+		log.Warn().Err(herr).Int64("delivery_id", id).Str("endpoint_id", endpointID.String()).Msg("webhookout: record endpoint failure failed")
+		return
+	}
+	if !justDisabled {
+		return
+	}
+	observability.WebhookEndpointsDisabledTotal.Inc()
+	payload, merr := json.Marshal(events.EndpointDisabledPayload{
+		EndpointID: endpointID.String(),
+		Reason:     DisabledReasonDeliveryFailures,
+	})
+	if merr != nil {
+		log.Warn().Err(merr).Str("endpoint_id", endpointID.String()).Msg("webhookout: marshal endpoint.disabled payload failed")
+		return
+	}
+	// customerID's other active endpoints only — Emit's own active = TRUE
+	// filter already self-excludes the endpoint just disabled above.
+	if eerr := e.Emit(ctx, custID, events.EndpointDisabled, payload); eerr != nil {
+		log.Warn().Err(eerr).Str("endpoint_id", endpointID.String()).Msg("webhookout: emit endpoint.disabled failed")
 	}
 }
 

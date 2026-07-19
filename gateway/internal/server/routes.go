@@ -192,6 +192,12 @@ func NewRouter(d *Deps) http.Handler {
 		// POST can hold a DB connection.
 		emitter = webhookout.NewEmitter(context.Background(), d.DB)
 	}
+	// SetFailureThreshold is the wiring point for WEBHOOK_ENDPOINT_FAILURE_THRESHOLD
+	// regardless of whether emitter came from d.Emitter (main.go's construction,
+	// which predates this knob and has no option for it) or was just constructed
+	// above — safe to call unconditionally since it's a nil-safe, race-free setter
+	// (see Emitter.SetFailureThreshold's doc comment).
+	emitter.SetFailureThreshold(d.Cfg.WebhookEndpointFailureThreshold)
 	// jobStore is nil-safe (jobs.NewStore returns nil when d.DB is nil), matching
 	// the framework's optional-Deps pattern — every exported Store method
 	// nil-checks its receiver. Used both by the async-opted-in branch of the
@@ -290,6 +296,7 @@ func NewRouter(d *Deps) http.Handler {
 			r.Delete("/endpoints/{id}", webhookout.DeleteEndpointHandler(d.DB, authCustomerID))
 			r.Patch("/endpoints/{id}", webhookout.UpdateEndpointSubscriptionHandler(d.DB, authCustomerID))
 			r.Post("/endpoints/{id}/rotate-secret", webhookout.RotateEndpointSecretHandler(d.DB, authCustomerID))
+			r.Post("/endpoints/{id}/enable", webhookout.EnableEndpointHandler(d.DB, authCustomerID))
 		})
 
 		// === Customer API-key self-management (auth gated; active when DB is set) ===

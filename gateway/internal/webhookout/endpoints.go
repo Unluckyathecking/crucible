@@ -55,6 +55,12 @@ type Endpoint struct {
 	// explicitly empty slice) restricts delivery to that subset.
 	SubscribedEvents []string  `json:"subscribed_events"`
 	CreatedAt        time.Time `json:"created_at"`
+	// DisabledAt/DisabledReason are both nil for an active endpoint and for a
+	// customer soft-deleted one (DeleteEndpoint) — only auto-disable
+	// (health.go's recordDeliveryFailure, on crossing
+	// WEBHOOK_ENDPOINT_FAILURE_THRESHOLD) ever sets them.
+	DisabledAt     *time.Time `json:"disabled_at"`
+	DisabledReason *string    `json:"disabled_reason"`
 }
 
 // EndpointCreated is Endpoint plus the signing secret. Returned exactly once,
@@ -154,9 +160,9 @@ func CreateEndpoint(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID,
 	err = db.QueryRow(ctx, `
 		INSERT INTO webhook_endpoints (customer_id, url, secret, subscribed_events)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, url, active, subscribed_events, created_at
+		RETURNING id, url, active, subscribed_events, created_at, disabled_at, disabled_reason
 	`, customerID, rawURL, secret, subscribedEvents).Scan(
-		&out.ID, &out.URL, &out.Active, &out.SubscribedEvents, &out.CreatedAt,
+		&out.ID, &out.URL, &out.Active, &out.SubscribedEvents, &out.CreatedAt, &out.DisabledAt, &out.DisabledReason,
 	)
 	if err != nil {
 		return EndpointCreated{}, fmt.Errorf("webhookout: insert endpoint: %w", err)
@@ -165,11 +171,15 @@ func CreateEndpoint(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID,
 	return out, nil
 }
 
-// ListEndpoints returns a paginated page of customerID's active webhook
-// endpoints, most-recently created first, plus the total matching row count
-// across all pages. Never selects the secret column. page/perPage must
-// already be clamped (see paging.Clamp) — ListEndpoints only computes the SQL
-// OFFSET, returning paging.ErrPageTooLarge if it would exceed
+// ListEndpoints returns a paginated page of customerID's active AND
+// auto-disabled webhook endpoints, most-recently created first, plus the
+// total matching row count across all pages. Never selects the secret
+// column. A customer soft-deleted endpoint (DeleteEndpoint) is excluded —
+// active = FALSE with disabled_reason NULL — since active alone can no
+// longer distinguish "gone" from "temporarily auto-disabled, still owned
+// and re-enable-able"; only the latter should ever reappear here. page/perPage
+// must already be clamped (see paging.Clamp) — ListEndpoints only computes
+// the SQL OFFSET, returning paging.ErrPageTooLarge if it would exceed
 // paging.MaxOffset.
 func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, page, perPage int) (paging.Page[Endpoint], error) {
 	offset, err := paging.Offset(page, perPage)
@@ -180,15 +190,15 @@ func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, 
 	var total int64
 	if err := db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM webhook_endpoints
-		WHERE customer_id = $1 AND active = TRUE
+		WHERE customer_id = $1 AND (active = TRUE OR disabled_reason IS NOT NULL)
 	`, customerID).Scan(&total); err != nil {
 		return paging.Page[Endpoint]{}, fmt.Errorf("webhookout: count endpoints: %w", err)
 	}
 
 	rows, err := db.Query(ctx, `
-		SELECT id, url, active, subscribed_events, created_at
+		SELECT id, url, active, subscribed_events, created_at, disabled_at, disabled_reason
 		FROM webhook_endpoints
-		WHERE customer_id = $1 AND active = TRUE
+		WHERE customer_id = $1 AND (active = TRUE OR disabled_reason IS NOT NULL)
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, customerID, perPage, offset)
