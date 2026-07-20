@@ -2,7 +2,7 @@
 # hetzner-bootstrap.sh — first-run server setup for Crucible on Hetzner Cloud
 #
 # Run this once on a fresh Ubuntu 24.04 server (CX22 or similar).
-# Installs Docker, Caddy, configures the firewall, and sets up the .env file.
+# Installs Docker, configures the firewall, and sets up the .env file.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/YOU/crucible/main/deploy/hetzner-bootstrap.sh | bash
@@ -41,26 +41,22 @@ First-run setup for a fresh Hetzner Cloud Ubuntu 24.04 server.
 Options:
   -h, --help        Show this help message
   --skip-firewall   Skip ufw configuration (useful if firewall is managed externally)
-  --skip-caddy      Skip Caddy installation (useful if you use a different reverse proxy)
 
 What it does:
   1. Installs Docker + docker-compose plugin
-  2. Installs Caddy (reverse proxy with automatic TLS)
-  3. Configures ufw firewall (allow 22, 80, 443)
-  4. Creates a .env file from .env.example template
-  5. Sets up a daily cron job for database backups at 3am
+  2. Configures ufw firewall (allow 22, 80, 443)
+  3. Creates a .env file from .env.example template
+  4. Sets up a daily cron job for database backups at 3am
 EOF
     exit 0
 }
 
 SKIP_FIREWALL=false
-SKIP_CADDY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)       usage ;;
         --skip-firewall) SKIP_FIREWALL=true; shift ;;
-        --skip-caddy)    SKIP_CADDY=true; shift ;;
         *)               warn "Unknown option: $1"; shift ;;
     esac
 done
@@ -130,38 +126,11 @@ install_docker() {
     ok "Compose plugin: $(docker compose version)"
 }
 
-# ---------------------------------------------------------------------------
-# 2. Caddy (reverse proxy with automatic TLS)
-# ---------------------------------------------------------------------------
-
-install_caddy() {
-    if [[ "$SKIP_CADDY" == "true" ]]; then
-        log "Skipping Caddy installation (--skip-caddy)"
-        return
-    fi
-
-    if command -v caddy &>/dev/null; then
-        ok "Caddy already installed: $(caddy version)"
-        return
-    fi
-
-    log "Installing Caddy..."
-
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-        | tee /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
-
-    systemctl enable --now caddy
-
-    ok "Caddy installed: $(caddy version)"
-}
+# No host reverse proxy: the docker-compose caddy service owns 80/443 and is wired
+# to the repo Caddyfile. A host Caddy would fight the container for those ports.
 
 # ---------------------------------------------------------------------------
-# 3. Firewall (ufw)
+# 2. Firewall (ufw)
 # ---------------------------------------------------------------------------
 
 configure_firewall() {
@@ -199,7 +168,7 @@ configure_firewall() {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Create .env from template
+# 3. Create .env from template
 # ---------------------------------------------------------------------------
 
 setup_env() {
@@ -249,7 +218,7 @@ setup_env() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Daily backup cron
+# 4. Daily backup cron
 # ---------------------------------------------------------------------------
 
 setup_backup_cron() {
@@ -281,7 +250,6 @@ main() {
     log "Server: $(hostname) | $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2)"
 
     install_docker
-    install_caddy
     configure_firewall
     setup_env
     setup_backup_cron
@@ -289,7 +257,7 @@ main() {
     log ""
     log "Bootstrap complete. Next steps:"
     log "  1. Edit $PROJECT_ROOT/.env and set Stripe keys"
-    log "  2. If using a domain, configure Caddy at /etc/caddy/Caddyfile"
+    log "  2. If using a domain, set DOMAIN in $PROJECT_ROOT/.env (the compose Caddy reads $PROJECT_ROOT/Caddyfile)"
     log "  3. Run: bash $PROJECT_ROOT/deploy/deploy.sh"
     log ""
     ok "Done."
