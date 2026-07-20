@@ -40,5 +40,8 @@ SDKs and to the gateway's outbound signer. Unset (the default) disables verifica
 
 ```sh
 cd workers/sdk-python
-python3 -m unittest conformance.test_fixture_conformance -v
+python3 -m unittest discover -v
 ```
+
+This runs the fixture-driven conformance cases (`conformance/`) and the SDK unit
+tests, including the HMAC-SHA256 signature-verification matrix (`tests/`).
