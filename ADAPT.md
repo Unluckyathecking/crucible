@@ -16,11 +16,11 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
    ```
    The `operation` string is forwarded opaquely to the worker. The framework never needs to know what your product does.
 
-3. **`gateway/migrations/0019_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). Name this file with the next free migration index (currently `0019`); migrations run in lexical order on every boot.
+3. **`gateway/migrations/<next>_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). Name this file with the next free migration index (`0026` at the time of writing); migrations run in lexical order on every boot.
 
 4. **`dashboard/app/page.tsx`** — landing copy + pricing display.
 
-5. **`docs/guides/`** — product-specific MDX docs.
+5. **`docs/api-reference.md`** — document your product's operations for customers.
 
 6. **`.env`** — set `API_KEY_PREFIX` (e.g. `vat_`), Stripe keys, worker URL.
    Optionally set `WORKER_SHARED_SECRET` to the same value on **both** the gateway
