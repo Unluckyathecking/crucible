@@ -51,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self._respond(200, b'{"status":"ok"}')
         else:
-            self._respond(404, b"not found")
+            self._reject()
 
     def do_POST(self):
         if self.path != "/invoke":
@@ -66,6 +66,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         result = invoke(req)
         self._respond(200, json.dumps(result, separators=(',', ':')).encode())
+
+    # /invoke is POST-only. Non-POST methods return 405 + Allow, mirroring the
+    # frozen contract enforced by the Go/Rust/TS SDKs (fixture: method_not_allowed).
+    def do_PUT(self):
+        self._reject()
+
+    def do_DELETE(self):
+        self._reject()
+
+    def do_PATCH(self):
+        self._reject()
+
+    def do_HEAD(self):
+        self._reject()
+
+    def do_OPTIONS(self):
+        self._reject()
+
+    def _reject(self):
+        if self.path == "/invoke":
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+        else:
+            self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _respond(self, status: int, body: bytes):
         self.send_response(status)
