@@ -1,6 +1,44 @@
-# Crucible — agent rules
+# Operating standard
 
-This file is the project-specific brief for Claude sessions and any other AI agents working in this repo. Global rules in `~/.claude/rules/common/` and `~/.claude/rules/golang/` apply by default; what follows only adds the Crucible-specific load-bearing constraints.
+Five pillars, in priority order: **simplicity, modularity, maintainability, cost-effectiveness, competency.** When they conflict, the earlier one wins. When in doubt, do less.
+
+## Think before coding
+State your assumptions; if uncertain, ask. If a request has several readings, surface them rather than silently pick one. If a simpler approach exists, say so. When something is unclear, stop and name it before writing code.
+
+## Simplicity first
+Write the minimum that solves the problem, nothing speculative. No features beyond the ask, no abstraction for single-use code, no configurability nobody requested, no error handling for cases that can't happen. If 200 lines could be 50, rewrite it. The test: would a senior engineer call this overcomplicated?
+
+## Surgical changes
+Touch only what the task needs. Don't "improve" adjacent code, don't refactor what isn't broken, match the existing style even where you'd do it differently. Remove only the orphans your own change created; leave pre-existing dead code alone and mention it instead. Every changed line should trace to the request.
+
+## Modularity and maintainability
+Many small files over few large ones — aim for 200-400 lines, functions under 50. One responsibility per module, low coupling, respect declared module boundaries. Don't repeat logic. Each module earns its own tests, and any new dependency earns a one-line reason.
+
+## Goal-driven execution
+Turn a task into a verifiable goal before starting: "fix the bug" becomes "write a failing test, then make it pass." For multi-step work, write a short plan with a check per step and loop until each one verifies.
+
+## Cost
+Tokens are a budget. Keep context minimal — a diff and its test output beat a whole-repo read. Prefer flat structures: a manager-of-workers only earns its cost when it does something the caller genuinely can't see. Reach for a fresh sub-agent only when a bounded, single job needs its own context.
+
+## Writing that others read
+Commit messages, PR descriptions, and review comments are a public record. Write them plain, tight, and competent — like a senior engineer, not a generated bullet list. No filler, no manufactured structure, straight quotes, punctuation used sparingly. Say what changed and why, then stop.
+
+## Running a multi-agent loop
+Learned in operation, kept because it earned its place:
+- Stay flat. Add a manager between you and workers only if that manager does work you structurally can't see. It is never worth adding as a review hop when you already gate every merge.
+- Trust state, not self-report. A delegate that looks idle may be done but unpushed. Check the branch or worktree directly on a fixed cadence; don't wait for an end-of-run message.
+- Partition before you parallelize. Split ownership by path up front so two agents can't build the same thing. Discovering the overlap after both shipped is wasted spend.
+- Fan out only read-only, bounded work (parallel review, parallel gating) — it's cheap and collision-free. Give write access only to a narrowly scoped, non-colliding fix.
+- Grade on merit. When two implementations race, merge the one that clears a bar you stated in advance, even when it isn't yours.
+- Confirm the ship. After a commit meant to land, check you're not on a detached HEAD and that nothing sits unpushed before calling the cycle done.
+- Let the standard sharpen itself. Every so often, read the operating record for what worked and what didn't, and update this file from the evidence.
+
+---
+*Coding principles above draw on the widely-shared community distillation of Andrej Karpathy's coding-agent guidance.*
+
+# Crucible — project brief
+
+This file is the project-specific brief for Claude sessions and any other AI agents working in this repo. The operating standard above governs how to work; the Go language rules in `~/.claude/rules/golang/` also apply. What follows adds only the Crucible-specific, load-bearing constraints.
 
 ## What this repo is
 
@@ -10,8 +48,6 @@ Authoritative docs:
 - **`README.md`** — quickstart, layout, current status.
 - **`ADAPT.md`** — what to change per product, what to leave alone.
 - **`docs-internal/REVIEW.md`** — pre-release review record + the three rounds of findings/fixes. Useful for understanding why some things are the way they are.
-- **`docs-internal/handoff-micro-saas-api-ideation-2026-05-16.md`** — the product catalogue that motivated the framework.
-- **`~/.claude/plans/ultrathink-create-a-plan-proud-penguin.md`** — the original approved plan. Defers to ADAPT for per-product workflow.
 
 ## Load-bearing invariants — do NOT change these casually
 
@@ -41,17 +77,17 @@ These exist for non-obvious reasons. If you think you need to change one of them
 
    `Store.Revoke()` handles this automatically for key revocation, but plan edits bypass the revocation path, so manual invalidation is needed when plan tiers change.
 
-8. **Migrations are idempotent and run on every gateway boot.** Every `gateway/migrations/*.sql` file uses `CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT DO NOTHING`, etc. No version-tracking table — files run in lexical order every time. Per-product clones add `0005_*.sql` etc.
+8. **Migrations are idempotent and run on every gateway boot.** Every `gateway/migrations/*.sql` file uses `CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT DO NOTHING`, etc. No version-tracking table — files run in lexical order every time. Per-product clones add their seed migration at the next free index (`0026_*.sql` at the time of writing).
 
 9. **`workers/sdk-go/` is the shared SDK. `workers/active` is a symlink.** Don't fork the SDK per product; extend it. Don't move the active worker out of `workers/`; the Dockerfile build context expects it there.
 
 ## What changes per product
 
-See `ADAPT.md`. The summary: `workers/active`, one line per endpoint in `gateway/internal/server/routes.go`, plan tier seeds in a new `gateway/migrations/0005_seed_plans.sql`, dashboard marketing copy, docs, Stripe product/prices. **Nothing else** should be touched per product. If you find yourself editing the gateway's `internal/auth`, `internal/billing`, `internal/ratelimit`, `internal/quota`, `internal/proxy`, or `internal/observability` per product — stop and explain why; you're probably solving the wrong problem.
+See `ADAPT.md`. The summary: `workers/active`, one entry per endpoint in `gateway/internal/server/routes_table.go` (`V1Routes`), plan tier seeds in a new migration at the next free index, dashboard marketing copy, docs, Stripe product/prices. **Nothing else** should be touched per product. If you find yourself editing the gateway's `internal/auth`, `internal/billing`, `internal/ratelimit`, `internal/quota`, `internal/proxy`, or `internal/observability` per product — stop and explain why; you're probably solving the wrong problem.
 
 ## Coding style
 
-Defers to `~/.claude/rules/common/coding-style.md` and `~/.claude/rules/golang/coding-style.md`. The project-specific stance is in `~/.claude/projects/-Users-mohammedalibhai/memory/feedback_scratch_build_lean.md`:
+The operating standard at the top of this file sets the general coding principles. The Crucible-specific stance (from `~/.claude/projects/-Users-mohammedalibhai/memory/feedback_scratch_build_lean.md`):
 
 - **Scratch-build, don't port.** Even when prior code in `equipulse-trading-bot` or elsewhere solves a similar problem, write fresh in Crucible's idioms.
 - **Every file earns its inclusion.** No speculative abstractions. No "in case we want to swap X later" wrappers. If three call sites would clearly benefit from a 30-line helper, ship it; otherwise don't.
@@ -90,41 +126,67 @@ These were the reviewer findings that mattered. Keep them enforced.
 
 ```
 gateway/
-├── cmd/gateway/main.go                  wiring: config → db → redis → middleware → server
-├── internal/auth/{keys,store,middleware} API key generation, lookup, Bearer enforcement, Store.Revoke
-├── internal/billing/{plans,stripe,webhook} plan cache, Stripe meter_event POST, webhook receiver
-├── internal/cache/redis.go              redis client constructor
-├── internal/config/config.go            envconfig — the operational contract
-├── internal/db/{pool,migrate}.go        pgx pool, embedded migration runner
-├── internal/httputil/recorder.go        shared StatusRecorder used by middleware + observability
-├── internal/middleware/middleware.go    request-id, recovery, access log, security headers, body limit
-├── internal/observability/metrics.go    Prometheus counters/histograms + /metrics handler
-├── internal/openapi/openapi.go          static OpenAPI 3.1 document builder + /openapi.json handler
-├── internal/proxy/client.go             HTTP/JSON client to worker (gRPC opt-in seam)
-├── internal/quota/{context,tracker,middleware} monthly cap enforcement; context.go bridges middleware↔recorder
-├── internal/ratelimit/{bucket,middleware} per-customer per-minute fixed-window
-├── internal/server/routes.go            chi router; PER-PRODUCT EDIT POINT for new endpoints
-├── internal/usage/{recorder,flusher}    write usage_events sync; async two-phase Stripe flush
-└── migrations/                          migrations.go (embedded fs.FS); 0001 init, 0002 nextauth, 0003 unique prefix, 0004 usage batches
+├── cmd/gateway/main.go       wiring: config → db → redis → runtime → middleware → server
+├── internal/apierror/        canonical JSON error-response envelope for handlers
+├── internal/audit/           append-only writes to the audit_log table
+├── internal/auth/            API key issue, hash, lookup, Bearer gating; Store.Revoke
+├── internal/billing/         plan cache, Stripe meter_event POST, checkout, webhook receiver
+├── internal/cache/           redis client constructor (parse + ping)
+├── internal/channelsig/      shared HMAC-SHA256 signed-channel primitive (webhooks + worker)
+├── internal/config/          envconfig — the operational contract
+├── internal/db/              pgx pool + embedded migration runner
+├── internal/egress/          SSRF-hardened outbound HTTP transport (blocks private/loopback IPs)
+├── internal/errorlog/        records non-2xx /v1 responses into error_events
+├── internal/events/          outbound-webhook event catalogue + payload shapes
+├── internal/httputil/        small shared HTTP helpers (status recorder, headers)
+├── internal/idempotency/     dedups POST /v1 retries within a TTL window
+├── internal/jobs/            durable Postgres-backed async job queue + worker-pool executor
+├── internal/middleware/      request-id, recovery, access log, security headers, body limit
+├── internal/observability/   Prometheus metrics + the middleware that increments them
+├── internal/openapi/         builds and serves the OpenAPI 3.1 document
+├── internal/operator/        read-only (SELECT-only) operator/admin query layer
+├── internal/paging/          shared list pagination (parse, clamp, offset, envelope)
+├── internal/proxy/           HTTP/JSON client to the worker
+├── internal/quota/           per-customer monthly unit cap via atomic Redis reserve
+├── internal/ratelimit/       per-customer per-minute sliding window (Redis sorted set + Lua)
+├── internal/resilience/      default-off retry + circuit-breaker policies for worker calls
+├── internal/respcache/       opt-in content-addressed cache of successful worker responses
+├── internal/runtime/         assembles config-driven, default-off resilience + tracing providers
+├── internal/selferrors/      serves GET /v1/errors (customer's own error history)
+├── internal/selfusage/       serves GET /v1/usage (aggregate usage vs quota)
+├── internal/selfusagedetail/ serves GET /v1/usage/events (per-event export, JSON/CSV)
+├── internal/server/          chi router + handlers; per-product routes live in routes_table.go
+├── internal/tracing/         optional, default-off OpenTelemetry (OTLP) tracing
+├── internal/usage/           records usage_events sync; async two-phase Stripe flush
+├── internal/validate/        stdlib-only JSON Schema subset validator for request bodies
+├── internal/webhookout/      delivers signed outbound webhook POSTs to customer endpoints
+└── migrations/               migrations.go (embedded fs.FS) + 0001–0025 framework schema; clones seed plans at the next free index (0026 at time of writing)
 
 workers/
-├── sdk-go/crucible.go                   Serve() helper for Go workers
-├── sdk-rust/src/{lib,server}.rs         Rust SDK (axum-based); mirrors sdk-go contract
-├── stubs/go/main.go                     hello-world Go worker (~30 LOC)
-└── active                               symlink to the worker this clone ships
+├── sdk-go/, sdk-rust/, sdk-ts/, sdk-python/   worker SDKs, one per host language, same /invoke contract
+├── conformance/fixture.json                   shared contract fixture every SDK is tested against
+├── stubs/                                     hello-world reference workers
+└── active                                     symlink to the worker this clone ships
+
+clients/                                       generated consumer SDKs (go, typescript, python) + openapi.json snapshot
+test/conformance/                              cross-cutting contract conformance suite
 
 dashboard/
-├── app/(api/auth, api/keys, dashboard, login, page.tsx)  Next.js 15 App Router
-├── auth.config.ts + auth.ts             edge-safe + full NextAuth config (split required for middleware)
-├── lib/{db,keys}.ts                     postgres pool, API key generation/hash (MIRRORS Go)
-└── middleware.ts                        auth-gates /dashboard/* and /api/keys/*
+├── app/{api, dashboard, login, operator, page.tsx}  Next.js 15 App Router (customer + operator console)
+├── auth.config.ts + auth.ts                   edge-safe + full NextAuth config (split required for middleware)
+├── lib/{db,keys}.ts                           postgres pool, API key generation/hash (MIRRORS Go)
+└── middleware.ts                              auth-gates /dashboard/*, /operator/*, and customer API routes
 
-ops/                                     prometheus + grafana provisioning
+ops/                                           prometheus + grafana provisioning
+deploy/                                        deploy, backup, and host bootstrap scripts
 scripts/
-├── new-tool.sh                          clone-and-rename ergonomic
-├── smoke-new-tool.sh                    THE CI smoke test — non-negotiable
-├── conformance-run.sh                   builds a worker stub, runs contract conformance suite, cleans up
-└── seed-dev.sh                          dev customer + API key for local testing
+├── new-tool.sh                                clone-and-rename ergonomic
+├── smoke-new-tool.sh                          THE CI smoke test — non-negotiable
+├── conformance-run.sh                         builds a worker stub, runs the contract conformance suite, cleans up
+├── acceptance-run.sh                          runs workers/active through the real gateway (real Postgres/Redis)
+├── gen-clients.sh                             regenerates the clients/ SDKs from the OpenAPI snapshot
+├── doctor.sh                                  preflight adapt-drift guard (env parity, active symlink, route table)
+└── seed-dev.sh                                dev customer + API key for local testing
 ```
 
 ## When in doubt
