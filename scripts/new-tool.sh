@@ -91,6 +91,10 @@ if ! bash scripts/doctor.sh; then
   echo "WARNING: doctor detected issues — see DOCTOR_FAIL lines above. Fix before running 'make dev'." >&2
 fi
 
+# Point at the next free migration slot rather than a hardcoded index that goes stale.
+LAST_MIG=$(ls gateway/migrations 2>/dev/null | grep -oE '^[0-9]{4}' | sort -n | tail -1 || true)
+NEXT_MIG=$(printf '%04d' "$(( 10#${LAST_MIG:-0} + 1 ))")
+
 echo
 echo "Done. Your new product lives at $DEST"
 echo
@@ -99,6 +103,6 @@ echo "  cd $DEST"
 echo "  cp .env.example .env"
 echo "  # Edit workers/active to point at your product worker."
 echo "  # Add a route per endpoint in gateway/internal/server/routes_table.go."
-echo "  # Add plans in gateway/migrations/0003_seed_plans.sql."
+echo "  # Add plans in gateway/migrations/${NEXT_MIG}_seed_plans.sql (the next free slot)."
 echo "  # Re-run scripts/doctor.sh after each adapt step to verify config."
 echo "  make dev"
