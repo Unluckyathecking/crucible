@@ -37,22 +37,25 @@ const (
 	jobsAdminListMaxPageSize     = 100
 )
 
-// jobStatusQueued..jobStatusFailed mirror gateway/internal/jobs.Status* — the
-// async_jobs.status CHECK constraint's frozen enum (see migrations/0019). Kept
-// as local literals rather than imported from package jobs: see JobsAdminStore's
-// doc comment for why this package cannot import jobs directly.
+// jobStatusSucceeded..jobStatusCancelled mirror gateway/internal/jobs.Status* —
+// the async_jobs.status CHECK constraint's frozen enum (see migrations/0019 and
+// 0022). Kept as local literals rather than imported from package jobs: see
+// JobsAdminStore's doc comment for why this package cannot import jobs directly.
 const (
-	jobStatusRunning   = "running"
 	jobStatusSucceeded = "succeeded"
 	jobStatusFailed    = "failed"
+	jobStatusCancelled = "cancelled"
 )
 
 // validAdminJobStatuses is the accepted ?status= filter set for
 // AdminListJobsHandler, mirroring server.validJobStatuses (which mirrors
 // jobs.Status*) so an unrecognized value is rejected as 400 rather than
-// silently matching zero rows.
+// silently matching zero rows. "cancelled" is included because customers can
+// cancel a queued job (jobs.CancelQueued), so such rows exist and must be
+// filterable — without it, ?status=cancelled 400s while matching rows exist.
 var validAdminJobStatuses = map[string]bool{
-	"queued": true, "running": true, jobStatusSucceeded: true, jobStatusFailed: true,
+	"queued": true, "running": true,
+	jobStatusSucceeded: true, jobStatusFailed: true, jobStatusCancelled: true,
 }
 
 // AdminJob is the operator-visible, cross-customer projection of an
@@ -88,7 +91,10 @@ type AdminJob struct {
 type JobsAdminStore interface {
 	AdminList(ctx context.Context, status *string, limit, offset int) ([]AdminJob, int64, error)
 	AdminGet(ctx context.Context, id uuid.UUID) (AdminJob, bool, error)
-	Requeue(ctx context.Context, id uuid.UUID) error
+	// Requeue performs a single status-guarded UPDATE and reports whether a row
+	// was requeued; false means the id is unknown or the job is in a
+	// non-requeuable (running/succeeded/cancelled) state. See jobs.Store.Requeue.
+	Requeue(ctx context.Context, id uuid.UUID) (bool, error)
 	ReleaseClaimed(ctx context.Context, instanceID uuid.UUID) (int64, error)
 }
 
@@ -214,8 +220,9 @@ func AdminGetJobHandler(store JobsAdminStore) http.HandlerFunc {
 }
 
 // AdminRequeueJobHandler handles POST /v1/admin/jobs/{id}/requeue: flips a
-// claimed/failed/dead-lettered row back to queued via the underlying
-// jobs.Store.Requeue. db is used only to emit a best-effort audit_log row.
+// failed/dead-lettered (or still-queued) row back to queued via the underlying
+// jobs.Store.Requeue's single status-guarded UPDATE. db is used only to emit a
+// best-effort audit_log row.
 func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
@@ -226,36 +233,37 @@ func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handler
 			return
 		}
 
-		// jobs.Store.Requeue is an unconditional UPDATE ... WHERE id=$1 with no
-		// rows-affected signal, so a 404 on an unknown id has to be established
-		// with a lookup here rather than inferred from Requeue's own return.
-		// The returned job is also used to guard against requeuing a running or
-		// succeeded job, which would cause concurrent double-execution or
-		// re-billing of already-completed work.
-		job, ok, err := store.AdminGet(r.Context(), id)
+		// Single status-guarded UPDATE (see jobs.Store.Requeue): running,
+		// succeeded, and cancelled rows are never touched, so there is no window
+		// between a status check and the write for a concurrent claim to slip
+		// through and get a running job yanked back to queued (double
+		// execution/billing). A zero-row result is disambiguated below with one
+		// follow-up read, mirroring jobsCancelHandler's CancelQueued handling.
+		requeued, err := store.Requeue(r.Context(), id)
 		if err != nil {
-			log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job lookup failed")
-			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
-			return
-		}
-		if !ok {
-			apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
-			return
-		}
-		if job.Status == jobStatusRunning || job.Status == jobStatusSucceeded {
-			apierror.Write(w, rid, http.StatusConflict, "JOB_NOT_REQUEUABLE", "job cannot be requeued in its current state", false)
-			return
-		}
-
-		if err := store.Requeue(r.Context(), id); err != nil {
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "requeue failed", false)
 			return
 		}
+		if !requeued {
+			_, ok, err := store.AdminGet(r.Context(), id)
+			if err != nil {
+				log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job lookup failed")
+				apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "lookup failed", false)
+				return
+			}
+			if !ok {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "job not found", false)
+				return
+			}
+			apierror.Write(w, rid, http.StatusConflict, "JOB_NOT_REQUEUABLE", "job cannot be requeued in its current state", false)
+			return
+		}
+
 		observability.JobsRequeuedTotal.Inc()
 		emitJobAudit(r.Context(), db, rid, ActionJobRequeued, "async_job", id.String())
 
-		job, ok, err = store.AdminGet(r.Context(), id)
+		job, ok, err := store.AdminGet(r.Context(), id)
 		if err != nil || !ok {
 			log.Error().Err(err).Str("request_id", rid).Msg("operator: requeue job re-fetch failed")
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "requeue succeeded but re-fetch failed", false)
