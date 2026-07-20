@@ -12,20 +12,24 @@ Crucible is one repo you copy to ship a new API. The framework — auth, rate li
 
 ## Status
 
-v1 shipped. API key auth (salted SHA-256, Redis hot cache), sliding-window rate limiting with atomic Lua scripts, monthly quota enforcement with atomic reserve, Stripe metered billing (async batch flusher, HMAC webhook verification), Prometheus metrics (6 counters/histograms, cardinality capped), health check endpoints, Next.js 15 dashboard (NextAuth magic-link, Resend email, shared Postgres). All 21 gateway packages have unit-test coverage; 249 tests pass under `-race` (infrastructure-gated tests self-skip when Postgres/Redis are absent and run in CI). First real product worker: VIES REST VAT-validation (`docs-internal/vies-research.md`). Worker SDKs: Go (shipped), Rust (shipped), TypeScript (v1.5). Pre-release review notes at `docs-internal/REVIEW.md`.
+v1 shipped and the surface has grown since. The gateway (33 internal packages) handles API key auth with a Redis hot cache, per-customer rate limits and monthly quotas, Stripe metered billing with HMAC-verified webhooks, request idempotency, async jobs (`/v1/jobs`), outbound webhooks with a deliveries API, self-serve usage and error endpoints, an operator console, Prometheus metrics, and opt-in OpenTelemetry tracing. The dashboard is Next.js 15 with NextAuth magic-link login.
+
+Worker SDKs exist for Go, Rust, TypeScript and Python; all four are conformance-tested in CI against the same frozen fixture. Generated consumer SDKs (Go, TypeScript, Python) live in `clients/`, with a CI drift guard that fails the build if they fall out of sync with the gateway's served OpenAPI document.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `gateway/` | Go API gateway. Owns auth, rate limit, billing, metering, OpenAPI, observability. |
+| `gateway/` | Go API gateway. Auth, rate limiting, billing, quotas, jobs, webhooks, observability. |
 | `gateway/proto/tool.proto` | The frozen worker contract. Never edit per product. |
-| `gateway/migrations/` | Postgres schema. |
-| `workers/sdk-go/` | Go worker SDK. Import it, write one function, you have a worker. |
-| `workers/sdk-rust/` | Rust worker SDK. Mirrors the Go SDK against the same HTTP/JSON contract. |
-| `workers/stubs/go/` | Hello-world reference worker (~30 lines). |
-| `workers/active` | Symlink to the worker this clone is shipping. |
-| `docs-internal/` | Design notes and handoffs. Not published. |
+| `workers/` | Worker SDKs (`sdk-go`, `sdk-rust`, `sdk-ts`, `sdk-python`), language stubs, the conformance fixture, and the `active` symlink pointing at the worker this clone ships. |
+| `clients/` | Generated consumer SDKs (Go, TypeScript, Python) and the OpenAPI snapshot they are generated from. |
+| `dashboard/` | Next.js customer dashboard: login, API keys, usage. |
+| `ops/` | Prometheus and Grafana provisioning. |
+| `scripts/` | `new-tool.sh`, the CI smoke test, client generation, dev seeding, `doctor.sh`. |
+| `test/` | External conformance suite for the worker contract. |
+| `deploy/` | Deploy, backup and host bootstrap scripts. |
+| `docs/` | API reference. |
 
 ## Running locally
 
@@ -48,6 +52,24 @@ curl -X POST localhost:8081/invoke \
 # → {"payload":{"echo":{"x":"hi"},"operation":"echo"},"billable_units":3}
 ```
 
+To bring up the whole stack instead (Postgres, Redis, worker, gateway, dashboard, Caddy, Prometheus, Grafana), run `make dev`.
+
+## Compatibility
+
+The stable surface is the worker contract. `gateway/proto/tool.proto` is frozen across all clones: the gateway forwards `operation` opaquely, and what your product actually does lives entirely in the worker. The HTTP/JSON form of the contract is pinned by `workers/conformance/fixture.json`, and CI runs every SDK against that fixture on every PR. Everything behind the contract — gateway internals, dashboard, ops — can change between commits; there is no versioned release train.
+
 ## Adapting Crucible to a new product
 
-See [ADAPT.md](ADAPT.md). TL;DR: edit `workers/active`, add one route in the gateway, define your plan tiers, and ship.
+See [ADAPT.md](ADAPT.md). TL;DR: repoint `workers/active`, add one entry to the gateway's route table, seed your plan tiers, and ship.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers local setup, what CI runs, and what makes a PR mergeable. The short version: keep CI green and keep the framework product-neutral.
+
+## Security
+
+Report vulnerabilities privately through GitHub's Security tab, not in public issues. Details in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE).
