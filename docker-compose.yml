@@ -111,7 +111,10 @@ services:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
-    env_file: ./dashboard/.env.local
+    # .env.local is gitignored; keep it optional so a fresh clone's `make dev` still starts.
+    env_file:
+      - path: ./dashboard/.env.local
+        required: false
     environment:
       DATABASE_URL: postgres://crucible:${POSTGRES_PASSWORD}@postgres:5432/crucible
       AUTH_URL: http://localhost:3000
