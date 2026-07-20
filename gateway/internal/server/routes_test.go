@@ -884,7 +884,7 @@ func TestBillingCheckout_WithKey(t *testing.T) {
 	h := billingCheckoutHandler(d)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(`{"plan_id":"pro"}`))
-	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -910,7 +910,7 @@ func TestBillingPortal_WithKey(t *testing.T) {
 	h := billingPortalHandler(d)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/portal", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -932,7 +932,7 @@ func TestBillingPortal_NoStripeCustomer(t *testing.T) {
 	h := billingPortalHandler(d)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/portal", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -972,7 +972,7 @@ func TestBillingCheckout_InvalidPlanID(t *testing.T) {
 
 			body := fmt.Sprintf(`{"plan_id":%q}`, tc.planID)
 			req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(body))
-			req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+			req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 			w := httptest.NewRecorder()
 			h(w, req)
 
@@ -989,7 +989,7 @@ func TestBillingCheckout_NotConfigured(t *testing.T) {
 	h := billingCheckoutHandler(d)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/checkout", strings.NewReader(`{"plan_id":"pro"}`))
-	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -1229,7 +1229,7 @@ func TestInvokeNon2xx_WorkerBodyAbsentFromCustomerResponse(t *testing.T) {
 // --- GET /v1/jobs (jobsListHandler) tests ---
 //
 // jobsListHandler is called directly (bypassing NewRouter/auth.Middleware),
-// the same pattern TestBillingCheckout_WithKey uses above: auth.WithKey
+// the same pattern TestBillingCheckout_WithKey uses above: auth.WithTestKey
 // injects the request context jobsListHandler reads via auth.FromContext,
 // so no auth.Store/Redis is needed. jobs.Store itself needs a real
 // customer_id/api_key_id foreign key target, hence the local Postgres
@@ -1318,7 +1318,7 @@ func TestJobsListHandler_CustomerScopedShapeAndHeader(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), keyA))
+	req = req.WithContext(auth.WithTestKey(req.Context(), keyA))
 	w := httptest.NewRecorder()
 	jobsListHandler(store)(w, req)
 
@@ -1358,7 +1358,7 @@ func TestJobsListHandler_StatusFilter(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?status=failed", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), key))
+	req = req.WithContext(auth.WithTestKey(req.Context(), key))
 	w := httptest.NewRecorder()
 	jobsListHandler(store)(w, req)
 
@@ -1386,7 +1386,7 @@ func TestJobsListHandler_UnknownStatus400(t *testing.T) {
 	key := seedJobsListCustomer(t, pool, "jobs-list-route-badstatus-"+uuid.New().String()+"@example.com")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?status=not-a-real-status", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), key))
+	req = req.WithContext(auth.WithTestKey(req.Context(), key))
 	w := httptest.NewRecorder()
 	jobsListHandler(store)(w, req)
 
@@ -1408,7 +1408,7 @@ func TestJobsListHandler_UnknownStatus400(t *testing.T) {
 
 func TestJobsListHandler_NotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
-	req = req.WithContext(auth.WithKey(req.Context(), testKey()))
+	req = req.WithContext(auth.WithTestKey(req.Context(), testKey()))
 	w := httptest.NewRecorder()
 	jobsListHandler(nil)(w, req)
 
@@ -1441,13 +1441,13 @@ func TestJobsListHandler_Unauthorized(t *testing.T) {
 
 // newJobsCancelRouter mounts jobsCancelHandler at the same path routes.go
 // registers it under, with a middleware injecting key into the request
-// context via auth.WithKey (nil key exercises the unauthenticated path).
+// context via auth.WithTestKey (nil key exercises the unauthenticated path).
 func newJobsCancelRouter(store *jobs.Store, key *auth.Key) http.Handler {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			if key != nil {
-				req = req.WithContext(auth.WithKey(req.Context(), key))
+				req = req.WithContext(auth.WithTestKey(req.Context(), key))
 			}
 			next.ServeHTTP(w, req)
 		})
@@ -1578,7 +1578,7 @@ func TestEnqueueAsync_BacklogCeiling(t *testing.T) {
 	doEnqueue := func(t *testing.T, maxQueuedPerCustomer int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
-		req = req.WithContext(auth.WithKey(req.Context(), key))
+		req = req.WithContext(auth.WithTestKey(req.Context(), key))
 		w := httptest.NewRecorder()
 		enqueueAsync(store, "echo", 0, maxQueuedPerCustomer)(w, req)
 		return w
@@ -1626,7 +1626,7 @@ func TestEnqueueAsync_BacklogCeilingDisabledAdmitsUnconditionally(t *testing.T) 
 
 	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/echo", strings.NewReader(`{}`))
-		req = req.WithContext(auth.WithKey(req.Context(), key))
+		req = req.WithContext(auth.WithTestKey(req.Context(), key))
 		w := httptest.NewRecorder()
 		enqueueAsync(store, "echo", 0, 0)(w, req)
 		if w.Code != http.StatusAccepted {

@@ -109,26 +109,6 @@ func TestOffset_BoundaryJustUnderMaxSucceeds(t *testing.T) {
 	}
 }
 
-func TestSlice_WindowsCorrectly(t *testing.T) {
-	items := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
-
-	if got := paging.Slice(items, 0, 3); len(got) != 3 || got[0] != 0 || got[2] != 2 {
-		t.Errorf("Slice(items, 0, 3) = %v, want [0 1 2]", got)
-	}
-	if got := paging.Slice(items, 8, 5); len(got) != 2 || got[0] != 8 || got[1] != 9 {
-		t.Errorf("Slice(items, 8, 5) = %v, want [8 9]", got)
-	}
-	if got := paging.Slice(items, 20, 5); len(got) != 0 {
-		t.Errorf("Slice(items, 20, 5) = %v, want empty", got)
-	}
-	if got := paging.Slice(items, -1, 5); len(got) != 0 {
-		t.Errorf("Slice(items, -1, 5) = %v, want empty", got)
-	}
-	if got := paging.Slice(items, 2, 0); len(got) != 8 {
-		t.Errorf("Slice(items, 2, 0) = %v, want the remaining 8 items (perPage<=0 means unbounded)", got)
-	}
-}
-
 func TestPage_MarshalsItemsAndTotal(t *testing.T) {
 	p := paging.Page[int]{Items: []int{1, 2, 3}, Total: 42}
 	b, err := json.Marshal(p)

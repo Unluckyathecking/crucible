@@ -88,19 +88,3 @@ type Page[T any] struct {
 	Items []T   `json:"items"`
 	Total int64 `json:"total"`
 }
-
-// Slice returns the [offset, offset+perPage) window of items, clamped to
-// items' bounds. For list endpoints that paginate over an
-// already-materialized in-process slice rather than pushing LIMIT/OFFSET
-// into SQL (e.g. because the underlying store method's signature is out of
-// this change's scope).
-func Slice[T any](items []T, offset, perPage int) []T {
-	if offset < 0 || offset >= len(items) {
-		return []T{}
-	}
-	end := len(items)
-	if perPage > 0 && offset+perPage < end {
-		end = offset + perPage
-	}
-	return items[offset:end]
-}

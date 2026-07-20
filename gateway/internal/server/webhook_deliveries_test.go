@@ -118,7 +118,7 @@ func deliveriesAuthContext(r *http.Request, customerID uuid.UUID) *http.Request 
 			Plan:  "free",
 		},
 	}
-	return r.WithContext(auth.WithKey(r.Context(), key))
+	return r.WithContext(auth.WithTestKey(r.Context(), key))
 }
 
 // deliveriesPage is the shape returned by webhookDeliveriesHandler.
