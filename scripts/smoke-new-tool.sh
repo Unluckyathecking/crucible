@@ -30,6 +30,7 @@ go work sync
 echo "==> building all Go modules"
 (cd workers/sdk-go && go build ./... && go vet ./...)
 (cd workers/stubs/go && go build ./... && go vet ./...)
+(cd workers/stubs/textkit && go build ./... && go vet ./...)
 (cd gateway && go build ./... && go vet ./...)
 
 echo "==> sanity: identifier rename happened"
@@ -65,13 +66,15 @@ echo "  -> doctor correctly detected env-prefix drift (exit $doctor_rc, cause: e
 
 echo "==> non-Go surfaces"
 
-# --- Rust SDK -----------------------------------------------------------------
-# Gate on cargo; machines without Rust toolchain skip this check gracefully.
+# --- Rust SDK + stub ----------------------------------------------------------
+# Gate on cargo; machines without Rust toolchain skip these checks gracefully.
 if command -v cargo >/dev/null 2>&1; then
   echo "  -> cargo check workers/sdk-rust"
   (cd workers/sdk-rust && cargo check --quiet 2>&1)
+  echo "  -> cargo check workers/stubs/rust"
+  (cd workers/stubs/rust && cargo check --quiet 2>&1)
 else
-  echo "  -> cargo not found — skipping Rust SDK check"
+  echo "  -> cargo not found — skipping Rust checks"
 fi
 
 # --- Python stub --------------------------------------------------------------
@@ -101,6 +104,30 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 else
   echo "  -> python3 not found — skipping Python stub check"
+fi
+
+# --- TS stub ------------------------------------------------------------------
+# Lightweight syntax check via Node's type stripping — no npm install needed.
+# Gate on node; a Node too old to strip TS types skips gracefully.
+if command -v node >/dev/null 2>&1; then
+  TS_STUB=workers/stubs/ts/src/index.ts
+  echo "  -> node --check $TS_STUB"
+  ts_out=$(node --check "$TS_STUB" 2>&1); ts_rc=$?
+  if [[ $ts_rc -ne 0 ]]; then
+    # Node < 22.18 needs the explicit flag to strip types before --check.
+    ts_out=$(node --experimental-strip-types --check "$TS_STUB" 2>&1); ts_rc=$?
+  fi
+  if [[ $ts_rc -eq 0 ]]; then
+    echo "     ts stub syntax OK"
+  elif printf '%s' "$ts_out" | grep -qi "bad option"; then
+    echo "  -> node too old to strip TS types — skipping TS stub syntax check"
+  else
+    echo "FAIL: TS stub failed node syntax check" >&2
+    printf '%s\n' "$ts_out" >&2
+    exit 1
+  fi
+else
+  echo "  -> node not found — skipping TS stub syntax check"
 fi
 
 echo
