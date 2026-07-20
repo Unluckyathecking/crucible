@@ -16,8 +16,11 @@ export const ALLOWED_ORIGIN = (() => {
 })();
 
 // DASHBOARD_BASE_URL is the full base URL (with path) used to construct Stripe
-// success/cancel/return redirect URLs. Uses NEXTAUTH_URL preferred over DASHBOARD_ORIGIN.
-export const DASHBOARD_BASE_URL = process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
+// success/cancel/return redirect URLs. AUTH_URL is checked first to match
+// ALLOWED_ORIGIN's precedence: under this repo's own compose/env defaults only
+// AUTH_URL is set, so omitting it here sent Stripe redirects to the fallback
+// http://localhost:3001 — which is Grafana, not the dashboard.
+export const DASHBOARD_BASE_URL = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? process.env.DASHBOARD_ORIGIN ?? "http://localhost:3001";
 
 // getGatewayUrl returns the base URL of the Crucible gateway the operator console
 // reads /v1/admin/* from. A function (not a module-level const) so it reflects
