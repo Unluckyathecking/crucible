@@ -12,7 +12,7 @@ Crucible is one repo you copy to ship a new API. The framework — auth, rate li
 
 ## Status
 
-v1 shipped and the surface has grown since. The gateway (33 internal packages) handles API key auth with a Redis hot cache, per-customer rate limits and monthly quotas, Stripe metered billing with HMAC-verified webhooks, request idempotency, async jobs (`/v1/jobs`), outbound webhooks with a deliveries API, self-serve usage and error endpoints, an operator console, Prometheus metrics, and opt-in OpenTelemetry tracing. The dashboard is Next.js 15 with NextAuth magic-link login.
+v1 shipped and the surface has grown since. The gateway handles API key auth with a Redis hot cache, per-customer rate limits and monthly quotas, Stripe metered billing with HMAC-verified webhooks, request idempotency, async jobs (`/v1/jobs`), outbound webhooks with a deliveries API, self-serve usage and error endpoints, an operator console, Prometheus metrics, and opt-in OpenTelemetry tracing. The dashboard is Next.js 15 with NextAuth magic-link login.
 
 Worker SDKs exist for Go, Rust, TypeScript and Python; all four are conformance-tested in CI against the same frozen fixture. Generated consumer SDKs (Go, TypeScript, Python) live in `clients/`, with a CI drift guard that fails the build if they fall out of sync with the gateway's served OpenAPI document.
 
