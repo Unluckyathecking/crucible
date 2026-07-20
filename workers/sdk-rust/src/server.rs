@@ -210,13 +210,44 @@ pub fn router_with_config(handler: impl Handler, config: HandlerConfig) -> Route
         .with_state(state)
 }
 
-/// Run the worker HTTP server on the given port and block until the listener fails.
+/// Run the worker HTTP server on the given port and block until SIGINT/SIGTERM,
+/// then drain in-flight requests before the listener closes.
 pub async fn serve(port: u16, handler: impl Handler) -> Result<(), ServeError> {
     let app = router(handler);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!(port, "worker listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+/// Resolves when the process receives SIGINT or SIGTERM, so axum can drain
+/// in-flight requests before shutting down — matching the Go/Python/TS SDKs.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+
+    tracing::info!("worker shutting down");
 }
 
 /// Verify the X-Worker-Signature header against body using secret.
