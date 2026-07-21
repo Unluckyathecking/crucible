@@ -65,7 +65,12 @@ describe("createOperatorSessionCookie / verifyOperatorSession", () => {
     const cookie = await createOperatorSessionCookie(TOKEN_A);
     const parts = cookie.value.split(".");
     const sig = parts[2];
-    parts[2] = `${sig.slice(0, -1)}${sig.at(-1) === "A" ? "B" : "A"}`;
+    // Tamper a middle character, not the last one: the final base64url char of a
+    // 32-byte HMAC carries only 2 significant bits, so flipping it is a no-op on
+    // the decoded signature ~1/16 of the time (flaky pass). A middle char is fully
+    // significant, so the decoded bytes always change and the cookie always rejects.
+    const mid = Math.floor(sig.length / 2);
+    parts[2] = `${sig.slice(0, mid)}${sig[mid] === "A" ? "B" : "A"}${sig.slice(mid + 1)}`;
     expect(await verifyOperatorSession(parts.join("."), TOKEN_A)).toBe(false);
   });
 

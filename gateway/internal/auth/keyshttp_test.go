@@ -311,12 +311,18 @@ func TestRotateKeysHandler_InGraceKey_409(t *testing.T) {
 	if rec2.Code != http.StatusConflict {
 		t.Fatalf("re-rotate of in-grace key status = %d, want 409, body = %s", rec2.Code, rec2.Body.String())
 	}
-	var body map[string]map[string]string
+	// The apierror envelope carries a bool retryable field, so decoding into
+	// map[string]map[string]string fails on valid responses.
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(rec2.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode 409 response: %v", err)
 	}
-	if code := body["error"]["code"]; code != "KEY_ALREADY_ROTATED" {
-		t.Errorf("error code = %q, want KEY_ALREADY_ROTATED", code)
+	if body.Error.Code != "KEY_ALREADY_ROTATED" {
+		t.Errorf("error code = %q, want KEY_ALREADY_ROTATED", body.Error.Code)
 	}
 }
 
