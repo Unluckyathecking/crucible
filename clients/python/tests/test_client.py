@@ -15,8 +15,6 @@ from typing import Any, Callable, Dict, Optional
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-import pytest
-
 from crucible_client import ApiError, Client
 
 
@@ -453,11 +451,11 @@ def test_healthz_non_utf8_error_body():
             assert e.code == "UNKNOWN"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="Python's int-to-str conversion digit limit (>4300) is enforced only on 3.11+; the pyproject floor is 3.9",
-)
 def test_healthz_oversized_json_integer_error_body():
+    if sys.version_info < (3, 11):
+        # The int-to-str digit limit this exercises exists only on 3.11+;
+        # older parsers accept the literal and no ValueError path exists.
+        return
     def handler(req):
         huge_int = b"9" * 5000
         body = b'{"error":{"code":"X","message":"m","retryable":false,"n":' + huge_int + b"}}"
