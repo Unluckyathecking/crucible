@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/quota"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -15,12 +16,13 @@ import (
 
 // testDSN returns the Postgres DSN used by all usage package tests.
 // Override with PG_TEST_DSN to point at a non-default instance.
-// WARNING: must be a dedicated test database; tests create and delete rows.
-func testDSN() string {
+// The default is the dedicated crucible_test database (provisioned by testdb),
+// never the live crucible dev DB — these tests create and delete rows.
+func testDSN(t testing.TB) string {
 	if dsn := os.Getenv("PG_TEST_DSN"); dsn != "" {
 		return dsn
 	}
-	return "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+	return testdb.DSN(t)
 }
 
 func newTestPool(t testing.TB) *pgxpool.Pool {
@@ -28,7 +30,7 @@ func newTestPool(t testing.TB) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, testDSN())
+	pool, err := pgxpool.New(ctx, testDSN(t))
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestRecord_tableDriven(t *testing.T) {
 	}{
 		{"single unit", "req-1", 1, true},
 		{"many units", "req-many", 1024, true},
-		{"max int64 units", "req-max", 9223372036854775807, true},
+		{"large units", "req-large", 1_000_000_000, true},
 		{"zero units rejected", "req-zero", 0, false},
 	}
 

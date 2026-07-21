@@ -21,6 +21,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 )
 
 // testInfra groups the real Postgres + Redis dependencies needed by integration tests.
@@ -37,7 +38,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, "postgres://crucible@localhost:5432/crucible?sslmode=disable")
+	pool, err := pgxpool.New(ctx, testdb.DSN(t))
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}

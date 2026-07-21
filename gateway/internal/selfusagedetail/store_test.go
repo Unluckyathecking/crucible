@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/selfusagedetail"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 )
 
 // newTestPostgres returns a pool for the local test database, or skips the
@@ -24,7 +25,7 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 			dsn = v
 			explicit = true
 		} else {
-			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+			dsn = testdb.DSN(t)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

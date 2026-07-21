@@ -11,11 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+	dsn := testdb.DSN(t)
 	if v := os.Getenv("TEST_DATABASE_URL"); v != "" {
 		dsn = v
 	}

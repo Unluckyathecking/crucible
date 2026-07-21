@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 )
 
 // newTestPostgres mirrors the pattern used across gateway/internal (e.g.
@@ -29,7 +30,7 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 			dsn = v
 			explicit = true
 		} else {
-			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+			dsn = testdb.DSN(t)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

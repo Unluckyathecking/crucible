@@ -1,6 +1,7 @@
 package textkit
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/openapi"
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 	"github.com/Unluckyathecking/crucible/gateway/test/harness"
 	crucible "github.com/Unluckyathecking/crucible/workers/sdk-go"
 	"github.com/Unluckyathecking/crucible/workers/stubs/textkit/handler"
@@ -51,20 +54,28 @@ func newTestHTTPClient(t *testing.T) *http.Client {
 
 func postgresDSN(t *testing.T) string {
 	t.Helper()
-	v := os.Getenv("POSTGRES_DSN")
-	if v == "" {
-		t.Fatal("POSTGRES_DSN not set; required for integration tests")
+	if v := os.Getenv("POSTGRES_DSN"); v != "" {
+		return v
 	}
-	return v
+	return testdb.DSN(t)
 }
 
 func redisURL(t *testing.T) string {
 	t.Helper()
-	v := os.Getenv("REDIS_URL")
-	if v == "" {
-		t.Fatal("REDIS_URL not set; required for integration tests")
+	if v := os.Getenv("REDIS_URL"); v != "" {
+		return v
 	}
-	return v
+	// Match the gateway/internal convention: fall back to the local default and
+	// skip (not fail) when Redis is genuinely unreachable.
+	const addr = "localhost:6379"
+	c := redis.NewClient(&redis.Options{Addr: addr})
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("redis unavailable on %s, skipping: %v", addr, err)
+	}
+	return "redis://" + addr
 }
 
 // newTestServer boots the real gateway middleware chain with the textkit
