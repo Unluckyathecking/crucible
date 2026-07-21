@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
           cache-dependency-path: |
             gateway/go.sum
@@ -55,7 +55,8 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379
           POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
-        run: cd gateway && go vet ./... && go test -race -timeout 9m $(go list ./... | grep -v '/test')
+        # -p 1 serialises these DB-backed package tests so parallel packages don't race one another on the shared CI Postgres.
+        run: cd gateway && go vet ./... && go test -p 1 -race -timeout 9m $(go list ./... | grep -v '/test')
       - name: gateway integration tests
         # timeout-minutes (15) is 3m beyond the binary -timeout (12m) so the job watchdog
         # fires only on genuine hangs; the extra time lets cleanup goroutines flush and
@@ -65,7 +66,8 @@ jobs:
           REDIS_URL: redis://localhost:6379
           POSTGRES_DSN: postgres://crucible:ci_test@localhost:5432/crucible?sslmode=disable
         # -race: data-race detector; -count=1: disables test result caching; -shuffle=on: randomises order.
-        run: cd gateway && go vet ./test/... && go test -race -count=1 -shuffle=on -timeout 12m ./test/...
+        # -p 1 serialises the DB-backed test packages so they don't race each other applying migrations to the shared CI Postgres.
+        run: cd gateway && go vet ./test/... && go test -p 1 -race -count=1 -shuffle=on -timeout 12m ./test/...
 
       - name: sdk-go test
         run: cd workers/sdk-go && go vet ./... && go test -race ./...
@@ -122,7 +124,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
           cache-dependency-path: |
             gateway/go.sum
