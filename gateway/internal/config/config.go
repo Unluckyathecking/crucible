@@ -48,10 +48,19 @@ type Config struct {
 	StripeWebhookSecret string `envconfig:"STRIPE_WEBHOOK_SECRET" required:"true"`
 	StripeMeterName     string `envconfig:"STRIPE_METER_NAME"     default:"crucible_units"`
 
+	// Self-serve Stripe Checkout and Billing Portal redirect URLs. The
+	// /v1/billing/checkout and /v1/billing/portal routes activate only when all
+	// three — plus StripeSecretKey — are set; any empty (the default) leaves the
+	// feature off and those routes keep returning 503. main.go gates construction
+	// of Deps.Checkout on this, so no cross-field validation is done here.
+	CheckoutSuccessURL string `envconfig:"CHECKOUT_SUCCESS_URL" default:""`
+	CheckoutCancelURL  string `envconfig:"CHECKOUT_CANCEL_URL"  default:""`
+	PortalReturnURL    string `envconfig:"PORTAL_RETURN_URL"    default:""`
+
 	// Security
 	APIKeyPrefix    string `envconfig:"API_KEY_PREFIX"     default:"cru_"`
 	APIKeyHashSalt  string `envconfig:"API_KEY_HASH_SALT"  required:"true"`
-	DashboardOrigin string `envconfig:"DASHBOARD_ORIGIN"   default:"http://localhost:3001"`
+	DashboardOrigin string `envconfig:"DASHBOARD_ORIGIN"   default:"http://localhost:3000"`
 	// OperatorToken gates the /v1/admin/* read-only subrouter. Empty (default)
 	// disables the admin routes entirely; they return 401 if reached.
 	// Generate with: openssl rand -hex 32
@@ -87,9 +96,7 @@ type Config struct {
 	// transport) async job failure before it dead-letters to terminal
 	// 'failed'; a deterministic worker error or a billable_units<1
 	// violation is never retried regardless of this value. Conservative
-	// default: matches jobs.ExecutorConfig's own zero-value fallback, so
-	// the async path retries transient failures even before this value is
-	// wired through to jobs.NewExecutor.
+	// default: matches jobs.ExecutorConfig's own zero-value fallback.
 	JobMaxAttempts int `envconfig:"JOB_MAX_ATTEMPTS" default:"3"`
 	// JobRetryBackoffMS is the base delay before an async job's first
 	// retry; each subsequent retry doubles it, bounded (see

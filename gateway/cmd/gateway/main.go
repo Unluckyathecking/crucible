@@ -23,6 +23,7 @@ import (
 	"github.com/Unluckyathecking/crucible/gateway/internal/cache"
 	"github.com/Unluckyathecking/crucible/gateway/internal/config"
 	"github.com/Unluckyathecking/crucible/gateway/internal/db"
+	"github.com/Unluckyathecking/crucible/gateway/internal/errorlog"
 	"github.com/Unluckyathecking/crucible/gateway/internal/idempotency"
 	"github.com/Unluckyathecking/crucible/gateway/internal/jobs"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
@@ -46,6 +47,14 @@ func (r *redisPinger) Ping(ctx context.Context) error { return r.c.Ping(ctx).Err
 type pgPinger struct{ p *pgxpool.Pool }
 
 func (p *pgPinger) Ping(ctx context.Context) error { return p.p.Ping(ctx) }
+
+// redisCacheDeleter adapts *redis.Client to billing.CacheDeleter: the raw
+// client's Del returns *redis.IntCmd, not error.
+type redisCacheDeleter struct{ c *redis.Client }
+
+func (r *redisCacheDeleter) Del(ctx context.Context, keys ...string) error {
+	return r.c.Del(ctx, keys...).Err()
+}
 
 func main() {
 	// Best-effort .env load; absent .env is fine if env is set externally (CI, docker, prod).
@@ -142,7 +151,10 @@ func main() {
 	recorder := usage.NewRecorder(pool, quotaTracker)
 	stripe := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeMeterName)
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
-	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool)
+	// WithCacheDeleter lets subscription/customer webhook handlers flush the
+	// auth:<prefix> Redis cache immediately on a plan change, instead of waiting
+	// out the 60 s TTL (CLAUDE.md invariant #7).
+	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool, billing.WithCacheDeleter(&redisCacheDeleter{redisClient}))
 	respCacheStore := respcache.NewStore(redisClient)
 	// Constructed once here and injected into BOTH server.Deps (below) and
 	// jobs.NewExecutor: a single shared Emitter/delivery-worker instance, not
@@ -172,10 +184,13 @@ func main() {
 	jobProxyClient := proxy.New(cfg.WorkerURL, jobHTTPTimeout, asyncMaxConns, components.Policy).
 		WithSecret(cfg.WorkerSharedSecret)
 	jobExecutor := jobs.NewExecutor(jobStore, jobProxyClient, recorder, jobs.ExecutorConfig{
-		PoolSize:      cfg.JobWorkerPoolSize,
-		PollInterval:  cfg.JobPollInterval(),
-		JobTimeout:    cfg.JobTimeout(),
-		ErrorExposure: cfg.ErrorExposure,
+		PoolSize:               cfg.JobWorkerPoolSize,
+		PollInterval:           cfg.JobPollInterval(),
+		JobTimeout:             cfg.JobTimeout(),
+		ErrorExposure:          cfg.ErrorExposure,
+		MaxAttempts:            cfg.JobMaxAttempts,
+		RetryBackoff:           cfg.JobRetryBackoff(),
+		MaxInflightPerCustomer: cfg.JobMaxInflightPerCustomer,
 	})
 	// Same Emitter instance injected into server.Deps below — one shared
 	// delivery worker, not a second Emitter.
@@ -210,6 +225,16 @@ func main() {
 		jobExecutor.Run(rootCtx)
 	}()
 
+	// Self-serve Stripe Checkout / Billing Portal. Constructed only when all
+	// three redirect URLs and the Stripe key are set; otherwise left as a nil
+	// interface so /v1/billing/checkout and /v1/billing/portal keep returning
+	// 503 (server.Deps.Checkout == nil). Declared as the interface type, not
+	// *billing.CheckoutClient, so an unconfigured build stays a true nil.
+	var checkout server.BillingService
+	if cfg.StripeSecretKey != "" && cfg.CheckoutSuccessURL != "" && cfg.CheckoutCancelURL != "" && cfg.PortalReturnURL != "" {
+		checkout = billing.NewCheckoutClient(cfg.StripeSecretKey, cfg.CheckoutSuccessURL, cfg.CheckoutCancelURL, cfg.PortalReturnURL, pool)
+	}
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: server.NewRouter(&server.Deps{
@@ -229,6 +254,8 @@ func main() {
 			TracerProvider: components.TracerProvider,
 			OperatorStore:  operator.NewStore(pool),
 			OperatorToken:  cfg.OperatorToken,
+			Checkout:       checkout,
+			ErrorRecorder:  errorlog.New(pool),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

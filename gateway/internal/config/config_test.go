@@ -91,6 +91,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"PostgresMaxConns", c.PostgresMaxConns, 20},
 		{"StripeMeterName", c.StripeMeterName, "crucible_units"},
 		{"APIKeyPrefix", c.APIKeyPrefix, "cru_"},
+		{"DashboardOrigin", c.DashboardOrigin, "http://localhost:3000"},
 		{"ErrorExposure", c.ErrorExposure, "sanitized"},
 		{"LogLevel", c.LogLevel, "info"},
 		{"MetricsPort", c.MetricsPort, 9090},
@@ -991,5 +992,49 @@ func TestWebhookMaxInflightPerCustomerPositiveIsValid(t *testing.T) {
 	}
 	if c.WebhookMaxInflightPerCustomer != 3 {
 		t.Errorf("WebhookMaxInflightPerCustomer = %d, want 3", c.WebhookMaxInflightPerCustomer)
+	}
+}
+
+// --- Checkout / Billing Portal URL field tests ---
+
+// TestCheckoutURLsDefaultEmpty verifies the three redirect URLs default to empty,
+// which keeps the self-serve billing routes off (they return 503 in main.go).
+func TestCheckoutURLsDefaultEmpty(t *testing.T) {
+	setRequiredEnv(t)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CheckoutSuccessURL != "" {
+		t.Errorf("CheckoutSuccessURL = %q, want empty (feature off by default)", c.CheckoutSuccessURL)
+	}
+	if c.CheckoutCancelURL != "" {
+		t.Errorf("CheckoutCancelURL = %q, want empty (feature off by default)", c.CheckoutCancelURL)
+	}
+	if c.PortalReturnURL != "" {
+		t.Errorf("PortalReturnURL = %q, want empty (feature off by default)", c.PortalReturnURL)
+	}
+}
+
+// TestCheckoutURLsParsed verifies the three redirect URLs are read from the environment.
+func TestCheckoutURLsParsed(t *testing.T) {
+	setRequiredEnv(t)
+	setenv(t, "CHECKOUT_SUCCESS_URL", "https://app.example.com/billing/success")
+	setenv(t, "CHECKOUT_CANCEL_URL", "https://app.example.com/billing/cancel")
+	setenv(t, "PORTAL_RETURN_URL", "https://app.example.com/billing")
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.CheckoutSuccessURL != "https://app.example.com/billing/success" {
+		t.Errorf("CheckoutSuccessURL = %q, want the value set", c.CheckoutSuccessURL)
+	}
+	if c.CheckoutCancelURL != "https://app.example.com/billing/cancel" {
+		t.Errorf("CheckoutCancelURL = %q, want the value set", c.CheckoutCancelURL)
+	}
+	if c.PortalReturnURL != "https://app.example.com/billing" {
+		t.Errorf("PortalReturnURL = %q, want the value set", c.PortalReturnURL)
 	}
 }
