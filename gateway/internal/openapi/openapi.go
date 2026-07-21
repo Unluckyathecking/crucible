@@ -521,6 +521,18 @@ var webhookEventDescriptors = []struct {
 			Required: []string{"job_id", "operation", "status", "error_code"},
 		},
 	},
+	{
+		eventType: events.EndpointDisabled,
+		summary:   "Fired when one of the customer's own webhook endpoints auto-disables after exceeding the consecutive delivery-failure threshold. Delivered to the customer's other active endpoints, never to the one just disabled.",
+		schema: &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"endpoint_id": {Type: "string", Description: "The auto-disabled endpoint's UUID"},
+				"reason":      {Type: "string", Description: "Always \"delivery_failures\" for this event"},
+			},
+			Required: []string{"endpoint_id", "reason"},
+		},
+	},
 }
 
 // buildWebhooks constructs the `webhooks` document section from webhookEventDescriptors.
@@ -922,6 +934,8 @@ func webhookEndpointsPathItems() map[string]PathItem {
 		"active":            {Type: "boolean"},
 		"subscribed_events": {Type: "array", Description: "Event types this endpoint receives; null means every event type"},
 		"created_at":        {Type: "string", Description: "RFC3339 creation timestamp"},
+		"disabled_at":       {Type: "string", Description: "RFC3339 timestamp the endpoint was auto-disabled at; null unless currently auto-disabled"},
+		"disabled_reason":   {Type: "string", Description: "Why the endpoint was auto-disabled, e.g. \"delivery_failures\"; null unless currently auto-disabled"},
 	}
 	createdProps := map[string]*Schema{}
 	for k, v := range endpointProps {
@@ -1057,6 +1071,24 @@ func webhookEndpointsPathItems() map[string]PathItem {
 					"400": errResp("Bad request — malformed endpoint id"),
 					"401": errResp("Unauthorized — missing or invalid API key"),
 					"404": errResp("Endpoint not found (includes ids owned by another customer)"),
+					"500": errResp("Internal server error"),
+				},
+			},
+		},
+		"/v1/webhooks/endpoints/{id}/enable": {
+			Post: &Operation{
+				OperationID: "enable_webhook_endpoint",
+				Summary:     "Re-enable a webhook endpoint owned by the authenticated customer that was auto-disabled for chronic delivery failure",
+				Tags:        []string{"webhooks"},
+				Security:    []SecurityRequirement{{apiKeyScheme: []string{}}},
+				Parameters: []Parameter{
+					{Name: "id", In: "path", Required: true, Description: "Endpoint UUID", Schema: &Schema{Type: "string"}},
+				},
+				Responses: map[string]Response{
+					"204": {Description: "Endpoint re-enabled"},
+					"400": errResp("Bad request — malformed endpoint id"),
+					"401": errResp("Unauthorized — missing or invalid API key"),
+					"404": errResp("Endpoint not found, owned by another customer, or not currently auto-disabled (includes customer soft-deleted endpoints)"),
 					"500": errResp("Internal server error"),
 				},
 			},

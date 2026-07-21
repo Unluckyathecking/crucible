@@ -118,6 +118,8 @@ export interface ListWebhookEndpointsResponse {
 export interface CreateWebhookEndpointResponse {
   active: boolean;
   created_at: string;
+  disabled_at: string | null;
+  disabled_reason: string | null;
   id: string;
   secret_hex: string;
   subscribed_events: unknown[] | null;
@@ -332,6 +334,14 @@ export class Client {
    */
   async updateWebhookEndpointSubscription(id: string, payload?: Record<string, unknown>, apiKey?: string): Promise<void> {
     await this.requestVoid("PATCH", `/v1/webhooks/endpoints/${encodeURIComponent(id)}`, payload ?? {}, apiKey ?? this.defaultApiKey);
+  }
+
+  /**
+   * POST /v1/webhooks/endpoints/{id}/enable — enable webhook endpoint.
+   * @param apiKey - Override the default API key for this call.
+   */
+  async enableWebhookEndpoint(id: string, apiKey?: string): Promise<void> {
+    await this.requestVoid("POST", `/v1/webhooks/endpoints/${encodeURIComponent(id)}/enable`, undefined, apiKey ?? this.defaultApiKey);
   }
 
   /**

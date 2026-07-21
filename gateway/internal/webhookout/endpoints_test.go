@@ -836,6 +836,147 @@ func TestRotateEndpointSecretHandler_NoAuth(t *testing.T) {
 	}
 }
 
+// --- auto-disabled endpoint lifecycle ---------------------------------------
+//
+// An auto-disabled endpoint (health.go) stays in ListEndpoints, so every
+// management call the customer can see it through has to work on it too. When
+// delete/PATCH/rotate still required active = TRUE, the only escape was
+// enable-then-delete, which restarts the doomed deliveries that disabled it
+// for as long as the second call takes.
+
+// listEndpointIDs GETs /v1/webhooks/endpoints as customerID and returns the
+// endpoint ids on the first page.
+func listEndpointIDs(t *testing.T, r http.Handler, customerID uuid.UUID) []uuid.UUID {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/webhooks/endpoints", nil).WithContext(testKeyContext(customerID)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list endpoints: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var page paging.Page[Endpoint]
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	ids := make([]uuid.UUID, 0, len(page.Items))
+	for _, e := range page.Items {
+		ids = append(ids, e.ID)
+	}
+	return ids
+}
+
+func TestDeleteEndpointHandler_AutoDisabled_Succeeds(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "delete-autodisabled@example.com")
+	ep := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	forceDisable(t, pool, ep)
+	r := newEndpointsRouter(pool)
+
+	if got := listEndpointIDs(t, r, cust); len(got) != 1 || got[0] != ep {
+		t.Fatalf("precondition: auto-disabled endpoint not listed, got %v", got)
+	}
+
+	delRec := httptest.NewRecorder()
+	r.ServeHTTP(delRec, httptest.NewRequest(http.MethodDelete, "/v1/webhooks/endpoints/"+ep.String(), nil).
+		WithContext(testKeyContext(cust)))
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", delRec.Code, delRec.Body.String())
+	}
+
+	snap := fetchEndpointHealth(t, pool, ep)
+	if snap.active {
+		t.Error("endpoint still active after delete")
+	}
+	if snap.disabledAt != nil || snap.disabledReason != nil {
+		t.Errorf("delete left the auto-disable marks: disabled_at = %v, disabled_reason = %v", snap.disabledAt, snap.disabledReason)
+	}
+	if got := listEndpointIDs(t, r, cust); len(got) != 0 {
+		t.Errorf("deleted endpoint still listed: %v", got)
+	}
+	// A deleted endpoint must not be revivable, whatever state it was in first.
+	if err := EnableEndpoint(context.Background(), pool, ep, cust); err != ErrEndpointNotFound {
+		t.Errorf("EnableEndpoint after delete: err = %v, want ErrEndpointNotFound", err)
+	}
+}
+
+func TestUpdateEndpointSubscriptionHandler_AutoDisabled_Succeeds(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "patch-autodisabled@example.com")
+	ep := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	forceDisable(t, pool, ep)
+	r := newEndpointsRouter(pool)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, patchEndpointReq(t, cust, ep, map[string]any{"subscribed_events": []string{events.QuotaExceeded}}))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := storedSubscribedEvents(t, pool, ep); len(got) != 1 || got[0] != events.QuotaExceeded {
+		t.Errorf("subscribed_events = %v, want [%s]", got, events.QuotaExceeded)
+	}
+
+	snap := fetchEndpointHealth(t, pool, ep)
+	if snap.active {
+		t.Error("PATCH re-enabled an auto-disabled endpoint")
+	}
+	if snap.disabledReason == nil || *snap.disabledReason != DisabledReasonDeliveryFailures {
+		t.Errorf("disabled_reason = %v, want %q", snap.disabledReason, DisabledReasonDeliveryFailures)
+	}
+}
+
+func TestRotateEndpointSecretHandler_AutoDisabled_Succeeds(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "rotate-autodisabled@example.com")
+	ep := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	originalSecret := storedSecret(t, pool, ep)
+	forceDisable(t, pool, ep)
+	r := newEndpointsRouter(pool)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+ep.String()+"/rotate-secret", nil).
+		WithContext(testKeyContext(cust)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if hex.EncodeToString(storedSecret(t, pool, ep)) == hex.EncodeToString(originalSecret) {
+		t.Error("stored secret was not rotated")
+	}
+	if fetchEndpointHealth(t, pool, ep).active {
+		t.Error("rotate-secret re-enabled an auto-disabled endpoint")
+	}
+}
+
+// TestEndpointHandlers_SoftDeleted_404 pins the other edge of
+// visibleEndpointSQL: widening delete/PATCH/rotate to auto-disabled rows must
+// not also reach customer soft-deleted ones, which share active = FALSE but
+// leave disabled_reason NULL.
+func TestEndpointHandlers_SoftDeleted_404(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "softdeleted-404@example.com")
+	ep := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	if err := DeleteEndpoint(context.Background(), pool, ep, cust); err != nil {
+		t.Fatalf("DeleteEndpoint: %v", err)
+	}
+	r := newEndpointsRouter(pool)
+
+	cases := []struct {
+		name string
+		req  *http.Request
+	}{
+		{"delete", httptest.NewRequest(http.MethodDelete, "/v1/webhooks/endpoints/"+ep.String(), nil).WithContext(testKeyContext(cust))},
+		{"patch", patchEndpointReq(t, cust, ep, map[string]any{"subscribed_events": []string{events.QuotaExceeded}})},
+		{"rotate-secret", httptest.NewRequest(http.MethodPost, "/v1/webhooks/endpoints/"+ep.String()+"/rotate-secret", nil).WithContext(testKeyContext(cust))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, c.req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestValidateEndpointURL exercises the validation function directly, table-style.
 func TestValidateEndpointURL(t *testing.T) {
 	cases := []struct {

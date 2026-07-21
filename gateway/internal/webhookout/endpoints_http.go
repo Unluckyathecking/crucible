@@ -202,6 +202,41 @@ func RotateEndpointSecretHandler(db *pgxpool.Pool, customerID CustomerIDFunc) ht
 	}
 }
 
+// EnableEndpointHandler handles POST /v1/webhooks/endpoints/{id}/enable:
+// re-enables an endpoint owned by the authenticated customer that was
+// auto-disabled for chronic delivery failure. An id owned by another
+// customer, that doesn't exist, or that isn't currently auto-disabled
+// (including a customer soft-deleted one) returns 404 either way
+// (IDOR-safe; see EnableEndpoint's doc comment).
+func EnableEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		custID, ok := customerID(r)
+		if !ok {
+			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			apierror.Write(w, rid, http.StatusBadRequest, apierror.BAD_REQUEST, "invalid endpoint id", false)
+			return
+		}
+
+		if err := EnableEndpoint(r.Context(), db, id, custID); err != nil {
+			if errors.Is(err, ErrEndpointNotFound) {
+				apierror.Write(w, rid, http.StatusNotFound, "NOT_FOUND", "webhook endpoint not found", false)
+				return
+			}
+			log.Error().Err(err).Str("request_id", rid).Msg("webhookout: enable endpoint failed")
+			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "enable endpoint failed", false)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // DeleteEndpointHandler handles DELETE /v1/webhooks/endpoints/{id}: deactivates
 // an endpoint owned by the authenticated customer. An id owned by another
 // customer, or that doesn't exist, returns 404 either way (IDOR-safe).

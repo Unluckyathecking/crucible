@@ -37,6 +37,7 @@ func TestAllEventTypesMatchesConstants(t *testing.T) {
 		APIKeyRevoked:       true,
 		JobSucceeded:        true,
 		JobFailed:           true,
+		EndpointDisabled:    true,
 	}
 	if len(AllEventTypes) != len(want) {
 		t.Fatalf("AllEventTypes has %d entries, want %d", len(AllEventTypes), len(want))

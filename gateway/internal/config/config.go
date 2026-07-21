@@ -155,6 +155,13 @@ type Config struct {
 	// a product clone opts in by setting a positive value.
 	WebhookMaxInflightPerCustomer int `envconfig:"WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER" default:"0"`
 
+	// WebhookEndpointFailureThreshold is the number of consecutive terminal
+	// dead-letters (see webhookout.Emitter.markDeadLetter) after which a
+	// webhook endpoint auto-disables (see webhookout/health.go). Zero-config-safe:
+	// 0 (default) disables auto-disable entirely, leaving today's forever-retry
+	// behaviour byte-identical — a product clone opts in by setting a positive value.
+	WebhookEndpointFailureThreshold int `envconfig:"WEBHOOK_ENDPOINT_FAILURE_THRESHOLD" default:"0"`
+
 	// Observability
 	LogLevel    string `envconfig:"LOG_LEVEL"    default:"info"`
 	MetricsPort int    `envconfig:"METRICS_PORT" default:"9090"`
@@ -340,6 +347,11 @@ func Load() (*Config, error) {
 	// is a misconfiguration error.
 	if c.WebhookMaxInflightPerCustomer < 0 {
 		return nil, fmt.Errorf("WEBHOOK_MAX_INFLIGHT_PER_CUSTOMER must be >= 0 (got %d)", c.WebhookMaxInflightPerCustomer)
+	}
+	// <= 0 (default 0) disables auto-disable entirely — only negative is a
+	// misconfiguration error, matching WebhookMaxInflightPerCustomer's validation.
+	if c.WebhookEndpointFailureThreshold < 0 {
+		return nil, fmt.Errorf("WEBHOOK_ENDPOINT_FAILURE_THRESHOLD must be >= 0 (got %d)", c.WebhookEndpointFailureThreshold)
 	}
 	// --- OTel tracing validation ---
 	// NaN fails all comparisons in Go, so it must be checked explicitly — strconv.ParseFloat
