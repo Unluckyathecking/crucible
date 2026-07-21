@@ -193,6 +193,72 @@ Readiness probe. Checks Redis and Postgres connectivity. No authentication requi
 
 Status is `"degraded"` if any dependency is unreachable.
 
+## Account and Management Endpoints
+
+These endpoints manage your usage, keys, webhooks, async jobs, and billing. All require the same Bearer API key as the invoke endpoints. The key, webhook, and job list endpoints page with `page` and `per_page` and return a `{"items": [...], "total": N}` envelope. The two exports `GET /v1/usage/events` and `GET /v1/errors` instead page with `page` and `limit` and return `{"data": [...], "has_more": bool, "page": N, "limit": N}`.
+
+### Usage
+
+**GET /v1/usage** — your current billing-period consumption: plan id, units used, monthly cap, remaining balance, the period window, and a per-operation breakdown.
+
+**GET /v1/usage/events** — your individual usage events (`id`, `operation`, `billable_units`, `created_at`), newest first. Filter by date and operation. Add `?format=csv` (or send `Accept: text/csv`) for a CSV export to reconcile against Stripe invoices.
+
+### Errors
+
+**GET /v1/errors** — your recent error events (every non-2xx `/v1` response), newest first. Filter by date, operation, and error code.
+
+### API Keys
+
+New keys are minted in the dashboard. Over the API you can list, rotate, and revoke them.
+
+**GET /v1/keys** — list your active keys (`id`, visible prefix, name, timestamps). The secret is never returned.
+
+**POST /v1/keys/{id}/rotate** — issue a replacement key. Body `{"grace_secs": N}` keeps the old key valid for a grace window (default `3600`, max `604800`). The new key is shown once.
+
+**DELETE /v1/keys/{id}** — revoke a key immediately.
+
+### Outbound Webhooks
+
+Register endpoints to receive signed event deliveries (see [Verifying Webhooks](#verifying-webhooks)).
+
+**POST /v1/webhooks/endpoints** — register an `https://` delivery URL. Optional `subscribed_events` narrows the event types; omit it to receive all. Returns `secret_hex` once — store it.
+
+**GET /v1/webhooks/endpoints** — list your registered endpoints. Secrets are never included.
+
+**PATCH /v1/webhooks/endpoints/{id}** — replace the endpoint's subscribed event types.
+
+**DELETE /v1/webhooks/endpoints/{id}** — deactivate an endpoint.
+
+**POST /v1/webhooks/endpoints/{id}/rotate-secret** — issue a new signing secret. It is shown once; the previous secret stops verifying immediately.
+
+**GET /v1/webhooks/deliveries** — the delivery log across all your endpoints (status, attempts, last response code), newest first.
+
+### Async Jobs
+
+Operations your product runs asynchronously answer a `POST /v1/{operation}` with `202 {"job_id": "..."}` instead of an inline result. The request still passes auth, rate-limit, and quota admission at submission time. Poll for the outcome:
+
+**GET /v1/jobs/{id}** — a job's `status` (`queued`, `running`, `succeeded`, `failed`, `cancelled`), and its `result` or `error` once terminal.
+
+**GET /v1/jobs** — your job history, newest first. Filter by `status` and `operation`.
+
+**POST /v1/jobs/{id}/cancel** — withdraw a job while it is still queued. A running or finished job returns `409`.
+
+### Billing
+
+**POST /v1/billing/checkout** — body `{"plan_id": "pro"}`. Returns `{"url": "..."}`, a Stripe Checkout redirect for the customer to start or change a subscription.
+
+**POST /v1/billing/portal** — returns `{"url": "..."}`, a Stripe Billing Portal redirect for self-service management of payment method, cancellation, and invoices.
+
+Billing lifecycle: the customer starts a subscription at `POST /v1/billing/checkout`; on payment, Stripe calls the gateway's webhook, which links the subscription to the customer and sets their plan; metered usage flushes to Stripe as it accrues; the customer manages or cancels through the portal.
+
+### Operator Endpoints
+
+The `/v1/admin/*` routes (customers, plans, audit log, per-customer usage, jobs, webhook dead-letters) exist for product operators behind an `OPERATOR_TOKEN`. They are mostly read-only, plus dead-letter replay and job requeue/release. They are separate from the customer API-key path and are not part of the customer-facing API.
+
+## Idempotency
+
+Any `POST /v1/{operation}` accepts an optional `Idempotency-Key` header (max 255 characters). An identical key replayed within 24 hours returns the stored response without re-invoking the worker or re-billing. A concurrent request with the same key returns `409`; reusing a key with a different request body returns `422`.
+
 ## Error Reference
 
 All errors follow a consistent envelope:
@@ -215,10 +281,9 @@ The `retryable` field indicates whether the same request might succeed if retrie
 |---|---|---|
 | 400 | `BAD_REQUEST` | Invalid JSON in the request body. |
 | 401 | `UNAUTHORIZED` | Missing, malformed, or invalid API key. |
-| 500 | `INTERNAL` | Auth lookup failed due to internal error (message: "auth lookup failed"). |
 | 429 | `RATE_LIMITED` | Per-minute rate limit exceeded for your plan. Retry after 60 seconds. |
 | 429 | `QUOTA_EXCEEDED` | Monthly billable-unit cap reached. Does not reset until the next billing cycle. |
-| 500 | `INTERNAL` | Unexpected server error. Include `X-Request-ID` when reporting. |
+| 500 | `INTERNAL` | Unexpected server error, including auth-lookup failures. Include `X-Request-ID` when reporting. |
 | 502 | `WORKER_UNREACHABLE` | The worker process did not respond within the timeout (default 10s). |
 | 502 | `WORKER_BAD_RESPONSE` | Worker returned success with `billable_units < 1`. Contract violation. |
 
@@ -457,4 +522,4 @@ Every response includes these security headers:
 
 ## CORS
 
-The gateway allows cross-origin requests from the configured dashboard origin only (`DASHBOARD_ORIGIN` env var, default `http://localhost:3001`). Allowed methods: `GET`, `POST`, `OPTIONS`. Allowed headers: `Authorization`, `Content-Type`, `X-Request-ID`. Credentials are not supported for cross-origin requests.
+The gateway allows cross-origin requests from the configured dashboard origin only (`DASHBOARD_ORIGIN` env var, default `http://localhost:3001`). Allowed methods: `GET`, `POST`, `PATCH`, `DELETE`, `OPTIONS`. Allowed headers: `Authorization`, `Content-Type`, `X-Request-ID`, `Idempotency-Key`. Credentials are not supported for cross-origin requests.
