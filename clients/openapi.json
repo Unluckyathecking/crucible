@@ -1655,6 +1655,14 @@
                       "type": "string",
                       "description": "RFC3339 creation timestamp"
                     },
+                    "disabled_at": {
+                      "type": "string",
+                      "description": "RFC3339 timestamp the endpoint was auto-disabled at; null unless currently auto-disabled"
+                    },
+                    "disabled_reason": {
+                      "type": "string",
+                      "description": "Why the endpoint was auto-disabled, e.g. \"delivery_failures\"; null unless currently auto-disabled"
+                    },
                     "id": {
                       "type": "string",
                       "description": "Endpoint UUID"
@@ -1869,6 +1877,76 @@
         }
       }
     },
+    "/v1/webhooks/endpoints/{id}/enable": {
+      "post": {
+        "operationId": "enable_webhook_endpoint",
+        "summary": "Re-enable a webhook endpoint owned by the authenticated customer that was auto-disabled for chronic delivery failure",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Endpoint re-enabled"
+          },
+          "400": {
+            "description": "Bad request — malformed endpoint id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Endpoint not found, owned by another customer, or not currently auto-disabled (includes customer soft-deleted endpoints)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/webhooks/endpoints/{id}/rotate-secret": {
       "post": {
         "operationId": "rotate_webhook_endpoint_secret",
@@ -2042,6 +2120,45 @@
                   "customer_id",
                   "old_key_id",
                   "new_key_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The registered endpoint acknowledged the webhook"
+          }
+        }
+      }
+    },
+    "endpoint.disabled": {
+      "post": {
+        "operationId": "webhook_endpoint_disabled",
+        "summary": "Fired when one of the customer's own webhook endpoints auto-disables after exceeding the consecutive delivery-failure threshold. Delivered to the customer's other active endpoints, never to the one just disabled.",
+        "description": "Delivered only to endpoints subscribed to this event type. An endpoint with no explicit subscribed_events value receives every event type (default).",
+        "tags": [
+          "webhooks"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "endpoint_id": {
+                    "type": "string",
+                    "description": "The auto-disabled endpoint's UUID"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "Always \"delivery_failures\" for this event"
+                  }
+                },
+                "required": [
+                  "endpoint_id",
+                  "reason"
                 ]
               }
             }

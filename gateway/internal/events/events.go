@@ -26,6 +26,13 @@ const (
 	// state, whether via a worker-reported structured error, a
 	// billable_units<1 contract violation, or retry-exhausted dead-letter.
 	JobFailed = "job.failed"
+	// EndpointDisabled fires when a webhook endpoint auto-disables after
+	// exceeding WEBHOOK_ENDPOINT_FAILURE_THRESHOLD consecutive dead-letters
+	// (see gateway/internal/webhookout/health.go). Delivered to the same
+	// customer's other active endpoints — never to the endpoint that was
+	// just disabled, since Emit only fans out to active = TRUE endpoints
+	// and this one no longer is.
+	EndpointDisabled = "endpoint.disabled"
 )
 
 // AllEventTypes is the single source of truth for the full event-type set.
@@ -39,6 +46,7 @@ var AllEventTypes = []string{
 	APIKeyRevoked,
 	JobSucceeded,
 	JobFailed,
+	EndpointDisabled,
 }
 
 // IsValidEventType reports whether eventType is a member of AllEventTypes.
@@ -99,4 +107,10 @@ type JobFailedPayload struct {
 	Operation string `json:"operation"`
 	Status    string `json:"status"`
 	ErrorCode string `json:"error_code"`
+}
+
+// EndpointDisabledPayload is the payload for EndpointDisabled.
+type EndpointDisabledPayload struct {
+	EndpointID string `json:"endpoint_id"`
+	Reason     string `json:"reason"`
 }

@@ -36,6 +36,7 @@
 //	crucible_idempotency_keys_reaped_total               — idempotency_keys rows deleted by retention (idempotency.Reaper)
 //	crucible_webhook_deliveries_reaped_total             — delivered webhook_deliveries rows deleted by retention (webhookout.DeliveryReaper)
 //	crucible_webhook_deliveries_throttled_total{reason}  — webhook delivery claims held back by the per-customer fairness cap; reason=inflight_cap (webhookout.Emitter.claimDue)
+//	crucible_webhook_endpoints_disabled_total            — webhook endpoints auto-disabled after exceeding the consecutive delivery-failure threshold (label-free, webhookout.recordDeliveryFailure)
 //
 // Note: worker_retries_total and worker_breaker_state are recorded by proxy.Client, not by
 // Middleware — they are worker-call-scoped, not HTTP-request-scoped.
@@ -302,6 +303,15 @@ var (
 		Name: "crucible_webhook_deliveries_reaped_total",
 		Help: "Number of delivered webhook_deliveries rows deleted by the retention reaper (label-free).",
 	})
+
+	// WebhookEndpointsDisabledTotal counts webhook endpoints auto-disabled
+	// after crossing WEBHOOK_ENDPOINT_FAILURE_THRESHOLD consecutive
+	// dead-letters (gateway/internal/webhookout.recordDeliveryFailure).
+	// Always zero when the knob is at its default disabled value. Label-free.
+	WebhookEndpointsDisabledTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crucible_webhook_endpoints_disabled_total",
+		Help: "Number of webhook endpoints auto-disabled after exceeding the consecutive delivery-failure threshold (label-free).",
+	})
 )
 
 // Metrics is a test-friendly holder for all observability counters.
@@ -342,6 +352,7 @@ type Metrics struct {
 	IdempotencyKeysReapedTotal      prometheus.Counter
 	WebhookDeliveriesReapedTotal    prometheus.Counter
 	WebhookDeliveriesThrottledTotal *prometheus.CounterVec
+	WebhookEndpointsDisabledTotal   prometheus.Counter
 }
 
 // NewMetricsForTest creates all metrics registered against the supplied Registerer.
@@ -488,6 +499,10 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 			Name: "crucible_webhook_deliveries_throttled_total",
 			Help: "Number of outbound webhook delivery claims held back by the per-customer fairness cap, by reason (inflight_cap).",
 		}, []string{"reason"}),
+		WebhookEndpointsDisabledTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "crucible_webhook_endpoints_disabled_total",
+			Help: "Number of webhook endpoints auto-disabled after exceeding the consecutive delivery-failure threshold (label-free).",
+		}),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -524,6 +539,7 @@ func NewMetricsForTest(reg prometheus.Registerer) *Metrics {
 		m.IdempotencyKeysReapedTotal,
 		m.WebhookDeliveriesReapedTotal,
 		m.WebhookDeliveriesThrottledTotal,
+		m.WebhookEndpointsDisabledTotal,
 	)
 	return m
 }

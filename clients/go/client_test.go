@@ -303,7 +303,7 @@ func TestCreateWebhookEndpoint(t *testing.T) {
 		if reqBody["x"] == nil {
 			t.Error("expected request body to contain key x")
 		}
-		writeJSON(w, map[string]any{"active": true, "created_at": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": []any{}, "url": "ok"})
+		writeJSON(w, map[string]any{"active": true, "created_at": "ok", "disabled_at": "ok", "disabled_reason": "ok", "id": "ok", "secret_hex": "ok", "subscribed_events": []any{}, "url": "ok"})
 	})
 	resp, err := c.CreateWebhookEndpoint(context.Background(), "test-key", map[string]any{"x": 1})
 	if err != nil {
@@ -348,6 +348,22 @@ func TestUpdateWebhookEndpointSubscription(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	err := c.UpdateWebhookEndpointSubscription(context.Background(), "test-key", "test-id", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnableWebhookEndpoint(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/webhooks/endpoints/test-id/enable" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-API-Key"); got == "" {
+			t.Error("X-API-Key header missing")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	err := c.EnableWebhookEndpoint(context.Background(), "test-key", "test-id")
 	if err != nil {
 		t.Fatal(err)
 	}
