@@ -2243,6 +2243,10 @@ if first_typed_op:
     call_oversized_int = f"c.{first_typed_op.op_id}(" + ", ".join(py_test_call_args(first_typed_op)) + ")"
     oversized_json_int_test_py = "\n\n\n" + "\n".join([
         f"def test_{first_typed_op.op_id}_oversized_json_integer_error_body():",
+        "    if sys.version_info < (3, 11):",
+        "        # The int-to-str digit limit this exercises exists only on 3.11+;",
+        "        # older parsers accept the literal and no ValueError path exists.",
+        "        return",
         "    def handler(req):",
         '        huge_int = b"9" * 5000',
         '        body = b\'{"error":{"code":"X","message":"m","retryable":false,"n":\' + huge_int + b"}}"',
@@ -2485,6 +2489,7 @@ from __future__ import annotations
 import contextlib
 import http.server
 import json
+import sys
 import threading
 import time
 import urllib.error
