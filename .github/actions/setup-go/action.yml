@@ -1,0 +1,23 @@
+name: setup-go
+description: >
+  Go toolchain setup with the repo's pinned version and module caches. The
+  version pin lives here and nowhere else; workflows that intentionally track
+  the floating minor (the clone smoke test) pass go-version explicitly.
+inputs:
+  go-version:
+    description: Go version to install.
+    default: "1.25.12"
+  cache-dependency-path:
+    description: go.sum paths that key the module cache.
+    default: |
+      gateway/go.sum
+      workers/sdk-go/go.sum
+      workers/stubs/go/go.sum
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
