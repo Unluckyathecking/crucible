@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Unluckyathecking/crucible/gateway/internal/testdb"
 )
 
 // newTestPostgres mirrors the same pattern used in internal/operator/store_test.go
@@ -26,7 +28,7 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 			dsn = v
 			explicit = true
 		} else {
-			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+			dsn = testdb.DSN(t)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
