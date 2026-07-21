@@ -149,7 +149,7 @@ func (a jobsAdminAdapter) AdminGet(ctx context.Context, id uuid.UUID) (operator.
 	return adminJobFromStoreRow(j), true, nil
 }
 
-func (a jobsAdminAdapter) Requeue(ctx context.Context, id uuid.UUID) error {
+func (a jobsAdminAdapter) Requeue(ctx context.Context, id uuid.UUID) (bool, error) {
 	return a.store.Requeue(ctx, id)
 }
 

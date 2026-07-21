@@ -753,26 +753,29 @@ func (s *Store) CancelQueued(ctx context.Context, id, customerID uuid.UUID) (boo
 	return tag.RowsAffected() > 0, nil
 }
 
-// Requeue returns a claimed job to 'queued' without recording an error.
-// Not called by Executor itself — see Run's doc comment for why a job
-// interrupted by shutdown is left 'running' for the crash-recovery sweep to
-// reclaim rather than requeued immediately (avoids a second, concurrent
-// execution of a job whose worker call may still genuinely be in flight).
-// Retained as a general primitive for callers that can positively confirm
-// a job is safe to retry immediately (e.g. future operator tooling).
-func (s *Store) Requeue(ctx context.Context, id uuid.UUID) error {
+// Requeue returns a job to 'queued' via a single status-guarded UPDATE,
+// mirroring CancelQueued's queued-only guard inverted: a running, succeeded, or
+// cancelled row is never touched. The guard lives in the WHERE clause so there
+// is no window between reading the status and writing it — an operator requeue
+// can never yank a job that a poller claimed a moment earlier back to 'queued'
+// and trigger a second, concurrent execution (and second billing) of work
+// already in flight. Returns whether a row was actually requeued; false with no
+// error means the id is unknown or the job is in one of those non-requeuable
+// states, which the operator requeue handler maps to 404-vs-409 with a
+// follow-up read (see AdminRequeueJobHandler).
+func (s *Store) Requeue(ctx context.Context, id uuid.UUID) (bool, error) {
 	if s == nil {
-		return fmt.Errorf("jobs: store is nil")
+		return false, fmt.Errorf("jobs: store is nil")
 	}
-	_, err := s.db.Exec(ctx, `
+	tag, err := s.db.Exec(ctx, `
 		UPDATE async_jobs
 		SET status = 'queued', claimed_at = NULL, claimed_by = NULL, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status NOT IN ('running', 'succeeded', 'cancelled')
 	`, id)
 	if err != nil {
-		return fmt.Errorf("jobs: requeue: %w", err)
+		return false, fmt.Errorf("jobs: requeue: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // ReleaseClaimed returns every 'running' job still claimed by instanceID to

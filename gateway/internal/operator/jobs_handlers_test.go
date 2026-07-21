@@ -45,7 +45,7 @@ func (a jobsAdminTestAdapter) AdminGet(ctx context.Context, id uuid.UUID) (opera
 	return adminJobFromRow(j), true, nil
 }
 
-func (a jobsAdminTestAdapter) Requeue(ctx context.Context, id uuid.UUID) error {
+func (a jobsAdminTestAdapter) Requeue(ctx context.Context, id uuid.UUID) (bool, error) {
 	return a.store.Requeue(ctx, id)
 }
 
@@ -182,6 +182,51 @@ func TestAdminListJobsHandler_InvalidStatus(t *testing.T) {
 	rec := doJobsAdminRequest(t, h, http.MethodGet, "/v1/admin/jobs?status=bogus", testJobsOperatorToken, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAdminListJobsHandler_StatusCancelledFilter covers the ?status=cancelled
+// filter: customer-cancelled rows exist (jobs.CancelQueued), so the filter must
+// be accepted (200) and return them, not 400.
+func TestAdminListJobsHandler_StatusCancelledFilter(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedJobsCustomer(t, pool, "jobs-admin-http-cancelled-filter-"+uuid.New().String()+"@example.com")
+	store := jobs.NewStore(pool)
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, custA, keyA, "echo", "req-cancel", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	cancelled, err := store.CancelQueued(ctx, id, custA)
+	if err != nil || !cancelled {
+		t.Fatalf("CancelQueued: cancelled=%v err=%v", cancelled, err)
+	}
+
+	h := newJobsAdminRouter(pool)
+	rec := doJobsAdminRequest(t, h, http.MethodGet, "/v1/admin/jobs?status=cancelled&per_page=100", testJobsOperatorToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items []struct {
+			JobID  string `json:"job_id"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	found := false
+	for _, it := range page.Items {
+		if it.JobID == id.String() {
+			found = true
+			if it.Status != jobs.StatusCancelled {
+				t.Errorf("job %s status = %q, want %q", id, it.Status, jobs.StatusCancelled)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("cancelled job %s not returned by ?status=cancelled filter", id)
 	}
 }
 
@@ -347,6 +392,83 @@ func TestAdminRequeueJobHandler_RejectSucceeded(t *testing.T) {
 	}
 	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
 		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
+	}
+}
+
+func TestAdminRequeueJobHandler_RejectCancelled(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedJobsCustomer(t, pool, "jobs-admin-http-requeue-cancelled-"+uuid.New().String()+"@example.com")
+	store := jobs.NewStore(pool)
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, custA, keyA, "echo", "req-cancelled", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	// A customer-cancelled job must not be requeuable — requeuing withdrawn work
+	// would re-run and re-bill it.
+	cancelled, err := store.CancelQueued(ctx, id, custA)
+	if err != nil || !cancelled {
+		t.Fatalf("CancelQueued: cancelled=%v err=%v", cancelled, err)
+	}
+
+	h := newJobsAdminRouter(pool)
+	rec := doJobsAdminRequest(t, h, http.MethodPost, "/v1/admin/jobs/"+id.String()+"/requeue", testJobsOperatorToken, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "JOB_NOT_REQUEUABLE" {
+		t.Errorf("error code = %q, want JOB_NOT_REQUEUABLE", body.Error.Code)
+	}
+	job, ok, err := store.Get(ctx, id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != jobs.StatusCancelled {
+		t.Errorf("status = %q, want %q (unchanged)", job.Status, jobs.StatusCancelled)
+	}
+	if n := countJobsAuditRows(t, pool, operator.ActionJobRequeued, "async_job", id.String()); n != 0 {
+		t.Errorf("audit rows after rejected requeue = %d, want 0", n)
+	}
+}
+
+// TestAdminRequeueJobHandler_RunningJobNotYankedBack is the HTTP-layer proof for
+// the TOCTOU fix: requeuing a running job (the race outcome the old
+// lookup-then-update allowed) is refused atomically by the guarded UPDATE, and
+// the row stays 'running' — never pulled back to 'queued' for a second,
+// concurrent execution.
+func TestAdminRequeueJobHandler_RunningJobNotYankedBack(t *testing.T) {
+	pool := newTestPostgres(t)
+	custA, keyA := seedJobsCustomer(t, pool, "jobs-admin-http-requeue-race-"+uuid.New().String()+"@example.com")
+	store := jobs.NewStore(pool)
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, custA, keyA, "echo", "req-race", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := store.Claim(ctx, 10, uuid.New(), 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	h := newJobsAdminRouter(pool)
+	rec := doJobsAdminRequest(t, h, http.MethodPost, "/v1/admin/jobs/"+id.String()+"/requeue", testJobsOperatorToken, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+
+	job, ok, err := store.Get(ctx, id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != jobs.StatusRunning {
+		t.Errorf("status = %q, want %q — a running job must never be requeued", job.Status, jobs.StatusRunning)
 	}
 }
 

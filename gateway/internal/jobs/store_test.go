@@ -914,12 +914,23 @@ func TestStore_Requeue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+	// Drive the job to terminal 'failed' — a requeuable state. Requeue's guard
+	// deliberately refuses running/succeeded/cancelled rows, so requeuing
+	// straight from 'running' is no longer valid (that was the double-execution
+	// bug the guard closes); TestStore_Requeue_RefusesRunning covers that path.
 	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
+	if err := s.Fail(context.Background(), id, "TEST_ERROR", "seeded for requeue"); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
 
-	if err := s.Requeue(context.Background(), id); err != nil {
+	requeued, err := s.Requeue(context.Background(), id)
+	if err != nil {
 		t.Fatalf("Requeue: %v", err)
+	}
+	if !requeued {
+		t.Fatal("Requeue(failed job) = false, want true")
 	}
 
 	job, ok, err := s.Get(context.Background(), id, custA)
@@ -928,6 +939,38 @@ func TestStore_Requeue(t *testing.T) {
 	}
 	if job.Status != StatusQueued {
 		t.Errorf("status = %q, want %q", job.Status, StatusQueued)
+	}
+}
+
+// TestStore_Requeue_RefusesRunning proves the status guard: a running job is
+// never requeued (RowsAffected == 0), so an operator requeue racing a poller's
+// claim can never yank in-flight work back to 'queued' for a second execution.
+func TestStore_Requeue_RefusesRunning(t *testing.T) {
+	pool := newTestPostgres(t)
+	s := NewStore(pool)
+	custA, keyA := seedCustomer(t, pool, "jobs-requeue-running-"+uuid.New().String()+"@example.com")
+	id, err := s.Enqueue(context.Background(), custA, keyA, "echo", "req", "free", json.RawMessage(`{}`), 0, "")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := s.Claim(context.Background(), 10, uuid.New(), 0); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	requeued, err := s.Requeue(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+	if requeued {
+		t.Fatal("Requeue(running job) = true, want false (running must be refused)")
+	}
+
+	job, ok, err := s.Get(context.Background(), id, custA)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if job.Status != StatusRunning {
+		t.Errorf("status = %q, want %q (unchanged)", job.Status, StatusRunning)
 	}
 }
 

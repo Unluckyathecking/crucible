@@ -3,6 +3,7 @@ package operator_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,14 +13,26 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Unluckyathecking/crucible/gateway/internal/db"
 	"github.com/Unluckyathecking/crucible/gateway/internal/operator"
+)
+
+// testDBName is the dedicated database this suite runs against, kept separate
+// from the live dev DB (crucible) so a run never reads or pollutes real data.
+const (
+	testDBName        = "crucible_test"
+	testDBDefaultDSN  = "postgres://crucible@localhost:5432/" + testDBName + "?sslmode=disable"
+	testDBMaintainDSN = "postgres://crucible@localhost:5432/postgres?sslmode=disable"
 )
 
 // newTestPostgres returns a pool for the local test database, or skips the test
 // if Postgres is not reachable. When TEST_DATABASE_URL or POSTGRES_DSN is set,
-// failures are fatal (Postgres is expected to be available in CI).
+// failures are fatal (Postgres is expected to be available in CI); otherwise the
+// suite defaults to a dedicated crucible_test database, created on first need,
+// and applies migrations so it is self-contained.
 func newTestPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -29,10 +42,11 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 			dsn = v
 			explicit = true
 		} else {
-			dsn = "postgres://crucible@localhost:5432/crucible?sslmode=disable"
+			dsn = testDBDefaultDSN
+			ensureTestDB(t)
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -48,8 +62,38 @@ func newTestPostgres(t *testing.T) *pgxpool.Pool {
 		}
 		t.Skipf("postgres ping failed, skipping: %v", err)
 	}
+	if err := db.Apply(ctx, pool); err != nil {
+		pool.Close()
+		t.Fatalf("apply migrations: %v", err)
+	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// ensureTestDB creates the dedicated crucible_test database if it does not yet
+// exist, connecting to the maintenance database first. Best-effort: on the
+// fallback path any failure here surfaces as a skip when the caller then fails
+// to connect to the test DB, matching the skip-when-unavailable semantics.
+// Concurrent test binaries race harmlessly — the loser gets 42P04
+// (duplicate_database), which is ignored.
+func ensureTestDB(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, testDBMaintainDSN)
+	if err != nil {
+		return
+	}
+	defer admin.Close()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+testDBName); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P04" {
+			return // already exists
+		}
+		// Any other failure (no privilege, maintenance DB unreachable) is
+		// non-fatal here: the caller's connect to the test DB will skip if it
+		// genuinely isn't usable.
+	}
 }
 
 // seedCustomer inserts a minimal customers row and returns the new ID.
