@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,5 +182,58 @@ func TestApply_CreatesExpectedSchema(t *testing.T) {
 	}
 	if !batchIDExists {
 		t.Error("column 'usage_events.batch_id' missing after Apply — 0004_usage_batches.sql did not run")
+	}
+}
+
+// TestApply_ConcurrentAppliesSucceed runs many Apply calls at once against a
+// single fresh database and asserts every one returns nil. Without cross-process
+// serialization, the concurrent CREATE INDEX IF NOT EXISTS statements race into a
+// duplicate-key error on pg_class ("SQLSTATE 23505 ... pg_class_relname_nsp_index"):
+// two sessions both see the index as absent, both insert, one loses. This models
+// two prod replicas (or parallel test binaries) booting against the same DB.
+func TestApply_ConcurrentAppliesSucceed(t *testing.T) {
+	ctx := context.Background()
+
+	adminPool := newTestPostgres(t, adminDSN)
+
+	testDB := fmt.Sprintf("crucible_conc_test_%d", rand.Intn(1_000_000))
+
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDB)); err != nil {
+		adminPool.Close()
+		t.Fatalf("create test db: %v", err)
+	}
+
+	// pool_max_conns must be >= the goroutine count: each Apply holds one
+	// connection while blocked on the advisory lock, so an undersized pool would
+	// deadlock rather than serialize.
+	const concurrency = 8
+	testDSN := fmt.Sprintf("postgres://crucible@localhost:5432/%s?sslmode=disable&pool_max_conns=%d", testDB, concurrency+2)
+	testPool := newTestPostgres(t, testDSN)
+	t.Cleanup(func() {
+		testPool.Close()
+		_, _ = adminPool.Exec(ctx, fmt.Sprintf(
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s'", testDB,
+		))
+		if _, err := adminPool.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", testDB)); err != nil {
+			t.Logf("warn: drop test db: %v", err)
+		}
+		adminPool.Close()
+	})
+
+	errs := make([]error, concurrency)
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := range concurrency {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = db.Apply(ctx, testPool)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("concurrent Apply #%d failed: %v", i, err)
+		}
 	}
 }
