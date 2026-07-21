@@ -195,7 +195,7 @@ Status is `"degraded"` if any dependency is unreachable.
 
 ## Account and Management Endpoints
 
-These endpoints manage your usage, keys, webhooks, async jobs, and billing. All require the same Bearer API key as the invoke endpoints. List endpoints accept `page` and `per_page` query parameters and return a `{"items": [...], "total": N}` envelope.
+These endpoints manage your usage, keys, webhooks, async jobs, and billing. All require the same Bearer API key as the invoke endpoints. The key, webhook, and job list endpoints page with `page` and `per_page` and return a `{"items": [...], "total": N}` envelope. The two exports `GET /v1/usage/events` and `GET /v1/errors` instead page with `page` and `limit` and return `{"data": [...], "has_more": bool, "page": N, "limit": N}`.
 
 ### Usage
 
@@ -207,7 +207,7 @@ These endpoints manage your usage, keys, webhooks, async jobs, and billing. All 
 
 **GET /v1/errors** — your recent error events (every non-2xx `/v1` response), newest first. Filter by date, operation, and error code.
 
-### API keys
+### API Keys
 
 New keys are minted in the dashboard. Over the API you can list, rotate, and revoke them.
 
@@ -217,7 +217,7 @@ New keys are minted in the dashboard. Over the API you can list, rotate, and rev
 
 **DELETE /v1/keys/{id}** — revoke a key immediately.
 
-### Outbound webhooks
+### Outbound Webhooks
 
 Register endpoints to receive signed event deliveries (see [Verifying Webhooks](#verifying-webhooks)).
 
@@ -233,11 +233,11 @@ Register endpoints to receive signed event deliveries (see [Verifying Webhooks](
 
 **GET /v1/webhooks/deliveries** — the delivery log across all your endpoints (status, attempts, last response code), newest first.
 
-### Async jobs
+### Async Jobs
 
 Operations your product runs asynchronously answer a `POST /v1/{operation}` with `202 {"job_id": "..."}` instead of an inline result. The request still passes auth, rate-limit, and quota admission at submission time. Poll for the outcome:
 
-**GET /v1/jobs/{id}** — a job's `status` (`queued`, `running`, `succeeded`, `failed`), and its `result` or `error` once terminal.
+**GET /v1/jobs/{id}** — a job's `status` (`queued`, `running`, `succeeded`, `failed`, `cancelled`), and its `result` or `error` once terminal.
 
 **GET /v1/jobs** — your job history, newest first. Filter by `status` and `operation`.
 
@@ -249,11 +249,11 @@ Operations your product runs asynchronously answer a `POST /v1/{operation}` with
 
 **POST /v1/billing/portal** — returns `{"url": "..."}`, a Stripe Billing Portal redirect for self-service management of payment method, cancellation, and invoices.
 
-Billing lifecycle: the customer starts a subscription at `POST /v1/billing/checkout`; on payment, Stripe calls the gateway's webhook, which links the subscription to the customer and sets their plan; metered usage then flushes to Stripe each billing cycle; the customer manages or cancels through the portal.
+Billing lifecycle: the customer starts a subscription at `POST /v1/billing/checkout`; on payment, Stripe calls the gateway's webhook, which links the subscription to the customer and sets their plan; metered usage flushes to Stripe as it accrues; the customer manages or cancels through the portal.
 
-### Operator endpoints
+### Operator Endpoints
 
-Read-only `/v1/admin/*` routes (customers, plans, audit log, per-customer usage, jobs, webhook dead-letters) exist for product operators behind an `OPERATOR_TOKEN`. They are separate from the customer API-key path and are not part of the customer-facing API.
+The `/v1/admin/*` routes (customers, plans, audit log, per-customer usage, jobs, webhook dead-letters) exist for product operators behind an `OPERATOR_TOKEN`. They are mostly read-only, plus dead-letter replay and job requeue/release. They are separate from the customer API-key path and are not part of the customer-facing API.
 
 ## Idempotency
 
