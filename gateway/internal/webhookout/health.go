@@ -25,8 +25,9 @@ const DisabledReasonDeliveryFailures = "delivery_failures"
 // recordDeliverySuccess resets an endpoint's consecutive dead-letter counter
 // after a delivery reaches the 'delivered' terminal state. The WHERE guard
 // avoids a write on the (overwhelmingly common) already-healthy case, where
-// the counter is already zero. A nil db is impossible here — callers are
-// Emitter methods that already nil-check e.db before reaching this — but the
+// the counter is already zero; the caller skips the call altogether while
+// auto-disable is off. A nil db is impossible here — callers are Emitter
+// methods that already nil-check e.db before reaching this — but the
 // signature takes db explicitly so health.go has no Emitter-shaped dependency.
 func recordDeliverySuccess(ctx context.Context, db *pgxpool.Pool, endpointID uuid.UUID) error {
 	_, err := db.Exec(ctx, `

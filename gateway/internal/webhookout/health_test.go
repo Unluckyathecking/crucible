@@ -321,7 +321,8 @@ func TestMarkDeadLetter_AutoDisablesAtThreshold_FansOutEvent(t *testing.T) {
 // default (an Emitter with no SetFailureThreshold call, matching every
 // existing production Emitter before this change) leaves dead-lettering
 // behaviour byte-identical: no auto-disable, no endpoint.disabled fan-out,
-// no matter how many consecutive dead-letters accumulate.
+// and no health accounting write at all, no matter how many consecutive
+// dead-letters accumulate.
 func TestMarkDeadLetter_DefaultThresholdZero_NeverDisables(t *testing.T) {
 	pool := newTestPostgres(t)
 	cust := seedCustomer(t, pool, "health-deadletter-zero-"+uuid.New().String()+"@example.com")
@@ -339,8 +340,8 @@ func TestMarkDeadLetter_DefaultThresholdZero_NeverDisables(t *testing.T) {
 	if !snap.active {
 		t.Error("endpoint auto-disabled despite WEBHOOK_ENDPOINT_FAILURE_THRESHOLD=0 (default)")
 	}
-	if snap.consecutiveFailures != 10 {
-		t.Errorf("consecutive_failures = %d, want 10 (still counted, just never acted on)", snap.consecutiveFailures)
+	if snap.consecutiveFailures != 0 {
+		t.Errorf("consecutive_failures = %d, want 0 (no health write while auto-disable is off)", snap.consecutiveFailures)
 	}
 	if got := pendingEndpointDisabledDeliveries(t, pool, sibling); got != 0 {
 		t.Errorf("endpoint.disabled fan-out fired with threshold=0: count = %d, want 0", got)
@@ -356,11 +357,36 @@ func TestMarkDelivered_ResetsConsecutiveFailures(t *testing.T) {
 	}
 
 	e := &Emitter{db: pool}
+	e.SetFailureThreshold(3)
 	id := seedDelivery(t, pool, ep, "delivering", seedDeliveryOpts{attempts: 0})
 	e.markDelivered(id, ep, 1, 200)
 
 	if got := fetchEndpointHealth(t, pool, ep).consecutiveFailures; got != 0 {
 		t.Errorf("consecutive_failures after markDelivered = %d, want 0", got)
+	}
+	if got := fetchDelivery(t, pool, id).status; got != "delivered" {
+		t.Errorf("delivery status = %q, want delivered", got)
+	}
+}
+
+// TestMarkDelivered_ThresholdZero_SkipsHealthWrite is the success-path half of
+// the zero-threshold opt-out: with auto-disable off, a delivered row must not
+// cost the counter-reset round trip either, so a counter left behind by an
+// earlier enabled window stays untouched.
+func TestMarkDelivered_ThresholdZero_SkipsHealthWrite(t *testing.T) {
+	pool := newTestPostgres(t)
+	cust := seedCustomer(t, pool, "health-delivered-zero-"+uuid.New().String()+"@example.com")
+	ep := seedEndpoint(t, pool, cust, "https://example.com/hook")
+	if _, _, err := recordDeliveryFailure(context.Background(), pool, ep, 0); err != nil {
+		t.Fatalf("seed failure: %v", err)
+	}
+
+	e := &Emitter{db: pool} // failureThreshold left at its zero value
+	id := seedDelivery(t, pool, ep, "delivering", seedDeliveryOpts{attempts: 0})
+	e.markDelivered(id, ep, 1, 200)
+
+	if got := fetchEndpointHealth(t, pool, ep).consecutiveFailures; got != 1 {
+		t.Errorf("consecutive_failures after markDelivered = %d, want 1 (untouched while auto-disable is off)", got)
 	}
 	if got := fetchDelivery(t, pool, id).status; got != "delivered" {
 		t.Errorf("delivery status = %q, want delivered", got)

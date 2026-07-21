@@ -28,9 +28,24 @@ import (
 // mirroring dashboard/app/api/webhooks/route.ts's MAX_URL_LENGTH.
 const maxEndpointURLLength = 2048
 
-// ErrEndpointNotFound is returned by DeleteEndpoint when no active endpoint
-// with the given id is owned by customerID — whether because the id doesn't
-// exist, was already deleted, or belongs to a different customer. Collapsing
+// visibleEndpointSQL matches the webhook_endpoints rows a customer can still
+// see and act on: active ones plus auto-disabled ones (health.go's
+// recordDeliveryFailure, which leaves disabled_reason set). Customer
+// soft-deleted rows are excluded — they share active = FALSE but leave
+// disabled_reason NULL.
+//
+// Every customer-facing statement in this file shares the one predicate on
+// purpose. When only ListEndpoints honoured auto-disabled rows and the
+// mutating paths still required active = TRUE, an auto-disabled endpoint was
+// visible but un-deletable, un-patchable and un-rotatable: the only way out
+// was to re-enable it first, which restarts the doomed deliveries that got it
+// disabled for as long as the follow-up call takes.
+const visibleEndpointSQL = `(active = TRUE OR disabled_reason IS NOT NULL)`
+
+// ErrEndpointNotFound is returned by DeleteEndpoint when no endpoint matching
+// visibleEndpointSQL with the given id is owned by customerID — whether
+// because the id doesn't exist, was already deleted, or belongs to a different
+// customer. Collapsing
 // all three into one error (rather than distinguishing "not found" from
 // "forbidden") keeps DeleteEndpoint IDOR-safe: a caller can never learn that
 // an id belongs to someone else.
@@ -190,15 +205,14 @@ func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, 
 	var total int64
 	if err := db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM webhook_endpoints
-		WHERE customer_id = $1 AND (active = TRUE OR disabled_reason IS NOT NULL)
-	`, customerID).Scan(&total); err != nil {
+		WHERE customer_id = $1 AND `+visibleEndpointSQL, customerID).Scan(&total); err != nil {
 		return paging.Page[Endpoint]{}, fmt.Errorf("webhookout: count endpoints: %w", err)
 	}
 
 	rows, err := db.Query(ctx, `
 		SELECT id, url, active, subscribed_events, created_at, disabled_at, disabled_reason
 		FROM webhook_endpoints
-		WHERE customer_id = $1 AND (active = TRUE OR disabled_reason IS NOT NULL)
+		WHERE customer_id = $1 AND `+visibleEndpointSQL+`
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, customerID, perPage, offset)
@@ -217,7 +231,7 @@ func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, 
 	return paging.Page[Endpoint]{Items: items, Total: total}, nil
 }
 
-// UpdateEndpointSubscription replaces the subscribed_events set for an active
+// UpdateEndpointSubscription replaces the subscribed_events set for an
 // endpoint owned by customerID, applying the same validate/cap/dedupe rules
 // as CreateEndpoint: nil resubscribes to every event type; a non-nil
 // (possibly empty) slice restricts delivery to that subset. On narrowing
@@ -229,6 +243,10 @@ func ListEndpoints(ctx context.Context, db *pgxpool.Pool, customerID uuid.UUID, 
 // updateWebhookEndpointSubscription. Returns ErrEndpointNotFound both when id
 // doesn't exist and when it belongs to a different customer, matching
 // DeleteEndpoint's IDOR-safe convention.
+//
+// An auto-disabled endpoint accepts the update (visibleEndpointSQL): narrowing
+// the subscription is one of the repairs a customer makes before re-enabling.
+// It does not itself re-enable the endpoint — that stays EnableEndpoint's job.
 func UpdateEndpointSubscription(ctx context.Context, db *pgxpool.Pool, id, customerID uuid.UUID, subscribedEvents []string) error {
 	subscribedEvents, err := normalizeSubscribedEvents(subscribedEvents)
 	if err != nil {
@@ -237,8 +255,7 @@ func UpdateEndpointSubscription(ctx context.Context, db *pgxpool.Pool, id, custo
 
 	tag, err := db.Exec(ctx, `
 		UPDATE webhook_endpoints SET subscribed_events = $3
-		WHERE id = $1 AND customer_id = $2 AND active = TRUE
-	`, id, customerID, subscribedEvents)
+		WHERE id = $1 AND customer_id = $2 AND `+visibleEndpointSQL, id, customerID, subscribedEvents)
 	if err != nil {
 		return fmt.Errorf("webhookout: update endpoint subscription: %w", err)
 	}
@@ -259,13 +276,20 @@ func UpdateEndpointSubscription(ctx context.Context, db *pgxpool.Pool, id, custo
 	return nil
 }
 
-// RotateEndpointSecret generates a fresh signing secret for an active
-// endpoint owned by customerID and overwrites the stored secret; the old
-// secret stops verifying immediately (Sign/Verify read the current column
-// value on every delivery). The returned hex-encoded secret is the only time
-// it is ever surfaced, mirroring CreateEndpoint's SecretHex. Returns
-// ErrEndpointNotFound both when id doesn't exist and when it belongs to a
-// different customer (IDOR-safe).
+// RotateEndpointSecret generates a fresh signing secret for an endpoint owned
+// by customerID and overwrites the stored secret; the old secret stops
+// verifying immediately (Sign/Verify read the current column value on every
+// delivery). The returned hex-encoded secret is the only time it is ever
+// surfaced, mirroring CreateEndpoint's SecretHex. Returns ErrEndpointNotFound
+// both when id doesn't exist and when it belongs to a different customer
+// (IDOR-safe).
+//
+// An auto-disabled endpoint accepts rotation (visibleEndpointSQL). Rotating
+// while disabled is the safer order, not a loophole: a disabled endpoint has
+// no deliveries in flight (Emit and claimDue both require active = TRUE), so
+// no request can straddle the swap, and the alternative — re-enable, then
+// rotate — restarts deliveries signed with the secret the customer is trying
+// to replace. Rotation does not re-enable the endpoint.
 func RotateEndpointSecret(ctx context.Context, db *pgxpool.Pool, id, customerID uuid.UUID) (string, error) {
 	secret, err := GenerateSecret()
 	if err != nil {
@@ -274,8 +298,7 @@ func RotateEndpointSecret(ctx context.Context, db *pgxpool.Pool, id, customerID 
 
 	tag, err := db.Exec(ctx, `
 		UPDATE webhook_endpoints SET secret = $3
-		WHERE id = $1 AND customer_id = $2 AND active = TRUE
-	`, id, customerID, secret)
+		WHERE id = $1 AND customer_id = $2 AND `+visibleEndpointSQL, id, customerID, secret)
 	if err != nil {
 		return "", fmt.Errorf("webhookout: rotate endpoint secret: %w", err)
 	}
@@ -292,11 +315,15 @@ func RotateEndpointSecret(ctx context.Context, db *pgxpool.Pool, id, customerID 
 // Returns ErrEndpointNotFound both when id doesn't exist and when it belongs
 // to a different customer, so the HTTP handler can return 404 in both cases
 // without leaking cross-customer existence (IDOR-safe).
+//
+// Deleting an auto-disabled endpoint clears disabled_at/disabled_reason so the
+// row settles into the one canonical soft-deleted state — active = FALSE with
+// disabled_reason NULL. Keeping the auto-disable marks would leave the row in
+// ListEndpoints and revivable through EnableEndpoint, i.e. not deleted at all.
 func DeleteEndpoint(ctx context.Context, db *pgxpool.Pool, id, customerID uuid.UUID) error {
 	tag, err := db.Exec(ctx, `
-		UPDATE webhook_endpoints SET active = FALSE
-		WHERE id = $1 AND customer_id = $2 AND active = TRUE
-	`, id, customerID)
+		UPDATE webhook_endpoints SET active = FALSE, disabled_at = NULL, disabled_reason = NULL
+		WHERE id = $1 AND customer_id = $2 AND `+visibleEndpointSQL, id, customerID)
 	if err != nil {
 		return fmt.Errorf("webhookout: delete endpoint: %w", err)
 	}

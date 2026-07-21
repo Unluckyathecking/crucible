@@ -649,6 +649,14 @@ func (e *Emitter) markDelivered(id int64, endpointID uuid.UUID, attempts, status
 	if err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Msg("webhookout: mark delivered failed")
 	}
+	// Health accounting costs one extra round trip per terminal outcome, so
+	// it is skipped entirely while auto-disable is off (threshold <= 0, the
+	// default) — a deployment that never opts in pays nothing for the
+	// feature. The counter only moves while the knob is on, which is also the
+	// only window in which anything reads it.
+	if e.failureThreshold.Load() <= 0 {
+		return
+	}
 	if err := recordDeliverySuccess(ctx, e.db, endpointID); err != nil {
 		log.Warn().Err(err).Int64("delivery_id", id).Str("endpoint_id", endpointID.String()).Msg("webhookout: reset endpoint failure counter failed")
 	}
@@ -688,7 +696,12 @@ func (e *Emitter) markDeadLetter(id int64, attempts int, statusCode *int) {
 		return
 	}
 
-	custID, justDisabled, herr := recordDeliveryFailure(ctx, e.db, endpointID, int(e.failureThreshold.Load()))
+	// No health round trip while auto-disable is off — see markDelivered.
+	threshold := int(e.failureThreshold.Load())
+	if threshold <= 0 {
+		return
+	}
+	custID, justDisabled, herr := recordDeliveryFailure(ctx, e.db, endpointID, threshold)
 	if herr != nil {
 		log.Warn().Err(herr).Int64("delivery_id", id).Str("endpoint_id", endpointID.String()).Msg("webhookout: record endpoint failure failed")
 		return
