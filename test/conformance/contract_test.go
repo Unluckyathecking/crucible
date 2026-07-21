@@ -156,6 +156,30 @@ func TestInvokeErrorEnvelope(t *testing.T) {
 	}
 }
 
+// TestInvokeMethodNotAllowed asserts that non-POST methods on /invoke are rejected
+// with HTTP 405 (fixture case non_post_invoke_method_rejected). Only the status is
+// asserted: the Allow header is an SDK-level nicety not every SDK emits, whereas 405
+// is the frozen contract every stub must honour.
+func TestInvokeMethodNotAllowed(t *testing.T) {
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPut,
+		http.MethodDelete, http.MethodPatch, http.MethodOptions,
+	} {
+		req, err := http.NewRequest(method, workerURL+"/invoke", nil)
+		if err != nil {
+			t.Fatalf("%s /invoke: build request: %v", method, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s /invoke: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s /invoke: want 405, got %d", method, resp.StatusCode)
+		}
+	}
+}
+
 // doInvoke is a shared helper: POST /invoke, assert HTTP 200 + application/json,
 // decode and return the response.
 func doInvoke(t *testing.T, body any) invokeResp {

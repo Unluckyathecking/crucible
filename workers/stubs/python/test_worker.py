@@ -18,7 +18,7 @@ from http.server import HTTPServer
 
 import pytest
 
-from main import WorkerHandler
+from worker import Handler
 
 
 def _free_port() -> int:
@@ -30,7 +30,7 @@ def _free_port() -> int:
 class _Server:
     def __init__(self):
         self.port = _free_port()
-        self._httpd = HTTPServer(("127.0.0.1", self.port), WorkerHandler)
+        self._httpd = HTTPServer(("127.0.0.1", self.port), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
     def start(self):

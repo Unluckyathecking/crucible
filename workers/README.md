@@ -11,12 +11,24 @@ The contract is defined in `gateway/proto/tool.proto`. Workers speak HTTP/JSON b
 
 | Path | What |
 |---|---|
-| `sdk-go/` | Go SDK. Import this, write one function, you have a working worker. |
-| `sdk-python/` | (v1.5) |
-| `sdk-typescript/` | (v1.5) |
+| `sdk-go/` | Go SDK. Import it, write one function, you have a working worker. |
+| `sdk-python/` | Python SDK. Standard library only, no third-party dependencies. |
+| `sdk-ts/` | TypeScript SDK. Zero dependencies, runs on Node. |
 | `sdk-rust/` | Rust SDK. Depend on it, write one async handler, call `serve`. |
-| `stubs/` | Hello-world reference impls — one per SDK language. |
-| `active` | Symlink to the worker this clone ships. Edit this when adapting Crucible. |
+| `stubs/` | Reference workers, one per SDK plus textkit. See below. |
+| `active` | Symlink to the worker this clone ships (default `stubs/go`). Edit it when adapting. |
+
+## Stubs
+
+Each stub is a complete, runnable worker to copy as a starting point.
+
+| Stub | What it is |
+|---|---|
+| `stubs/go` | Echo worker on the Go SDK. `active` points here by default. |
+| `stubs/textkit` | Go worker with several text operations; the reference for multi-operation products. |
+| `stubs/rust` | Echo worker on the Rust SDK. |
+| `stubs/ts` | Echo worker on the TypeScript SDK. |
+| `stubs/python` | Echo worker in the standard library, no SDK. |
 
 ## Writing a Go worker
 
@@ -59,7 +71,7 @@ logged, never surfaced). Error envelopes are returned with HTTP 200 — the gate
 the response *shape* (`payload` vs `error`), not the status. See `stubs/rust/` for the
 hello-world echo worker.
 
-## Writing a worker in another language (no SDK yet)
+## Writing a worker in another language
 
 Speak HTTP/JSON against the contract. The on-wire shapes:
 
@@ -93,26 +105,29 @@ Speak HTTP/JSON against the contract. The on-wire shapes:
 
 `/healthz` just needs to return HTTP 200 when the process is ready to serve.
 
-## Conformance gate
+## Conformance
 
-Every stub in `stubs/` is wired into a language-agnostic contract test suite
-(`test/conformance/contract_test.go`) that verifies the frozen HTTP/JSON shapes:
+Two layers hold every worker to the frozen contract.
 
-| Stub | Run locally |
-|---|---|
-| Go | `bash scripts/conformance-run.sh go` |
-| Rust | `bash scripts/conformance-run.sh rust` |
-| TypeScript | `bash scripts/conformance-run.sh ts` |
-| Python | `bash scripts/conformance-run.sh python` |
+**Fixture-driven, per SDK.** `workers/conformance/fixture.json` is the language-neutral
+spec; each SDK loads it and asserts the cases in-process (`sdk-go/conformance`,
+`sdk-rust/conformance`, `sdk-ts/conformance`, `sdk-python/conformance`). The
+`fixture-conformance` matrix in `.github/workflows/worker-conformance.yml` runs all four
+with `fail-fast: false`, so every SDK reports even when one fails. The TS leg also runs
+`npm test`, the SDK's unit suite, which includes the HMAC signature matrix.
 
-CI runs all four in a matrix (`.github/workflows/worker-conformance.yml`) with
-`fail-fast: false` so every SDK gets a report even if one fails. The suite is
-driven by `WORKER_URL` — no language-specific assertion branches exist; the same
-tests run against every stub unchanged.
+**External, against a live stub.** `test/conformance/contract_test.go` is driven by
+`WORKER_URL` and speaks plain HTTP/JSON, so the same tests run against any stub:
 
-Adding a new language: add a `case` entry in `scripts/conformance-run.sh` and a
-matrix entry in `.github/workflows/worker-conformance.yml`. The test file never
-changes.
+```sh
+bash scripts/conformance-run.sh go|rust|ts|python
+```
+
+CI runs this layer against the Python stub, which has no SDK, in the
+`python-stub-conformance` job, next to the stub's own pytest.
+
+Adding a language: add a `case` in `scripts/conformance-run.sh`, plus a matrix entry in
+the workflow for a fixture suite. The fixture and the external test file stay the same.
 
 ## Billable units
 
@@ -124,3 +139,11 @@ Return `billable_units >= 1` on every successful response.
 - Per-token LLM tools: return tokens consumed.
 
 The gateway emits a Stripe `meter_event` with `value=billable_units` for every successful call. Pricing in Stripe is per-unit.
+
+## Cloning
+
+`scripts/new-tool.sh` renames Go module paths and `crucible` identifiers to your product
+name across the Go, TypeScript, and config files it copies. The Rust and Python SDK
+internals keep their original names (the `crucible_sdk` crate, the `crucible` package):
+they are imported by fixed names, so renaming them per clone would break those imports
+with no benefit.

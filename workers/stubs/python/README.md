@@ -1,6 +1,6 @@
 # Python worker stub
 
-A ~50-line stdlib-only reference worker implementing the frozen Crucible HTTP/JSON contract.
+A compact, stdlib-only reference worker implementing the frozen Crucible HTTP/JSON contract.
 Use it as a starting point for any Python-based Crucible worker.
 
 ## Contract
@@ -31,9 +31,8 @@ Any non-positive or non-numeric value falls back to 1.
 ## Run
 
 ```sh
-python3 main.py          # default port 8081
-python3 main.py 9000     # custom port
-PORT=9000 python3 main.py
+python3 worker.py            # default port 8081
+PORT=9000 python3 worker.py  # custom port
 ```
 
 ## Smoke test

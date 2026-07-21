@@ -150,22 +150,7 @@ async function assertEmptyBodyBadRequest(port) {
 // ── Test runner ───────────────────────────────────────────────────────────────
 
 for (const tc of fixture.cases) {
-  // Check for a known TS divergence.
-  const tsDivergence = tc.known_divergences && tc.known_divergences.ts;
-
-  test(tc.id, async (t) => {
-    // method_not_allowed: canonical contract is 405 but TS SDK returns 404.
-    // Skip rather than asserting the wrong expected status so CI stays green
-    // without masking the contract violation. Fix lands in a separate SDK PR.
-    if (tc.kind === 'method_not_allowed' && tsDivergence) {
-      t.skip(`TS SDK returns ${tsDivergence.status} instead of 405; ${tsDivergence.note}`);
-      return;
-    }
-
-    if (tsDivergence) {
-      console.log(`  known TS divergence: ${tsDivergence.note}`);
-    }
-
+  test(tc.id, async () => {
     // Build a reusable echo server for cases that need a healthy worker.
     await withServer(() => ({ payload: { ok: true }, billable_units: 1 }), async (port) => {
       switch (tc.kind) {
@@ -174,7 +159,6 @@ for (const tc of fixture.cases) {
           break;
 
         case 'method_not_allowed':
-          // Diverged cases are skipped above; reaching here means canonical 405.
           await assertMethodNotAllowed(port, 405);
           break;
 
