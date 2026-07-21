@@ -79,21 +79,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Pull Docker images
+# 2. Rebuild and start services
 # ---------------------------------------------------------------------------
+#
+# gateway, worker, and dashboard are build: services. A plain `pull` + `up` would
+# restart the STALE images built before `git pull`, so `--build` rebuilds them
+# from the just-pulled source, mirroring `make dev`.
 
-echo "[deploy] Pulling Docker images..."
-docker compose pull
-
-# ---------------------------------------------------------------------------
-# 3. Start services
-# ---------------------------------------------------------------------------
-
-echo "[deploy] Starting services..."
-docker compose up -d --remove-orphans
+echo "[deploy] Rebuilding and starting services..."
+docker compose up -d --build --remove-orphans
 
 # ---------------------------------------------------------------------------
-# 4. Wait for health checks
+# 3. Wait for health checks
 # ---------------------------------------------------------------------------
 
 echo "[deploy] Waiting for services to be healthy..."
@@ -121,7 +118,7 @@ if [[ $ELAPSED -ge $MAX_WAIT ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Show status
+# 4. Show status
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -130,7 +127,9 @@ docker compose ps
 
 echo ""
 echo "[deploy] Gateway health check:"
-if curl -sf http://localhost:8080/healthz &>/dev/null; then
+# No host port 8080 is published (Caddy owns 80/443), so check the gateway inside
+# its container — the same command the compose healthcheck uses.
+if docker compose exec -T gateway wget -qO- http://localhost:8080/healthz &>/dev/null; then
     echo "[deploy]   Gateway is responding"
 else
     echo "[deploy]   Gateway health check failed (may need a moment to start)"
