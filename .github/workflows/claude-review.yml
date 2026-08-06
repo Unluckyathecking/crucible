@@ -63,13 +63,17 @@ jobs:
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
 
-  # Added 2026-08-06 (pr-agent rollout): if this PR has needed several review
-  # rounds, escalate — leave an "@claude fix" marker comment (tells the
-  # pr-agent dispatcher to stand down) and run the Claude fixer inline.
-  # Additive job; the review job above is unchanged.
+  # Added 2026-08-06 (pr-agent rollout): if a pr-agent-driven PR (any bot:*
+  # label) has needed several review rounds, escalate -- leave an
+  # "@claude fix" marker comment (tells the dispatcher to stand down) and
+  # run the Claude fixer inline. Scoped to bot:* PRs only, since escalation
+  # only makes sense for PRs that automated system is driving. Additive
+  # job; the review job above is unchanged.
   auto-escalate:
     needs: claude-review
-    if: ${{ !github.event.pull_request.draft }}
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+      contains(toJSON(github.event.pull_request.labels.*.name), '"bot:') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,18 +92,18 @@ jobs:
           echo "reviews=$total" >> "$GITHUB_OUTPUT"
           echo "Review #$total for ${{ github.event.pull_request.head.ref }}"
       - name: Leave escalation marker
-        if: steps.count.outputs.reviews == 3
+        if: steps.count.outputs.reviews == 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "@claude fix — auto-escalated: this PR has needed 3 review rounds. The inline fixer is taking over; pr-agent automation should stand down."
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "@claude fix — auto-escalated: this PR has needed 5 review rounds. The inline fixer is taking over; pr-agent automation should stand down."
       - name: Checkout repository
-        if: steps.count.outputs.reviews == 3
+        if: steps.count.outputs.reviews == 5
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 1
       - name: Run Claude fixer inline
-        if: steps.count.outputs.reviews == 3
+        if: steps.count.outputs.reviews == 5
         uses: anthropics/claude-code-action@af0559ee4f514d1ef21826982bed13f7edc3c35e # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
