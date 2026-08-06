@@ -62,3 +62,54 @@ jobs:
 
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
+
+  # Added 2026-08-06 (pr-agent rollout): if this PR has needed several review
+  # rounds, escalate — leave an "@claude fix" marker comment (tells the
+  # pr-agent dispatcher to stand down) and run the Claude fixer inline.
+  # Additive job; the review job above is unchanged.
+  auto-escalate:
+    needs: claude-review
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    steps:
+      - name: Count reviews of this PR branch
+        id: count
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prior=$(gh api "repos/${{ github.repository }}/actions/workflows/claude-review.yml/runs?branch=${{ github.event.pull_request.head.ref }}&status=success&per_page=100" --jq '.workflow_runs | length')
+          total=$((prior + 1))
+          echo "reviews=$total" >> "$GITHUB_OUTPUT"
+          echo "Review #$total for ${{ github.event.pull_request.head.ref }}"
+      - name: Leave escalation marker
+        if: steps.count.outputs.reviews == 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "@claude fix — auto-escalated: this PR has needed 3 review rounds. The inline fixer is taking over; pr-agent automation should stand down."
+      - name: Checkout repository
+        if: steps.count.outputs.reviews == 3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+      - name: Run Claude fixer inline
+        if: steps.count.outputs.reviews == 3
+        uses: anthropics/claude-code-action@af0559ee4f514d1ef21826982bed13f7edc3c35e # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            This PR has been through multiple automated review rounds without
+            converging. Read the outstanding review feedback on the PR
+            (sticky review comment, top-level comments, inline comments),
+            fix everything actionable directly on the PR head branch, run the
+            repository's tests if present, and push your commits to the PR
+            head branch. Follow the repository CLAUDE.md.
