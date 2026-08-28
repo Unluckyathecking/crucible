@@ -153,7 +153,7 @@ func main() {
 	flusher := usage.NewFlusher(pool, stripe, 30*time.Second)
 	// WithCacheDeleter lets subscription/customer webhook handlers flush the
 	// auth:<prefix> Redis cache immediately on a plan change, instead of waiting
-	// out the 60 s TTL (CLAUDE.md invariant #7).
+	// out the 60 s TTL (AGENTS.md invariant #7).
 	webhook := billing.NewWebhook(cfg.StripeWebhookSecret, pool, billing.WithCacheDeleter(&redisCacheDeleter{redisClient}))
 	respCacheStore := respcache.NewStore(redisClient)
 	// Constructed once here and injected into BOTH server.Deps (below) and

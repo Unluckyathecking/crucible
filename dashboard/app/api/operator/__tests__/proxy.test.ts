@@ -77,7 +77,7 @@ describe("_lib/guard.ts — the only place OPERATOR_TOKEN-adjacent auth logic li
     expect(matches.length).toBeGreaterThanOrEqual(2); // jsonResponse + operatorErrorResponse
   });
 
-  it("the 500 path logs an opaque error id in a header, never in the JSON body (CLAUDE.md: internal IDs never escape)", () => {
+  it("the 500 path logs an opaque error id in a header, never in the JSON body (AGENTS.md: internal IDs never escape)", () => {
     const bodyIdx = src.indexOf('"Internal server error"');
     const stringifyIdx = src.lastIndexOf("JSON.stringify", bodyIdx + 100);
     const closingParen = src.indexOf(")", stringifyIdx);

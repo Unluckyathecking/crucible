@@ -134,7 +134,7 @@ describe("GET /api/usage route.ts — CSRF guard drift-detection", () => {
     expect(forbiddenIdx).toBeLessThan(authIdx);
   });
 
-  it("500 error response does not include errorId in JSON body (CLAUDE.md: internal IDs never escape)", () => {
+  it("500 error response does not include errorId in JSON body (AGENTS.md: internal IDs never escape)", () => {
     // errorId must only appear in the x-error-id header, never in the response body.
     const errorBodyIdx = routeSrc.indexOf('"Internal server error"');
     expect(errorBodyIdx).toBeGreaterThanOrEqual(0);

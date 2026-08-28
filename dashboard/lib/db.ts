@@ -132,7 +132,7 @@ function invalidateAuthCache(prefix: string): void {
 // "forbidden" when the key exists but belongs to another customer (caller should 403),
 // or "not_found" when the key doesn't exist at all.
 //
-// CLAUDE.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
+// AGENTS.md invariant #7: revocation must invalidate the gateway's Redis hot-cache entry
 // ("auth:{prefix}") so that the key stops working immediately rather than after the 60 s TTL.
 // This function does that: after the Postgres UPDATE succeeds it fires a best-effort Redis DEL.
 // If REDIS_URL is not configured in the dashboard's environment the DEL is skipped; the key
@@ -153,7 +153,7 @@ export async function revokeApiKey(
 
   if (updateResult.rows.length > 0) {
     const { prefix } = updateResult.rows[0];
-    // Best-effort Redis cache invalidation (CLAUDE.md invariant #7): minimises the stale-cache
+    // Best-effort Redis cache invalidation (AGENTS.md invariant #7): minimises the stale-cache
     // window after Postgres commits. Not atomic with the UPDATE — a transient Redis failure
     // leaves the key cached until the 60 s TTL. Fire-and-forget by design.
     invalidateAuthCache(prefix);
@@ -210,7 +210,7 @@ export type RotateResult =
 // The old key's expires_at is set to now + graceSecs (server-clamped) so both keys
 // authenticate during the grace window. After the grace window, only the new key works.
 //
-// CLAUDE.md invariant #7: fires auth: cache DEL for the old prefix after the DB
+// AGENTS.md invariant #7: fires auth: cache DEL for the old prefix after the DB
 // transaction commits so the gateway's hot-path enforces the new expires_at immediately.
 export async function rotateApiKey(
   keyId: string,
@@ -281,7 +281,7 @@ export async function rotateApiKey(
     // Best-effort cache invalidation: force the gateway to re-read the old key from
     // Postgres on the next request so the new expires_at is cached immediately.
     // Fire-and-forget — a transient Redis failure just means the old key stays cached
-    // until the 60s TTL, which is acceptable. (CLAUDE.md invariant #7)
+    // until the 60s TTL, which is acceptable. (AGENTS.md invariant #7)
     invalidateAuthCache(oldPrefix);
 
     // Best-effort audit — failure must never roll back the completed rotation.

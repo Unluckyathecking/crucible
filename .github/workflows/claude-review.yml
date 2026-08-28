@@ -32,7 +32,7 @@ jobs:
             Review this pull request against the repo's own standards before
             anything generic:
 
-            1. CLAUDE.md is the operating standard — flag violations of its
+            1. AGENTS.md is the operating standard — flag violations of its
                load-bearing invariants: tool.proto stays frozen (no per-product
                fields), the gateway keeps rejecting success responses with
                billable_units < 1, webhook handlers dispatch before recording
@@ -116,4 +116,4 @@ jobs:
             (sticky review comment, top-level comments, inline comments),
             fix everything actionable directly on the PR head branch, run the
             repository's tests if present, and push your commits to the PR
-            head branch. Follow the repository CLAUDE.md.
+            head branch. Follow the repository AGENTS.md.

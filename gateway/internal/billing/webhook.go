@@ -55,7 +55,7 @@ type WebhookOption func(*Webhook)
 
 // WithCacheDeleter wires a Redis DEL client so that handlers can immediately
 // invalidate auth:<prefix> cache entries after a customer-link or plan change
-// (CLAUDE.md invariant #7). Without this option, cache entries expire naturally
+// (AGENTS.md invariant #7). Without this option, cache entries expire naturally
 // after the 60 s TTL — acceptable for existing deployments but not for upgrades.
 func WithCacheDeleter(d CacheDeleter) WebhookOption {
 	return func(w *Webhook) { w.cache = d }
@@ -384,7 +384,7 @@ func (h *Webhook) handleSubscriptionUpsert(ctx context.Context, event *stripeEve
 	}
 
 	// Look up the internal customer UUID once for both cache invalidation
-	// (CLAUDE.md invariant #7: plan changes bypass the revocation path, so the
+	// (AGENTS.md invariant #7: plan changes bypass the revocation path, so the
 	// cache must be flushed explicitly) and outbound webhook emission. Gated on
 	// RowsAffected() > 0: if the UPDATE above matched no row (customer not yet
 	// linked to this stripe_customer_id), a customer link racing in between this
@@ -541,7 +541,7 @@ func (h *Webhook) handleCustomerCreated(ctx context.Context, event *stripeEvent)
 
 // invalidateCustomerCache deletes auth:<prefix> Redis entries for all active API keys
 // belonging to customerID. This ensures plan or stripe_customer_id changes take effect
-// immediately rather than waiting for the 60 s TTL (CLAUDE.md invariant #7).
+// immediately rather than waiting for the 60 s TTL (AGENTS.md invariant #7).
 // Keys are flushed in batches of 100 to bound Redis command payload size.
 // Result set is bounded at 1000 rows; customers with more active keys will have the
 // remainder flushed by TTL expiry within 60 s (same as before this feature existed).

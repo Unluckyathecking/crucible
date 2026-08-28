@@ -1,7 +1,7 @@
 /**
  * Tests for lib/keys.ts — these assert the exact semantics that mirror
  * gateway/internal/auth/keys.go. Any drift here means dashboard-issued keys
- * will fail gateway auth. See CLAUDE.md load-bearing invariant #5 and #6.
+ * will fail gateway auth. See AGENTS.md load-bearing invariant #5 and #6.
  */
 import { createHash } from "crypto";
 import { describe, it, expect } from "vitest";

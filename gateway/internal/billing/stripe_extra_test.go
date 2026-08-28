@@ -161,7 +161,7 @@ func TestEmitMeterEvent_HTTPTestServer(t *testing.T) {
 
 // TestEmitMeterEvent_IdempotencyKey_IsStable verifies that calling EmitMeterEvent
 // twice with the same idempotencyKey sends the same Idempotency-Key header both times.
-// This is the Stripe retry safety guarantee (invariant #4 from CLAUDE.md).
+// This is the Stripe retry safety guarantee (invariant #4 from AGENTS.md).
 func TestEmitMeterEvent_IdempotencyKey_IsStable(t *testing.T) {
 	const idemKey = "batch_uuid_stable_001"
 	const units = uint64(99)
