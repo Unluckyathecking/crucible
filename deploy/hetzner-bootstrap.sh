@@ -5,7 +5,7 @@
 # Installs Docker, configures the firewall, and sets up the .env file.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/YOU/crucible/main/deploy/hetzner-bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/hetzner-bootstrap.sh | bash
 #   # or, after cloning the repo:
 #   bash deploy/hetzner-bootstrap.sh
 #

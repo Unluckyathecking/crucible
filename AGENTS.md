@@ -38,7 +38,7 @@ Learned in operation, kept because it earned its place:
 
 # Crucible — project brief
 
-This file is the project-specific brief for Claude sessions and any other AI agents working in this repo. The operating standard above governs how to work; the Go language rules in `~/.claude/rules/golang/` also apply. What follows adds only the Crucible-specific, load-bearing constraints.
+This file is the project brief for anyone working in this repo. The operating standard above governs how to work. What follows adds only the Crucible-specific, load-bearing constraints.
 
 ## What this repo is
 
@@ -55,7 +55,7 @@ These exist for non-obvious reasons. If you think you need to change one of them
 
 1. **`gateway/proto/tool.proto` is frozen across all clones.** Never add per-product fields. `operation` is a free-form string the gateway forwards opaquely; product semantics live in the worker. Per-product proto extensions break the entire clone-and-adapt promise.
 
-2. **`billable_units` is a contract, not a convention.** Workers MUST return >= 1 on every successful response. The gateway enforces this at the trust boundary (`server/routes.go`): success + `BillableUnits < 1` returns `502 WORKER_BAD_RESPONSE`. Removing that check re-opens free-usage escape.
+2. **`billable_units` is a contract, not a convention.** Workers MUST return >= 1 on every successful response. The gateway enforces this at the trust boundary (`server/invoke.go`): success + `BillableUnits < 1` returns `502 WORKER_BAD_RESPONSE`. Removing that check re-opens free-usage escape.
 
 3. **Stripe webhook ordering: dispatch first, record after success.** `billing/webhook.go` deliberately runs the handler before inserting the dedup row. Reversing this order permanently loses events when handlers transiently fail. The handlers (`handleSubscriptionUpsert`, `handleSubscriptionDeleted`) are idempotent on subscription state, so double-dispatch on race is safe; permanent loss is not.
 
@@ -87,9 +87,9 @@ See `ADAPT.md`. The summary: `workers/active`, one entry per endpoint in `gatewa
 
 ## Coding style
 
-The operating standard at the top of this file sets the general coding principles. The Crucible-specific stance (from `~/.claude/projects/-Users-mohammedalibhai/memory/feedback_scratch_build_lean.md`):
+The operating standard at the top of this file sets the general coding principles. The Crucible-specific stance:
 
-- **Scratch-build, don't port.** Even when prior code in `equipulse-trading-bot` or elsewhere solves a similar problem, write fresh in Crucible's idioms.
+- **Scratch-build, don't port.** Even when prior code elsewhere solves a similar problem, write fresh in Crucible's idioms.
 - **Every file earns its inclusion.** No speculative abstractions. No "in case we want to swap X later" wrappers. If three call sites would clearly benefit from a 30-line helper, ship it; otherwise don't.
 - **Boring stdlib over novelty.** `net/http`, `pgx`, `chi`, `redis/v9`, `zerolog`, `envconfig`, `prometheus/client_golang`, `stripe-go` (or in our case, direct HTTP because the surface is small) — these are the locked picks. Novelty has to justify itself; obvious doesn't.
 - **No comments explaining WHAT the code does.** Identifiers do that. Comments explain WHY: a non-obvious invariant, a workaround for a specific bug, behaviour that would surprise a reader. The flusher's two-phase explanation in `usage/flusher.go` is a good template — it explains the bug the design prevents.
@@ -117,10 +117,9 @@ These were the reviewer findings that mattered. Keep them enforced.
 
 ## Workflow rules
 
-- **Local-first.** No `gh repo create` until the framework hits its acceptance bar (already done). The user pushes when ready; no agent runs `git push` to a remote that doesn't exist.
-- **Plan mode for non-trivial changes.** Use `~/.claude/plans/*.md` for anything spanning more than 3-4 files. Update the existing plan rather than creating new ones; one plan per project.
-- **Single-shot reviews, not agent loops.** The OpenCode CLI agent interprets review prompts as work-to-execute and produces no output. Use a direct HTTP POST to OpenRouter (or similar) with the bundled source code in one request. Pattern documented in `docs-internal/REVIEW.md` under Process.
-- **Don't dismiss reviewer findings without re-verification.** My initial dismissal of "flusher double-bill" in round-1 was wrong; Codex caught the real bug in round-2. Triage carefully, especially for billing / auth paths.
+- **Changes land through pull requests.** `main` is protected; a PR merges only when the required checks (go, rust, dashboard, smoke, acceptance) are green.
+- **Plan before non-trivial changes.** Write a short plan for anything spanning more than 3-4 files, and update it rather than starting a new one.
+- **Don't dismiss reviewer findings without re-verification.** A "flusher double-bill" finding was dismissed in the first review round and turned out to be a real bug. Triage carefully, especially for billing / auth paths.
 
 ## File map (where things live)
 
