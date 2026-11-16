@@ -6,7 +6,7 @@ description: >
 inputs:
   go-version:
     description: Go version to install.
-    default: "1.25.12"
+    default: "1.26.11"
   cache-dependency-path:
     description: go.sum paths that key the module cache.
     default: |

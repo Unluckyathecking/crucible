@@ -126,7 +126,9 @@ func (f *flushRecorder) Flush() { f.flushed = true }
 // leaves Status and wroteHeader unchanged so the 1xx code remains observable by
 // middleware reading sr.Status after the handler returns.
 func TestStatusRecorder1xxThenWrite(t *testing.T) {
-	inner := httptest.NewRecorder()
+	// httptest.ResponseRecorder rejects bodies after a 1xx on newer Go, so use a
+	// permissive writer; this test only exercises the recorder's own bookkeeping.
+	inner := &nonFlusherWriter{h: http.Header{}}
 	sr := NewStatusRecorder(inner)
 
 	sr.WriteHeader(http.StatusContinue) // 100 — informational, must not commit wroteHeader

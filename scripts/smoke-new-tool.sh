@@ -112,10 +112,10 @@ fi
 if command -v node >/dev/null 2>&1; then
   TS_STUB=workers/stubs/ts/src/index.ts
   echo "  -> node --check $TS_STUB"
-  ts_out=$(node --check "$TS_STUB" 2>&1); ts_rc=$?
+  ts_out=$(node --check "$TS_STUB" 2>&1) && ts_rc=0 || ts_rc=$?
   if [[ $ts_rc -ne 0 ]]; then
     # Node < 22.18 needs the explicit flag to strip types before --check.
-    ts_out=$(node --experimental-strip-types --check "$TS_STUB" 2>&1); ts_rc=$?
+    ts_out=$(node --experimental-strip-types --check "$TS_STUB" 2>&1) && ts_rc=0 || ts_rc=$?
   fi
   if [[ $ts_rc -eq 0 ]]; then
     echo "     ts stub syntax OK"
