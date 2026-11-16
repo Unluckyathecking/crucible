@@ -42,82 +42,22 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// invoke routes, so they must stay out of Build()'s invoke-route-only paths
 	// (see server.TestV1RoutesDriftGuard) but should still appear in the
 	// document actually served to API consumers.
-	for path, item := range webhookEndpointsPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, webhookEndpointsPathItems())
 
 	// Layer the customer API-key self-management routes on for the same
 	// reason as webhookEndpointsPathItems above.
-	for path, item := range keysPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, keysPathItems())
 
 	// Layer the customer error-history self-service route on for the same
 	// reason as usagePathItem/keysPathItems above.
-	for path, item := range errorsPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, errorsPathItems())
 
 	// Layer the async job status-polling route on for the same reason as
 	// usagePathItem/keysPathItems/errorsPathItems above: framework infra
 	// (gateway/internal/jobs), not a per-product invoke route — kept out of
 	// Build()'s invoke-route-only paths (see server.TestV1RoutesDriftGuard)
 	// but still documented in the actual served /openapi.json.
-	for path, item := range jobsPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, jobsPathItems())
 
 	// Layer the per-event usage export route on for the same reason as
 	// usagePathItem/keysPathItems/errorsPathItems/jobsPathItems above:
@@ -125,22 +65,7 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// invoke route — kept out of Build()'s invoke-route-only paths (see
 	// server.TestV1RoutesDriftGuard) but still documented in the actual served
 	// /openapi.json.
-	for path, item := range usageEventsPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, usageEventsPathItems())
 
 	// Layer the webhook delivery log route on for the same reason as
 	// usagePathItem/keysPathItems/errorsPathItems/jobsPathItems/usageEventsPathItems
@@ -148,22 +73,7 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 	// invoke route — kept out of Build()'s invoke-route-only paths (see
 	// server.TestV1RoutesDriftGuard) but still documented in the actual served
 	// /openapi.json.
-	for path, item := range webhookDeliveriesPathItems() {
-		existing := doc.Paths[path]
-		if item.Get != nil {
-			existing.Get = item.Get
-		}
-		if item.Post != nil {
-			existing.Post = item.Post
-		}
-		if item.Patch != nil {
-			existing.Patch = item.Patch
-		}
-		if item.Delete != nil {
-			existing.Delete = item.Delete
-		}
-		doc.Paths[path] = existing
-	}
+	mergePathItems(doc.Paths, webhookDeliveriesPathItems())
 
 	b, err := json.Marshal(doc)
 	if err != nil {
@@ -175,5 +85,27 @@ func Handler(invokeRoutes []RouteDescriptor) http.HandlerFunc {
 		if _, err := w.Write(body); err != nil {
 			log.Printf("openapi: write: %v", err)
 		}
+	}
+}
+
+// mergePathItems copies the operations (Get, Post, Patch, Delete) each item
+// defines onto the entry already in paths, rather than replacing the whole
+// PathItem, so operations set earlier for the same path are kept.
+func mergePathItems(paths, items map[string]PathItem) {
+	for path, item := range items {
+		existing := paths[path]
+		if item.Get != nil {
+			existing.Get = item.Get
+		}
+		if item.Post != nil {
+			existing.Post = item.Post
+		}
+		if item.Patch != nil {
+			existing.Patch = item.Patch
+		}
+		if item.Delete != nil {
+			existing.Delete = item.Delete
+		}
+		paths[path] = existing
 	}
 }

@@ -1,7 +1,6 @@
 package operator
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
@@ -21,7 +21,7 @@ import (
 // Query params: plan_id (optional), page (default 1), per_page (default 20).
 func ListCustomersHandler(s *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		q := r.URL.Query()
 		page, _ := strconv.Atoi(q.Get("page"))
 		perPage, _ := strconv.Atoi(q.Get("per_page"))
@@ -41,14 +41,14 @@ func ListCustomersHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
 // GetCustomerHandler handles GET /v1/admin/customers/{id}.
 func GetCustomerHandler(s *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -67,7 +67,7 @@ func GetCustomerHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, c)
+		httputil.WriteJSON(w, c)
 	}
 }
 
@@ -75,7 +75,7 @@ func GetCustomerHandler(s *Store) http.HandlerFunc {
 // Query params: start, end (RFC3339; optional, default = current UTC calendar month).
 func GetCustomerUsageHandler(s *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -123,7 +123,7 @@ func GetCustomerUsageHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
@@ -131,7 +131,7 @@ func GetCustomerUsageHandler(s *Store) http.HandlerFunc {
 // Query params: customer_id, action, start, end (RFC3339), page, per_page.
 func ListAuditEventsHandler(s *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		q := r.URL.Query()
 
 		var f AuditFilter
@@ -172,14 +172,14 @@ func ListAuditEventsHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
 // ListPlansHandler handles GET /v1/admin/plans.
 func ListPlansHandler(s *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		plans, err := s.Plans(r.Context())
 		if err != nil {
@@ -188,12 +188,6 @@ func ListPlansHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, plans)
+		httputil.WriteJSON(w, plans)
 	}
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(v)
 }

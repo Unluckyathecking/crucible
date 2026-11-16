@@ -22,7 +22,7 @@ func Middleware(token string) func(http.Handler) http.Handler {
 	tokenBytes := []byte(token)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+			rid := mwpkg.RequestIDFrom(r.Context())
 
 			authz := r.Header.Get("Authorization")
 			// HTTP auth scheme is case-insensitive per RFC 7235.

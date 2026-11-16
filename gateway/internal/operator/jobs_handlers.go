@@ -14,6 +14,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
@@ -156,7 +157,7 @@ func adminJobItemFrom(j AdminJob) adminJobItem {
 // that's the entire point of an operator console.
 func AdminListJobsHandler(store JobsAdminStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		q := r.URL.Query()
 
 		var status *string
@@ -188,7 +189,7 @@ func AdminListJobsHandler(store JobsAdminStore) http.HandlerFunc {
 		for _, j := range adminJobs {
 			items = append(items, adminJobItemFrom(j))
 		}
-		writeJSON(w, paging.Page[adminJobItem]{Items: items, Total: total})
+		httputil.WriteJSON(w, paging.Page[adminJobItem]{Items: items, Total: total})
 	}
 }
 
@@ -196,7 +197,7 @@ func AdminListJobsHandler(store JobsAdminStore) http.HandlerFunc {
 // customer (unscoped read), 404 on unknown id.
 func AdminGetJobHandler(store JobsAdminStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -215,7 +216,7 @@ func AdminGetJobHandler(store JobsAdminStore) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, adminJobItemFrom(job))
+		httputil.WriteJSON(w, adminJobItemFrom(job))
 	}
 }
 
@@ -225,7 +226,7 @@ func AdminGetJobHandler(store JobsAdminStore) http.HandlerFunc {
 // best-effort audit_log row.
 func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -269,7 +270,7 @@ func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handler
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "requeue succeeded but re-fetch failed", false)
 			return
 		}
-		writeJSON(w, adminJobItemFrom(job))
+		httputil.WriteJSON(w, adminJobItemFrom(job))
 	}
 }
 
@@ -292,7 +293,7 @@ type releaseJobsResponse struct {
 // concurrent execution (see ReleaseClaimed's doc comment in jobs/store.go).
 func AdminReleaseJobsHandler(store JobsAdminStore, db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		var body releaseJobsRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -316,7 +317,7 @@ func AdminReleaseJobsHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handle
 			emitJobAudit(r.Context(), db, rid, ActionJobsReleased, "gateway_instance", instanceID.String())
 		}
 
-		writeJSON(w, releaseJobsResponse{Released: n})
+		httputil.WriteJSON(w, releaseJobsResponse{Released: n})
 	}
 }
 

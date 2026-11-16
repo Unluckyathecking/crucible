@@ -20,6 +20,12 @@ type ctxKey string
 
 const RequestIDKey ctxKey = "request_id"
 
+// RequestIDFrom returns the request id stored on ctx by RequestID, or "" if none.
+func RequestIDFrom(ctx context.Context) string {
+	v, _ := ctx.Value(RequestIDKey).(string)
+	return v
+}
+
 func init() {
 	// zerolog.DefaultContextLogger ensures Ctx(ctx) always returns a usable logger
 	// even when no specific logger has been stored in context. Without this, Ctx

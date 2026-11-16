@@ -33,7 +33,7 @@ type BillingService interface {
 // Response: {"url":"https://checkout.stripe.com/..."}
 func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if d.Checkout == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return
@@ -77,7 +77,7 @@ func billingCheckoutHandler(d *Deps) http.HandlerFunc {
 // Response: {"url":"https://billing.stripe.com/..."}
 func billingPortalHandler(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if d.Checkout == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "billing not configured", false)
 			return

@@ -18,7 +18,7 @@ import (
 
 func invoke(p *proxy.Client, recorder *usage.Recorder, errorExposure string, operation string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		key := auth.FromContext(r.Context())
 
 		var payload json.RawMessage

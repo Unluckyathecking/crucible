@@ -64,7 +64,7 @@ func Middleware(routes []openapi.RouteDescriptor) func(http.Handler) http.Handle
 				return
 			}
 
-			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+			rid := mwpkg.RequestIDFrom(r.Context())
 
 			// Read the body; restore r.Body immediately so downstream handlers
 			// (including the error path) can still read it.

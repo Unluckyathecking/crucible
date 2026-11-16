@@ -46,7 +46,7 @@ func Middleware(bucket *Bucket, plans *billing.PlanCache) func(http.Handler) htt
 					httputil.SetRateLimitHeaders(w, limit, 0, resetAt)
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-				rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+				rid := mwpkg.RequestIDFrom(r.Context())
 				apierror.Write(w, rid, http.StatusTooManyRequests, apierror.RATE_LIMITED, "rate limit exceeded", true)
 				return
 			}
