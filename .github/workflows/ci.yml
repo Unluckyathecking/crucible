@@ -172,6 +172,8 @@ jobs:
         run: cd workers/sdk-rust && cargo clippy -- -D warnings
       - name: cargo test
         run: cd workers/sdk-rust && cargo test
+      - name: rust stub check
+        run: cd workers/stubs/rust && cargo check
 
   dashboard:
     needs: changes
