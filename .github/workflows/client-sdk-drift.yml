@@ -11,8 +11,7 @@ on:
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
-      - "gateway/internal/server/routes.go"
-      - "gateway/internal/server/routes_table.go"
+      - "gateway/internal/server/**"
       - ".github/workflows/client-sdk-drift.yml"
   pull_request:
     paths:
@@ -23,8 +22,7 @@ on:
       - "scripts/gen-clients.sh"
       - "gateway/cmd/spec-dump/**"
       - "gateway/internal/openapi/**"
-      - "gateway/internal/server/routes.go"
-      - "gateway/internal/server/routes_table.go"
+      - "gateway/internal/server/**"
       - ".github/workflows/client-sdk-drift.yml"
 
 permissions:
