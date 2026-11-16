@@ -13,6 +13,7 @@ inputs:
       gateway/go.sum
       workers/sdk-go/go.sum
       workers/stubs/go/go.sum
+      workers/stubs/textkit/go.sum
 runs:
   using: composite
   steps:
