@@ -1,7 +1,6 @@
 package operator
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
@@ -41,7 +41,7 @@ func ListCustomersHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
@@ -67,7 +67,7 @@ func GetCustomerHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, c)
+		httputil.WriteJSON(w, c)
 	}
 }
 
@@ -123,7 +123,7 @@ func GetCustomerUsageHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
@@ -172,7 +172,7 @@ func ListAuditEventsHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
@@ -188,12 +188,6 @@ func ListPlansHandler(s *Store) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, plans)
+		httputil.WriteJSON(w, plans)
 	}
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(v)
 }

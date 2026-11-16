@@ -14,6 +14,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/observability"
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
@@ -188,7 +189,7 @@ func AdminListJobsHandler(store JobsAdminStore) http.HandlerFunc {
 		for _, j := range adminJobs {
 			items = append(items, adminJobItemFrom(j))
 		}
-		writeJSON(w, paging.Page[adminJobItem]{Items: items, Total: total})
+		httputil.WriteJSON(w, paging.Page[adminJobItem]{Items: items, Total: total})
 	}
 }
 
@@ -215,7 +216,7 @@ func AdminGetJobHandler(store JobsAdminStore) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, adminJobItemFrom(job))
+		httputil.WriteJSON(w, adminJobItemFrom(job))
 	}
 }
 
@@ -269,7 +270,7 @@ func AdminRequeueJobHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handler
 			apierror.Write(w, rid, http.StatusInternalServerError, apierror.INTERNAL, "requeue succeeded but re-fetch failed", false)
 			return
 		}
-		writeJSON(w, adminJobItemFrom(job))
+		httputil.WriteJSON(w, adminJobItemFrom(job))
 	}
 }
 
@@ -316,7 +317,7 @@ func AdminReleaseJobsHandler(store JobsAdminStore, db *pgxpool.Pool) http.Handle
 			emitJobAudit(r.Context(), db, rid, ActionJobsReleased, "gateway_instance", instanceID.String())
 		}
 
-		writeJSON(w, releaseJobsResponse{Released: n})
+		httputil.WriteJSON(w, releaseJobsResponse{Released: n})
 	}
 }
 

@@ -2,7 +2,6 @@ package webhookout
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/Unluckyathecking/crucible/gateway/internal/apierror"
 	"github.com/Unluckyathecking/crucible/gateway/internal/audit"
+	"github.com/Unluckyathecking/crucible/gateway/internal/httputil"
 	mwpkg "github.com/Unluckyathecking/crucible/gateway/internal/middleware"
 	"github.com/Unluckyathecking/crucible/gateway/internal/paging"
 )
@@ -50,7 +50,7 @@ func ListDeadLettersHandler(db *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, result)
+		httputil.WriteJSON(w, result)
 	}
 }
 
@@ -80,7 +80,7 @@ func ReplaySingleHandler(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		emitReplayAudit(r.Context(), db, rid, id)
-		writeJSON(w, requeuedResponse{Requeued: 1})
+		httputil.WriteJSON(w, requeuedResponse{Requeued: 1})
 	}
 }
 
@@ -105,7 +105,7 @@ func ReplayBulkHandler(db *pgxpool.Pool) http.HandlerFunc {
 		for _, id := range ids {
 			emitReplayAudit(r.Context(), db, rid, id)
 		}
-		writeJSON(w, requeuedResponse{Requeued: len(ids)})
+		httputil.WriteJSON(w, requeuedResponse{Requeued: len(ids)})
 	}
 }
 
@@ -126,10 +126,4 @@ func emitReplayAudit(ctx context.Context, db *pgxpool.Pool, requestID string, de
 		log.Warn().Err(err).Str("request_id", requestID).Int64("delivery_id", deliveryID).
 			Msg("webhookout: audit emit failed for replay")
 	}
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(v)
 }
