@@ -511,7 +511,7 @@ func v1ErrorCapture(rec *errorlog.ErrorRecorder, capturePayload bool, maxPayload
 			if key == nil || key.Customer.ID == uuid.Nil {
 				return
 			}
-			rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+			rid := mw.RequestIDFrom(r.Context())
 			errCode, errMsg := capture.ParseErrorFields()
 			rec.Record(context.Background(), key.Customer.ID, key.ID, op, errCode, rid, errMsg, capture.Status(), reqPayload)
 		})

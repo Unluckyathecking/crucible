@@ -34,7 +34,7 @@ type requeuedResponse struct {
 // Query params: page (default 1), per_page (default 20).
 func ListDeadLettersHandler(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		q := r.URL.Query()
 		page, _ := strconv.Atoi(q.Get("page"))
 		perPage, _ := strconv.Atoi(q.Get("per_page"))
@@ -57,7 +57,7 @@ func ListDeadLettersHandler(db *pgxpool.Pool) http.HandlerFunc {
 // ReplaySingleHandler handles POST /v1/admin/webhooks/deadletters/{id}/replay.
 func ReplaySingleHandler(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		if err != nil {
@@ -87,7 +87,7 @@ func ReplaySingleHandler(db *pgxpool.Pool) http.HandlerFunc {
 // ReplayBulkHandler handles POST /v1/admin/webhooks/deadletters/replay?endpoint_id=<uuid>.
 func ReplayBulkHandler(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 
 		endpointID, err := uuid.Parse(r.URL.Query().Get("endpoint_id"))
 		if err != nil {

@@ -116,7 +116,7 @@ const jobBacklogExceededCode = "JOB_BACKLOG_EXCEEDED"
 // customer at every other tenant's expense.
 func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds, maxQueuedPerCustomer int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if store == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
 			return
@@ -190,7 +190,7 @@ func enqueueAsync(store *jobs.Store, operation string, timeoutSeconds, maxQueued
 // nonexistent id).
 func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if store == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
 			return
@@ -254,7 +254,7 @@ func jobsGetHandler(store *jobs.Store) http.HandlerFunc {
 // This cycle has no cooperative cancel of a RUNNING job: it always 409s.
 func jobsCancelHandler(store *jobs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if store == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
 			return
@@ -356,7 +356,7 @@ type jobListItem struct {
 // same page/per_page contract as webhookDeliveriesHandler.
 func jobsListHandler(store *jobs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		if store == nil {
 			apierror.Write(w, rid, http.StatusServiceUnavailable, apierror.NOT_CONFIGURED, "async jobs not configured", false)
 			return

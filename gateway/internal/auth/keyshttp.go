@@ -58,7 +58,7 @@ type keyItemResponse struct {
 // API keys. Never serializes a hash or full-key field.
 func ListKeysHandler(store *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		key := FromContext(r.Context())
 		if key == nil {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -138,7 +138,7 @@ type rotateRequest struct {
 // new full key is present in the response exactly once.
 func RotateKeysHandler(store *Store, keyPrefix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		key := FromContext(r.Context())
 		if key == nil {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -194,7 +194,7 @@ func RotateKeysHandler(store *Store, keyPrefix string) http.HandlerFunc {
 // invalidation, audit, and webhook emission all preserved).
 func RevokeKeysHandler(store *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		key := FromContext(r.Context())
 		if key == nil {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)

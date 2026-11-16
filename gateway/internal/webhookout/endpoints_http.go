@@ -45,7 +45,7 @@ type createEndpointRequest struct {
 // carries the signing secret exactly once.
 func CreateEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -81,7 +81,7 @@ func CreateEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.Han
 // customer's active endpoints. Never serializes a secret field.
 func ListEndpointsHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -122,7 +122,7 @@ type updateEndpointSubscriptionRequest struct {
 // exist, returns 404 either way (IDOR-safe).
 func UpdateEndpointSubscriptionHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -172,7 +172,7 @@ type rotateEndpointSecretResponse struct {
 // The new secret is returned exactly once, like CreateEndpointHandler's.
 func RotateEndpointSecretHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -210,7 +210,7 @@ func RotateEndpointSecretHandler(db *pgxpool.Pool, customerID CustomerIDFunc) ht
 // (IDOR-safe; see EnableEndpoint's doc comment).
 func EnableEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)
@@ -242,7 +242,7 @@ func EnableEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.Han
 // customer, or that doesn't exist, returns 404 either way (IDOR-safe).
 func DeleteEndpointHandler(db *pgxpool.Pool, customerID CustomerIDFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+		rid := mwpkg.RequestIDFrom(r.Context())
 		custID, ok := customerID(r)
 		if !ok {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)

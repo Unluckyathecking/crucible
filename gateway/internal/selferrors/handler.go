@@ -51,7 +51,7 @@ type Response struct {
 func Handler(db *pgxpool.Pool) http.HandlerFunc {
 	store := NewStore(db)
 	return func(w http.ResponseWriter, r *http.Request) {
-		rid, _ := r.Context().Value(mw.RequestIDKey).(string)
+		rid := mw.RequestIDFrom(r.Context())
 		key := auth.FromContext(r.Context())
 		if key == nil {
 			apierror.Write(w, rid, http.StatusUnauthorized, apierror.UNAUTHORIZED, "no auth context", false)

@@ -124,7 +124,7 @@ func Middleware(store *Store, recorder *usage.Recorder, operation string, ttl ti
 					metrics.RespCacheHitsTotal.WithLabelValues(operation).Inc()
 				}
 				if authKey := auth.FromContext(r.Context()); authKey != nil {
-					rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+					rid := mwpkg.RequestIDFrom(r.Context())
 					// r.Context(), not a derived context: recorder.Record calls
 					// quota.MarkRecorded, which reads a signal seeded into this exact
 					// request's context by quota.Middleware. A background context

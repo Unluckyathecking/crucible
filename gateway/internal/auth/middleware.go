@@ -20,7 +20,7 @@ const keyCtxKey ctxKey = "auth.key"
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			rid, _ := r.Context().Value(mwpkg.RequestIDKey).(string)
+			rid := mwpkg.RequestIDFrom(r.Context())
 			authz := r.Header.Get("Authorization")
 			// HTTP auth schemes are case-insensitive per RFC 7235; accept "Bearer ", "bearer ", etc.
 			token := ""
