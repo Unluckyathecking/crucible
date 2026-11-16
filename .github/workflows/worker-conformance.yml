@@ -110,6 +110,11 @@ jobs:
         working-directory: workers/sdk-python
         run: python3 -m unittest conformance.test_fixture_conformance -v
 
+      - name: Python SDK unit tests
+        if: matrix.sdk.id == 'python'
+        working-directory: workers/sdk-python
+        run: python3 -m unittest discover -s tests -t . -v
+
   # ── Python stub (no SDK — use the external conformance-run.sh suite) ─────────
 
   python-stub-conformance:
