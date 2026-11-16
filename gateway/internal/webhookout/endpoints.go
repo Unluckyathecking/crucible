@@ -1,5 +1,5 @@
 // Customer-facing CRUD for webhook_endpoints: the write-counterpart to the
-// delivery log (routes.go's webhookDeliveriesHandler) and the dead-letter
+// delivery log (ListDeliveries in deliveries.go) and the dead-letter
 // replay routes (adminhttp.go). Endpoint lifecycle was previously reachable
 // only through the NextAuth dashboard (dashboard/app/api/webhooks); this gives
 // an API-key-only customer the same registration capability.
