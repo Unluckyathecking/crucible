@@ -1,7 +1,7 @@
 // Package server wires the HTTP router and per-route handlers for the Crucible gateway.
 //
-// Per-product clones edit ONE location: the "per-product routes" block in NewRouter.
-// One line per endpoint maps an HTTP path to an opaque operation string forwarded to the worker.
+// Per-product clones edit ONE file: routes_table.go (V1Routes, AsyncRoutes, RespCacheTTLSeconds).
+// Each V1Routes entry maps an HTTP path to an opaque operation string forwarded to the worker.
 package server
 
 import (
