@@ -5,7 +5,7 @@ A Crucible worker is a single process that implements one frozen contract:
 - `POST /invoke` — accepts an `InvokeRequest` JSON, returns an `InvokeResponse` JSON.
 - `GET /healthz` — returns 200 OK when ready.
 
-The contract is defined in `gateway/proto/tool.proto`. Workers speak HTTP/JSON by default (curl-debuggable, writable in any language); gRPC is opt-in for perf-sensitive workers.
+The contract is defined in `gateway/proto/tool.proto`. Workers speak HTTP/JSON (curl-debuggable, writable in any language); the proto file documents the message shapes, it is not a gRPC transport.
 
 ## Layout
 

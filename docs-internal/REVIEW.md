@@ -6,7 +6,7 @@ Two passes, both single-shot (no agent loops):
 
 1. **Internal: OpenRouter 1-shot, DeepSeek V3.1** (`docs-internal/REVIEW.md` initial pass). Bundled all 14 gateway files into one HTTP POST. Most of its CRITICAL findings were stdlib misreads (`hmac.Equal` flagged as non-constant-time, missed `io.Copy(io.Discard, ...)`, etc.). The one genuine HIGH was my self-review finding: webhook dedup happening before dispatch could permanently drop events on transient handler failure.
 
-2. **External: Codex full-tree review** (`docs-internal/full-code-review-2026-05-16.md`). Higher-signal pass. Caught 6 real issues missed by both DeepSeek and my self-review.
+2. **External: Codex full-tree review.** Higher-signal pass. Caught 6 real issues missed by both DeepSeek and my self-review.
 
 3. **GLM-5.1 third pass** running in parallel as of 2026-05-16T17:50; results will be triaged when complete.
 
