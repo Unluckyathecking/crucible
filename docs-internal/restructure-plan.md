@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: in progress. Written 2026-11-16 against main after #224.
+Status: done. Written 2026-11-16 against main after #224; PRs #226 to #233 merged the same day.
 
 ## Goal
 
@@ -62,6 +62,11 @@ Branch protection requires branches to be up to date, so merges are serial
 even where the work is parallel. PRs 2, 3, 4, 6 and 7 own disjoint paths and
 are written concurrently; PR 5 starts after 3 and 4 merge.
 
+Merged as: 1 #226, 2 #227, 3 #230, 4 #229, 5 #233, 6 #228, 7 #231. One PR was
+added during the work: #232 removed home-directory paths, a private repo name
+and a stale local-first rule from AGENTS.md, and fixed the bootstrap script's
+placeholder URL and the `server` package comment.
+
 | # | Title | Paths owned | Risk | Tier |
 |---|---|---|---|---|
 | 1 | docs: add restructure plan | `docs-internal/restructure-plan.md` | none | lead |
@@ -114,8 +119,12 @@ are written concurrently; PR 5 starts after 3 and 4 merge.
 - The duplicated `jobs.Store` construction in `main` and `NewRouter`, and the
   harness emitter that outlives its test server. Real, but fixing them changes
   wiring behaviour.
-- The agent-process sections of AGENTS.md. Only facts about the code are
-  corrected; what guidance the file should carry is the owner's call.
+- The operating-standard block at the top of AGENTS.md. Facts about the code
+  and machine-specific references were corrected; what general guidance the
+  file should carry is the owner's call.
+- `seed-dev.sh` and the three `deploy/` scripts are not exercised by CI.
+- `govulncheck` is installed at `@latest`; `clients/go` is in the `ci` path
+  filter but only the drift workflow builds it.
 
 ## Needs an owner decision (not done here)
 
@@ -129,3 +138,6 @@ are written concurrently; PR 5 starts after 3 and 4 merge.
 - `gateway/proto/tool.proto` is the frozen contract but nothing generates code
   from it or checks it against the JSON structs in `proxy/client.go`.
 - The `rust`, `ts` and `textkit` stub Dockerfiles are never built in CI.
+- `workers/stubs/rust/Cargo.lock` is out of date with `Cargo.toml`
+  (`cargo check --locked` fails), so the new CI step runs without `--locked`.
+  Regenerating the lockfile changes resolved dependency versions.
