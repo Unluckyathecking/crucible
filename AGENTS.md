@@ -77,9 +77,9 @@ These exist for non-obvious reasons. If you think you need to change one of them
 
    `Store.Revoke()` handles this automatically for key revocation, but plan edits bypass the revocation path, so manual invalidation is needed when plan tiers change.
 
-8. **Migrations are idempotent and run on every gateway boot.** Every `gateway/migrations/*.sql` file uses `CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT DO NOTHING`, etc. No version-tracking table — files run in lexical order every time. Per-product clones add their seed migration at the next free index (`0026_*.sql` at the time of writing).
+8. **Migrations are idempotent and run on every gateway boot.** Every `gateway/migrations/*.sql` file uses `CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT DO NOTHING`, etc. No version-tracking table — files run in lexical order every time. Per-product clones add their seed migration at the next free index (`0027_*.sql` at the time of writing).
 
-9. **`workers/sdk-go/` is the shared SDK. `workers/active` is a symlink.** Don't fork the SDK per product; extend it. Don't move the active worker out of `workers/`; the Dockerfile build context expects it there.
+9. **`workers/sdk-go/` is the shared SDK. `workers/active` is a symlink.** Don't fork the SDK per product; extend it. Don't move the active worker out of `workers/`; `scripts/doctor.sh`, `scripts/acceptance-run.sh` and the CI version check resolve it by that path.
 
 ## What changes per product
 
@@ -155,17 +155,19 @@ gateway/
 ├── internal/selferrors/      serves GET /v1/errors (customer's own error history)
 ├── internal/selfusage/       serves GET /v1/usage (aggregate usage vs quota)
 ├── internal/selfusagedetail/ serves GET /v1/usage/events (per-event export, JSON/CSV)
-├── internal/server/          chi router + handlers; per-product routes live in routes_table.go
+├── internal/server/          chi router + handlers (routes.go, invoke.go, jobs_handlers.go, billing_handlers.go, webhook_deliveries.go); per-product routes live in routes_table.go
+├── internal/testdb/          shared real-Postgres/Redis test helpers (integration tests)
 ├── internal/tracing/         optional, default-off OpenTelemetry (OTLP) tracing
 ├── internal/usage/           records usage_events sync; async two-phase Stripe flush
 ├── internal/validate/        stdlib-only JSON Schema subset validator for request bodies
 ├── internal/webhookout/      delivers signed outbound webhook POSTs to customer endpoints
-└── migrations/               migrations.go (embedded fs.FS) + 0001–0025 framework schema; clones seed plans at the next free index (0026 at time of writing)
+├── test/{acceptance,harness,scenarios,textkit}/  end-to-end tests: harness boots the gateway middleware chain on real Postgres/Redis with an in-process worker stub; textkit/ is the route table for the textkit worker
+└── migrations/               migrations.go (embedded fs.FS) + 0001–0026 framework schema; clones seed plans at the next free index (0027 at time of writing)
 
 workers/
 ├── sdk-go/, sdk-rust/, sdk-ts/, sdk-python/   worker SDKs, one per host language, same /invoke contract
 ├── conformance/fixture.json                   shared contract fixture every SDK is tested against
-├── stubs/                                     hello-world reference workers
+├── stubs/                                     hello-world reference workers (go, python, rust, ts) plus stubs/textkit, a multi-operation reference worker (its routes live in gateway/test/textkit)
 └── active                                     symlink to the worker this clone ships
 
 clients/                                       generated consumer SDKs (go, typescript, python) + openapi.json snapshot
