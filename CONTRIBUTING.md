@@ -4,7 +4,7 @@ Crucible is a template repo with a single maintainer. Contributions are welcome;
 
 ## Running it locally
 
-You need Go 1.25+, and Node 22 with pnpm if you're touching the dashboard. A Rust toolchain is optional: the smoke test runs a `cargo check` on the Rust SDK when cargo is installed and skips it otherwise (CI always runs it). Config comes from `.env`, which you create once:
+You need Go 1.26+, and Node 22 with pnpm if you're touching the dashboard. A Rust toolchain is optional: the smoke test runs a `cargo check` on the Rust SDK when cargo is installed and skips it otherwise (CI always runs it). Config comes from `.env`, which you create once:
 
 ```bash
 cp .env.example .env
@@ -27,7 +27,7 @@ make gateway    # gateway on :8080; migrations run on boot
 
 ## What CI runs
 
-Four workflows gate changes. The first three run on every PR; the drift guard fires only when the client-facing surface changes (`clients/`, the OpenAPI builder, the route files). Reproduce the relevant ones locally before pushing and you'll rarely be surprised:
+Four workflows gate changes. `ci` and `new-tool-smoke` run on every PR but skip jobs for surfaces the PR does not touch; `worker-conformance` and the drift guard are path-filtered (`workers/`, `test/conformance/`; and `clients/`, the OpenAPI builder, the route files). Reproduce the relevant ones locally before pushing and you'll rarely be surprised:
 
 - `ci` — `go vet` and `go test -race` for the gateway (unit and integration, against real Postgres and Redis), the Go worker SDK tests, a worker stub build, `docker compose build`, govulncheck, the Rust SDK (check, clippy, test), and the dashboard (`pnpm test`, then `pnpm build`).
 - `new-tool-smoke` — one job runs `bash scripts/smoke-new-tool.sh`; a second clones a demo tree with `scripts/new-tool.sh` and runs the acceptance suite against it end to end.

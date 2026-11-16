@@ -193,6 +193,10 @@ Readiness probe. Checks Redis and Postgres connectivity. No authentication requi
 
 Status is `"degraded"` if any dependency is unreachable.
 
+### GET /openapi.json
+
+The OpenAPI 3.1 document for this API. No authentication required.
+
 ## Account and Management Endpoints
 
 These endpoints manage your usage, keys, webhooks, async jobs, and billing. All require the same Bearer API key as the invoke endpoints. The key, webhook, and job list endpoints page with `page` and `per_page` and return a `{"items": [...], "total": N}` envelope. The two exports `GET /v1/usage/events` and `GET /v1/errors` instead page with `page` and `limit` and return `{"data": [...], "has_more": bool, "page": N, "limit": N}`.
@@ -230,6 +234,8 @@ Register endpoints to receive signed event deliveries (see [Verifying Webhooks](
 **DELETE /v1/webhooks/endpoints/{id}** — deactivate an endpoint.
 
 **POST /v1/webhooks/endpoints/{id}/rotate-secret** — issue a new signing secret. It is shown once; the previous secret stops verifying immediately.
+
+**POST /v1/webhooks/endpoints/{id}/enable** — re-enable an endpoint that was auto-disabled for chronic delivery failure. Returns 204; 404 if the endpoint is not found or is not currently auto-disabled.
 
 **GET /v1/webhooks/deliveries** — the delivery log across all your endpoints (status, attempts, last response code), newest first.
 
