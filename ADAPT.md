@@ -14,9 +14,11 @@ To turn this template into a new API product (e.g. `vat-check`), edit only these
    ```go
    var RespCacheTTLSeconds = map[string]int{"/validate-vat": 300}
    ```
+   To run an endpoint as a durable async job (202 + poll `GET /v1/jobs/{id}`) instead of inline, add it to `AsyncRoutes` (path to optional per-route job timeout in seconds; 0 = gateway default).
+
    The `operation` string is forwarded opaquely to the worker. The framework never needs to know what your product does.
 
-3. **`gateway/migrations/<next>_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). Name this file with the next free migration index (`0026` at the time of writing); migrations run in lexical order on every boot.
+3. **`gateway/migrations/<next>_seed_plans.sql`** — define your pricing tiers (rate limit per minute, monthly unit cap, Stripe price id). Name this file with the next free migration index (`0027` at the time of writing); migrations run in lexical order on every boot.
 
 4. **`dashboard/app/page.tsx`** — landing copy + pricing display.
 
