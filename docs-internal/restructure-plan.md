@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: in progress. Written 2026-11-16 against main after #225.
+Status: in progress. Written 2026-11-16 against main after #224.
 
 ## Goal
 
@@ -34,8 +34,7 @@ script is orphaned. The problems are inside the tree:
   findings that `REVIEW.md` records as fixed, and embeds a local path.
   `docs-internal/vies-research.md` is research for a worker that is not in
   this repo.
-- Local and CI gaps. `make test` and `make tidy` skip `workers/stubs/textkit`.
-  `workers/sdk-python/tests/test_signature.py` is never run in CI.
+- CI gaps. `workers/sdk-python/tests/test_signature.py` is never run in CI.
   `workers/stubs/rust` is never compiled in CI.
 
 ## Target layout
@@ -71,7 +70,7 @@ are written concurrently; PR 5 starts after 3 and 4 merge.
 | 4 | refactor: split the jobs store and webhook emitter by responsibility | `gateway/internal/jobs/store*.go`, `gateway/internal/webhookout/emitter*.go` | low; same as 3. SQL strings must stay byte-identical | Sonnet |
 | 5 | refactor: share request-id, JSON and date-range helpers | `gateway/internal/middleware`, `httputil`, `selferrors`, `selfusagedetail`, `operator/handlers.go`, `webhookout/adminhttp.go`, `openapi/handler.go`, plus the one-line request-id call sites | medium; touches handlers. Headers, status codes and error strings must not change | Sonnet, lead reviews every hunk |
 | 6 | refactor: move the client generator out of its shell heredoc | `scripts/gen-clients.sh`, `scripts/gen_clients.py`, `.github/workflows/client-sdk-drift.yml`, `clients/README.md` | low; drift workflow proves the output is byte-identical | Sonnet |
-| 7 | ci: cover textkit in make targets, run python sdk tests, check the rust stub | `Makefile`, `.github/workflows/worker-conformance.yml`, `.github/workflows/ci.yml` (rust job only) | low; may surface an existing failure, in which case stop and report | Haiku |
+| 7 | ci: run the python sdk tests and compile the rust stub | `.github/workflows/worker-conformance.yml`, `.github/workflows/ci.yml` (rust job only) | low; may surface an existing failure, in which case stop and report | Haiku |
 
 ## How behaviour preservation is verified
 
