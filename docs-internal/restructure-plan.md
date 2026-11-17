@@ -123,21 +123,25 @@ placeholder URL and the `server` package comment.
   and machine-specific references were corrected; what general guidance the
   file should carry is the owner's call.
 - `seed-dev.sh` and the three `deploy/` scripts are not exercised by CI.
-- `govulncheck` is installed at `@latest`; `clients/go` is in the `ci` path
-  filter but only the drift workflow builds it.
+- ~~`govulncheck` is installed at `@latest`; `clients/go` is in the `ci` path
+  filter but only the drift workflow builds it.~~ Done: govulncheck is pinned
+  to v1.1.4 and `clients/go` is out of the `ci` filter (the drift workflow
+  builds and tests it).
 
 ## Needs an owner decision (not done here)
 
 - `docker-compose.yml` publishes Postgres 5432 and Redis 6379 on all
   interfaces. Docker bypasses ufw for published ports, so the firewall set up
   by `deploy/hetzner-bootstrap.sh` does not cover them.
-- Grafana alert rules reference `datasourceUid: prometheus` but the
-  provisioned datasource sets no `uid`.
+- ~~Grafana alert rules reference `datasourceUid: prometheus` but the
+  provisioned datasource sets no `uid`.~~ Done: the datasource now sets
+  `uid: prometheus`.
 - `workers/sdk-python` has no consumer; `stubs/python` reimplements the
   contract with the standard library.
 - `gateway/proto/tool.proto` is the frozen contract but nothing generates code
-  from it or checks it against the JSON structs in `proxy/client.go`.
-- The `rust`, `ts` and `textkit` stub Dockerfiles are never built in CI.
-- `workers/stubs/rust/Cargo.lock` is out of date with `Cargo.toml`
-  (`cargo check --locked` fails), so the new CI step runs without `--locked`.
-  Regenerating the lockfile changes resolved dependency versions.
+  from it. Done: `proxy/proto_contract_test.go` now checks its field names
+  against the JSON structs in `proxy/client.go`.
+- ~~The `rust`, `ts` and `textkit` stub Dockerfiles are never built in CI.~~
+  Done: the `go` job builds them.
+- ~~`workers/stubs/rust/Cargo.lock` is out of date with `Cargo.toml`.~~ Done:
+  regenerated, and the CI step runs with `--locked` again.
