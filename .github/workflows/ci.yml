@@ -37,7 +37,7 @@ jobs:
           echo "$changed"
           match() { echo "$changed" | grep -qE "$1" && echo true || echo false; }
           {
-            echo "go=$(match '^(gateway/|workers/|clients/go/|test/conformance/|go\.work|docker-compose\.yml|Caddyfile|scripts/|\.github/workflows/ci\.yml)')"
+            echo "go=$(match '^(gateway/|workers/|test/conformance/|go\.work|docker-compose\.yml|Caddyfile|scripts/|\.github/workflows/ci\.yml)')"
             echo "rust=$(match '^(workers/sdk-rust/|workers/stubs/rust/|\.github/workflows/ci\.yml)')"
             echo "dashboard=$(match '^(dashboard/|\.github/workflows/ci\.yml)')"
           } >> "$GITHUB_OUTPUT"
@@ -110,6 +110,12 @@ jobs:
 
       - name: docker compose build
         run: docker compose build gateway worker dashboard
+      - name: docker build rust stub
+        run: docker build -f workers/stubs/rust/Dockerfile -t crucible-stub-rust .
+      - name: docker build ts stub
+        run: docker build -f workers/stubs/ts/Dockerfile -t crucible-stub-ts .
+      - name: docker build textkit stub
+        run: docker build -f workers/stubs/textkit/Dockerfile -t crucible-stub-textkit .
 
       - name: go version drift check
         run: |
@@ -142,7 +148,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/setup-go
       - name: install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: govulncheck gateway
         run: cd gateway && govulncheck ./...
       - name: govulncheck sdk-go
