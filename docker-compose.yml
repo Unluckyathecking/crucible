@@ -120,7 +120,7 @@ services:
       AUTH_URL: http://localhost:3000
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
