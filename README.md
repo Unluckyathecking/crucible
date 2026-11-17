@@ -80,7 +80,7 @@ curl -k -X POST https://localhost/v1/echo \
 
 The seed script's own example uses `localhost:8080`, which applies when the gateway runs outside Docker (below).
 
-Postgres, Redis, Prometheus (9091), Grafana (3001) and the dashboard (3000) are bound to 127.0.0.1 only. Grafana's login is `admin` with your `GF_ADMIN_PASSWORD`. The dashboard needs its own config before it is useful: copy `dashboard/.env.example` to `dashboard/.env.local`, set `AUTH_SECRET`, and use the same `API_KEY_PREFIX` and `API_KEY_HASH_SALT` as the gateway. Without `RESEND_API_KEY`, magic-link login emails are written to the container log (`docker compose logs dashboard`).
+Postgres, Redis, Prometheus (9091), Grafana (3001) and the dashboard (3000) are bound to 127.0.0.1 only. Grafana's login is `admin` with your `GF_ADMIN_PASSWORD`. The dashboard needs its own config before it is useful: copy `dashboard/.env.example` to `dashboard/.env.local`, set `AUTH_SECRET`, and use the same `API_KEY_PREFIX` and `API_KEY_HASH_SALT` as the gateway. The container runs in production mode, so magic-link login needs a `RESEND_API_KEY`; when the dashboard runs outside Docker with `make dashboard`, links are printed to the console instead.
 
 On a remote server, reach the localhost-only services over an SSH tunnel:
 
@@ -94,8 +94,8 @@ then open http://localhost:3000 for the dashboard and http://localhost:3001 for 
 
 ```bash
 docker compose up -d postgres redis
-make worker    # stub worker on :8081
-make gateway   # gateway on :8080, reads .env, runs migrations on boot
+make worker    # stub worker on :8081, runs in the foreground
+make gateway   # in a second shell: gateway on :8080, reads .env, runs migrations on boot
 ```
 
 The worker can be called on its own:
@@ -136,7 +136,7 @@ Gateway tests need real Postgres and Redis. With them running (`docker compose u
 
 ```bash
 make test                        # gateway, Go SDK, Go stub and textkit tests
-cd gateway && go test -race -p 1 ./...
+(cd gateway && go test -race -p 1 ./...)
 bash scripts/smoke-new-tool.sh   # clone a new product tree and check it builds
 make acceptance                  # workers/active through the real gateway, end to end
 cd dashboard && pnpm test && pnpm build
