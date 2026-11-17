@@ -130,9 +130,10 @@ placeholder URL and the `server` package comment.
 
 ## Needs an owner decision (not done here)
 
-- `docker-compose.yml` publishes Postgres 5432 and Redis 6379 on all
+- ~~`docker-compose.yml` publishes Postgres 5432 and Redis 6379 on all
   interfaces. Docker bypasses ufw for published ports, so the firewall set up
-  by `deploy/hetzner-bootstrap.sh` does not cover them.
+  by `deploy/hetzner-bootstrap.sh` does not cover them.~~ Done: Postgres,
+  Redis and Prometheus now bind to 127.0.0.1.
 - ~~Grafana alert rules reference `datasourceUid: prometheus` but the
   provisioned datasource sets no `uid`.~~ Done: the datasource now sets
   `uid: prometheus`.
